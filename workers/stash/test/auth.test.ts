@@ -113,7 +113,7 @@ describe("bearer authentication and route capabilities", () => {
     const stash = await request(app, "http://stash.test/v1/stashes/alpha/files", {
       headers: bearer(minted.token),
     });
-    expect(stash.status).toBe(501);
+    expect(stash.status).toBe(200);
   });
 
   it("fails closed when D1 throws", async () => {
