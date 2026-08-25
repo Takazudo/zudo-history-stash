@@ -3,10 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>zudo-history-stash</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>History Stash</title>
     <script>
-      const theme = localStorage.getItem("zhs.theme");
-      if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      (() => {
+        try {
+          const theme = localStorage.getItem("zhs.theme");
+          if (theme === "light" || theme === "dark") {
+            document.documentElement.dataset.theme = theme;
+          }
+        } catch {
+          // Storage can be unavailable in privacy-restricted contexts; the system theme remains valid.
+        }
+      })();
     </script>
   </head>
   <body>

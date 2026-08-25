@@ -1,5 +1,3 @@
-# Static-asset viewer Worker. The API proxy is a placeholder until the viewer
-# foundation task wires the service binding through src/worker.ts.
 name = "zudo-history-stash-viewer"
 main = "src/worker.ts"
 compatibility_date = "2026-08-25"
@@ -14,6 +12,10 @@ directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api", "/api/*"]
+
+[[routes]]
+pattern = "history-stash.example.com"
+custom_domain = true
 
 [[services]]
 binding = "STASH"
