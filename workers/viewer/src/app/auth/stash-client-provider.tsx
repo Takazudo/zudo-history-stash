@@ -1,87 +1,94 @@
-import type {
-  ApiError,
-  ErrorResponse,
-  MeResponse,
-  Result,
-} from "@takazudo/zudo-history-stash-core";
+import {
+  StashHttpError,
+  createStashClient,
+  type ClientResult,
+  type MeResponse,
+  type StashClient,
+  type StashFetch,
+} from "@takazudo/zudo-history-stash";
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { clearToken as clearStoredToken, getToken, setToken as storeToken } from "./token-store.js";
 
-export interface ViewerStashClient {
-  me(options?: { signal?: AbortSignal }): Promise<Result<MeResponse>>;
+export interface ViewerStashClient extends StashClient {
+  me(options?: { signal?: AbortSignal }): Promise<ClientResult<MeResponse>>;
+  withSignal(signal: AbortSignal): StashClient;
 }
+
+export type ViewerStashClientFactory = (
+  token: string,
+  onUnauthorized: () => void,
+) => ViewerStashClient;
 
 interface StashClientContextValue {
   token: string | null;
   client: ViewerStashClient | null;
-  authenticate(token: string): Promise<Result<MeResponse>>;
+  authenticate(token: string): Promise<ClientResult<MeResponse>>;
   logOut(): void;
 }
 
 const StashClientContext = createContext<StashClientContextValue | null>(null);
 
-function toApiError(response: Response, body: ErrorResponse | null): ApiError {
-  return {
-    status: response.status,
-    code: body?.error.code ?? "internal",
-    message: body?.error.message ?? `Request failed with status ${response.status}`,
-  };
+function messageFromHttpError(error: StashHttpError): string {
+  if (error.body && typeof error.body === "object" && "error" in error.body) {
+    const detail = error.body.error;
+    if (detail && typeof detail === "object" && "message" in detail) {
+      const message = detail.message;
+      if (typeof message === "string") return message;
+    }
+  }
+  return error.cause instanceof Error ? error.cause.message : error.message;
 }
 
-async function parseError(response: Response): Promise<ErrorResponse | null> {
+async function readMe(client: StashClient): Promise<ClientResult<MeResponse>> {
   try {
-    return (await response.json()) as ErrorResponse;
-  } catch {
-    return null;
+    return await client.me();
+  } catch (error) {
+    if (!(error instanceof StashHttpError)) throw error;
+    return {
+      ok: false,
+      error: {
+        status: error.status,
+        code: error.code ?? "internal",
+        message: messageFromHttpError(error),
+      },
+    };
   }
 }
 
 export function createViewerStashClient(
   token: string,
   onUnauthorized: () => void,
-  fetchImplementation: typeof fetch = fetch,
+  fetchImplementation: StashFetch = globalThis.fetch.bind(globalThis),
 ): ViewerStashClient {
+  const createClient = (signal?: AbortSignal): StashClient =>
+    createStashClient({
+      baseUrl: "/api",
+      token,
+      fetch: async (input, init) => {
+        const response = await fetchImplementation(
+          input,
+          signal && !init?.signal ? { ...init, signal } : init,
+        );
+        if (response.status === 401) onUnauthorized();
+        return response;
+      },
+    });
+
+  const client = createClient();
   return {
-    async me(options) {
-      let response: Response;
-      try {
-        response = await fetchImplementation("/api/v1/me", {
-          headers: { authorization: `Bearer ${token}` },
-          signal: options?.signal,
-        });
-      } catch (error) {
-        return {
-          ok: false,
-          error: {
-            status: 0,
-            code: "internal",
-            message: error instanceof Error ? error.message : "The request failed",
-          },
-        };
-      }
-
-      if (response.ok) {
-        try {
-          return { ok: true, value: (await response.json()) as MeResponse };
-        } catch {
-          return {
-            ok: false,
-            error: {
-              status: response.status,
-              code: "internal",
-              message: "The API response was not valid JSON",
-            },
-          };
-        }
-      }
-
-      if (response.status === 401) onUnauthorized();
-      return { ok: false, error: toApiError(response, await parseError(response)) };
-    },
+    ...client,
+    me: (options) => readMe(options?.signal ? createClient(options.signal) : client),
+    withSignal: (signal) => createClient(signal),
   };
 }
 
-export function StashClientProvider({ children }: { children: ReactNode }) {
+export function StashClientProvider({
+  children,
+  clientFactory = createViewerStashClient,
+}: {
+  children: ReactNode;
+  clientFactory?: ViewerStashClientFactory;
+}) {
   const [token, setCurrentToken] = useState(getToken);
 
   const logOut = useCallback(() => {
@@ -90,13 +97,13 @@ export function StashClientProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const client = useMemo(
-    () => (token ? createViewerStashClient(token, logOut) : null),
-    [logOut, token],
+    () => (token ? clientFactory(token, logOut) : null),
+    [clientFactory, logOut, token],
   );
 
   const authenticate = useCallback(
     async (candidate: string) => {
-      const candidateClient = createViewerStashClient(candidate, logOut);
+      const candidateClient = clientFactory(candidate, logOut);
       const result = await candidateClient.me();
       if (result.ok) {
         storeToken(candidate);
@@ -104,7 +111,7 @@ export function StashClientProvider({ children }: { children: ReactNode }) {
       }
       return result;
     },
-    [logOut],
+    [clientFactory, logOut],
   );
 
   const value = useMemo(
