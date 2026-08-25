@@ -1,0 +1,315 @@
+.diff-view {
+  display: grid;
+  min-width: 0;
+  gap: var(--vsp-xl);
+}
+
+.page:has(.diff-view) .page__title {
+  min-width: 0;
+  word-break: break-all;
+}
+
+.diff-view__header,
+.diff-state-card,
+.diff-notice {
+  min-width: 0;
+  border: var(--border-hairline) solid var(--theme-border);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface-raised);
+}
+
+.diff-view__header {
+  display: grid;
+  gap: var(--vsp-lg);
+  padding-block: var(--vsp-lg);
+  padding-inline: var(--hsp-lg);
+}
+
+.diff-view__identity {
+  display: grid;
+  min-width: 0;
+  gap: var(--vsp-xs);
+}
+
+.diff-view__identity h2,
+.diff-view__identity p,
+.diff-state-card h3,
+.diff-state-card p,
+.diff-notice p {
+  margin: 0;
+}
+
+.diff-view__identity h2 {
+  min-width: 0;
+  font-family: var(--font-family-mono);
+  font-size: var(--text-lg);
+  line-height: var(--line-code);
+  word-break: break-all;
+}
+
+.diff-view__identity p,
+.diff-copy-status,
+.diff-state-card p,
+.diff-notice p {
+  color: var(--theme-ink-muted);
+}
+
+.diff-view__identity p,
+.diff-copy-status {
+  font-size: var(--text-xs);
+}
+
+.diff-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: var(--vsp-md) var(--hsp-md);
+}
+
+.diff-control {
+  display: grid;
+  min-width: 0;
+  gap: var(--vsp-xs);
+}
+
+.diff-control__label {
+  color: var(--theme-ink-muted);
+  font-size: var(--text-xs);
+  font-weight: 680;
+}
+
+.diff-control__value {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  gap: var(--hsp-xs);
+}
+
+.diff-control select {
+  min-height: var(--control-height);
+  max-width: 100%;
+  padding-inline: var(--hsp-sm);
+  border: var(--border-hairline) solid var(--input-border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--theme-ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-control__value select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.diff-control__value .kind-badge {
+  flex: 0 0 auto;
+}
+
+.diff-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-height);
+  gap: var(--hsp-xs);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.diff-stats {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-height);
+  gap: var(--hsp-sm);
+  padding-inline: var(--hsp-sm);
+  border: var(--border-hairline) solid var(--theme-border);
+  border-radius: var(--radius-sm);
+  background: var(--theme-surface);
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
+}
+
+.diff-stats__add {
+  color: var(--theme-diff-add-fg);
+}
+
+.diff-stats__remove {
+  color: var(--theme-diff-remove-fg);
+}
+
+.diff-copy-group {
+  display: grid;
+  justify-items: start;
+  gap: var(--vsp-xs);
+}
+
+.diff-state-card,
+.diff-notice {
+  display: grid;
+  gap: var(--vsp-sm);
+  padding-block: var(--vsp-lg);
+  padding-inline: var(--hsp-lg);
+}
+
+.diff-state-card h3 {
+  font-size: var(--text-md);
+  line-height: var(--line-tight);
+}
+
+.diff-state-card__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hsp-md);
+}
+
+.diff-notice {
+  border-color: var(--theme-warning-soft);
+  background: var(--theme-warning-soft);
+}
+
+.diff-table-pane {
+  container-type: inline-size;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior-inline: contain;
+  border: var(--border-hairline) solid var(--theme-border);
+  border-radius: var(--radius-md);
+  background: var(--theme-surface-raised);
+}
+
+.diff-table {
+  border-spacing: 0;
+  border-collapse: separate;
+  font-family: var(--font-family-mono);
+  font-size: var(--text-xs);
+  line-height: var(--line-code);
+}
+
+.diff-table-pane--wrap .diff-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.diff-table-pane--nowrap .diff-table {
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
+}
+
+.diff-table th,
+.diff-table td {
+  box-sizing: border-box;
+  padding-block: var(--vsp-xs);
+  padding-inline: var(--hsp-xs);
+  border-bottom: var(--border-hairline) solid var(--theme-border);
+  vertical-align: top;
+}
+
+.diff-table thead th {
+  background: var(--table-header-bg);
+  color: var(--theme-ink-muted);
+  font-family: var(--font-sans);
+  font-weight: 680;
+  text-align: left;
+}
+
+.diff-table__gutter,
+.diff-table__sign {
+  width: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.diff-table__gutter {
+  color: var(--theme-ink-muted);
+}
+
+.diff-table__sign {
+  text-align: center;
+}
+
+.diff-table__content {
+  width: auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.diff-table-pane--wrap .diff-table__content {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-table-pane--nowrap .diff-table__content {
+  white-space: pre;
+  word-break: normal;
+}
+
+.diff-table__row--add > * {
+  background: var(--theme-diff-add-bg);
+}
+
+.diff-table__row--add .diff-table__sign {
+  color: var(--theme-diff-add-fg);
+}
+
+.diff-table__row--remove > * {
+  background: var(--theme-diff-remove-bg);
+}
+
+.diff-table__row--remove .diff-table__sign {
+  color: var(--theme-diff-remove-fg);
+}
+
+.diff-table__row--context > * {
+  background: var(--theme-diff-context-bg);
+}
+
+.diff-table__hunk th {
+  padding-block: var(--vsp-sm);
+  padding-inline: var(--hsp-sm);
+  background: var(--theme-surface-muted);
+  color: var(--theme-ink-muted);
+  font-weight: 680;
+  text-align: left;
+  white-space: pre;
+}
+
+.diff-table__marker td {
+  padding-block: var(--vsp-xs);
+  padding-inline: var(--hsp-md);
+  background: var(--theme-surface);
+  color: var(--theme-ink-muted);
+  font-style: italic;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-table tbody:last-child tr:last-child > * {
+  border-bottom: 0;
+}
+
+@media (max-width: 40rem) {
+  .diff-view {
+    gap: var(--vsp-lg);
+  }
+
+  .diff-view__header,
+  .diff-state-card,
+  .diff-notice {
+    padding-inline: var(--hsp-md);
+  }
+
+  .diff-controls {
+    align-items: stretch;
+  }
+
+  .diff-control,
+  .diff-copy-group {
+    flex: 1 1 auto;
+  }
+}
