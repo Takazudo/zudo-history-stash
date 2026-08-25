@@ -20,6 +20,10 @@ The resource rule keeps child work proportional: a sub-issue runs its own packag
 
 Worker tests use the Cloudflare Vitest plugin and apply migrations in setup. Exercise routes with `app.request(url, init, env, ctx)`, wait for the execution context, and assert D1 rows directly. Inject `now` and IDs for deterministic responses, and use the `onBeforeCommit` seam for a real two-writer race. A process-group reaper prevents orphaned workerd processes.
 
+### `@cloudflare/vitest-plugin` 1.0 D1 isolation
+
+Verified with two tests in the same test file inserting the same primary-key row: D1 storage is isolated per test file, not per individual test. The second test observes the first test's row and receives a UNIQUE-constraint failure. Stateful suites must call the shared `resetDatabase()` helper from `beforeEach`; migrations are applied once from `test/setup.ts` with `applyD1Migrations`.
+
 Keep backend testing in three lanes:
 
 1. **Local:** full destructive CRUD, seed-and-teardown, and error injection against an isolated local database.
