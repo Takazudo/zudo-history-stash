@@ -12,12 +12,17 @@ test("@smoke protected deep links preserve next", async ({ page }) => {
 });
 
 test("@smoke unsafe next falls back to the principal home", async ({ page }) => {
-  await page.route("**/api/v1/me", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ principal: "admin" }),
-    });
+  await page.route("**/api/v1/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    const value =
+      pathname === "/api/v1/me"
+        ? { principal: "admin" }
+        : pathname === "/api/v1/stashes"
+          ? { stashes: [], nextAfter: null }
+          : pathname === "/api/v1/changes"
+            ? { changes: [], hasMore: false, nextBefore: null }
+            : { error: { code: "not-found", message: "Not found" } };
+    await route.fulfill({ status: "error" in value ? 404 : 200, json: value });
   });
 
   await page.goto("/login?next=//evil.example");

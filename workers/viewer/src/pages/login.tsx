@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { defaultPathForPrincipal, isSafeNext } from "../app/safe-next.js";
 import { Button } from "../app/shell/button.js";
+import { stashErrorMessage } from "../components/index.js";
 
 export default function LoginPage() {
   const { authenticate } = useStashClient();
@@ -22,15 +23,22 @@ export default function LoginPage() {
 
     setSubmitting(true);
     setError(null);
-    const result = await authenticate(candidate);
-    setSubmitting(false);
-    if (!result.ok) {
-      setError(result.error.status === 401 ? "That token was not accepted." : result.error.message);
-      return;
-    }
+    try {
+      const result = await authenticate(candidate);
+      if (!result.ok) {
+        setError(
+          result.error.status === 401 ? "That token was not accepted." : stashErrorMessage(result),
+        );
+        return;
+      }
 
-    const next = searchParams.get("next");
-    navigate(isSafeNext(next) ? next : defaultPathForPrincipal(result.value), { replace: true });
+      const next = searchParams.get("next");
+      navigate(isSafeNext(next) ? next : defaultPathForPrincipal(result.value), { replace: true });
+    } catch (requestError) {
+      setError(stashErrorMessage(requestError));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -41,10 +49,14 @@ export default function LoginPage() {
           Paste a token to browse the stashes and files available to that principal.
         </p>
         <form onSubmit={handleSubmit}>
-          <label className="form-field">
-            <span className="form-field__label">Access token</span>
+          <div className="form-field">
+            <label className="form-field__label" htmlFor="access-token">
+              Access token
+            </label>
             <input
+              aria-describedby="access-token-help"
               className="form-field__input"
+              id="access-token"
               name="token"
               type="password"
               autoComplete="off"
@@ -52,10 +64,10 @@ export default function LoginPage() {
               value={token}
               onChange={(event) => setToken(event.currentTarget.value)}
             />
-            <span className="form-field__help">
+            <span className="form-field__help" id="access-token-help">
               Stored only in this tab&apos;s session storage.
             </span>
-          </label>
+          </div>
           {error ? (
             <p className="form-error" role="alert">
               {error}
