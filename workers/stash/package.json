@@ -6,6 +6,7 @@
   "scripts": {
     "build": "wrangler deploy --dry-run --outdir=dist",
     "test": "bash test/run-with-reaper.sh",
+    "test:contract": "vitest run --config vitest.contract.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },
@@ -18,6 +19,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
     "@cloudflare/workers-types": "^5.20260825.1",
+    "@takazudo/zudo-history-stash": "workspace:*",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11",
     "wrangler": "^4.125.0"

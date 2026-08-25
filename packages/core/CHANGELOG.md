@@ -1,0 +1,10 @@
+# Changelog
+
+## 0.1.0 — 2026-08-25
+
+- Define the complete v1 route table, principals, request/response types, strict Zod schemas, and
+  stable error codes.
+- Add shared stash/path validation, UTF-8 limits, canonical hashing, representation ETags, and
+  conditional-request helpers.
+- Add bounded stored and candidate text diffs with unified output, structured hunks, statistics,
+  truncation, and explicit oversized states.

@@ -16,6 +16,7 @@ export default defineConfig({
   ],
   test: {
     include: ["test/**/*.test.ts"],
+    exclude: ["test/contract/**"],
     setupFiles: ["./test/setup.ts"],
     maxWorkers: 2,
   },

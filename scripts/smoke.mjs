@@ -58,15 +58,20 @@ function skipOrFail(message) {
   console.log(`::notice::Smoke skipped: ${message}`);
 }
 
-async function jsonGet(url) {
+async function jsonGet(url, onResponse = () => {}) {
   const response = await fetch(url, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  return { status: response.status, body: await response.text() };
+  onResponse();
+  return {
+    status: response.status,
+    contentType: response.headers.get("content-type") ?? "",
+    body: await response.text(),
+  };
 }
 
-function navigationGet(url) {
+function navigationGet(url, onResponse = () => {}) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const request = (parsed.protocol === "https:" ? httpsRequest : httpRequest)(
@@ -83,12 +88,19 @@ function navigationGet(url) {
         },
       },
       (response) => {
+        onResponse();
         let body = "";
         response.setEncoding("utf8");
         response.on("data", (chunk) => {
           body += chunk;
         });
-        response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            contentType: String(response.headers["content-type"] ?? ""),
+            body,
+          }),
+        );
       },
     );
     request.setTimeout(REQUEST_TIMEOUT_MS, () => {
@@ -102,23 +114,37 @@ function navigationGet(url) {
 }
 
 async function smokeStash(url) {
+  let answered = false;
+  const markAnswered = () => {
+    answered = true;
+  };
   try {
-    const result = await jsonGet(`${url}/v1/health`);
-    if (result.status !== 200) {
-      throw new Error(`stash health returned HTTP ${result.status}`);
+    const health = await jsonGet(`${url}/v1/health`, markAnswered);
+    if (health.status !== 200) {
+      throw new Error(`stash health returned HTTP ${health.status}`);
+    }
+    if (!/^application\/json(?:;|$)/iu.test(health.contentType)) {
+      throw new Error(`stash health returned unexpected content type ${health.contentType}`);
     }
     let body;
     try {
-      body = JSON.parse(result.body);
+      body = JSON.parse(health.body);
     } catch {
       throw new Error("stash health did not return JSON");
     }
     if (body.marker !== "ZHS_HEALTH_OK") {
       throw new Error("stash health JSON is missing marker ZHS_HEALTH_OK");
     }
-    console.log("stash smoke passed: /v1/health");
+
+    const unauthenticated = await jsonGet(`${url}/v1/stashes`, markAnswered);
+    if (unauthenticated.status !== 401) {
+      throw new Error(
+        `stash unauthenticated /v1/stashes returned HTTP ${unauthenticated.status}, expected 401`,
+      );
+    }
+    console.log("stash smoke passed: /v1/health marker and /v1/stashes auth fence");
   } catch (error) {
-    if (isProvisioningError(error)) {
+    if (!answered && isProvisioningError(error)) {
       skipOrFail(
         `stash is not provisioned (${errorCodes(error).join(", ") || "connection error"})`,
       );
@@ -129,17 +155,40 @@ async function smokeStash(url) {
 }
 
 async function smokeViewer(url) {
+  let answered = false;
+  const markAnswered = () => {
+    answered = true;
+  };
   try {
-    const result = await navigationGet(`${url}/login`);
-    if (result.status !== 200) {
-      throw new Error(`viewer navigation returned HTTP ${result.status}`);
+    const navigation = await navigationGet(`${url}/login`, markAnswered);
+    if (navigation.status !== 200) {
+      throw new Error(`viewer navigation returned HTTP ${navigation.status}`);
     }
-    if (!/<title\b[^>]*>[\s\S]*?<\/title>/i.test(result.body)) {
+    if (!/^text\/html(?:;|$)/iu.test(navigation.contentType)) {
+      throw new Error(
+        `viewer navigation returned unexpected content type ${navigation.contentType}`,
+      );
+    }
+    if (!/<title\b[^>]*>[\s\S]*?<\/title>/i.test(navigation.body)) {
       throw new Error("viewer navigation returned HTML without a <title>");
     }
-    console.log("viewer smoke passed: navigation /login");
+
+    const health = await jsonGet(`${url}/api/v1/health`, markAnswered);
+    if (health.status !== 200) {
+      throw new Error(`viewer proxied health returned HTTP ${health.status}`);
+    }
+    let body;
+    try {
+      body = JSON.parse(health.body);
+    } catch {
+      throw new Error("viewer proxied health did not return JSON");
+    }
+    if (body.marker !== "ZHS_HEALTH_OK") {
+      throw new Error("viewer proxied health JSON is missing marker ZHS_HEALTH_OK");
+    }
+    console.log("viewer smoke passed: navigation /login and proxied /api/v1/health");
   } catch (error) {
-    if (isProvisioningError(error)) {
+    if (!answered && isProvisioningError(error)) {
       skipOrFail(
         `viewer is not provisioned (${errorCodes(error).join(", ") || "connection error"})`,
       );

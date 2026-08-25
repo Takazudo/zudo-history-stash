@@ -30,7 +30,71 @@ Keep backend testing in three lanes:
 2. **Preview/live:** contract shape, auth handshake, and read assertions against the deployment under test; only explicitly fenced disposable mutations are allowed.
 3. **Production smoke:** read-only health and known-good reads; never mutate production data.
 
-The smoke script is intentionally narrow: stash health must be `200` JSON with `ZHS_HEALTH_OK`; viewer navigation must be a browser-shaped request and return `200` HTML with a `<title>`. Provisioning-only connection errors may skip until `SMOKE_REQUIRE_LIVE=1`; HTTP or content-contract failures remain failures.
+## HTTP contract suite
+
+`workers/stash/test/contract` is a plain Node Vitest suite against a running HTTP origin. It uses
+`@takazudo/zudo-history-stash` and is deliberately excluded from `pnpm test`, because unit tests
+must not depend on a server.
+
+| Variable              | Default                      | Purpose                                                            |
+| --------------------- | ---------------------------- | ------------------------------------------------------------------ |
+| `API_BASE_URL`        | `http://localhost:8787`      | Stash API origin; use `http://localhost:8787/api` under `dev:full` |
+| `TEST_TIER`           | `local`                      | `local`, `preview`, or `production`                                |
+| `STASH_ADMIN_TOKEN`   | `dev-admin-token` on `local` | Credential for `/v1/me`, seeded reads, and local fixture creation  |
+| `CONTRACT_STASH_NAME` | `demo`                       | Known seeded stash for read-only assertions                        |
+| `CONTRACT_FILE_PATH`  | `docs/guide.md`              | Known seeded file with at least two versions                       |
+
+The health, identity, list, get, conditional-get, history, diff, and change-feed cases run
+unchanged at every tier. Every persisting case is declared directly with
+`it.runIf(MUTATION_ALLOWED)`, where `MUTATION_ALLOWED` is true only for `TEST_TIER=local`.
+Preview and production therefore share the same read assertions while discovering mutation cases
+as skipped. A `POST` candidate diff remains in the read lane because the route has read capability
+and never persists its body.
+
+Against `pnpm dev:stash` plus the seeded fixture:
+
+```bash
+TEST_TIER=local \
+API_BASE_URL=http://localhost:8787 \
+pnpm --filter zudo-history-stash test:contract
+```
+
+Under `pnpm dev:full`, point through the viewer proxy:
+
+```bash
+TEST_TIER=local \
+API_BASE_URL=http://localhost:8787/api \
+pnpm --filter zudo-history-stash test:contract
+```
+
+To audit the production mutation fence, run the same seeded read suite with the JSON reporter and
+inspect its skipped-test count; no test in `local-only HTTP mutation contract` may pass or fail:
+
+```bash
+TEST_TIER=production \
+API_BASE_URL=https://stash.example.com \
+STASH_ADMIN_TOKEN="$STASH_ADMIN_TOKEN" \
+pnpm --filter zudo-history-stash test:contract --reporter=json \
+  --outputFile=contract-production.json
+```
+
+CI runs the local contract command after the live fixture is seeded. That step stays guarded by
+`hashFiles('scripts/seed-dev.mjs')` until the live-harness topic supplies the seed script.
+
+## Smoke tests
+
+The post-deploy script is intentionally narrow and read-only:
+
+- `node scripts/smoke.mjs --target stash` requires `200` JSON with `ZHS_HEALTH_OK`, then verifies
+  that an unauthenticated `/v1/stashes` request returns `401`.
+- `node scripts/smoke.mjs --target viewer` sends browser navigation headers to `/login`, requires
+  `200` HTML with a `<title>`, then verifies that `/api/v1/health` proxies `200` with the stash
+  marker.
+
+Set `SMOKE_BASE_URL`, or the target-specific `STASH_BASE_URL` / `VIEWER_BASE_URL`. Provisioning-only
+connection errors may skip until `SMOKE_REQUIRE_LIVE=1`; HTTP, TLS-expiry, and content-contract
+failures remain failures. Once either request receives an HTTP response, later connection errors
+in that run cannot be reclassified as provisioning skips.
 
 ## Playwright conventions
 
