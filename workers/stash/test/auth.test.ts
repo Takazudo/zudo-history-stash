@@ -106,7 +106,7 @@ describe("bearer authentication and route capabilities", () => {
     const admin = await request(app, "http://stash.test/v1/stashes", {
       headers: bearer("test-admin"),
     });
-    expect(admin.status).toBe(501);
+    expect(admin.status).toBe(200);
 
     await seedStash("alpha");
     const minted = await mintToken("alpha", "write");
