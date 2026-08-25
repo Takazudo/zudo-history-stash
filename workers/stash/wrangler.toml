@@ -1,0 +1,10 @@
+# Minimal Worker configuration. The skeleton intentionally has no bindings;
+# the stash-skeleton task adds D1, routes, vars, and migrations.
+name = "zudo-history-stash"
+main = "src/index.ts"
+compatibility_date = "2026-08-25"
+workers_dev = true
+preview_urls = true
+
+[observability]
+enabled = true
