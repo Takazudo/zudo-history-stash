@@ -1,0 +1,46 @@
+{
+  "name": "zudo-history-stash-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "// ── Workspace ───────────────────────": "",
+    "build": "pnpm -r --if-present build",
+    "build:libs": "pnpm --filter \"./packages/*\" build",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "// ── Quality ──────────────────────────": "",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "format:md": "pnpm exec mdx-formatter --write .",
+    "lint:tokens": "pnpm --filter zudo-history-stash-viewer lint:tokens",
+    "b4push": "bash scripts/run-b4push.sh",
+    "// ── Local Workers ────────────────────": "",
+    "dev:stash": "wrangler dev -c workers/stash/wrangler.toml",
+    "dev:viewer": "pnpm --filter zudo-history-stash-viewer dev",
+    "dev:full": "wrangler dev -c workers/viewer/wrangler.toml -c workers/stash/wrangler.toml",
+    "// ── Lifecycle ────────────────────────": "",
+    "prepare": "lefthook install && bash scripts/install-git-hooks.sh",
+    "init-worktree": "bash scripts/install-git-hooks.sh"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@takazudo/mdx-formatter": "^1.2.1",
+    "@takazudo/zudo-design-token-lint": "^2.1.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "eslint-plugin-react": "^7.37.0",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "globals": "^16.0.0",
+    "lefthook": "^2.1.0",
+    "prettier": "^3.5.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0",
+    "wrangler": "^4.125.0"
+  }
+}
