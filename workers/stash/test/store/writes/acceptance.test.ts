@@ -30,6 +30,12 @@ describe("stash writes", () => {
     expectError(tooLarge, "payload-too-large");
   });
 
+  it("returns validation instead of throwing for malformed store-level put input", async () => {
+    const { stash, writes } = await setup();
+    const result = await writes.put(stash, "malformed.txt", { expectedVersion: null } as never);
+    expectError(result, "validation");
+  });
+
   it("checks CAS before skip and returns complete current values", async () => {
     const { stash, writes } = await setup();
     const first = await writes.put(stash, "cas.txt", {
@@ -185,6 +191,30 @@ describe("stash writes", () => {
         .bind(initial.stash, "loser-unique-body")
         .first(),
     ).toBeNull();
+  });
+
+  it("classifies a concurrent delete loser as stale before tombstone state", async () => {
+    const initial = await setup();
+    await initial.writes.put(initial.stash, "delete-race.txt", {
+      body: "base",
+      expectedVersion: null,
+    });
+    const competitor = createWrites(initial.env, initial.deps);
+    let afterWinner: Awaited<ReturnType<typeof counts>> | undefined;
+    const outer = createWrites(initial.env, {
+      ...initial.deps,
+      onBeforeCommit: async () => {
+        await competitor.delete(initial.stash, "delete-race.txt", { expectedVersion: 1 });
+        afterWinner = await counts(initial.stash);
+      },
+    });
+    const result = await outer.delete(initial.stash, "delete-race.txt", {
+      expectedVersion: 1,
+    });
+    expectError(result, "stale");
+    if (result.ok) throw new Error("expected stale delete");
+    expect(result.current).toMatchObject({ version: 2, deleted: true, kind: "delete" });
+    expect(await counts(initial.stash)).toEqual(afterWinner);
   });
 
   it("allows exactly one real concurrent CAS writer", async () => {

@@ -197,6 +197,17 @@ describe("history import store", () => {
     });
     expect(await counts("continuation")).toEqual(beforeDuplicate);
 
+    const backdated = await store.importFile("continuation", {
+      path: "history.txt",
+      expectedVersion: 5,
+      versions: [{ kind: "put", body: "backdated", createdAt: 1_004 }],
+    });
+    expect(backdated).toMatchObject({
+      ok: false,
+      error: { code: "validation", status: 400 },
+    });
+    expect(await counts("continuation")).toEqual(beforeDuplicate);
+
     const continued = await store.importFile("continuation", {
       path: "history.txt",
       expectedVersion: 5,

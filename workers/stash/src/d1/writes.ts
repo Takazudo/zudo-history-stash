@@ -217,6 +217,12 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     input: PutFileBody,
     options: WriteOptions = {},
   ): Promise<StoreWriteResult<PutResult>> {
+    if (typeof input?.body !== "string") {
+      return (
+        validateCommon(stash, path, PutFileBody, input, options) ??
+        failure("validation", 400, "Invalid write input")
+      );
+    }
     if (!isWellFormedString(input.body)) {
       return failure("body-not-well-formed", 400, "Body is not well-formed Unicode");
     }
@@ -400,6 +406,9 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     if (wonByOther) return wonByOther;
     const currentHead = await readHead(db, stash, path);
     if (!currentHead) return failure("not-found", 404, "File not found");
+    if (currentHead.head_version !== input.expectedVersion) {
+      return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
+    }
     if (currentHead.deleted === 1) {
       return failure(
         "already-deleted",
@@ -408,10 +417,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
         currentFromHead(currentHead),
       );
     }
-    if (currentHead.head_version === input.expectedVersion) {
-      return failure("internal", 500, "Delete batch failed without a competing write");
-    }
-    return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
+    return failure("internal", 500, "Delete batch failed without a competing write");
   }
 
   async function rollback(

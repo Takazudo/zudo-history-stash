@@ -116,6 +116,10 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
     } else if (head.head_version !== value.expectedVersion) {
       return failure("stale", 409, "Expected version is stale", currentFromHead(head));
     }
+    const firstImportedVersion = value.versions[0];
+    if (head && firstImportedVersion && firstImportedVersion.createdAt < head.created_at) {
+      return failure("validation", 400, "Import createdAt cannot precede the current head");
+    }
 
     const baseVersion = value.expectedVersion ?? 0;
     const storedTargetVersions = Array.from(
