@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { computeDiff } from "./diff.js";
 import { StashError, statusForCode } from "./errors.js";
 import {
   BODY_LIMIT_BYTES,
@@ -68,10 +67,4 @@ describe("typed errors", () => {
     const error = new StashError("file-deleted", "deleted");
     expect(error).toMatchObject({ name: "StashError", code: "file-deleted", status: 404 });
   });
-});
-
-it("keeps the diff implementation explicitly stubbed", () => {
-  expect(() => computeDiff("a", "b", { path: "x", fromLabel: "v1", toLabel: "v2" })).toThrow(
-    "not-implemented",
-  );
 });
