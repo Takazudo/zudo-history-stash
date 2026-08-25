@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "lint:tokens": "design-token-lint",
     "e2e": "playwright test",
+    "e2e:live": "PW_LIVE=1 STASH_ADMIN_TOKEN=dev-admin-token API_BASE_URL=http://localhost:8787/api playwright test --project=chromium-live",
     "e2e:list": "bash scripts/check-e2e-collection.sh",
     "deploy": "wrangler deploy"
   },

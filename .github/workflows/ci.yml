@@ -106,42 +106,36 @@ jobs:
         run: pnpm --filter zudo-history-stash-viewer exec playwright install --with-deps chromium
 
       - name: Run mock lane
-        run: pnpm --filter zudo-history-stash-viewer e2e -- --grep-invert "@flaky|@local-only|@live"
+        run: pnpm --filter zudo-history-stash-viewer exec playwright test --grep-invert "@flaky|@local-only|@live"
 
       - name: Start full local Workers
-        if: hashFiles('scripts/seed-dev.mjs') != ''
         env:
+          API_BASE_URL: http://localhost:8787/api
           DEV_LOG: /tmp/zudo-history-stash-dev.log
           DEV_PID_FILE: /tmp/zudo-history-stash-dev.pid
+          STASH_ADMIN_TOKEN: dev-admin-token
         run: |
           set -euo pipefail
-          pnpm dev:full >"$DEV_LOG" 2>&1 &
+          setsid pnpm dev:full >"$DEV_LOG" 2>&1 &
           echo "$!" > "$DEV_PID_FILE"
 
       - name: Wait for local stash health
-        if: hashFiles('scripts/seed-dev.mjs') != ''
         env:
           HEALTH_URL: http://localhost:8787/api/v1/health
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 90); do
-            if curl --fail --silent --show-error "$HEALTH_URL" >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::Timed out waiting for $HEALTH_URL"
-          cat /tmp/zudo-history-stash-dev.log
-          exit 1
+          node scripts/wait-for.mjs --url "$HEALTH_URL" || {
+            cat /tmp/zudo-history-stash-dev.log
+            exit 1
+          }
 
       - name: Seed local live fixture
-        if: hashFiles('scripts/seed-dev.mjs') != ''
         env:
-          DEV_API_BASE_URL: http://localhost:8787/api
-        run: node scripts/seed-dev.mjs --base-url "$DEV_API_BASE_URL"
+          API_BASE_URL: http://localhost:8787/api
+          STASH_ADMIN_TOKEN: dev-admin-token
+        run: node scripts/seed-dev.mjs --base-url "$API_BASE_URL"
 
       - name: Run local HTTP contract suite
-        if: hashFiles('scripts/seed-dev.mjs') != ''
         env:
           API_BASE_URL: http://localhost:8787/api
           TEST_TIER: local
@@ -149,8 +143,37 @@ jobs:
         run: pnpm --filter zudo-history-stash test:contract
 
       - name: Run live lane
-        if: hashFiles('scripts/seed-dev.mjs') != ''
-        run: pnpm --filter zudo-history-stash-viewer e2e -- --grep "@live"
+        env:
+          API_BASE_URL: http://localhost:8787/api
+          PW_BASE_URL: http://localhost:8787
+          STASH_ADMIN_TOKEN: dev-admin-token
+        run: pnpm --filter zudo-history-stash-viewer e2e:live
+
+      - name: Stop full local Workers
+        if: always()
+        env:
+          DEV_PID_FILE: /tmp/zudo-history-stash-dev.pid
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$DEV_PID_FILE" ]]; then
+            exit 0
+          fi
+          dev_pid="$(<"$DEV_PID_FILE")"
+          if [[ ! "$dev_pid" =~ ^[0-9]+$ ]]; then
+            echo "::warning::Ignoring invalid dev server PID: $dev_pid"
+            exit 0
+          fi
+          if ! kill -0 -- "-$dev_pid" 2>/dev/null; then
+            exit 0
+          fi
+          kill -TERM -- "-$dev_pid"
+          for _attempt in $(seq 1 20); do
+            if ! kill -0 -- "-$dev_pid" 2>/dev/null; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          kill -KILL -- "-$dev_pid" 2>/dev/null || true
 
       - name: Upload Playwright traces and report
         if: failure() || cancelled()
@@ -160,5 +183,6 @@ jobs:
           path: |
             workers/viewer/test-results/
             workers/viewer/playwright-report/
+            /tmp/zudo-history-stash-dev.log
           if-no-files-found: ignore
           retention-days: 7

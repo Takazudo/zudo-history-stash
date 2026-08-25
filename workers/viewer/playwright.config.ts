@@ -8,6 +8,9 @@ export function resolveWorkers(value: string | undefined): number | `${number}%`
 }
 
 const externalBaseUrl = process.env.PW_BASE_URL;
+const liveHarness = process.env.PW_LIVE === "1";
+const baseURL =
+  externalBaseUrl ?? (liveHarness ? "http://localhost:8787" : "http://127.0.0.1:5173");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -15,16 +18,23 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   workers: resolveWorkers(process.env.PW_WORKERS),
-  reporter: [["list"]],
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
   webServer: externalBaseUrl
     ? undefined
-    : {
-        command: "pnpm dev --host 127.0.0.1 --port 5173",
-        url: "http://127.0.0.1:5173/login",
-        reuseExistingServer: !process.env.CI,
-      },
+    : liveHarness
+      ? {
+          command: "pnpm --dir ../.. dev:full:seeded",
+          url: "http://localhost:8787/api/v1/health",
+          reuseExistingServer: false,
+          timeout: 120_000,
+        }
+      : {
+          command: "pnpm dev --host 127.0.0.1 --port 5173",
+          url: "http://127.0.0.1:5173/login",
+          reuseExistingServer: !process.env.CI,
+        },
   use: {
-    baseURL: externalBaseUrl ?? "http://127.0.0.1:5173",
+    baseURL,
     contextOptions: { reducedMotion: "reduce" },
     trace: "on-first-retry",
   },
@@ -36,9 +46,10 @@ export default defineConfig({
     },
     {
       name: "chromium-live",
+      testMatch: /live\.spec\.ts/u,
       grep: /@live/u,
       grepInvert: /@local-only|@flaky/u,
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], trace: "retain-on-failure" },
     },
   ],
 });

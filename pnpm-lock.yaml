@@ -17,6 +17,9 @@ importers:
       '@takazudo/zudo-design-token-lint':
         specifier: ^2.1.0
         version: 2.1.0
+      '@takazudo/zudo-history-stash':
+        specifier: workspace:*
+        version: link:packages/client
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.1
