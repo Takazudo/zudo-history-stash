@@ -84,29 +84,50 @@ secret. See the complete [API reference](docs/api.md) and the
 
 ```bash
 pnpm install
+cp workers/stash/.dev.vars.example workers/stash/.dev.vars
 pnpm dev:full
 ```
 
-The full local setup serves the viewer on `http://localhost:8787` and reaches the stash Worker through the local service binding. Once the live harness exists, seed its deterministic fixture with:
+`dev:full` builds the workspace libraries and viewer assets, applies pending local D1 migrations,
+and then starts both Workers. The viewer is the first (primary) config and is exposed on
+`http://localhost:8787`; the stash is an auxiliary Worker with no public local port and is reached
+through the viewer's `STASH` service binding. The copied `.dev.vars` supplies the agreed local-only
+`STASH_ADMIN_TOKEN=dev-admin-token` to the stash Worker.
+
+In another terminal, wait for the proxied health marker and seed the deterministic fixture through
+the viewer. The bare seed script defaults to `http://localhost:8787` for `dev:stash`; `seed:dev`
+pins `API_BASE_URL=http://localhost:8787/api` for the full viewer-primary topology:
 
 ```bash
-node scripts/seed-dev.mjs --base-url http://localhost:8787/api
+pnpm wait:full
+pnpm seed:dev
 ```
+
+The seed creates stash `demo`, writes three versions of `docs/guide.md` (including Japanese and
+CRLF bodies), creates then deletes `notes/todo.txt`, and finally rolls the guide back to v1. It
+prints its newly minted write token once for optional manual use; the viewer and tests use the
+admin token and never depend on that printed value. A second run skips the existing `demo` stash.
+To preserve the fixture while exercising a reset,
+`node scripts/seed-dev.mjs --base-url http://localhost:8787/api --reset` uses a fresh
+`demo-reset-...` stash because stash deletion is deferred.
 
 See [docs/api.md](docs/api.md) for the API reference and
 [docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning.
 
-| Command                                | Purpose                                                            |
-| -------------------------------------- | ------------------------------------------------------------------ |
-| `pnpm dev:stash`                       | Run the stash Worker locally                                       |
-| `pnpm dev:viewer`                      | Run the Vite viewer locally                                        |
-| `pnpm dev:full`                        | Run viewer plus stash with Wrangler's multi-config service binding |
-| `pnpm build:libs`                      | Build the two public packages first                                |
-| `pnpm build`                           | Build every workspace package and Worker dry-run                   |
-| `pnpm test`                            | Run workspace unit/Worker tests                                    |
-| `pnpm typecheck`                       | Type-check every workspace package                                 |
-| `pnpm lint` / `pnpm lint:tokens`       | Run ESLint and viewer token lint                                   |
-| `pnpm format:check` / `pnpm format:md` | Check or format source and Markdown                                |
-| `pnpm b4push`                          | Run the local pre-push quality sequence                            |
+| Command                                | Purpose                                                           |
+| -------------------------------------- | ----------------------------------------------------------------- |
+| `pnpm dev:stash`                       | Run the stash Worker locally                                      |
+| `pnpm dev:viewer`                      | Run the Vite viewer locally                                       |
+| `pnpm dev:migrate`                     | Apply pending migrations to the local stash D1                    |
+| `pnpm dev:full`                        | Build, migrate, then run the viewer-primary multi-Worker topology |
+| `pnpm wait:full` / `pnpm seed:dev`     | Wait for proxied health, then seed `demo` through `/api`          |
+| `pnpm build:libs`                      | Build the two public packages first                               |
+| `pnpm build:viewer`                    | Build static viewer assets for the full local Worker              |
+| `pnpm build`                           | Build every workspace package and Worker dry-run                  |
+| `pnpm test`                            | Run workspace unit/Worker tests                                   |
+| `pnpm typecheck`                       | Type-check every workspace package                                |
+| `pnpm lint` / `pnpm lint:tokens`       | Run ESLint and viewer token lint                                  |
+| `pnpm format:check` / `pnpm format:md` | Check or format source and Markdown                               |
+| `pnpm b4push`                          | Run the local pre-push quality sequence                           |
 
 Cloudflare Artifacts is useful prior art, but it is closed beta, paid, and git-client-centric. History Stash deliberately avoids that "git is overkill" tradeoff: it keeps the D1-backed HTTP contract small and lets each consumer retain its own workflow.

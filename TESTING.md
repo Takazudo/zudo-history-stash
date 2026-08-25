@@ -78,8 +78,9 @@ pnpm --filter zudo-history-stash test:contract --reporter=json \
   --outputFile=contract-production.json
 ```
 
-CI runs the local contract command after the live fixture is seeded. That step stays guarded by
-`hashFiles('scripts/seed-dev.mjs')` until the live-harness topic supplies the seed script.
+CI runs the local contract command after the live fixture is seeded through the viewer proxy. The
+guard used while the harness was being built is gone, so the contract suite is now a required part
+of every `e2e` job.
 
 ## Smoke tests
 
@@ -100,7 +101,59 @@ in that run cannot be reclassified as provisioning skips.
 
 Use Chromium and title tags: `@smoke`, `@live`, `@local-only`, and `@flaky` (a flaky tag requires a linked issue). Keep a console-error fixture enabled, use reduced motion, and do not use `waitForTimeout` or `networkidle`. Mock API calls with `page.route('**/api/**')` in the mock lane.
 
-The CI `@live` lane starts `pnpm dev:full`, waits for `http://localhost:8787/api/v1/health`, runs `node scripts/seed-dev.mjs --base-url http://localhost:8787/api`, and then runs `--grep @live`. `@local-only` is reserved for cases that require a developer machine and is excluded from the CI lane. Upload traces and reports only on failure or cancellation.
+### Local live topology and fixture
+
+Copy `workers/stash/.dev.vars.example` to `workers/stash/.dev.vars` before starting local Workers.
+The local convention is always:
+
+- `STASH_ADMIN_TOKEN=dev-admin-token`
+- viewer primary at `http://localhost:8787`
+- stash auxiliary reachable only through the `STASH` service binding
+- `API_BASE_URL=http://localhost:8787/api` for the seed and HTTP contract suite
+
+`pnpm dev:full` builds the libraries and viewer assets, applies local D1 migrations, and passes the
+viewer config first to Wrangler. `pnpm wait:full` polls `/api/v1/health` until it sees the
+`ZHS_HEALTH_OK` marker. `pnpm seed:dev` then creates the `demo` fixture. The seed is idempotent: it
+skips an existing `demo`; `--reset` creates a fresh suffixed stash because deletion is deferred. A
+successful new seed prints its write token exactly once, but no test or follow-up command consumes
+that output. The bare script's `http://localhost:8787` default is for `dev:stash`; always use the
+`/api` base URL above with `dev:full`.
+
+The one-command browser lane lets Playwright own this same start → marker wait → seed lifecycle:
+
+```bash
+pnpm --filter zudo-history-stash-viewer e2e:live
+```
+
+For a manual reproduction with the server kept in a separate terminal, use:
+
+```bash
+# Terminal 1
+STASH_ADMIN_TOKEN=dev-admin-token pnpm dev:full
+
+# Terminal 2
+HEALTH_URL=http://localhost:8787/api/v1/health node scripts/wait-for.mjs
+STASH_ADMIN_TOKEN=dev-admin-token \
+  API_BASE_URL=http://localhost:8787/api \
+  node scripts/seed-dev.mjs --base-url http://localhost:8787/api
+PW_BASE_URL=http://localhost:8787 \
+  STASH_ADMIN_TOKEN=dev-admin-token \
+  pnpm --filter zudo-history-stash-viewer e2e:live
+```
+
+The live rollback replay proof deliberately retries **without closing the dialog**. The first
+request commits in the real stash Worker, while Playwright aborts its browser-facing response.
+Clicking `Try again` in that still-mounted dialog reuses both the request body and its
+`Idempotency-Key`; the test requires `Idempotent-Replayed: true` and verifies that D1 contains only
+one new version (v5 on a fresh fixture). Closing and reopening would mount a new dialog and mint a
+new key, so a second rollback would be valid behavior rather than an idempotent replay.
+
+CI starts `pnpm dev:full` in its own process group, validates the proxied health marker, seeds with
+the same token and `/api` base URL, runs the guarded HTTP contract step from issue #21, and then runs
+the `chromium-live` project. It always stops the full Worker process group. The live project retains
+traces on failure, and CI uploads its Playwright results, HTML report, and Worker log on failure or
+cancellation. `@local-only` remains reserved for specs that require a developer machine and is
+excluded from CI.
 
 ## Composition ownership
 
