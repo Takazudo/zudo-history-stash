@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+  push:
+    branches:
+      - main
+      - "base/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quality:
+    name: Build and check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.12.0
+
+      # Keep this command order identical to scripts/run-b4push.sh.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build libraries
+        run: pnpm build:libs
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Design-token lint
+        run: pnpm lint:tokens
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: publint and attw package checks
+        env:
+          CORE_PACKAGE_DIR: packages/core
+          CLIENT_PACKAGE_DIR: packages/client
+        run: |
+          set -euo pipefail
+          (cd "$CORE_PACKAGE_DIR" && pnpm dlx publint run --strict --pack=false)
+          (cd "$CORE_PACKAGE_DIR" && pnpm dlx --package @arethetypeswrong/cli attw --pack . --profile esm-only)
+          (cd "$CLIENT_PACKAGE_DIR" && pnpm dlx publint run --strict --pack=false)
+          (cd "$CLIENT_PACKAGE_DIR" && pnpm dlx --package @arethetypeswrong/cli attw --pack . --profile esm-only)
+
+  e2e:
+    name: Playwright e2e
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.12.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore Playwright browser cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Chromium
+        run: pnpm --filter zudo-history-stash-viewer exec playwright install --with-deps chromium
+
+      - name: Run mock lane
+        run: pnpm --filter zudo-history-stash-viewer e2e -- --grep-invert "@flaky|@local-only|@live"
+
+      - name: Start full local Workers
+        if: hashFiles('scripts/seed-dev.mjs') != ''
+        env:
+          DEV_LOG: /tmp/zudo-history-stash-dev.log
+          DEV_PID_FILE: /tmp/zudo-history-stash-dev.pid
+        run: |
+          set -euo pipefail
+          pnpm dev:full >"$DEV_LOG" 2>&1 &
+          echo "$!" > "$DEV_PID_FILE"
+
+      - name: Wait for local stash health
+        if: hashFiles('scripts/seed-dev.mjs') != ''
+        env:
+          HEALTH_URL: http://localhost:8787/api/v1/health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent --show-error "$HEALTH_URL" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Timed out waiting for $HEALTH_URL"
+          cat /tmp/zudo-history-stash-dev.log
+          exit 1
+
+      - name: Seed local live fixture
+        if: hashFiles('scripts/seed-dev.mjs') != ''
+        env:
+          DEV_API_BASE_URL: http://localhost:8787/api
+        run: node scripts/seed-dev.mjs --base-url "$DEV_API_BASE_URL"
+
+      - name: Run live lane
+        if: hashFiles('scripts/seed-dev.mjs') != ''
+        run: pnpm --filter zudo-history-stash-viewer e2e -- --grep "@live"
+
+      - name: Upload Playwright traces and report
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-results-${{ github.run_id }}
+          path: |
+            workers/viewer/test-results/
+            workers/viewer/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
