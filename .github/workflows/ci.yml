@@ -1,0 +1,191 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+  push:
+    branches:
+      - main
+      - "base/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quality:
+    name: Build and check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      # Keep this command order identical to scripts/run-b4push.sh.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check b4push/CI parity
+        run: pnpm check:b4push-ci-parity
+
+      - name: Build libraries
+        run: pnpm build:libs
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Design-token lint
+        run: pnpm lint:tokens
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: publint and attw package checks
+        run: |
+          set -euo pipefail
+          pnpm --filter @takazudo/zudo-history-stash-core lint:pkg
+          pnpm --filter @takazudo/zudo-history-stash lint:pkg
+
+  e2e:
+    name: Playwright e2e
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build libraries
+        run: pnpm build:libs
+
+      - name: Restore Playwright browser cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Chromium
+        run: pnpm --filter zudo-history-stash-viewer exec playwright install --with-deps chromium
+
+      - name: Run mock lane
+        run: pnpm --filter zudo-history-stash-viewer exec playwright test --grep-invert "@flaky|@local-only|@live"
+
+      - name: Start full local Workers
+        env:
+          API_BASE_URL: http://localhost:8787/api
+          DEV_LOG: /tmp/zudo-history-stash-dev.log
+          DEV_PID_FILE: /tmp/zudo-history-stash-dev.pid
+          STASH_ADMIN_TOKEN: dev-admin-token
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'STASH_ADMIN_TOKEN=%s\n' "$STASH_ADMIN_TOKEN" > workers/stash/.dev.vars
+          setsid pnpm dev:full >"$DEV_LOG" 2>&1 &
+          echo "$!" > "$DEV_PID_FILE"
+
+      - name: Wait for local stash health
+        env:
+          HEALTH_URL: http://localhost:8787/api/v1/health
+        run: |
+          set -euo pipefail
+          node scripts/wait-for.mjs --url "$HEALTH_URL" || {
+            cat /tmp/zudo-history-stash-dev.log
+            exit 1
+          }
+
+      - name: Seed local live fixture
+        env:
+          API_BASE_URL: http://localhost:8787/api
+          STASH_ADMIN_TOKEN: dev-admin-token
+        run: node scripts/seed-dev.mjs --base-url "$API_BASE_URL"
+
+      - name: Run local HTTP contract suite
+        env:
+          API_BASE_URL: http://localhost:8787/api
+          TEST_TIER: local
+          STASH_ADMIN_TOKEN: dev-admin-token
+        run: pnpm --filter zudo-history-stash test:contract
+
+      - name: Run live lane
+        env:
+          API_BASE_URL: http://localhost:8787/api
+          PW_BASE_URL: http://localhost:8787
+          STASH_ADMIN_TOKEN: dev-admin-token
+        run: pnpm --filter zudo-history-stash-viewer e2e:live
+
+      - name: Stop full local Workers
+        if: always()
+        env:
+          DEV_PID_FILE: /tmp/zudo-history-stash-dev.pid
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$DEV_PID_FILE" ]]; then
+            exit 0
+          fi
+          dev_pid="$(<"$DEV_PID_FILE")"
+          if [[ ! "$dev_pid" =~ ^[0-9]+$ ]]; then
+            echo "::warning::Ignoring invalid dev server PID: $dev_pid"
+            exit 0
+          fi
+          if ! kill -0 -- "-$dev_pid" 2>/dev/null; then
+            exit 0
+          fi
+          kill -TERM -- "-$dev_pid"
+          for _attempt in $(seq 1 20); do
+            if ! kill -0 -- "-$dev_pid" 2>/dev/null; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          kill -KILL -- "-$dev_pid" 2>/dev/null || true
+
+      - name: Upload Playwright traces and report
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-results-${{ github.run_id }}
+          path: |
+            workers/viewer/test-results/
+            workers/viewer/playwright-report/
+            /tmp/zudo-history-stash-dev.log
+          if-no-files-found: ignore
+          retention-days: 7

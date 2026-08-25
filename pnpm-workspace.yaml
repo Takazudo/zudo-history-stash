@@ -1,0 +1,21 @@
+packages:
+  - "packages/*"
+  - "workers/*"
+
+# pnpm 10 keeps workspace policy here so every package gets the same install
+# behaviour. Workspace links are intentional: feature packages consume the
+# local library builds instead of an unrelated published copy.
+autoInstallPeers: true
+engineStrict: true
+strictPeerDependencies: false
+preferFrozenLockfile: true
+minimumReleaseAge: 0
+confirmModulesPurge: false
+linkWorkspacePackages: true
+
+# These packages ship native binaries and are the only install scripts allowed
+# to run in this repository.
+allowBuilds:
+  esbuild: true
+  lefthook: true
+  workerd: true

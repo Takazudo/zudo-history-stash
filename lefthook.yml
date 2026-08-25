@@ -1,0 +1,11 @@
+# Installed by the `prepare` script (pnpm install runs it).
+#
+# The pre-push worktree guard is deliberately installed directly by
+# scripts/install-git-hooks.sh so lefthook reset operations cannot remove it.
+
+pre-commit:
+  parallel: true
+  commands:
+    format-mdx:
+      glob: "*.{md,mdx}"
+      run: pnpm exec mdx-formatter --write {staged_files} && git add -f {staged_files}

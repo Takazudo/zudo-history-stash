@@ -1,0 +1,42 @@
+{
+  "name": "@takazudo/zudo-history-stash",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:pkg": "pnpm dlx publint@0.3.12 && pnpm dlx @arethetypeswrong/cli@0.18.5 --pack . --profile esm-only",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@takazudo/zudo-history-stash-core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}

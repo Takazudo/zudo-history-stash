@@ -1,0 +1,2 @@
+# Local-only convention used by dev:full, the seed, contract tests, and @live Playwright lane.
+STASH_ADMIN_TOKEN=dev-admin-token

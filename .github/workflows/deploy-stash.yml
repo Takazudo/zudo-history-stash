@@ -1,0 +1,128 @@
+name: Deploy stash Worker
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "workers/stash/**"
+      - "packages/core/**"
+      - "pnpm-lock.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-stash-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-secrets:
+    name: Check Cloudflare credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Check deploy credentials
+        id: check
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_CONFIG: workers/stash/wrangler.toml
+        run: |
+          READY=true
+          if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            :
+          else
+            READY=false
+            echo "::notice::Cloudflare secrets are not configured; stash deployment is skipped."
+          fi
+          if [[ ! -f "$WRANGLER_CONFIG" ]] || ! grep -Eq 'database_id[[:space:]]*=' "$WRANGLER_CONFIG" || grep -Eq 'REPLACE_(ME|WITH)' "$WRANGLER_CONFIG"; then
+            READY=false
+            echo "::notice::workers/stash/wrangler.toml has no provisioned D1 ID; stash deployment is skipped."
+          fi
+          echo "ready=$READY" >> "$GITHUB_OUTPUT"
+
+  migrate-d1:
+    name: Apply stash D1 migrations
+    needs: check-secrets
+    if: needs.check-secrets.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply remote D1 migrations
+        working-directory: workers/stash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler d1 migrations apply zudo-history-stash --remote
+
+  deploy:
+    name: Deploy stash Worker
+    needs: [check-secrets, migrate-d1]
+    if: needs.check-secrets.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy stash Worker
+        working-directory: workers/stash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy --env=""
+
+  smoke:
+    name: Smoke-test stash Worker
+    needs: deploy
+    if: needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Smoke-test health endpoint
+        env:
+          SMOKE_BASE_URL: ${{ vars.STASH_SMOKE_BASE_URL }}
+        run: node scripts/smoke.mjs --target stash

@@ -1,0 +1,37 @@
+name = "zudo-history-stash"
+main = "src/index.ts"
+compatibility_date = "2026-08-25"
+workers_dev = true
+preview_urls = true
+
+[observability]
+enabled = true
+
+[[routes]]
+pattern = "zudo-history-stash.__DOMAIN__"
+custom_domain = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "zudo-history-stash"
+database_id = "REPLACE_ME" # wrangler d1 create zudo-history-stash
+
+[vars]
+ALLOWED_ORIGINS = ""
+
+[secrets]
+required = ["STASH_ADMIN_TOKEN"]
+
+[env.preview]
+routes = []
+
+[env.preview.vars]
+ALLOWED_ORIGINS = "http://localhost:5173"
+
+[env.preview.secrets]
+required = ["STASH_ADMIN_TOKEN"]
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "zudo-history-stash-preview"
+database_id = "REPLACE_ME"

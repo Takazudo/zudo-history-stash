@@ -1,0 +1,219 @@
+import { fence, type SqlFragment } from "./writes.js";
+
+const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
+
+type Preparer = Pick<D1DatabaseSession, "prepare">;
+
+export interface PreparedImportVersion {
+  version: number;
+  kind: "put" | "delete" | "rollback";
+  body: string | null;
+  hash: string | null;
+  size: number;
+  rollbackOf: number | null;
+  author: string;
+  message: string;
+  metaJson: string;
+  createdAt: number;
+}
+
+export interface ImportBatchInput {
+  stash: string;
+  path: string;
+  expectedVersion: number | null;
+  versions: PreparedImportVersion[];
+}
+
+export interface ImportBatch {
+  statements: D1PreparedStatement[];
+  firstVersionStatementIndex: number;
+}
+
+function operationFence(input: ImportBatchInput): SqlFragment {
+  return input.expectedVersion === null
+    ? fence.create(input.stash, input.path)
+    : fence.put(input.stash, input.path, input.expectedVersion);
+}
+
+function putStatements(
+  db: Preparer,
+  input: ImportBatchInput,
+  entry: PreparedImportVersion,
+  importFence: SqlFragment,
+): D1PreparedStatement[] {
+  if (entry.body === null || entry.hash === null) throw new Error("Invalid prepared import put");
+  return [
+    db
+      .prepare(
+        `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
+         SELECT ?, ?, ?, NULL, ?, ? WHERE ${importFence.sql}
+         ON CONFLICT(stash_name, hash) DO NOTHING`,
+      )
+      .bind(
+        input.stash,
+        entry.hash,
+        entry.body,
+        entry.size,
+        entry.createdAt,
+        ...importFence.params,
+      ),
+    db
+      .prepare(
+        `INSERT INTO versions
+          (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
+           rollback_of, author, message, meta_json, created_at)
+         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ? WHERE ${importFence.sql}`,
+      )
+      .bind(
+        input.stash,
+        input.path,
+        entry.version,
+        entry.hash,
+        entry.size,
+        DEFAULT_CONTENT_TYPE,
+        entry.author,
+        entry.message,
+        entry.metaJson,
+        entry.createdAt,
+        ...importFence.params,
+      ),
+  ];
+}
+
+function deleteStatement(
+  db: Preparer,
+  input: ImportBatchInput,
+  entry: PreparedImportVersion,
+  importFence: SqlFragment,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO versions
+        (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
+         rollback_of, author, message, meta_json, created_at)
+       SELECT ?, ?, ?, 'delete', NULL, 0, ?, NULL, ?, ?, ?, ? WHERE ${importFence.sql}`,
+    )
+    .bind(
+      input.stash,
+      input.path,
+      entry.version,
+      DEFAULT_CONTENT_TYPE,
+      entry.author,
+      entry.message,
+      entry.metaJson,
+      entry.createdAt,
+      ...importFence.params,
+    );
+}
+
+function rollbackStatement(
+  db: Preparer,
+  input: ImportBatchInput,
+  entry: PreparedImportVersion,
+  importFence: SqlFragment,
+): D1PreparedStatement {
+  if (entry.rollbackOf === null) throw new Error("Invalid prepared import rollback");
+  return db
+    .prepare(
+      `INSERT INTO versions
+        (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
+         rollback_of, author, message, meta_json, created_at)
+       SELECT ?, ?, ?, 'rollback', target.blob_hash, target.size_bytes, target.content_type,
+         target.version, ?, ?, ?, ?
+       FROM versions target
+       WHERE target.stash_name = ? AND target.path = ? AND target.version = ?
+         AND target.blob_hash IS NOT NULL AND ${importFence.sql}`,
+    )
+    .bind(
+      input.stash,
+      input.path,
+      entry.version,
+      entry.author,
+      entry.message,
+      entry.metaJson,
+      entry.createdAt,
+      input.stash,
+      input.path,
+      entry.rollbackOf,
+      ...importFence.params,
+    );
+}
+
+export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch {
+  if (input.versions.length === 0) throw new Error("Import batch requires versions");
+  const importFence = operationFence(input);
+  const statements: D1PreparedStatement[] = [];
+  let firstVersionStatementIndex = -1;
+
+  for (const entry of input.versions) {
+    const before = statements.length;
+    if (entry.kind === "put") {
+      statements.push(...putStatements(db, input, entry, importFence));
+      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before + 1;
+    } else if (entry.kind === "delete") {
+      statements.push(deleteStatement(db, input, entry, importFence));
+      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before;
+    } else {
+      statements.push(rollbackStatement(db, input, entry, importFence));
+      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before;
+    }
+  }
+
+  const first = input.versions[0];
+  const last = input.versions.at(-1);
+  if (!first || !last) throw new Error("Import batch requires versions");
+  const finalVersion = last.version;
+  const finalHash = last.kind === "delete" ? null : last.hash;
+  const deleted = last.kind === "delete" ? 1 : 0;
+
+  if (input.expectedVersion === null) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO files
+            (stash_name, path, head_version, head_hash, deleted, created_at, updated_at)
+           SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${importFence.sql}
+             AND EXISTS (SELECT 1 FROM versions
+               WHERE stash_name = ? AND path = ? AND version = ?)`,
+        )
+        .bind(
+          input.stash,
+          input.path,
+          finalVersion,
+          finalHash,
+          deleted,
+          first.createdAt,
+          last.createdAt,
+          ...importFence.params,
+          input.stash,
+          input.path,
+          finalVersion,
+        ),
+    );
+  } else {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE files SET head_version = ?, head_hash = ?, deleted = ?, updated_at = ?
+           WHERE stash_name = ? AND path = ? AND head_version = ? AND ${importFence.sql}
+             AND EXISTS (SELECT 1 FROM versions
+               WHERE stash_name = ? AND path = ? AND version = ?)`,
+        )
+        .bind(
+          finalVersion,
+          finalHash,
+          deleted,
+          last.createdAt,
+          input.stash,
+          input.path,
+          input.expectedVersion,
+          ...importFence.params,
+          input.stash,
+          input.path,
+          finalVersion,
+        ),
+    );
+  }
+
+  return { statements, firstVersionStatementIndex };
+}

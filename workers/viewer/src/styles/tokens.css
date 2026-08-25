@@ -1,0 +1,111 @@
+@import "tailwindcss/preflight";
+@import "tailwindcss/utilities";
+
+@theme {
+  /* Tier 1: palette. Raw color values live only here. */
+  --palette-slate-0: oklch(99% 0.004 255);
+  --palette-slate-1: oklch(96% 0.006 255);
+  --palette-slate-2: oklch(90% 0.009 255);
+  --palette-slate-3: oklch(76% 0.014 255);
+  --palette-slate-4: oklch(55% 0.018 255);
+  --palette-slate-5: oklch(37% 0.02 255);
+  --palette-slate-6: oklch(25% 0.018 255);
+  --palette-slate-7: oklch(18% 0.016 255);
+  --palette-slate-8: oklch(13% 0.014 255);
+  --palette-blue-0: oklch(95% 0.035 250);
+  --palette-blue-1: oklch(82% 0.09 250);
+  --palette-blue-2: oklch(61% 0.19 250);
+  --palette-blue-3: oklch(48% 0.17 250);
+  --palette-blue-4: oklch(72% 0.14 250);
+  --palette-green-0: oklch(94% 0.045 155);
+  --palette-green-1: oklch(78% 0.12 155);
+  --palette-green-2: oklch(42% 0.12 155);
+  --palette-green-3: oklch(68% 0.13 155);
+  --palette-red-0: oklch(95% 0.04 25);
+  --palette-red-1: oklch(79% 0.1 25);
+  --palette-red-2: oklch(48% 0.17 25);
+  --palette-red-3: oklch(72% 0.15 25);
+  --palette-amber-0: oklch(95% 0.055 85);
+  --palette-amber-1: oklch(75% 0.13 75);
+
+  /* Tier 2: semantic theme roles reference the palette. */
+  --theme-canvas: light-dark(var(--palette-slate-0), var(--palette-slate-8));
+  --theme-surface: light-dark(var(--palette-slate-1), var(--palette-slate-7));
+  --theme-surface-raised: light-dark(var(--palette-slate-0), var(--palette-slate-6));
+  --theme-surface-muted: light-dark(var(--palette-slate-2), var(--palette-slate-6));
+  --theme-ink: light-dark(var(--palette-slate-7), var(--palette-slate-1));
+  --theme-ink-muted: light-dark(var(--palette-slate-5), var(--palette-slate-3));
+  --theme-border: light-dark(var(--palette-slate-2), var(--palette-slate-5));
+  --theme-border-strong: light-dark(var(--palette-slate-3), var(--palette-slate-4));
+  --theme-accent: light-dark(var(--palette-blue-3), var(--palette-blue-4));
+  --theme-accent-soft: light-dark(var(--palette-blue-0), var(--palette-slate-6));
+  --theme-on-accent: var(--palette-slate-0);
+  --theme-focus: light-dark(var(--palette-blue-2), var(--palette-blue-1));
+  --theme-success: light-dark(var(--palette-green-2), var(--palette-green-3));
+  --theme-success-soft: light-dark(var(--palette-green-0), var(--palette-slate-6));
+  --theme-error: light-dark(var(--palette-red-2), var(--palette-red-3));
+  --theme-error-soft: light-dark(var(--palette-red-0), var(--palette-slate-6));
+  --theme-warning-soft: light-dark(var(--palette-amber-0), var(--palette-slate-6));
+  --theme-diff-add-bg: light-dark(var(--palette-green-0), var(--palette-slate-6));
+  --theme-diff-add-fg: light-dark(var(--palette-green-2), var(--palette-green-3));
+  --theme-diff-remove-bg: light-dark(var(--palette-red-0), var(--palette-slate-6));
+  --theme-diff-remove-fg: light-dark(var(--palette-red-2), var(--palette-red-3));
+  --theme-diff-context-bg: light-dark(var(--palette-slate-0), var(--palette-slate-7));
+  --theme-diff-context-fg: light-dark(var(--palette-slate-5), var(--palette-slate-3));
+
+  /* Tier 3: component roles are the public styling interface. */
+  --header-bg: var(--theme-surface-raised);
+  --header-border: var(--theme-border);
+  --button-primary-bg: var(--theme-accent);
+  --button-primary-fg: var(--theme-on-accent);
+  --button-secondary-bg: var(--theme-surface-raised);
+  --button-secondary-fg: var(--theme-ink);
+  --button-danger-bg: var(--theme-error);
+  --button-danger-fg: var(--theme-on-accent);
+  --table-header-bg: var(--theme-surface-muted);
+  --table-row-bg: var(--theme-surface-raised);
+  --table-row-hover-bg: var(--theme-accent-soft);
+  --badge-bg: var(--theme-surface-muted);
+  --badge-fg: var(--theme-ink-muted);
+  --input-bg: var(--theme-surface-raised);
+  --input-border: var(--theme-border-strong);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-family-mono: ui-monospace, "JetBrains Mono", monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.625rem;
+  --line-tight: 1.2;
+  --line-body: 1.5;
+  --line-code: 1.55;
+
+  --hsp-xs: 0.375rem;
+  --hsp-sm: 0.625rem;
+  --hsp-md: 1rem;
+  --hsp-lg: 1.5rem;
+  --hsp-xl: 2rem;
+  --vsp-xs: 0.25rem;
+  --vsp-sm: 0.5rem;
+  --vsp-md: 0.875rem;
+  --vsp-lg: 1.5rem;
+  --vsp-xl: 2.25rem;
+  --row-dense: 2.25rem;
+  --control-height: 2.25rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --border-hairline: 1px;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
