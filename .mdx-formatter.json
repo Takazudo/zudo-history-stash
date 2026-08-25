@@ -8,12 +8,6 @@
     "_temp-resource/**"
   ],
   "addEmptyLinesInBlockJsx": {
-    "blockComponents": [
-      "Note",
-      "Tip",
-      "Warning",
-      "Details",
-      "Tabs"
-    ]
+    "blockComponents": ["Note", "Tip", "Warning", "Details", "Tabs"]
   }
 }
