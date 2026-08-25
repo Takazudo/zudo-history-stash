@@ -324,8 +324,8 @@ describe("FilePage", () => {
       "/s/notes/diff/docs/readme.txt?from=3&to=head",
     );
     const rollback = row.getByRole("button", { name: "Rollback to v3" });
-    expect(rollback.hasAttribute("disabled")).toBe(true);
-    expect(rollback.getAttribute("title")).toBe("available after the rollback sub-issue");
+    expect(rollback.hasAttribute("disabled")).toBe(false);
+    expect(rollback.getAttribute("title")).toBeNull();
 
     await userEvent.click(screen.getByRole("radio", { name: "Use v2 as from version" }));
     await userEvent.click(screen.getByRole("radio", { name: "Use v3 as to version" }));

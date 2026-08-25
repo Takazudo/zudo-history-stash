@@ -1,5 +1,5 @@
 import type { HistoryPage, VersionRecord } from "@takazudo/zudo-history-stash";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { ViewerStashClient } from "../app/auth/stash-client-provider.js";
 import { Button } from "../app/shell/button.js";
@@ -9,6 +9,7 @@ import { clientValue, ErrorBanner } from "./error-banner.js";
 import { KindBadge } from "./kind-badge.js";
 import { LoadMore } from "./load-more.js";
 import { RelativeTime } from "./relative-time.js";
+import { RollbackDialog, type RollbackSuccess } from "./rollback-dialog.js";
 import "./history-list.css";
 
 interface HistoryListProps {
@@ -138,6 +139,7 @@ function HistoryRow({
   viewedVersion,
   onFromChange,
   onToChange,
+  onRollback,
 }: {
   client: ViewerStashClient;
   stash: string;
@@ -148,10 +150,10 @@ function HistoryRow({
   viewedVersion?: number;
   onFromChange: (version: number) => void;
   onToChange: (version: number) => void;
+  onRollback: (version: VersionRecord) => void;
 }) {
   const fileUrl = `/s/${stash}/f/${path}`;
   const diffUrl = `/s/${stash}/diff/${path}`;
-  const rollbackUnavailable = "available after the rollback sub-issue";
 
   return (
     <tr
@@ -204,16 +206,13 @@ function HistoryRow({
         <div className="history-row-actions">
           <Link to={`${fileUrl}?version=${version.version}`}>View this version</Link>
           <Link to={`${diffUrl}?from=${version.version}&to=head`}>Diff vs head</Link>
-          <span className="history-row-actions__disabled" title={rollbackUnavailable}>
-            <Button
-              aria-label={`Rollback to v${version.version}`}
-              compact
-              disabled
-              title={rollbackUnavailable}
-            >
-              Rollback to this version
-            </Button>
-          </span>
+          <Button
+            aria-label={`Rollback to v${version.version}`}
+            compact
+            onClick={() => onRollback(version)}
+          >
+            Rollback to this version
+          </Button>
         </div>
       </td>
     </tr>
@@ -230,6 +229,9 @@ export function HistoryList({ client, stash, path, page, viewedVersion }: Histor
   const [pagingError, setPagingError] = useState<unknown | null>(null);
   const [fromVersion, setFromVersion] = useState<number | null>(initialComparison.from);
   const [toVersion, setToVersion] = useState<number | null>(initialComparison.to);
+  const [total, setTotal] = useState(page.total);
+  const [rollbackTarget, setRollbackTarget] = useState<VersionRecord | null>(null);
+  const [rollbackToast, setRollbackToast] = useState<string | null>(null);
 
   useEffect(() => {
     controllerRef.current?.abort();
@@ -237,6 +239,7 @@ export function HistoryList({ client, stash, path, page, viewedVersion }: Histor
     setNextBefore(page.nextBefore);
     setLoadingMore(false);
     setPagingError(null);
+    setTotal(page.total);
     const comparison = defaultComparison(page);
     setFromVersion(comparison.from);
     setToVersion(comparison.to);
@@ -272,19 +275,56 @@ export function HistoryList({ client, stash, path, page, viewedVersion }: Histor
     navigate(`/s/${stash}/diff/${path}?${search.toString()}`);
   }
 
+  const closeRollback = useCallback(() => setRollbackTarget(null), []);
+
+  function completeRollback({ result, message }: RollbackSuccess) {
+    const target = rollbackTarget;
+    if (!target) return;
+    const effectiveMessage = message || `Rollback to v${target.version}`;
+    const created: VersionRecord = {
+      version: result.version,
+      kind: "rollback",
+      hash: result.hash,
+      size: target.size,
+      rollbackOf: target.version,
+      author: "viewer",
+      message: effectiveMessage,
+      meta: {},
+      createdAt: result.createdAt,
+    };
+    setVersions((current) => mergeVersions(current, [created]));
+    setTotal((current) => Math.max(current + 1, result.version));
+    setFromVersion(target.version);
+    setToVersion(result.version);
+    setRollbackToast(
+      `Rollback complete. Created v${result.version} as rollback to v${target.version}.`,
+    );
+    setRollbackTarget(null);
+    navigate(`/s/${stash}/f/${path}`);
+  }
+
   return (
     <section className="section-card history-list" aria-labelledby="file-history-title">
       <div className="section-card__heading history-list__heading">
         <div>
           <h2 id="file-history-title">History</h2>
           <p>
-            {page.total} {page.total === 1 ? "version" : "versions"}, newest first.
+            {total} {total === 1 ? "version" : "versions"}, newest first.
           </p>
         </div>
         <Button compact disabled={fromVersion === null || toVersion === null} onClick={compare}>
           Compare
         </Button>
       </div>
+
+      {rollbackToast ? (
+        <div aria-live="polite" className="rollback-toast" role="status">
+          <span>{rollbackToast}</span>
+          <Button compact onClick={() => setRollbackToast(null)}>
+            Dismiss
+          </Button>
+        </div>
+      ) : null}
 
       {versions.length === 0 ? (
         <p className="empty-copy">No versions have been recorded for this file.</p>
@@ -336,6 +376,7 @@ export function HistoryList({ client, stash, path, page, viewedVersion }: Histor
                 version={version}
                 viewedVersion={viewedVersion}
                 onFromChange={setFromVersion}
+                onRollback={setRollbackTarget}
                 onToChange={setToVersion}
               />
             ))}
@@ -351,6 +392,16 @@ export function HistoryList({ client, stash, path, page, viewedVersion }: Histor
       <div className="section-card__footer">
         <LoadMore hasMore={nextBefore !== null} loading={loadingMore} onLoadMore={loadMore} />
       </div>
+      {rollbackTarget ? (
+        <RollbackDialog
+          client={client}
+          path={path}
+          stash={stash}
+          target={rollbackTarget}
+          onClose={closeRollback}
+          onSuccess={completeRollback}
+        />
+      ) : null}
     </section>
   );
 }

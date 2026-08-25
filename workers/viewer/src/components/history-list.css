@@ -221,11 +221,6 @@
   color: var(--theme-error);
 }
 
-.history-row-actions__disabled {
-  display: inline-flex;
-  cursor: not-allowed;
-}
-
 .history-list__paging-error {
   padding-block: var(--vsp-md) 0;
   padding-inline: var(--hsp-md);
