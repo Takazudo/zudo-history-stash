@@ -37,3 +37,46 @@ const client = createStashClient({
 
 Write tokens are full-stash credentials and should not be embedded in browser code. Use a read
 token for browser-direct consumers.
+
+## In-memory testing fake
+
+The `./testing` subpath provides a deliberately narrow, environment-neutral fetch fake. It is for
+consumer tests that exercise file operations without booting workerd; it is not a replacement for
+the real Worker or its D1 tests.
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
+
+const fake = createFakeStash({ adminToken: "test-admin" });
+fake.createStash("docs");
+const token = fake.mintToken("docs", "write");
+
+const client = createStashClient({
+  baseUrl: "https://stash.test",
+  token,
+  fetch: fake.fetch,
+});
+```
+
+`fake.state` exposes the in-memory stash, token, blob, file, version, and idempotency tables for
+direct fixture setup and assertions. `fake.reset()` clears those tables without replacing the
+state object. Pass `now` to freeze timestamps.
+
+The fake implements only `GET /v1/me`, `POST /v1/stashes`, and the stash-scoped file list, file
+read/write/delete/rollback, history, changes, and stored/candidate diff routes. All other routes —
+including health, stash listing/details, token management, import, and cross-stash changes — return
+`501 not-implemented`. Token-management setup therefore uses `fake.mintToken()` directly.
+
+The same exported conformance runner is used to detect drift between the fake and the real Worker:
+
+```ts
+import { runConformance } from "@takazudo/zudo-history-stash/testing";
+
+await runConformance(fetch, "http://localhost:8787/api", {
+  adminToken: process.env.STASH_ADMIN_TOKEN!,
+});
+```
+
+Fake-only conformance runs additionally pass `mintToken: fake.mintToken`; real-worker runs mint the
+read token through the server's admin endpoint.
