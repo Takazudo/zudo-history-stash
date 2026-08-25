@@ -7,7 +7,6 @@ worktrees/
 test-results/
 playwright-report/
 __inbox/
-_temp-resource/
 .dev.vars
 .dev.vars.*
 !.dev.vars.example
