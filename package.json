@@ -20,6 +20,7 @@
     "format:check": "prettier --check .",
     "format:md": "pnpm exec mdx-formatter --write .",
     "lint:tokens": "pnpm --filter zudo-history-stash-viewer lint:tokens",
+    "check:b4push-ci-parity": "node scripts/check-b4push-ci-parity.mjs",
     "b4push": "bash scripts/run-b4push.sh",
     "// ── Local Workers ────────────────────": "",
     "dev:stash": "wrangler dev -c workers/stash/wrangler.toml",

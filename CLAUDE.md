@@ -21,11 +21,11 @@ This repository is a Cloudflare-based, versioned text store with rollback, on-de
 
 Run `pnpm install` first. `pnpm dev:stash` starts the stash Worker; `pnpm dev:viewer` starts Vite; `pnpm dev:full` starts the viewer on port `8787` with the stash service binding. The live API health URL is `http://localhost:8787/api/v1/health`.
 
-Quality commands are `pnpm build:libs`, `pnpm format:check`, `pnpm typecheck`, `pnpm lint`, `pnpm lint:tokens`, `pnpm test`, and `pnpm build`. `pnpm b4push` runs those checks in that order after a frozen install.
+Quality commands are `pnpm build:libs`, `pnpm format:check`, `pnpm typecheck`, `pnpm lint`, `pnpm lint:tokens`, `pnpm test`, and `pnpm build`. `pnpm b4push` runs a b4push/CI parity check and those checks in that order after a frozen install.
 
 ## Automation
 
-Lefthook installs the repository hooks. The pre-push hook runs `scripts/run-b4push.sh`; keep its command order aligned with the quality sequence in `.github/workflows/ci.yml`. CI adds package `publint`/`attw` checks and a Playwright e2e job with mock and guarded `@live` lanes. Deploy workflows apply stash D1 migrations before deployment, scope Cloudflare secrets to Wrangler steps, and smoke-test the deployed endpoint.
+Lefthook installs the repository hooks. The pre-push hook runs `scripts/run-b4push.sh`; `scripts/check-b4push-ci-parity.mjs` keeps its command order aligned with the CI quality sequence in `.github/workflows/ci.yml`. CI adds package `publint`/`attw` checks and a Playwright e2e job with mock and guarded `@live` lanes. Deploy workflows apply stash D1 migrations before deployment, scope Cloudflare secrets to Wrangler steps, and smoke-test the deployed endpoint.
 
 ## Testing
 
