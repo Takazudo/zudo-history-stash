@@ -23,6 +23,63 @@ viewer Worker ── service binding ──► stash Worker
 | `zudo-history-stash` (`workers/stash`)                | Hono `/v1` API and the D1 system of record                                   |
 | `zudo-history-stash-viewer` (`workers/viewer`)        | React/Tailwind standalone viewer and service-binding proxy                   |
 
+## Consumer guide
+
+Install the isomorphic client in a Node.js application, browser bundle, or Worker:
+
+```bash
+pnpm add @takazudo/zudo-history-stash
+```
+
+The client returns typed business outcomes and keeps compare-and-set versions explicit:
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+const client = createStashClient({
+  baseUrl: process.env.STASH_URL!,
+  token: process.env.STASH_TOKEN,
+});
+const files = client.files("demo");
+const put = await client.putLatest("demo", "docs/guide.md", "Updated guide\n");
+if (!put.ok) throw new Error(put.error.message);
+const history = await files.history("docs/guide.md");
+if (!history.ok) throw new Error(history.error.message);
+const diff = await files.diff("docs/guide.md", { from: 1, to: "head" });
+if (!diff.ok) throw new Error(diff.error.message);
+const rollback = await files.rollback("docs/guide.md", {
+  toVersion: 1,
+  expectedVersion: put.value.version,
+});
+if (!rollback.ok) throw new Error(rollback.error.message);
+```
+
+For a same-account Worker, bind the stash service and give its `fetch` method to the same client.
+The hostname is only a valid URL base; the binding routes the request internally:
+
+```toml
+[[services]]
+binding = "STASH"
+service = "zudo-history-stash"
+```
+
+```ts
+const client = createStashClient({
+  baseUrl: "https://stash.internal",
+  token: env.STASH_TOKEN,
+  fetch: (input, init) => env.STASH.fetch(input, init),
+});
+```
+
+Bots and other consumers can post stable viewer links without knowing the viewer implementation:
+
+- `/s/:stash/f/*path` opens a file and its history.
+- `/s/:stash/diff/*path?from=N&to=M|head` opens a stored-version diff.
+
+Browser-direct code must use a `read` token. A `write` token is a full-stash credential and can
+replace, delete, or roll back every path in that stash; keep it in a trusted server or Worker
+secret. See the complete [API reference](docs/api.md) and the
+[Cloudflare setup guide](docs/cloudflare-setup.md) for bindings, D1, secrets, CORS, and deployment.
+
 ## Quick start
 
 ```bash
@@ -36,7 +93,8 @@ The full local setup serves the viewer on `http://localhost:8787` and reaches th
 node scripts/seed-dev.mjs --base-url http://localhost:8787/api
 ```
 
-See [docs/api.md](docs/api.md) for the API reference stub (filled in by the contract/docs sub-issue) and [docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning.
+See [docs/api.md](docs/api.md) for the API reference and
+[docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning.
 
 | Command                                | Purpose                                                            |
 | -------------------------------------- | ------------------------------------------------------------------ |

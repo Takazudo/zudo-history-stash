@@ -104,6 +104,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20260825.1
         version: 5.20260825.1
+      '@takazudo/zudo-history-stash':
+        specifier: workspace:*
+        version: link:../../packages/client
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

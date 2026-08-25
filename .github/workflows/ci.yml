@@ -140,6 +140,14 @@ jobs:
           DEV_API_BASE_URL: http://localhost:8787/api
         run: node scripts/seed-dev.mjs --base-url "$DEV_API_BASE_URL"
 
+      - name: Run local HTTP contract suite
+        if: hashFiles('scripts/seed-dev.mjs') != ''
+        env:
+          API_BASE_URL: http://localhost:8787/api
+          TEST_TIER: local
+          STASH_ADMIN_TOKEN: dev-admin-token
+        run: pnpm --filter zudo-history-stash test:contract
+
       - name: Run live lane
         if: hashFiles('scripts/seed-dev.mjs') != ''
         run: pnpm --filter zudo-history-stash-viewer e2e -- --grep "@live"
