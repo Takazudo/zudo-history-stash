@@ -24,6 +24,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "lint:pkg": "pnpm dlx publint@0.3.12 && pnpm dlx @arethetypeswrong/cli@0.18.5 --pack . --profile esm-only",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
