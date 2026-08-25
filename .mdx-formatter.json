@@ -1,6 +1,19 @@
 {
-  "exclude": ["node_modules/**", "dist/**", "worktrees/**", "__inbox/**", ".playwright-cli/**"],
+  "exclude": [
+    "node_modules/**",
+    "dist/**",
+    "worktrees/**",
+    "__inbox/**",
+    ".playwright-cli/**",
+    "_temp-resource/**"
+  ],
   "addEmptyLinesInBlockJsx": {
-    "blockComponents": ["Note", "Tip", "Warning", "Details", "Tabs"]
+    "blockComponents": [
+      "Note",
+      "Tip",
+      "Warning",
+      "Details",
+      "Tabs"
+    ]
   }
 }
