@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check b4push/CI parity
+        run: pnpm check:b4push-ci-parity
+
       - name: Build libraries
         run: pnpm build:libs
 

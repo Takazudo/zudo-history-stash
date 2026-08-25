@@ -12,7 +12,7 @@ The levels are cumulative evidence, not interchangeable labels:
 - **L4 — browser e2e:** Chromium navigation, interaction, routing, and API composition through Playwright.
 - **L5 — live/infrastructure:** a running Worker, D1 bindings, service binding proxy, deployed smoke endpoints, or another real external boundary.
 
-T0 is the local `pnpm b4push` sequence: frozen install → `build:libs` → format check → typecheck → lint (including token lint) → tests → build (including both Wrangler dry-runs). T1 is CI: the same sequence plus `publint`/`attw` and the Playwright e2e job. No nightly tier is part of v1.
+T0 is the local `pnpm b4push` sequence: frozen install → b4push/CI parity → `build:libs` → format check → typecheck → lint (including token lint) → tests → build (including both Wrangler dry-runs). T1 is CI: the same sequence plus `publint`/`attw` and the Playwright e2e job. No nightly tier is part of v1.
 
 The resource rule keeps child work proportional: a sub-issue runs its own package's unit/Worker tests and typecheck; the full Playwright suite, both dry-run deploys, package publication checks, and live composition belong to CI and the confirm pass.
 
