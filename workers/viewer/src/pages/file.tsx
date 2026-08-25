@@ -323,6 +323,7 @@ export default function FilePage() {
           <HistoryList
             client={client}
             key={`${stash}:${path}`}
+            onRollbackComplete={file.reload}
             page={history.value}
             path={path}
             stash={stash}

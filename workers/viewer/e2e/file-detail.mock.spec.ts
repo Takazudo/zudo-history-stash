@@ -70,10 +70,13 @@ test("@smoke file detail renders history and lazily requests visible stats", asy
 
   await page.goto("/s/notes/f/docs/readme.txt");
   const history = page.getByRole("region", { name: "History" });
-  await expect(history.getByText("rollback")).toBeVisible();
-  await expect(history.getByText("→ v2")).toBeVisible();
-  await expect(history.getByText("deleted")).toBeVisible();
+  await expect(history.getByText("rollback", { exact: true })).toBeVisible();
+  await expect(history.getByText("→ v2", { exact: true })).toBeVisible();
+  await expect(history.getByText("deleted", { exact: true })).toBeVisible();
 
+  const newestStats = history.locator('[data-history-version="60"] .history-diff-stats');
+  await newestStats.scrollIntoViewIfNeeded();
+  await expect(newestStats).toHaveText("+2 −1");
   await expect.poll(() => diffRequests.length).toBeGreaterThan(0);
   expect(diffRequests.length).toBeLessThan(60);
 

@@ -193,6 +193,14 @@
   table-layout: fixed;
 }
 
+.diff-table-pane--wrap .diff-table__gutter {
+  width: 7ch;
+}
+
+.diff-table-pane--wrap .diff-table__sign {
+  width: 8ch;
+}
+
 .diff-table-pane--nowrap .diff-table {
   width: max-content;
   min-width: 100%;

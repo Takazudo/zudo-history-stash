@@ -67,6 +67,7 @@ test("@smoke diff page renders structured rows and copies the unified fixture", 
   page,
 }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.setViewportSize({ width: 375, height: 900 });
   await page.addInitScript(() => sessionStorage.setItem("zhs.token", "zhs_test"));
   await page.route("**/api/v1/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
@@ -90,6 +91,16 @@ test("@smoke diff page renders structured rows and copies the unified fixture", 
   await expect(add.locator('[data-column="old"]')).toHaveText("");
   await expect(add.locator('[data-column="new"]')).toHaveText("2");
   await expect(add.locator('[data-column="sign"]')).toHaveText("+");
+
+  await expect(page.getByLabel("Wrap long lines")).toBeChecked();
+  const columnHeaders = page.getByRole("table", { name: "Unified diff" }).getByRole("columnheader");
+  await columnHeaders.first().scrollIntoViewIfNeeded();
+  const headerMetrics = await columnHeaders.evaluateAll((headers) =>
+    headers.map((header) => ({ clientWidth: header.clientWidth, scrollWidth: header.scrollWidth })),
+  );
+  expect(
+    headerMetrics.every(({ clientWidth, scrollWidth }) => scrollWidth <= clientWidth + 1),
+  ).toBe(true);
 
   await page.getByRole("button", { name: "Copy unified" }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(UNIFIED);

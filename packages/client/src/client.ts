@@ -279,7 +279,12 @@ async function readRaw(
     throw new StashHttpError(0, undefined, undefined, error);
   }
 
-  const parsedBody = await parseBody(response);
+  let parsedBody: unknown;
+  try {
+    parsedBody = await parseBody(response);
+  } catch (error) {
+    throw new StashHttpError(0, undefined, undefined, error);
+  }
   const raw: RawResponse = {
     status: response.status,
     body: parsedBody,

@@ -336,6 +336,42 @@ describe("FilePage", () => {
     expect(router.state.location.search).toBe("?from=2&to=3");
   });
 
+  it("refreshes the head representation after a successful rollback", async () => {
+    const get = vi
+      .fn<StashFilesClient["get"]>()
+      .mockResolvedValueOnce({ ok: true, value: fileRecord({ body: "current body" }) })
+      .mockResolvedValueOnce({ ok: true, value: fileRecord({ body: "current body" }) })
+      .mockResolvedValue({
+        ok: true,
+        value: fileRecord({
+          version: 5,
+          hash: "sha256-2",
+          body: "rolled back body",
+          kind: "rollback",
+        }),
+      });
+    const rollback = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        version: 5,
+        hash: "sha256-2",
+        rollbackOf: 2,
+        identicalToHead: false,
+        changeId: 9,
+        createdAt: "2026-08-25T10:00:00.000Z",
+      },
+    }));
+    renderFileRoute("/s/notes/f/docs/readme.txt", clientWithFiles({ get, rollback }));
+
+    expect(await screen.findByText("current body")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Rollback to v2" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm rollback" }));
+
+    expect(await screen.findByText("rolled back body")).toBeTruthy();
+    expect(screen.getByText("Rollback complete. Created v5 as rollback to v2.")).toBeTruthy();
+    expect(get).toHaveBeenCalledTimes(3);
+  });
+
   it("appends history pages newest-first without duplicate versions", async () => {
     const history = vi.fn(async (path: string, options): Promise<ClientResult<HistoryPage>> => {
       if (options?.before === 2) {

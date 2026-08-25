@@ -4,6 +4,15 @@ const ADMIN_TOKEN = process.env.STASH_ADMIN_TOKEN ?? "dev-admin-token";
 const AUTHORIZATION = { Authorization: `Bearer ${ADMIN_TOKEN}` };
 const GUIDE_PATH = "docs/guide.md";
 
+test.use({
+  allowedConsoleErrors: [
+    {
+      pattern: /^Failed to load resource: net::ERR_CONNECTION_FAILED$/u,
+      why: "The test deliberately loses the first rollback response after the upstream mutation commits.",
+    },
+  ],
+});
+
 interface HistoryResponse {
   total: number;
   headVersion: number;
@@ -90,6 +99,7 @@ test("@live viewer composes with the stash Worker and replays one rollback", asy
   await failedAttempt.getByRole("button", { name: "Try again" }).click();
 
   await expect(dialog).toBeHidden();
+  await expect(page.locator(".file-body-pane")).toContainText("履歴を安全に確認できるデモです。");
   const completedRollback = page
     .getByRole("region", { name: "History" })
     .locator(`[data-history-version="${expectedRollbackVersion}"]`);

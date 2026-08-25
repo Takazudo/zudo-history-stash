@@ -18,6 +18,7 @@ interface HistoryListProps {
   path: string;
   page: HistoryPage;
   viewedVersion?: number;
+  onRollbackComplete?: () => void;
 }
 
 type DiffStatsState =
@@ -219,7 +220,14 @@ function HistoryRow({
   );
 }
 
-export function HistoryList({ client, stash, path, page, viewedVersion }: HistoryListProps) {
+export function HistoryList({
+  client,
+  stash,
+  path,
+  page,
+  viewedVersion,
+  onRollbackComplete,
+}: HistoryListProps) {
   const navigate = useNavigate();
   const controllerRef = useRef<AbortController | null>(null);
   const initialComparison = defaultComparison(page);
@@ -300,6 +308,7 @@ export function HistoryList({ client, stash, path, page, viewedVersion }: Histor
       `Rollback complete. Created v${result.version} as rollback to v${target.version}.`,
     );
     setRollbackTarget(null);
+    onRollbackComplete?.();
     navigate(`/s/${stash}/f/${path}`);
   }
 

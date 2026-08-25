@@ -287,6 +287,17 @@ describe("response mapping and safety", () => {
 
     mock.mockRejectedValueOnce(new TypeError("offline"));
     await expect(c.me()).rejects.toBeInstanceOf(StashHttpError);
+
+    mock.mockResolvedValueOnce({
+      status: 200,
+      headers: new Headers(),
+      text: vi.fn().mockRejectedValue(new TypeError("response body disconnected")),
+    } as unknown as Response);
+    await expect(c.me()).rejects.toMatchObject({
+      name: "StashHttpError",
+      status: 0,
+      cause: expect.objectContaining({ message: "response body disconnected" }),
+    });
   });
 
   it("validates paths before fetch and never percent-encodes route paths", async () => {

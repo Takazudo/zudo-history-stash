@@ -1,15 +1,18 @@
 import { test as base } from "@playwright/test";
 
-interface AllowedConsoleError {
+export interface AllowedConsoleError {
   pattern: RegExp;
   why: string;
 }
 
-// Keep this list empty by default. Every future exception must include a narrow pattern and why.
-const allowedConsoleErrors: AllowedConsoleError[] = [];
+interface ConsoleErrorOptions {
+  allowedConsoleErrors: AllowedConsoleError[];
+}
 
-export const test = base.extend({
-  page: async ({ page }, use) => {
+export const test = base.extend<ConsoleErrorOptions>({
+  // Keep this empty by default. Every test-specific exception must include a narrow pattern and why.
+  allowedConsoleErrors: [[], { option: true }],
+  page: async ({ page, allowedConsoleErrors }, use) => {
     const errors: string[] = [];
     page.on("console", (message) => {
       if (message.type() !== "error") return;

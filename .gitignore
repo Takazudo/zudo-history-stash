@@ -9,5 +9,9 @@ playwright-report/
 __inbox/
 _temp-resource/
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
 .env
+.env.*
+!.env.example
 .DS_Store

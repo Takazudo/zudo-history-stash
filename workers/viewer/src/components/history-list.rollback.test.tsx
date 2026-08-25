@@ -103,12 +103,14 @@ describe("HistoryList rollback integration", () => {
     }));
     const client = fakeClient(rollback);
     const clientFactory: ViewerStashClientFactory = () => client;
+    const onRollbackComplete = vi.fn();
     sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_test");
     render(
       <MemoryRouter initialEntries={["/s/notes/f/docs/readme.txt?version=2"]}>
         <StashClientProvider clientFactory={clientFactory}>
           <HistoryList
             client={client}
+            onRollbackComplete={onRollbackComplete}
             page={history}
             path="docs/readme.txt"
             stash="notes"
@@ -145,6 +147,7 @@ describe("HistoryList rollback integration", () => {
     expect(within(createdRow as HTMLElement).getByText("rollback")).toBeTruthy();
     expect(within(createdRow as HTMLElement).getByText("→ v2")).toBeTruthy();
     await waitFor(() => expect(rollback).toHaveBeenCalledTimes(1));
+    expect(onRollbackComplete).toHaveBeenCalledOnce();
   });
 
   it("closes on Escape and restores focus to the history action", async () => {

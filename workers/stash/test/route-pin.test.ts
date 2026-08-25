@@ -1,7 +1,7 @@
 import { ROUTES } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
 import { CLIENT_ROUTES } from "@takazudo/zudo-history-stash";
-import apiReference from "../../../../docs/api.md?raw";
+import apiReference from "../../../docs/api.md?raw";
 import app from "../src/app.js";
 
 type RouteTuple = readonly [string, string];

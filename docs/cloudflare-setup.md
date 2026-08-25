@@ -27,18 +27,18 @@ The deploy workflows deliberately self-skip with a green check while either secr
 Create the production and preview databases, decline Wrangler's offer to edit the config automatically, and paste the printed IDs into the committed `workers/stash/wrangler.toml` bindings:
 
 ```bash
-npx wrangler@4 d1 create zudo-history-stash
-npx wrangler@4 d1 create zudo-history-stash-preview
+pnpm exec wrangler d1 create zudo-history-stash
+pnpm exec wrangler d1 create zudo-history-stash-preview
 ```
 
-The deployment remains skipped until the Cloudflare credentials and committed D1 IDs are ready. Apply migrations from `workers/stash` with `npx wrangler@4 d1 migrations apply zudo-history-stash --remote` before deploying code.
+The deployment remains skipped until the Cloudflare credentials and committed D1 IDs are ready. Apply migrations from `workers/stash` with `pnpm exec wrangler d1 migrations apply zudo-history-stash --remote` before deploying code.
 
 ## Worker secret and viewer access
 
 Set the admin credential locally or remotely; the value is never committed:
 
 ```bash
-npx wrangler@4 secret put STASH_ADMIN_TOKEN
+pnpm exec wrangler secret put STASH_ADMIN_TOKEN
 ```
 
 For local development, put the corresponding value in `workers/stash/.dev.vars` (copy the example file). Put Cloudflare Access in front of the viewer hostname when it is exposed to operators; the viewer itself holds no stash secret and only receives the token pasted into its login screen. Configure `previews_enabled` for each preview Worker when preview URLs are enabled, and keep preview service bindings pointed at `zudo-history-stash-preview`.
