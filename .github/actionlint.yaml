@@ -1,4 +1,1 @@
-# actionlint config. The lint workflow uses the house Blacksmith runner label.
-self-hosted-runner:
-  labels:
-    - blacksmith-2vcpu-ubuntu-2204
+# actionlint config. Standard GitHub-hosted labels require no overrides.

@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   actionlint:
-    runs-on: blacksmith-2vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -38,7 +38,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
 
-      # The ubuntu-2204 runner ships shellcheck preinstalled, so actionlint
+      # The ubuntu-22.04 runner ships shellcheck preinstalled, so actionlint
       # additionally lints run: shell blocks through it (no extra setup).
       - name: Run actionlint
         env:
