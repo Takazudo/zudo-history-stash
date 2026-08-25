@@ -77,7 +77,7 @@ describe("bearer authentication and route capabilities", () => {
       method: "POST",
       headers: bearer(minted.token),
     });
-    expect(response.status).toBe(501);
+    expect(response.status).toBe(400);
   });
 
   it("hides admin routes from stash principals", async () => {
