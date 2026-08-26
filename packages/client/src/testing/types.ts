@@ -21,10 +21,14 @@ export interface FakeStashRow {
 
 export interface FakeTokenRow {
   id: string;
-  token: string;
+  /** Bare SHA-256 digest; the plaintext secret is never retained in inspectable state. */
+  tokenHash: string;
   stash: string;
+  label: string;
   scope: TokenScope;
   createdAt: number;
+  revokedAt: number | null;
+  lastUsedAt: number | null;
 }
 
 export interface FakeBlobRow {
@@ -86,16 +90,14 @@ export interface FakeStash {
   state: FakeStashState;
   /** Creates a stash directly for fixture setup and returns its public name. */
   createStash(name: string): string;
-  /** Mints a direct fixture token. Token-management HTTP routes remain unsupported. */
-  mintToken(stash: string, scope: TokenScope): string;
+  /** Mints a fixture token through the same hash-only storage path as the HTTP route. */
+  mintToken(stash: string, scope: TokenScope): Promise<string>;
   /** Clears every in-memory table while preserving the state object identity. */
   reset(): void;
 }
 
 export interface ConformanceOptions {
   adminToken: string;
-  /** Fake-only setup seam; real workers mint through their admin token route. */
-  mintToken?: (stash: string, scope: TokenScope) => string | Promise<string>;
   /** Optional stable primary stash name for repeatable unit tests. Defaults to a unique name. */
   stashName?: string;
 }

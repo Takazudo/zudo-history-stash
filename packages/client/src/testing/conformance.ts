@@ -1,11 +1,16 @@
 import { DIFF_MAX_BYTES, canonicalJson } from "@takazudo/zudo-history-stash-core";
-import type { JsonValue, RouteId, TokenScope } from "@takazudo/zudo-history-stash-core";
+import type { JsonValue, RouteId } from "@takazudo/zudo-history-stash-core";
 import type { StashFetch } from "../client.js";
 import type { ConformanceOptions, ConformanceReport } from "./types.js";
 
 export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "me",
+  "listStashes",
   "createStash",
+  "getStash",
+  "createToken",
+  "listTokens",
+  "revokeToken",
   "listFiles",
   "getFile",
   "putFile",
@@ -17,7 +22,7 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "getStashChanges",
 ] as const satisfies readonly RouteId[];
 
-type TraceToken = "admin" | "read" | "none";
+type TraceToken = "admin" | "read" | "write" | "none";
 
 interface TraceRequest {
   method: string;
@@ -32,8 +37,10 @@ interface TraceContext {
   baseUrl: string;
   adminToken: string;
   readToken?: string;
+  writeToken?: string;
   stash: string;
   foreignStash: string;
+  laterStash: string;
   values: Map<string, unknown>;
   exercised: Set<RouteId>;
 }
@@ -206,6 +213,13 @@ const TRACE: readonly TraceStep[] = [
       lastChangeAt: null,
     }),
   ),
+  errorStep(
+    "duplicate stash is rejected",
+    "createStash",
+    (context) => ({ method: "POST", path: "/v1/stashes", body: { name: context.stash } }),
+    409,
+    "exists",
+  ),
   responseStep(
     "create foreign stash",
     "createStash",
@@ -218,11 +232,199 @@ const TRACE: readonly TraceStep[] = [
     (context) => ({ name: context.foreignStash }),
   ),
   responseStep(
+    "create later stash for keyset pagination",
+    "createStash",
+    (context) => ({
+      method: "POST",
+      path: "/v1/stashes",
+      body: { name: context.laterStash },
+    }),
+    201,
+    (context) => ({ name: context.laterStash }),
+  ),
+  responseStep(
+    "stash list exposes a keyset continuation",
+    "listStashes",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes?limit=1&after=${context.stash}`,
+    }),
+    200,
+    (context) => ({
+      stashes: [{ name: context.foreignStash }],
+      nextAfter: context.foreignStash,
+    }),
+  ),
+  responseStep(
+    "stash list continues after its keyset",
+    "listStashes",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes?limit=1&after=${context.foreignStash}`,
+    }),
+    200,
+    (context) => ({ stashes: [{ name: context.laterStash }], nextAfter: null }),
+  ),
+  responseStep(
+    "get stash returns its aggregate",
+    "getStash",
+    (context) => ({ method: "GET", path: `/v1/stashes/${context.stash}` }),
+    200,
+    (context) => ({
+      name: context.stash,
+      description: "",
+      meta: {},
+      fileCount: 0,
+      deletedFileCount: 0,
+      lastChangeId: null,
+      lastChangeAt: null,
+    }),
+  ),
+  {
+    name: "create read token returns its secret once",
+    routeId: "createToken",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/tokens`,
+      body: { label: "conformance-read", scope: "read" },
+    }),
+    verify(response, body, context) {
+      const step = "create read token returns its secret once";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, { label: "conformance-read", scope: "read" });
+      if (typeof value.id !== "string") traceFailure(step, "missing token id");
+      if (typeof value.token !== "string" || !/^zhs_[A-Za-z0-9_-]{43}$/.test(value.token)) {
+        traceFailure(step, "missing or malformed token secret");
+      }
+      if (typeof value.createdAt !== "string") traceFailure(step, "missing createdAt");
+      assertJsonEqual(step, value, {
+        id: value.id,
+        token: value.token,
+        label: "conformance-read",
+        scope: "read",
+        createdAt: value.createdAt,
+      });
+      context.readToken = value.token;
+      remember(context, "readToken", value.token);
+      remember(context, "readTokenId", value.id);
+      remember(context, "readTokenCreatedAt", value.createdAt);
+    },
+  },
+  {
+    name: "create write token returns its secret once",
+    routeId: "createToken",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/tokens`,
+      body: { label: "conformance-write", scope: "write" },
+    }),
+    verify(response, body, context) {
+      const step = "create write token returns its secret once";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, { label: "conformance-write", scope: "write" });
+      if (typeof value.id !== "string") traceFailure(step, "missing token id");
+      if (typeof value.token !== "string" || !/^zhs_[A-Za-z0-9_-]{43}$/.test(value.token)) {
+        traceFailure(step, "missing or malformed token secret");
+      }
+      if (typeof value.createdAt !== "string") traceFailure(step, "missing createdAt");
+      assertJsonEqual(step, value, {
+        id: value.id,
+        token: value.token,
+        label: "conformance-write",
+        scope: "write",
+        createdAt: value.createdAt,
+      });
+      context.writeToken = value.token;
+      remember(context, "writeToken", value.token);
+      remember(context, "writeTokenId", value.id);
+      remember(context, "writeTokenCreatedAt", value.createdAt);
+    },
+  },
+  {
+    name: "token list is newest first and omits secrets",
+    routeId: "listTokens",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/tokens`,
+    }),
+    verify(response, body, context) {
+      const step = "token list is newest first and omits secrets";
+      assertStatus(step, response, 200);
+      const tokens = array(record(body, step).tokens, step).map((value) => record(value, step));
+      assertEqual(step, tokens.length, 2, "tokens.length");
+      const expectedTokens = [
+        {
+          id: stringValue(context, "readTokenId", step),
+          label: "conformance-read",
+          scope: "read",
+          createdAt: stringValue(context, "readTokenCreatedAt", step),
+          revokedAt: null,
+          lastUsedAt: null,
+        },
+        {
+          id: stringValue(context, "writeTokenId", step),
+          label: "conformance-write",
+          scope: "write",
+          createdAt: stringValue(context, "writeTokenCreatedAt", step),
+          revokedAt: null,
+          lastUsedAt: null,
+        },
+      ].sort(
+        (left, right) =>
+          right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id),
+      );
+      assertJsonEqual(step, tokens, expectedTokens);
+      const serialized = JSON.stringify(body);
+      for (const token of tokens) {
+        if ("token" in token || "tokenHash" in token) {
+          traceFailure(step, "listed token exposed a secret or hash");
+        }
+      }
+      if (
+        serialized.includes(stringValue(context, "readToken", step)) ||
+        serialized.includes(stringValue(context, "writeToken", step))
+      ) {
+        traceFailure(step, "listed token exposed a minted secret");
+      }
+    },
+  },
+  errorStep(
+    "token creation rejects a missing stash",
+    "createToken",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash.slice(0, 50)}-missing/tokens`,
+      body: { scope: "read" },
+    }),
+    404,
+    "not-found",
+  ),
+  responseStep(
     "read token identity",
     "me",
     () => ({ method: "GET", path: "/v1/me", token: "read" }),
     200,
     (context) => ({ principal: "stash", stash: context.stash, scope: "read" }),
+  ),
+  responseStep(
+    "write token identity",
+    "me",
+    () => ({ method: "GET", path: "/v1/me", token: "write" }),
+    200,
+    (context) => ({ principal: "stash", stash: context.stash, scope: "write" }),
+  ),
+  responseStep(
+    "stash token may get its own stash",
+    "getStash",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({ name: context.stash }),
   ),
   errorStep(
     "stash token cannot reach admin setup",
@@ -272,6 +474,7 @@ const TRACE: readonly TraceStep[] = [
     (context) => ({
       method: "PUT",
       path: `/v1/stashes/${context.stash}/files/${path}`,
+      token: "write",
       body: {
         body: alpha,
         expectedVersion: null,
@@ -928,6 +1131,66 @@ const TRACE: readonly TraceStep[] = [
     400,
     "invalid-path",
   ),
+  errorStep(
+    "token revocation reports an unknown id",
+    "revokeToken",
+    (context) => ({
+      method: "DELETE",
+      path: `/v1/stashes/${context.stash}/tokens/tok_missing`,
+    }),
+    404,
+    "not-found",
+  ),
+  {
+    name: "token revocation returns an empty 204",
+    routeId: "revokeToken",
+    request: (context) => ({
+      method: "DELETE",
+      path: `/v1/stashes/${context.stash}/tokens/${stringValue(
+        context,
+        "readTokenId",
+        "token revocation returns an empty 204",
+      )}`,
+    }),
+    async verify(response) {
+      const step = "token revocation returns an empty 204";
+      assertStatus(step, response, 204);
+      assertEqual(step, await response.text(), "", "body");
+    },
+  },
+  errorStep(
+    "revoked token fails authentication",
+    "me",
+    () => ({ method: "GET", path: "/v1/me", token: "read" }),
+    401,
+    "unauthorized",
+  ),
+  {
+    name: "token list reports revocation without exposing secrets",
+    routeId: "listTokens",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/tokens`,
+    }),
+    verify(response, body, context) {
+      const step = "token list reports revocation without exposing secrets";
+      assertStatus(step, response, 200);
+      const tokens = array(record(body, step).tokens, step).map((value) => record(value, step));
+      const readId = stringValue(context, "readTokenId", step);
+      const read = tokens.find((token) => token.id === readId);
+      if (read === undefined) traceFailure(step, "revoked token is missing from the list");
+      if (typeof read.revokedAt !== "string") traceFailure(step, "revokedAt is not populated");
+      if (typeof read.lastUsedAt !== "string") traceFailure(step, "lastUsedAt is not populated");
+      const serialized = JSON.stringify(body);
+      if (
+        serialized.includes(stringValue(context, "readToken", step)) ||
+        serialized.includes(stringValue(context, "writeToken", step)) ||
+        serialized.includes("tokenHash")
+      ) {
+        traceFailure(step, "listed tokens exposed credential material");
+      }
+    },
+  },
 ];
 
 /** Stable, serializable trace metadata for coverage and documentation checks. */
@@ -947,6 +1210,10 @@ function foreignName(primary: string): string {
   return `${primary.slice(0, 50)}-foreign`;
 }
 
+function laterName(primary: string): string {
+  return `${primary.slice(0, 50)}-later`;
+}
+
 function tokenFor(
   context: TraceContext,
   token: TraceToken | undefined,
@@ -957,6 +1224,12 @@ function tokenFor(
     if (context.readToken === undefined)
       return traceFailure(step, "read token was not initialized");
     return context.readToken;
+  }
+  if (token === "write") {
+    if (context.writeToken === undefined) {
+      return traceFailure(step, "write token was not initialized");
+    }
+    return context.writeToken;
   }
   return context.adminToken;
 }
@@ -984,29 +1257,9 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
-async function mintReadToken(
-  context: TraceContext,
-  mintToken: ((stash: string, scope: TokenScope) => string | Promise<string>) | undefined,
-): Promise<string> {
-  if (mintToken !== undefined) return mintToken(context.stash, "read");
-  const response = await context.fetch(`${context.baseUrl}/v1/stashes/${context.stash}/tokens`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${context.adminToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ label: "conformance-read", scope: "read" }),
-  });
-  const body = await readBody(response);
-  assertStatus("mint read token setup", response, 201);
-  const token = record(body, "mint read token setup").token;
-  if (typeof token !== "string") return traceFailure("mint read token setup", "missing token");
-  return token;
-}
-
 /**
- * Runs the same consumer-facing trace against either the fake or a real Worker. A fake supplies
- * `mintToken`; a real Worker needs only the documented `{ adminToken }` options object.
+ * Runs the same consumer-facing trace against either the fake or a real Worker. Administrative
+ * setup and credential lifecycle checks go through the documented HTTP routes on both targets.
  */
 export async function runConformance(
   fetcher: StashFetch,
@@ -1020,12 +1273,12 @@ export async function runConformance(
     adminToken: options.adminToken,
     stash,
     foreignStash: foreignName(stash),
+    laterStash: laterName(stash),
     values: new Map(),
     exercised: new Set(),
   };
 
   for (let index = 0; index < TRACE.length; index += 1) {
-    if (index === 2) context.readToken = await mintReadToken(context, options.mintToken);
     const step = TRACE[index];
     if (step === undefined) return traceFailure("trace", `missing step ${index}`);
     const response = await send(context, step.request(context), step.name);
