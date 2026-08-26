@@ -111,7 +111,7 @@ async function mockDiffApi(page: Page): Promise<() => number> {
 }
 
 async function expectContainedHorizontalOverflow(page: Page): Promise<void> {
-  const pane = page.locator(".diff-table-pane");
+  const pane = page.locator(".zhs-diff-table-pane");
   await expect(pane).toBeVisible();
   await expect
     .poll(() => pane.evaluate((element) => element.scrollWidth > element.clientWidth))
@@ -149,10 +149,10 @@ test("@smoke diff view switches layout and display preferences without refetchin
   await expect(englishAdded).toHaveCount(1);
   await expect(cjkRemoved).toHaveCount(1);
   await expect(cjkAdded).toHaveCount(1);
-  await expect(cjkRemoved.locator(".sr-only").first()).toContainText("removed text:");
-  await expect(cjkRemoved.locator(".sr-only").last()).toHaveText("end of change");
-  await expect(cjkAdded.locator(".sr-only").first()).toContainText("added text:");
-  await expect(cjkAdded.locator(".sr-only").last()).toHaveText("end of change");
+  await expect(cjkRemoved.locator(".zhs-sr-only").first()).toContainText("removed text:");
+  await expect(cjkRemoved.locator(".zhs-sr-only").last()).toHaveText("end of change");
+  await expect(cjkAdded.locator(".zhs-sr-only").first()).toContainText("added text:");
+  await expect(cjkAdded.locator(".zhs-sr-only").last()).toHaveText("end of change");
 
   await page.getByRole("button", { name: "Split" }).click();
   const splitTable = page.getByRole("table", { name: "Split diff" });
@@ -172,7 +172,7 @@ test("@smoke diff view switches layout and display preferences without refetchin
   await expect(unstyledCjkAdded).toHaveCSS("text-decoration-line", "none");
 
   await page.getByRole("checkbox", { name: "Wrap" }).uncheck();
-  await expect(page.locator(".diff-table-pane")).toHaveAttribute("data-wrap", "off");
+  await expect(page.locator(".zhs-diff-table-pane")).toHaveAttribute("data-wrap", "off");
   await expectContainedHorizontalOverflow(page);
 
   await page.getByRole("button", { name: "Copy unified" }).click();

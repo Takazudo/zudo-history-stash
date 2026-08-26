@@ -5,6 +5,7 @@ export type AsyncState<T> =
   | { state: "ready"; value: T; error?: never; reload: () => void }
   | { state: "error"; value?: never; error: unknown; reload: () => void };
 
+/** Viewer-local request state for host pages that are not part of the UI package. */
 export function useAsync<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   deps: DependencyList,
@@ -18,7 +19,6 @@ export function useAsync<T>(
   useEffect(() => {
     const controller = new AbortController();
     setResult({ state: "loading" });
-
     void Promise.resolve()
       .then(() => fnRef.current(controller.signal))
       .then(
@@ -29,7 +29,6 @@ export function useAsync<T>(
           if (!controller.signal.aborted) setResult({ state: "error", error });
         },
       );
-
     return () => controller.abort();
     // This hook deliberately follows the caller-provided dependency list, like useEffect.
   }, [reloadVersion, ...deps]);

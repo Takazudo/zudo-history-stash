@@ -1,0 +1,118 @@
+@layer zhs-components {
+  .zhs-kind-badge {
+    display: inline-flex;
+    inline-size: fit-content;
+    align-items: center;
+    gap: var(--hsp-xs);
+    padding-block: var(--vsp-xs);
+    padding-inline: var(--hsp-xs);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: 680;
+    line-height: var(--line-tight);
+    white-space: nowrap;
+  }
+
+  .zhs-kind-badge--put {
+    background: var(--theme-diff-add-bg);
+    color: var(--theme-diff-add-fg);
+  }
+
+  .zhs-kind-badge--delete {
+    background: var(--theme-diff-remove-bg);
+    color: var(--theme-diff-remove-fg);
+  }
+
+  .zhs-kind-badge--rollback {
+    background: var(--theme-warning-soft);
+    color: var(--theme-ink);
+  }
+
+  .zhs-kind-badge__icon {
+    inline-size: var(--text-xs);
+    block-size: var(--text-xs);
+    flex: 0 0 auto;
+  }
+
+  .zhs-bytes,
+  .zhs-change-row__version {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .zhs-load-more {
+    display: flex;
+    justify-content: center;
+  }
+
+  .zhs-path-cell,
+  .zhs-change-row__path {
+    min-inline-size: 0;
+    overflow-wrap: break-word;
+  }
+
+  .zhs-path-cell {
+    font-family: var(--font-family-mono);
+    line-height: var(--line-code);
+  }
+
+  .zhs-change-row {
+    display: grid;
+    min-inline-size: 0;
+    gap: var(--vsp-sm);
+    padding-block: var(--vsp-md);
+    padding-inline: var(--hsp-md);
+    border-block-end: var(--border-hairline) solid var(--theme-border);
+  }
+
+  .zhs-change-row:last-child {
+    border-block-end: 0;
+  }
+
+  .zhs-change-row__summary,
+  .zhs-change-row__meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--hsp-sm);
+  }
+
+  .zhs-change-row__summary .zhs-relative-time {
+    margin-inline-start: auto;
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+  }
+
+  .zhs-change-row__path {
+    font-family: var(--font-family-mono);
+    font-size: var(--text-xs);
+    line-height: var(--line-code);
+  }
+
+  .zhs-change-row__stash {
+    font-family: var(--font-sans);
+    font-weight: 680;
+  }
+
+  .zhs-change-row__meta,
+  .zhs-change-row__message {
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+  }
+
+  .zhs-change-row__message,
+  .zhs-error-banner p {
+    margin: 0;
+  }
+
+  .zhs-change-row__message {
+    overflow-wrap: break-word;
+  }
+
+  .zhs-error-banner {
+    color: var(--theme-error);
+  }
+
+  .zhs-error-banner .zhs-button {
+    justify-self: start;
+  }
+}

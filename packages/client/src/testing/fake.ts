@@ -2,6 +2,7 @@ import {
   BODY_LIMIT_BYTES,
   ChangesQuery,
   CreateStashBody,
+  CreateTokenBody,
   DeleteFileBody,
   DiffCandidateBody,
   DiffQuery,
@@ -9,6 +10,7 @@ import {
   HistoryQuery,
   IDEMPOTENCY_KEY_MAX_CHARS,
   ListFilesQuery,
+  ListQuery,
   MAX_BODY_BYTES,
   PutFileBody,
   ROUTES,
@@ -48,11 +50,17 @@ import type {
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 const MAX_DIFF_CONTEXT = 10;
+const LAST_USED_INTERVAL_MS = 60_000;
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
 
 const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "me",
+  "listStashes",
   "createStash",
+  "getStash",
+  "createToken",
+  "listTokens",
+  "revokeToken",
   "listFiles",
   "getFile",
   "putFile",
@@ -71,6 +79,7 @@ interface MatchedRoute {
   routeId: RouteId;
   stash?: string;
   path?: string;
+  tokenId?: string;
 }
 
 class FakeHttpError extends Error {
@@ -128,9 +137,32 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   const { pathname } = new URL(request.url);
   const method = request.method.toUpperCase();
   if (method === "GET" && pathname === "/v1/me") return { routeId: "me" };
+  if (method === "GET" && pathname === "/v1/stashes") return { routeId: "listStashes" };
   if (method === "POST" && pathname === "/v1/stashes") return { routeId: "createStash" };
 
-  let match = /^\/v1\/stashes\/([^/]+)\/files$/.exec(pathname);
+  let match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)$/.exec(pathname);
+  if (method === "DELETE" && match?.[1] !== undefined && match[2] !== undefined) {
+    return {
+      routeId: "revokeToken",
+      stash: decode(match[1]),
+      tokenId: decode(match[2]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/tokens$/.exec(pathname);
+  if ((method === "GET" || method === "POST") && match?.[1] !== undefined) {
+    return {
+      routeId: method === "GET" ? "listTokens" : "createToken",
+      stash: decode(match[1]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && match?.[1] !== undefined) {
+    return { routeId: "getStash", stash: decode(match[1]) };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/files$/.exec(pathname);
   if (method === "GET" && match?.[1] !== undefined) {
     return { routeId: "listFiles", stash: decode(match[1]) };
   }
@@ -316,6 +348,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return row;
   };
 
+  const requireAdminStash = (stash: string): FakeStashRow => {
+    const validation = validateStashName(stash);
+    if (!validation.ok) return fail("validation", validation.message);
+    return requireStash(stash);
+  };
+
   const stashRecord = (row: FakeStashRow) => {
     const files = [...(state.files.get(row.name)?.values() ?? [])];
     const versions = state.versions.filter((version) => version.stash === row.name);
@@ -351,15 +389,49 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return row;
   };
 
-  const authenticate = (request: Request): Principal => {
+  const mintStoredToken = async (
+    stash: string,
+    scope: TokenScope,
+    label: string,
+  ): Promise<{ row: FakeTokenRow; token: string }> => {
+    requireAdminStash(stash);
+    const serial = nextToken;
+    nextToken += 1;
+    const tokenSerial = serial.toString(36).padStart(43, "0");
+    const idSerial = serial.toString(16).padStart(32, "0");
+    const token = `zhs_${tokenSerial}`;
+    const createdAt = now();
+    const row: FakeTokenRow = {
+      id: `tok_${idSerial}`,
+      tokenHash: (await sha256Hex(token)).slice("sha256-".length),
+      stash,
+      label,
+      scope,
+      createdAt,
+      revokedAt: null,
+      lastUsedAt: null,
+    };
+    state.tokens.set(row.id, row);
+    return { row, token };
+  };
+
+  const authenticate = async (request: Request): Promise<Principal> => {
     const authorization = request.headers.get("Authorization");
     const match = authorization === null ? null : /^Bearer ([^\s,]+)$/.exec(authorization);
     const token = match?.[1];
     if (token === undefined) return fail("unauthorized", "A valid bearer token is required.");
     if (token === adminToken) return { kind: "admin" };
-    const row = state.tokens.get(token);
-    if (row === undefined || !token.startsWith("zhs_")) {
+    if (!token.startsWith("zhs_")) {
       return fail("unauthorized", "A valid bearer token is required.");
+    }
+    const tokenHash = (await sha256Hex(token)).slice("sha256-".length);
+    const row = [...state.tokens.values()].find(
+      (candidate) => candidate.tokenHash === tokenHash && candidate.revokedAt === null,
+    );
+    if (row === undefined) return fail("unauthorized", "A valid bearer token is required.");
+    const usedAt = now();
+    if (row.lastUsedAt === null || row.lastUsedAt <= usedAt - LAST_USED_INTERVAL_MS) {
+      row.lastUsedAt = usedAt;
     }
     return { kind: "stash", stash: row.stash, tokenId: row.id, scope: row.scope };
   };
@@ -498,6 +570,71 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       parsed.data.meta ?? {},
     );
     return json(stashRecord(row), 201);
+  };
+
+  const handleListStashes = (url: URL): Response => {
+    const parsed = ListQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid stash list query.");
+    const candidates = [...state.stashes.values()]
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      .filter((row) => parsed.data.after === undefined || row.name > parsed.data.after);
+    const hasMore = candidates.length > parsed.data.limit;
+    const page = candidates.slice(0, parsed.data.limit);
+    return json({
+      stashes: page.map((row) => {
+        const { meta: _meta, ...summary } = stashRecord(row);
+        return summary;
+      }),
+      nextAfter: hasMore ? (page.at(-1)?.name ?? null) : null,
+    });
+  };
+
+  const handleGetStash = (stash: string): Response => json(stashRecord(requireAdminStash(stash)));
+
+  const handleCreateToken = async (request: Request, stash: string): Promise<Response> => {
+    const parsed = CreateTokenBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid token input.");
+    const { row, token } = await mintStoredToken(stash, parsed.data.scope, parsed.data.label ?? "");
+    return json(
+      {
+        id: row.id,
+        token,
+        label: row.label,
+        scope: row.scope,
+        createdAt: iso(row.createdAt),
+      },
+      201,
+    );
+  };
+
+  const handleListTokens = (stash: string): Response => {
+    requireAdminStash(stash);
+    const tokens = [...state.tokens.values()]
+      .filter((row) => row.stash === stash)
+      .sort(
+        (left, right) =>
+          right.createdAt - left.createdAt ||
+          (left.id < right.id ? 1 : left.id > right.id ? -1 : 0),
+      )
+      .map((row) => ({
+        id: row.id,
+        label: row.label,
+        scope: row.scope,
+        createdAt: iso(row.createdAt),
+        revokedAt: row.revokedAt === null ? null : iso(row.revokedAt),
+        lastUsedAt: row.lastUsedAt === null ? null : iso(row.lastUsedAt),
+      }));
+    return json({ tokens });
+  };
+
+  const handleRevokeToken = (stash: string, id: string): Response => {
+    const name = requireAdminStash(stash).name;
+    const row = state.tokens.get(id);
+    if (row === undefined || row.stash !== name) {
+      return fail("not-found", "The requested resource was not found.");
+    }
+    row.revokedAt = now();
+    return new Response(null, { status: 204 });
   };
 
   const handleListFiles = (stash: string, url: URL): Response => {
@@ -902,7 +1039,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     try {
       const match = routeMatch(request);
       if (match === undefined || !SUPPORTED_ROUTE_IDS.has(match.routeId)) return unsupported();
-      const principal = authenticate(request);
+      const principal = await authenticate(request);
       authorize(principal, match);
       const url = new URL(request.url);
       const stash = match.stash;
@@ -919,8 +1056,18 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
                   scope: principal.scope,
                 },
           );
+        case "listStashes":
+          return handleListStashes(url);
         case "createStash":
           return await handleCreateStash(request);
+        case "getStash":
+          return handleGetStash(stash ?? "");
+        case "createToken":
+          return await handleCreateToken(request, stash ?? "");
+        case "listTokens":
+          return handleListTokens(stash ?? "");
+        case "revokeToken":
+          return handleRevokeToken(stash ?? "", match.tokenId ?? "");
         case "listFiles":
           return handleListFiles(stash ?? "", url);
         case "getFile":
@@ -954,23 +1101,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     createStash(name) {
       return createStashRow(name).name;
     },
-    mintToken(stash, scope) {
-      requireStash(stash);
+    async mintToken(stash, scope) {
       if (scope !== "read" && scope !== "write") {
         throw new TypeError("scope must be read or write");
       }
-      const tokenSerial = nextToken.toString(36).padStart(43, "0");
-      const idSerial = nextToken.toString(16).padStart(32, "0");
-      const row: FakeTokenRow = {
-        id: `tok_${idSerial}`,
-        token: `zhs_${tokenSerial}`,
-        stash,
-        scope,
-        createdAt: now(),
-      };
-      nextToken += 1;
-      state.tokens.set(row.token, row);
-      return row.token;
+      return (await mintStoredToken(stash, scope, "")).token;
     },
     reset() {
       state.stashes.clear();

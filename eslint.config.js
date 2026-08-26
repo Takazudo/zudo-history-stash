@@ -50,7 +50,7 @@ export default [
     },
   },
   {
-    files: ["workers/viewer/**/*.{tsx,jsx}"],
+    files: ["workers/viewer/**/*.{tsx,jsx}", "packages/ui/**/*.{tsx,jsx}"],
     plugins: {
       react,
       "react-hooks": reactHooks,

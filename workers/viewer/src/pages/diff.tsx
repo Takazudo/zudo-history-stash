@@ -1,15 +1,18 @@
 import type { GetDiffResult, GetHistoryResult, VersionRecord } from "@takazudo/zudo-history-stash";
 import { buildDiffModel } from "@takazudo/zudo-history-stash-core";
+import {
+  DiffControls,
+  DiffPane,
+  KindBadge,
+  useDiffViewPreferences,
+} from "@takazudo/zudo-history-stash-ui";
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { Button } from "../app/shell/button.js";
 import { Page } from "../app/shell/page.js";
-import { DiffControls } from "../components/diff-controls.js";
-import { DiffPane } from "../components/diff-pane.js";
-import { ErrorBanner, KindBadge, clientValue } from "../components/index.js";
+import { ErrorBanner, clientValue } from "../components/error-banner.js";
 import { useAsync } from "../hooks/use-async.js";
-import { useDiffViewPreferences } from "../hooks/use-diff-view-preferences.js";
 
 const CONTEXT_VALUES = [0, 3, 10] as const;
 

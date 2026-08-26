@@ -119,9 +119,35 @@ describe("StashPage", () => {
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Include deleted" }));
     const deletedLink = await within(filesRegion).findByRole("link", { name: deleted.path });
-    expect(deletedLink.closest("td")?.className).toContain("list-path-cell");
+    expect(deletedLink.closest("td")?.className).toContain("zhs-path-cell");
     expect(screen.getByText("deleted")).toBeTruthy();
     expect(list).toHaveBeenCalledWith({ includeDeleted: true });
     expect(within(filesRegion).queryByRole("link", { name: "folder/a.txt" })).toBeNull();
+  });
+
+  it("shows New file and Tokens entry points to an admin", async () => {
+    renderViewerRoute("/s/notes", createFakeViewerClient());
+
+    expect((await screen.findByRole("link", { name: "New file" })).getAttribute("href")).toBe(
+      "/s/notes/new",
+    );
+    expect(screen.getByRole("link", { name: "Tokens" }).getAttribute("href")).toBe(
+      "/s/notes/tokens",
+    );
+  });
+
+  it("shows only New file to a matching write principal", async () => {
+    const client = createFakeViewerClient({
+      me: async () => ({
+        ok: true,
+        value: { principal: "stash", stash: "notes", tokenId: "tok_write", scope: "write" },
+      }),
+    });
+    renderViewerRoute("/s/notes", client);
+
+    expect((await screen.findByRole("link", { name: "New file" })).getAttribute("href")).toBe(
+      "/s/notes/new",
+    );
+    expect(screen.queryByRole("link", { name: "Tokens" })).toBeNull();
   });
 });

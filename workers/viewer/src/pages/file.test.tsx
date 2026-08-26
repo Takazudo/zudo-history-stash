@@ -10,7 +10,7 @@ import type {
   StashFilesClient,
   VersionRecord,
 } from "@takazudo/zudo-history-stash";
-import { createMemoryRouter, Outlet, RouterProvider } from "react-router-dom";
+import { createMemoryRouter, type InitialEntry, Outlet, RouterProvider } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import {
   StashClientProvider,
@@ -19,6 +19,7 @@ import {
 } from "../app/auth/stash-client-provider.js";
 import { RequireToken } from "../app/auth/require-token.js";
 import { TOKEN_STORAGE_KEY } from "../app/auth/token-store.js";
+import { ViewerStashUiProvider } from "../app/viewer-stash-ui-provider.js";
 import { createFakeViewerClient } from "../test/fake-viewer-client.js";
 import FilePage from "./file.js";
 
@@ -103,7 +104,7 @@ function clientWithFiles(overrides: Partial<StashFilesClient> = {}): ViewerStash
   });
 }
 
-function renderFileRoute(initialEntry: string, client: ViewerStashClient) {
+function renderFileRoute(initialEntry: InitialEntry, client: ViewerStashClient) {
   sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_test");
   const clientFactory: ViewerStashClientFactory = () => client;
   const router = createMemoryRouter(
@@ -119,7 +120,9 @@ function renderFileRoute(initialEntry: string, client: ViewerStashClient) {
           {
             element: (
               <RequireToken>
-                <Outlet />
+                <ViewerStashUiProvider>
+                  <Outlet />
+                </ViewerStashUiProvider>
               </RequireToken>
             ),
             children: [
@@ -175,6 +178,10 @@ describe("FilePage", () => {
     expect(body.getAttribute("data-wrap-long-lines")).toBe("false");
     expect(screen.getByText("No versions have been recorded for this file.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Compare" }).hasAttribute("disabled")).toBe(true);
+    expect((await screen.findByRole("link", { name: "Edit" })).getAttribute("href")).toBe(
+      "/s/notes/edit/docs/readme.txt",
+    );
+    expect(screen.getByRole("button", { name: "Delete…" })).toBeTruthy();
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Wrap long lines" }));
     expect(body.getAttribute("data-wrap-long-lines")).toBe("true");
@@ -192,6 +199,26 @@ describe("FilePage", () => {
     expect(writeText).toHaveBeenCalledWith("sha256-1234567890abcdef");
     expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
   });
+
+  it.each(["Saved v5.", "No write was needed; the file already matches v4."])(
+    "renders and consumes the edit destination flash: %s",
+    async (flash) => {
+      const { router } = renderFileRoute(
+        { pathname: "/s/notes/f/docs/readme.txt", state: { flash } },
+        clientWithFiles(),
+      );
+
+      const confirmation = await screen.findByRole("status", { name: "Save confirmation" });
+      expect(confirmation.textContent).toContain(flash);
+      await waitFor(() => expect(router.state.location.state).toBeNull());
+      expect(screen.getByRole("status", { name: "Save confirmation" }).textContent).toContain(
+        flash,
+      );
+
+      await userEvent.click(within(confirmation).getByRole("button", { name: "Dismiss" }));
+      expect(screen.queryByRole("status", { name: "Save confirmation" })).toBeNull();
+    },
+  );
 
   it("shows request errors with a retry action", async () => {
     renderFileRoute(
@@ -277,6 +304,7 @@ describe("FilePage", () => {
     expect(
       screen.getByRole("link", { name: "View last live version v3" }).getAttribute("href"),
     ).toBe("/s/notes/f/docs/readme.txt?version=3");
+    expect(await screen.findByRole("button", { name: "Restore v3…" })).toBeTruthy();
     expect(get).toHaveBeenNthCalledWith(1, "docs/readme.txt");
     expect(get).toHaveBeenNthCalledWith(2, "docs/readme.txt", { version: 4 });
   });
@@ -312,6 +340,9 @@ describe("FilePage", () => {
     expect(screen.getByRole("link", { name: "Return to head" }).getAttribute("href")).toBe(
       "/s/notes/f/docs/readme.txt",
     );
+    expect(
+      (await screen.findByRole("link", { name: "Edit from this version" })).getAttribute("href"),
+    ).toBe("/s/notes/edit/docs/readme.txt?from=2");
     expect(screen.getByText("→ v2")).toBeTruthy();
 
     const versionThree = document.querySelector('[data-history-version="3"]');
@@ -323,13 +354,20 @@ describe("FilePage", () => {
     expect(row.getByRole("link", { name: "Diff vs head" }).getAttribute("href")).toBe(
       "/s/notes/diff/docs/readme.txt?from=3&to=head",
     );
+    await waitFor(() =>
+      expect(row.getByRole("link", { name: "Edit from v3" }).getAttribute("href")).toBe(
+        "/s/notes/edit/docs/readme.txt?from=3",
+      ),
+    );
     const rollback = row.getByRole("button", { name: "Rollback to v3" });
-    expect(rollback.hasAttribute("disabled")).toBe(false);
-    expect(rollback.getAttribute("title")).toBeNull();
+    await waitFor(() => {
+      expect(rollback.hasAttribute("disabled")).toBe(false);
+      expect(rollback.getAttribute("title")).toBeNull();
+    });
 
     await userEvent.click(screen.getByRole("radio", { name: "Use v2 as from version" }));
     await userEvent.click(screen.getByRole("radio", { name: "Use v3 as to version" }));
-    await userEvent.click(screen.getByRole("button", { name: "Compare" }));
+    await userEvent.click(screen.getByRole("link", { name: "Compare" }));
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/s/notes/diff/docs/readme.txt"),
     );
@@ -361,15 +399,65 @@ describe("FilePage", () => {
         createdAt: "2026-08-25T10:00:00.000Z",
       },
     }));
-    renderFileRoute("/s/notes/f/docs/readme.txt", clientWithFiles({ get, rollback }));
+    const { router } = renderFileRoute(
+      "/s/notes/f/docs/readme.txt",
+      clientWithFiles({ get, rollback }),
+    );
 
     expect(await screen.findByText("current body")).toBeTruthy();
+    expect(router.state.historyAction).toBe("POP");
     await userEvent.click(screen.getByRole("button", { name: "Rollback to v2" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Confirm rollback" }));
+    const confirm = await screen.findByRole("button", { name: "Confirm rollback" });
+    const callsBeforeRollback = get.mock.calls.length;
+    await userEvent.click(confirm);
 
     expect(await screen.findByText("rolled back body")).toBeTruthy();
     expect(screen.getByText("Rollback complete. Created v5 as rollback to v2.")).toBeTruthy();
-    expect(get).toHaveBeenCalledTimes(3);
+    expect(get).toHaveBeenCalledTimes(callsBeforeRollback + 1);
+    expect(router.state.location.pathname).toBe("/s/notes/f/docs/readme.txt");
+    expect(router.state.location.search).toBe("");
+    expect(router.state.historyAction).toBe("POP");
+  });
+
+  it("replaces a historical URL with the head after a successful rollback", async () => {
+    const get = vi.fn(async (_path: string, options): Promise<FileGetResult> => ({
+      ok: true,
+      value:
+        options?.version === 2
+          ? fileRecord({ version: 2, hash: "sha256-2", body: "historical body" })
+          : fileRecord({
+              version: 5,
+              hash: "sha256-2",
+              body: "rolled back head",
+              kind: "rollback",
+            }),
+    }));
+    const rollback = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        version: 5,
+        hash: "sha256-2",
+        rollbackOf: 2,
+        identicalToHead: false,
+        changeId: 9,
+        createdAt: "2026-08-25T10:00:00.000Z",
+      },
+    }));
+    const { router } = renderFileRoute(
+      "/s/notes/f/docs/readme.txt?version=2",
+      clientWithFiles({ get, rollback }),
+    );
+
+    expect(await screen.findByText("historical body")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Rollback to v2" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm rollback" }));
+
+    expect(await screen.findByText("rolled back head")).toBeTruthy();
+    expect(router.state.location.pathname).toBe("/s/notes/f/docs/readme.txt");
+    expect(router.state.location.search).toBe("");
+    expect(router.state.historyAction).toBe("REPLACE");
+    expect(get).toHaveBeenCalledWith("docs/readme.txt", { version: 2 });
+    expect(get).toHaveBeenCalledWith("docs/readme.txt");
   });
 
   it("appends history pages newest-first without duplicate versions", async () => {
@@ -397,7 +485,74 @@ describe("FilePage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(document.querySelector('[data-history-version="1"]')).toBeTruthy());
     expect(document.querySelectorAll('[data-history-version="2"]')).toHaveLength(1);
-    expect(history).toHaveBeenNthCalledWith(1, "docs/readme.txt");
+    expect(history).toHaveBeenNthCalledWith(1, "docs/readme.txt", undefined);
+    expect(history).toHaveBeenNthCalledWith(2, "docs/readme.txt", { before: 2 });
+  });
+
+  it("keeps a confirmed rollback when a later history page resolves", async () => {
+    const history = vi.fn(async (_path: string, options): Promise<ClientResult<HistoryPage>> => {
+      if (options?.before === 2) {
+        return {
+          ok: true,
+          value: historyPage({
+            headVersion: 5,
+            total: 5,
+            versions: [
+              version({
+                version: 5,
+                kind: "rollback",
+                rollbackOf: 2,
+                hash: "sha256-2",
+                author: "Server",
+                message: "Server-confirmed rollback",
+              }),
+              version({ version: 2 }),
+              version({ version: 1 }),
+            ],
+            nextBefore: null,
+          }),
+        };
+      }
+      return {
+        ok: true,
+        value: historyPage({
+          versions: [version({ version: 4 }), version({ version: 3 }), version({ version: 2 })],
+          nextBefore: 2,
+        }),
+      };
+    });
+    const rollback = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        version: 5,
+        hash: "sha256-2",
+        rollbackOf: 2,
+        identicalToHead: false,
+        changeId: 9,
+        createdAt: "2026-08-25T10:00:00.000Z",
+      },
+    }));
+    renderFileRoute("/s/notes/f/docs/readme.txt", clientWithFiles({ history, rollback }));
+
+    await screen.findByRole("button", { name: "Load more" });
+    await userEvent.click(screen.getByRole("button", { name: "Rollback to v2" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Confirm rollback" }));
+    const toast = await screen.findByText("Rollback complete. Created v5 as rollback to v2.");
+
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(document.querySelector('[data-history-version="1"]')).toBeTruthy());
+
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-history-version]")];
+    expect(rows.map((row) => Number(row.dataset.historyVersion))).toEqual([5, 4, 3, 2, 1]);
+    expect(document.querySelectorAll('[data-history-version="5"]')).toHaveLength(1);
+    expect(within(rows[0] as HTMLElement).getByText("Server-confirmed rollback")).toBeTruthy();
+    expect(within(rows[0] as HTMLElement).getByText("Server")).toBeTruthy();
+    expect(toast.isConnected).toBe(true);
+    expect(screen.getByText("5 versions, newest first.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Compare" }).getAttribute("href")).toBe(
+      "/s/notes/diff/docs/readme.txt?from=2&to=5",
+    );
+    expect(history).toHaveBeenNthCalledWith(1, "docs/readme.txt", undefined);
     expect(history).toHaveBeenNthCalledWith(2, "docs/readme.txt", { before: 2 });
   });
 

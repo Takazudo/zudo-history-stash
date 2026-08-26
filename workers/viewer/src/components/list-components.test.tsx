@@ -2,13 +2,22 @@ import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { StashHttpError } from "@takazudo/zudo-history-stash";
-import { Bytes, ChangeRow, KindBadge, PathCell, RelativeTime, stashErrorMessage } from "./index.js";
-import { change } from "../test/fake-viewer-client.js";
+import {
+  Bytes,
+  ChangeRow,
+  KindBadge,
+  PathCell,
+  RelativeTime,
+  StashUiProvider,
+} from "@takazudo/zudo-history-stash-ui";
+import { ViewerAnchor, viewerHrefFor } from "../app/viewer-stash-ui-provider.js";
+import { change, createFakeViewerClient } from "../test/fake-viewer-client.js";
+import { stashErrorMessage } from "./error-banner.js";
 
 describe("shared list components", () => {
-  it("renders kind with a glyph, text, and rollback target", () => {
-    render(<KindBadge kind="rollback" rollbackOf={3} />);
-    expect(screen.getByText("↩")).toBeTruthy();
+  it("renders kind with a sized icon, text, and rollback target", () => {
+    const rendered = render(<KindBadge kind="rollback" rollbackOf={3} />);
+    expect(rendered.container.querySelector(".zhs-kind-badge__icon")).toBeTruthy();
     expect(screen.getByText("rollback")).toBeTruthy();
     expect(screen.getByText("→ v3")).toBeTruthy();
   });
@@ -29,16 +38,25 @@ describe("shared list components", () => {
   it("links paths and change rows to the stable viewer URLs", () => {
     render(
       <MemoryRouter>
-        <table>
-          <tbody>
-            <tr>
-              <PathCell path="docs/readme.txt" to="/s/notes/f/docs/readme.txt" />
-            </tr>
-          </tbody>
-        </table>
-        <ul>
-          <ChangeRow change={change()} showStash />
-        </ul>
+        <StashUiProvider
+          Anchor={ViewerAnchor}
+          client={createFakeViewerClient()}
+          hrefFor={viewerHrefFor}
+        >
+          <table>
+            <tbody>
+              <tr>
+                <PathCell
+                  path="docs/readme.txt"
+                  route={{ kind: "file", stash: "notes", path: "docs/readme.txt" }}
+                />
+              </tr>
+            </tbody>
+          </table>
+          <ul>
+            <ChangeRow change={change()} showStash />
+          </ul>
+        </StashUiProvider>
       </MemoryRouter>,
     );
 

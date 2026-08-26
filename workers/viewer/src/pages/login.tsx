@@ -3,10 +3,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { defaultPathForPrincipal, isSafeNext } from "../app/safe-next.js";
 import { Button } from "../app/shell/button.js";
-import { stashErrorMessage } from "../components/index.js";
+import { stashErrorMessage } from "../components/error-banner.js";
 
 export default function LoginPage() {
-  const { authenticate } = useStashClient();
+  const { authenticate, credentialBoundaryWarning } = useStashClient();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [token, setToken] = useState("");
@@ -48,6 +48,11 @@ export default function LoginPage() {
         <p className="login-card__intro">
           Paste a token to browse the stashes and files available to that principal.
         </p>
+        {credentialBoundaryWarning ? (
+          <p className="form-error" role="alert">
+            {credentialBoundaryWarning}
+          </p>
+        ) : null}
         <form onSubmit={handleSubmit}>
           <div className="form-field">
             <label className="form-field__label" htmlFor="access-token">

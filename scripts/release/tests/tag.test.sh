@@ -6,6 +6,7 @@ repo_root=$(cd "$test_dir/../../.." && pwd)
 shim_dir="$test_dir/shims"
 temp_dir=$(mktemp -d)
 trap 'rm -rf "$temp_dir"' EXIT
+command_root=$repo_root
 
 assert_contains() {
   local output=$1
@@ -33,7 +34,7 @@ run_tag() {
     RELEASE_SHIM_LOG="$temp_dir/invocations" \
     RELEASE_SHIM_STATE_DIR="$temp_dir/state" \
     "$@" \
-    bash "$repo_root/scripts/release.sh" tag --dry-run --branch base/sweep-260826-release 2>&1)
+    bash "$command_root/scripts/release.sh" tag --dry-run --branch base/sweep-260826-release 2>&1)
   actual_status=$?
   set -e
   if [[ "$actual_status" != "$expected_status" ]]; then
@@ -62,6 +63,22 @@ run_tag 1 'already exists on origin' GIT_REMOTE_TAG=1
 run_tag 1 "concluded 'failure', not success" GH_SCENARIO=failure
 run_tag 1 'No successful CI run became available' GH_SCENARIO=no_run
 run_tag 1 'Unable to query CI runs' GH_SCENARIO=query_error
+
+mismatch_dir="$temp_dir/ui-mismatch"
+rsync -a --exclude='.git' --exclude='node_modules' --exclude='.wrangler' \
+  --exclude='dist' "$repo_root/" "$mismatch_dir/"
+node -e '
+const fs = require("node:fs");
+const path = process.argv[1];
+const source = fs.readFileSync(path, "utf8");
+fs.writeFileSync(path, source.replace(
+  /export const VERSION = "0\.0\.0";/u,
+  "export const VERSION = \"9.9.9\";",
+));
+' "$mismatch_dir/packages/ui/src/index.ts"
+command_root=$mismatch_dir
+run_tag 1 'Version mismatch: packages/ui/src/index.ts=9.9.9; expected 0.0.0.'
+command_root=$repo_root
 
 # The CI bypass is accepted only in test mode and still performs every other
 # precondition.
