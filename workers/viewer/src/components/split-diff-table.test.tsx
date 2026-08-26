@@ -84,14 +84,24 @@ describe("SplitDiffTable", () => {
       .getAllByRole("columnheader")
       .filter((header) => header.getAttribute("scope") === "col");
     expect(columnHeaders.map((header) => header.textContent)).toEqual([
-      "Old line",
-      "Old change",
-      "Old text",
+      "Line",
+      "Δ",
+      "Text",
       "Divider",
-      "New line",
-      "New change",
-      "New text",
+      "Line",
+      "Δ",
+      "Text",
     ]);
+    expect(
+      ["Old line", "Old change", "Old text", "New line", "New change", "New text"].map(
+        (name) => within(table).getByRole("columnheader", { name }).textContent,
+      ),
+    ).toEqual(["Line", "Δ", "Text", "Line", "Δ", "Text"]);
+    expect(
+      columnHeaders
+        .filter((header) => header.textContent !== "Divider")
+        .every((header) => header.classList.contains("diff-table__column-heading")),
+    ).toBe(true);
     expect(within(table).getByText("v2")).toBeTruthy();
     expect(within(table).getByText("v5")).toBeTruthy();
 

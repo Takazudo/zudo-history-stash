@@ -260,15 +260,43 @@ export function SplitDiffTable({ rows, fromLabel, toLabel }: SplitDiffTableProps
       </colgroup>
       <thead>
         <tr>
-          <th scope="col">Old line</th>
-          <th scope="col">Old change</th>
-          <th scope="col">Old text</th>
+          <th
+            aria-label="Old line"
+            className="diff-table__column-heading diff-table__column-heading--line"
+            scope="col"
+          >
+            Line
+          </th>
+          <th
+            aria-label="Old change"
+            className="diff-table__column-heading diff-table__column-heading--sign"
+            scope="col"
+          >
+            Δ
+          </th>
+          <th aria-label="Old text" className="diff-table__column-heading" scope="col">
+            Text
+          </th>
           <th className="diff-table__divider" scope="col">
             <span className="sr-only">Divider</span>
           </th>
-          <th scope="col">New line</th>
-          <th scope="col">New change</th>
-          <th scope="col">New text</th>
+          <th
+            aria-label="New line"
+            className="diff-table__column-heading diff-table__column-heading--line"
+            scope="col"
+          >
+            Line
+          </th>
+          <th
+            aria-label="New change"
+            className="diff-table__column-heading diff-table__column-heading--sign"
+            scope="col"
+          >
+            Δ
+          </th>
+          <th aria-label="New text" className="diff-table__column-heading" scope="col">
+            Text
+          </th>
         </tr>
       </thead>
       <tbody>

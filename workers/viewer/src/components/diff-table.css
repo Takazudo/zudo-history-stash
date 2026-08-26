@@ -268,6 +268,21 @@
   text-align: left;
 }
 
+.diff-table--split .diff-table__column-heading {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.diff-table--split .diff-table__column-heading--line {
+  padding-inline: 0;
+  text-align: right;
+}
+
+.diff-table--split .diff-table__column-heading--sign {
+  padding-inline: 0;
+  text-align: center;
+}
+
 .diff-table__caption {
   padding-block: var(--vsp-xs);
   padding-inline: var(--hsp-xs);
