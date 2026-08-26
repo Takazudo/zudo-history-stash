@@ -263,6 +263,20 @@ async function readFile(
   return result.value;
 }
 
+async function readStoredSource(
+  files: StashFilesClient,
+  path: string,
+  version: number,
+): Promise<FileRecord | null> {
+  const result = await files.get(path, { version });
+  if (!result.ok) {
+    if (result.error.code === "version-not-found") return null;
+    throw result;
+  }
+  if ("notModified" in result) throw new Error("The stored source representation was not returned");
+  return result.value;
+}
+
 async function readHead(files: StashFilesClient, path: string): Promise<FileRecord> {
   const result = await files.get(path);
   if (result.ok) {
@@ -474,7 +488,7 @@ export function useWorkbench({ stash, path, initialSource }: UseWorkbenchOptions
       requestedSource === undefined
         ? Promise.resolve(null)
         : initialSource === undefined
-          ? readFile(files, path, requestedSource).catch(() => null)
+          ? readStoredSource(files, path, requestedSource)
           : readFile(files, path, requestedSource);
 
     void Promise.all([headRequest, historyRequest, sourceRequest])

@@ -405,6 +405,38 @@ describe("useWorkbench", () => {
     expect(explicit.result.current.source).toBeNull();
   });
 
+  it("surfaces a transient stored-source failure without deleting the draft", async () => {
+    const fixture = await fixtureWith(undefined, (fakeFetch) => async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (
+        request.method === "GET" &&
+        url.pathname.endsWith(`/files/${PATH}`) &&
+        url.searchParams.get("version") === "1"
+      ) {
+        throw new TypeError("temporary network failure");
+      }
+      return fakeFetch(input, init);
+    });
+    const key = workbenchDraftKey(STASH, PATH);
+    const serialized = JSON.stringify({
+      sourceVersion: 1,
+      fenceVersion: 2,
+      text: "unsaved draft\n",
+      lineEnding: "lf",
+      savedAt: Date.now(),
+    });
+    sessionStorage.setItem(key, serialized);
+    const rendered = renderHook(() => useWorkbench({ stash: STASH, path: PATH }), {
+      wrapper: providerFor(fixture.client),
+    });
+
+    await waitFor(() => expect(rendered.result.current.state).toBe("error"));
+    expect(rendered.result.current.error).toBeTruthy();
+    expect(rendered.result.current.source).toBeNull();
+    expect(sessionStorage.getItem(key)).toBe(serialized);
+  });
+
   it("reports a storage error when an unsafe draft cannot be cleared", async () => {
     const fixture = await fixtureWith();
     sessionStorage.setItem(
