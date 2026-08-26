@@ -39,9 +39,9 @@ describe("DiffTable compatibility wrapper", () => {
       "add",
     ]);
     expect(rows.map((row) => row.className)).toEqual([
-      "diff-table__row diff-table__row--context",
-      "diff-table__row diff-table__row--remove",
-      "diff-table__row diff-table__row--add",
+      "zhs-table__row zhs-diff-table__row zhs-diff-table__row--context",
+      "zhs-table__row zhs-diff-table__row zhs-diff-table__row--remove",
+      "zhs-table__row zhs-diff-table__row zhs-diff-table__row--add",
     ]);
     expect(rows.every((row) => row.children.length === 4)).toBe(true);
     expect(
@@ -57,15 +57,15 @@ describe("DiffTable compatibility wrapper", () => {
     expect(screen.getByLabelText("Removed line").textContent).toBe("−");
     expect(screen.getByLabelText("Added line").textContent).toBe("+");
 
-    const hunk = container.querySelector(".diff-table__hunk");
+    const hunk = container.querySelector(".zhs-diff-table__hunk");
     expect(hunk?.getAttribute("data-hunk-index")).toBe("0");
     expect(hunk?.getAttribute("id")).toBe("diff-hunk-0");
     expect(hunk?.textContent).toBe("@@ -3,2 +8,2 @@");
-    expect(container.querySelector(".diff-table-pane")?.className).toContain(
-      "diff-table-pane--wrap",
+    expect(container.querySelector(".zhs-diff-table-pane")?.className).toContain(
+      "zhs-diff-table-pane--wrap",
     );
     expect(
-      Array.from(container.querySelectorAll(".diff-table__marker"), (row) => row.textContent),
+      Array.from(container.querySelectorAll(".zhs-diff-table__marker"), (row) => row.textContent),
     ).toEqual(["\\ No newline at end of file", "? source marker"]);
   });
 });

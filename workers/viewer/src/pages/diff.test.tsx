@@ -323,8 +323,8 @@ describe("DiffPage", () => {
     renderDiffRoute("/s/notes/diff/docs/readme.txt?from=2&to=3", client);
 
     const table = await screen.findByRole("table", { name: "Unified diff" });
-    const pane = table.closest(".diff-table-pane");
-    expect(pane?.className).toContain("diff-table-pane--nowrap");
+    const pane = table.closest(".zhs-diff-table-pane");
+    expect(pane?.className).toContain("zhs-diff-table-pane--nowrap");
     const requestCount = diff.mock.calls.length;
     const wrap = screen.getByRole("checkbox", { name: "Wrap" }) as HTMLInputElement;
     const marks = screen.getByRole("checkbox", { name: "Marks" }) as HTMLInputElement;
@@ -332,11 +332,11 @@ describe("DiffPage", () => {
     expect(marks.checked).toBe(true);
 
     await userEvent.click(wrap);
-    expect(pane?.className).toContain("diff-table-pane--wrap");
+    expect(pane?.className).toContain("zhs-diff-table-pane--wrap");
     expect(localStorage.getItem("zhs.diff.wrap")).toBe("true");
 
     await userEvent.click(marks);
-    expect(pane?.className).toContain("diff-table-pane--no-marks");
+    expect(pane?.className).toContain("zhs-diff-table-pane--no-marks");
     expect(localStorage.getItem("zhs.diff.marks")).toBe("false");
 
     await userEvent.click(screen.getByRole("button", { name: "Split" }));

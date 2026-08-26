@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   StashHttpError,
@@ -159,19 +159,19 @@ describe("RollbackDialog", () => {
     const onSuccess = vi.fn();
     renderDialog({ client: viewerClient({ get, diff, rollback }), onSuccess });
 
-    expect(document.activeElement).toBe(screen.getByRole("dialog"));
     const confirm = await screen.findByRole("button", { name: "Confirm rollback" });
-    expect(document.activeElement).toBe(confirm);
+    await waitFor(() => {
+      expect(confirm.hasAttribute("disabled")).toBe(false);
+      expect(document.activeElement).toBe(confirm);
+    });
     expect(screen.getByLabelText("3 lines added, 2 lines removed").textContent).toBe("+3 −2");
     const preview = screen.getByRole("region", { name: "Rollback diff preview" });
-    expect(preview.classList.contains("rollback-dialog__preview")).toBe(true);
-    expect(preview.style.maxHeight).toBe("40dvh");
-    expect(preview.style.overflow).toBe("auto");
-    expect(preview.style.overscrollBehavior).toBe("contain");
+    expect(preview.classList.contains("zhs-rollback-dialog__preview")).toBe(true);
+    expect(preview.hasAttribute("style")).toBe(false);
     const diffTable = within(preview).getByRole("table", { name: "Unified diff" });
     expect(diffTable.parentElement?.getAttribute("data-wrap")).toBe("on");
-    expect(diffTable.querySelector(".diff-mark--removed")).toBeTruthy();
-    expect(diffTable.querySelector(".diff-mark--added")).toBeTruthy();
+    expect(diffTable.querySelector(".zhs-diff-mark--removed")).toBeTruthy();
+    expect(diffTable.querySelector(".zhs-diff-mark--added")).toBeTruthy();
     expect(within(diffTable).getAllByLabelText("Removed line")).toHaveLength(2);
     expect(within(diffTable).getAllByLabelText("Added line")).toHaveLength(3);
     expect(preview.querySelector("button, select, input")).toBeNull();
@@ -208,18 +208,18 @@ describe("RollbackDialog", () => {
       .mockResolvedValueOnce(headResult())
       .mockResolvedValueOnce(headResult({ version: 6, author: "Lin", hash: "sha256-new-head" }));
     const diff = vi.fn(async (_path, options) => readyDiff(options.from, options.to as number));
-    const rollback = vi.fn(async () => ({
-      ok: false as const,
-      error: { status: 409, code: "stale" as const, message: "Head changed" },
+    const rollback = vi.fn<StashFilesClient["rollback"]>().mockResolvedValue({
+      ok: false,
+      error: { status: 409, code: "stale", message: "Head changed" },
       current: {
         version: 6,
         hash: "sha256-new-head",
         deleted: false,
-        kind: "put" as const,
+        kind: "put",
         author: "Lin",
         createdAt: "2026-08-25T10:01:00.000Z",
       },
-    }));
+    });
     renderDialog({ client: viewerClient({ get, diff, rollback }) });
 
     await userEvent.click(await screen.findByRole("button", { name: "Confirm rollback" }));
@@ -234,6 +234,12 @@ describe("RollbackDialog", () => {
     expect(get).toHaveBeenCalledTimes(2);
     expect(diff).toHaveBeenLastCalledWith("docs/readme.txt", { from: 6, to: 2 });
     expect(rollback).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "Confirm rollback" }));
+    await waitFor(() => expect(rollback).toHaveBeenCalledTimes(2));
+    expect(rollback.mock.calls[1]?.[2]?.idempotencyKey).not.toBe(
+      rollback.mock.calls[0]?.[2]?.idempotencyKey,
+    );
   });
 
   it("warns when the target is byte-identical to the current head", async () => {
@@ -334,26 +340,24 @@ describe("RollbackDialog", () => {
     const secondOptions = rollback.mock.calls[1]?.[2];
     expect(firstOptions?.idempotencyKey).toBeTruthy();
     expect(secondOptions?.idempotencyKey).toBe(firstOptions?.idempotencyKey);
-    expect(rollback.mock.calls[1]?.[1]).toEqual(rollback.mock.calls[0]?.[1]);
+    expect(rollback.mock.calls[1]?.[1]).toBe(rollback.mock.calls[0]?.[1]);
+    expect(rollback.mock.calls[1]?.[2]).toBe(rollback.mock.calls[0]?.[2]);
+    expect(Object.isFrozen(rollback.mock.calls[0]?.[1])).toBe(true);
+    expect(Object.isFrozen(rollback.mock.calls[0]?.[2])).toBe(true);
   });
 
-  it("closes on Escape", async () => {
+  it("routes the native Escape cancellation only through onClose", async () => {
     const onClose = vi.fn();
     renderDialog({ onClose });
 
-    await userEvent.keyboard("{Escape}");
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("traps focus and wraps Tab at both ends", async () => {
+  it("uses the package native dialog and focuses the safe confirm action when ready", async () => {
     renderDialog();
     const confirm = await screen.findByRole("button", { name: "Confirm rollback" });
-    const close = screen.getByRole("button", { name: "Close rollback dialog" });
-    expect(document.activeElement).toBe(confirm);
-
-    await userEvent.tab();
-    expect(document.activeElement).toBe(close);
-    await userEvent.tab({ shift: true });
-    expect(document.activeElement).toBe(confirm);
+    await waitFor(() => expect(document.activeElement).toBe(confirm));
+    expect(screen.getByRole("dialog").tagName).toBe("DIALOG");
   });
 });

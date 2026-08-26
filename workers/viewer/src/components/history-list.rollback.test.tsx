@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   ClientResult,
@@ -126,8 +126,10 @@ describe("HistoryList rollback integration", () => {
     const rollbackButton = within(targetRow as HTMLElement).getByRole("button", {
       name: "Rollback to v2",
     });
-    expect(rollbackButton.hasAttribute("disabled")).toBe(false);
-    expect(rollbackButton.getAttribute("title")).toBeNull();
+    await waitFor(() => {
+      expect(rollbackButton.hasAttribute("disabled")).toBe(false);
+      expect(rollbackButton.getAttribute("title")).toBeNull();
+    });
 
     await userEvent.click(rollbackButton);
     expect(await screen.findByRole("dialog")).toBeTruthy();
@@ -170,10 +172,11 @@ describe("HistoryList rollback integration", () => {
     );
 
     const rollbackButton = screen.getByRole("button", { name: "Rollback to v2" });
+    await waitFor(() => expect(rollbackButton.hasAttribute("disabled")).toBe(false));
     await userEvent.click(rollbackButton);
     expect(await screen.findByRole("dialog")).toBeTruthy();
 
-    await userEvent.keyboard("{Escape}");
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(rollbackButton);
     expect(rollback).not.toHaveBeenCalled();

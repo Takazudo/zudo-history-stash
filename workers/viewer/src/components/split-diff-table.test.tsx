@@ -100,7 +100,7 @@ describe("SplitDiffTable", () => {
     expect(
       columnHeaders
         .filter((header) => header.textContent !== "Divider")
-        .every((header) => header.classList.contains("diff-table__column-heading")),
+        .every((header) => header.classList.contains("zhs-diff-table__column-heading")),
     ).toBe(true);
     expect(within(table).getByText("v2")).toBeTruthy();
     expect(within(table).getByText("v5")).toBeTruthy();
@@ -108,23 +108,15 @@ describe("SplitDiffTable", () => {
     const columns = Array.from(container.querySelectorAll("col"));
     expect(columns).toHaveLength(7);
     expect(columns.map((column) => column.className)).toEqual([
-      "diff-table__col--gutter",
-      "diff-table__col--sign",
+      "zhs-diff-table__col--gutter",
+      "zhs-diff-table__col--sign",
       "",
-      "diff-table__col--divider",
-      "diff-table__col--gutter",
-      "diff-table__col--sign",
-      "",
-    ]);
-    expect(columns.map((column) => (column as HTMLElement).style.width)).toEqual([
-      "5ch",
-      "2.5ch",
-      "",
-      "0px",
-      "5ch",
-      "2.5ch",
+      "zhs-diff-table__col--divider",
+      "zhs-diff-table__col--gutter",
+      "zhs-diff-table__col--sign",
       "",
     ]);
+    expect(columns.every((column) => !(column as HTMLElement).hasAttribute("style"))).toBe(true);
   });
 
   it("renders context and changed pairs with side-specific glyphs and semantic marks", () => {
@@ -146,15 +138,15 @@ describe("SplitDiffTable", () => {
     const right = within(pair).getByTestId("split-right-added");
     const removed = left.querySelector("del");
     const added = right.querySelector("ins");
-    expect(left.className).toContain("diff-table__cell--removed");
-    expect(right.className).toContain("diff-table__cell--added");
+    expect(left.className).toContain("zhs-diff-table__cell--removed");
+    expect(right.className).toContain("zhs-diff-table__cell--added");
     expect(removed?.textContent).toBe("removed text: old end of change");
     expect(added?.textContent).toBe("added text: new end of change");
     expect(
-      Array.from(removed?.querySelectorAll(".sr-only") ?? []).map((label) => label.textContent),
+      Array.from(removed?.querySelectorAll(".zhs-sr-only") ?? []).map((label) => label.textContent),
     ).toEqual(["removed text: ", " end of change"]);
     expect(
-      Array.from(added?.querySelectorAll(".sr-only") ?? []).map((label) => label.textContent),
+      Array.from(added?.querySelectorAll(".zhs-sr-only") ?? []).map((label) => label.textContent),
     ).toEqual(["added text: ", " end of change"]);
   });
 
@@ -167,16 +159,16 @@ describe("SplitDiffTable", () => {
     expect(within(added).getAllByRole("cell")).toHaveLength(7);
     expect(within(removed).getByTestId("split-left-removed").textContent).toBe("old only");
     const noNewLine = within(removed).getByLabelText("No new line");
-    const removedVoidCells = Array.from(removed.querySelectorAll(".diff-table__cell--void"));
-    expect(noNewLine.className).toContain("diff-table__cell--void");
+    const removedVoidCells = Array.from(removed.querySelectorAll(".zhs-diff-table__cell--void"));
+    expect(noNewLine.className).toContain("zhs-diff-table__cell--void");
     expect(removedVoidCells).toHaveLength(3);
     expect(
-      removedVoidCells.every((cell) => cell.className.includes("diff-table__cell--void")),
+      removedVoidCells.every((cell) => cell.className.includes("zhs-diff-table__cell--void")),
     ).toBe(true);
     const noOldLine = within(added).getByLabelText("No old line");
-    expect(noOldLine.className).toContain("diff-table__cell--void");
+    expect(noOldLine.className).toContain("zhs-diff-table__cell--void");
     expect(within(added).getByTestId("split-right-added").textContent).toBe("new only");
-    expect(added.querySelectorAll(".diff-table__cell--void")).toHaveLength(3);
+    expect(added.querySelectorAll(".zhs-diff-table__cell--void")).toHaveLength(3);
   });
 
   it("spans hunk, source-marker, and per-side no-newline rows across all columns", () => {
