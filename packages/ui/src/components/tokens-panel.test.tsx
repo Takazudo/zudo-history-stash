@@ -470,6 +470,171 @@ describe("TokensPanel", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a returned semantic target pending and refreshes it after revoke succeeds", async () => {
+    const fixture = makeFixture();
+    const archive = "archive";
+    fixture.fake.createStash(archive);
+    const token = await seedToken(fixture.seedClient, STASH, "notes bot", "write");
+    const deleteStarted = deferred();
+    const deleteGate = deferred();
+    const deleteFinished = deferred();
+    const delayedFetch: StashFetch = async (input, init) => {
+      const request = new Request(input, init);
+      const pathname = new URL(request.url).pathname;
+      const isNotesDelete = request.method === "DELETE" && pathname.endsWith(`/tokens/${token.id}`);
+      if (isNotesDelete) {
+        deleteStarted.resolve();
+        await deleteGate.promise;
+      }
+      const response = await fixture.fake.fetch(request);
+      if (isNotesDelete) deleteFinished.resolve();
+      return response;
+    };
+    fixture.requests.length = 0;
+    fixture.client = trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests);
+    fixture.clientForSignal = (signal) =>
+      trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests, signal);
+    const user = userEvent.setup();
+    const rendered = renderPanel(fixture);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke notes bot" }));
+    await user.click(screen.getByRole("button", { name: "Confirm revoke" }));
+    await deleteStarted.promise;
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "DELETE" && request.pathname.endsWith(`/${token.id}`),
+      ),
+    ).toHaveLength(1);
+
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={archive} />
+      </StashUiProvider>,
+    );
+    await screen.findByText("No tokens have been minted for this stash.");
+    expect(screen.queryByRole("dialog", { name: "Revoke token" })).toBeNull();
+
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={STASH} />
+      </StashUiProvider>,
+    );
+    const returnedDialog = await screen.findByRole("dialog", { name: "Revoke token" });
+    const pendingButton = within(returnedDialog).getByRole("button", {
+      name: "Revoking…",
+    }) as HTMLButtonElement;
+    expect(pendingButton.disabled).toBe(true);
+    fireEvent.click(pendingButton);
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "DELETE" && request.pathname.endsWith(`/${token.id}`),
+      ),
+    ).toHaveLength(1);
+    const notesListPath = `/v1/stashes/${STASH}/tokens`;
+    await screen.findByRole("table", { name: `Tokens for ${STASH}` });
+    const listsBeforeSettle = fixture.requests.filter(
+      (request) => request.method === "GET" && request.pathname === notesListPath,
+    ).length;
+
+    await act(async () => {
+      deleteGate.resolve();
+      await deleteFinished.promise;
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Revoke token" })).toBeNull());
+    const table = await screen.findByRole("table", { name: `Tokens for ${STASH}` });
+    await waitFor(() => {
+      expect(table.querySelector(`[data-token-id="${token.id}"]`)?.textContent).toContain(
+        "Revoked",
+      );
+    });
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "GET" && request.pathname === notesListPath,
+      ).length,
+    ).toBeGreaterThan(listsBeforeSettle);
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "DELETE" && request.pathname.endsWith(`/${token.id}`),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("restores a gated revoke failure only to its exact returned operation", async () => {
+    const fixture = makeFixture();
+    const archive = "archive";
+    fixture.fake.createStash(archive);
+    const notesToken = await seedToken(fixture.seedClient, STASH, "notes bot", "write");
+    await seedToken(fixture.seedClient, archive, "archive bot", "write");
+    const deleteStarted = deferred();
+    const deleteGate = deferred();
+    const deleteRejected = deferred();
+    const delayedFetch: StashFetch = async (input, init) => {
+      const request = new Request(input, init);
+      const pathname = new URL(request.url).pathname;
+      if (request.method === "DELETE" && pathname.endsWith(`/tokens/${notesToken.id}`)) {
+        deleteStarted.resolve();
+        await deleteGate.promise;
+        deleteRejected.resolve();
+        throw new Error("notes revoke failed");
+      }
+      return fixture.fake.fetch(request);
+    };
+    fixture.requests.length = 0;
+    fixture.client = trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests);
+    fixture.clientForSignal = (signal) =>
+      trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests, signal);
+    const user = userEvent.setup();
+    const rendered = renderPanel(fixture);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke notes bot" }));
+    await user.click(screen.getByRole("button", { name: "Confirm revoke" }));
+    await deleteStarted.promise;
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={archive} />
+      </StashUiProvider>,
+    );
+    await screen.findByRole("button", { name: "Revoke archive bot" });
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={STASH} />
+      </StashUiProvider>,
+    );
+    const returnedDialog = await screen.findByRole("dialog", { name: "Revoke token" });
+    expect(
+      (
+        within(returnedDialog).getByRole("button", {
+          name: "Revoking…",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      deleteGate.resolve();
+      await deleteRejected.promise;
+    });
+    expect(await within(returnedDialog).findByText("notes revoke failed")).toBeTruthy();
+    expect(
+      (within(returnedDialog).getByRole("button", { name: "Confirm revoke" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "DELETE" && request.pathname.endsWith(`/${notesToken.id}`),
+      ),
+    ).toHaveLength(1);
+
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={archive} />
+      </StashUiProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Revoke archive bot" }));
+    const archiveDialog = screen.getByRole("dialog", { name: "Revoke token" });
+    expect(within(archiveDialog).queryByText("notes revoke failed")).toBeNull();
+    expect(within(archiveDialog).getByText("archive bot")).toBeTruthy();
+  });
+
   it("binds revoke errors to the exact target and token operation", async () => {
     const user = userEvent.setup();
     const oldRequest = deferred();

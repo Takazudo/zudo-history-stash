@@ -48,6 +48,16 @@ interface RevokeSnapshot {
   token: TokenRecord;
 }
 
+interface RevokeAttempt {
+  completion?: Promise<void>;
+  operation: RevokeSnapshot;
+}
+
+interface RevokeErrorSnapshot {
+  error: unknown;
+  operation: RevokeSnapshot;
+}
+
 export interface TokensPanelProps {
   stash: string;
 }
@@ -67,6 +77,10 @@ function newestFirst(tokens: readonly TokenRecord[]): TokenRecord[] {
 
 function isSameTokenTarget(left: TokenTarget, right: TokenTarget): boolean {
   return left.client === right.client && left.stash === right.stash;
+}
+
+function isSameRevokeSubject(left: RevokeSnapshot, right: RevokeSnapshot): boolean {
+  return isSameTokenTarget(left.target, right.target) && left.token.id === right.token.id;
 }
 
 function OneTimeSecret({
@@ -204,11 +218,15 @@ export function TokensPanel({ stash }: TokensPanelProps) {
   const mintGenerationRef = useRef(0);
   const activeMintAttemptRef = useRef<MintAttempt | null>(null);
   const secretSnapshotRef = useRef<SecretSnapshot | null>(null);
+  const activeRevokeAttemptsRef = useRef<RevokeAttempt[]>([]);
+  const revokeSnapshotRef = useRef<RevokeSnapshot | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [mintAttempt, setMintAttempt] = useState<MintAttempt | null>(null);
   const [listSnapshot, setListSnapshot] = useState<TokenListSnapshot | null>(null);
   const [secretSnapshot, setSecretSnapshot] = useState<SecretSnapshot | null>(null);
   const [revokeSnapshot, setRevokeSnapshot] = useState<RevokeSnapshot | null>(null);
+  const [revokeAttempts, setRevokeAttempts] = useState<RevokeAttempt[]>([]);
+  const [revokeErrorSnapshot, setRevokeErrorSnapshot] = useState<RevokeErrorSnapshot | null>(null);
 
   useLayoutEffect(() => {
     activeTargetRef.current = target;
@@ -278,21 +296,88 @@ export function TokensPanel({ stash }: TokensPanelProps) {
   );
 
   const visibleSecret = secretSnapshot;
-  const visibleRevoke = revokeSnapshot?.target === target ? revokeSnapshot : null;
+  const visibleRevoke =
+    revokeSnapshot !== null && isSameTokenTarget(revokeSnapshot.target, target)
+      ? revokeSnapshot
+      : null;
+  const visibleRevokeAttempt =
+    visibleRevoke === null
+      ? null
+      : (revokeAttempts.find((attempt) => attempt.operation === visibleRevoke) ?? null);
+  const visibleRevokeError =
+    visibleRevoke !== null && revokeErrorSnapshot?.operation === visibleRevoke
+      ? revokeErrorSnapshot.error
+      : null;
   const listResult =
     listSnapshot?.target === target
       ? listSnapshot.result
       : ({ state: "loading" } satisfies TokenListResult);
 
-  async function handleRevoke(operation: RevokeSnapshot) {
-    const result = await operation.target.client.stashes
-      .tokens(operation.target.stash)
-      .revoke(operation.token.id);
-    if (!result.ok) throw result;
-    if (activeTargetRef.current !== operation.target) return;
+  function selectRevoke(token: TokenRecord) {
+    const candidate = { target, token };
+    const activeAttempt = activeRevokeAttemptsRef.current.find((attempt) =>
+      isSameRevokeSubject(attempt.operation, candidate),
+    );
+    const operation = activeAttempt?.operation ?? candidate;
+    revokeSnapshotRef.current = operation;
+    setRevokeSnapshot(operation);
+    setRevokeErrorSnapshot((current) => (current?.operation === operation ? current : null));
+  }
 
+  function closeRevoke(operation: RevokeSnapshot) {
+    if (
+      activeRevokeAttemptsRef.current.some((attempt) => attempt.operation === operation) ||
+      revokeSnapshotRef.current !== operation
+    ) {
+      return;
+    }
+    revokeSnapshotRef.current = null;
     setRevokeSnapshot((current) => (current === operation ? null : current));
-    refresh();
+    setRevokeErrorSnapshot((current) => (current?.operation === operation ? null : current));
+  }
+
+  function handleRevoke(operation: RevokeSnapshot): Promise<void> {
+    const existingAttempt = activeRevokeAttemptsRef.current.find((attempt) =>
+      isSameRevokeSubject(attempt.operation, operation),
+    );
+    if (existingAttempt !== undefined) {
+      return existingAttempt.completion ?? Promise.resolve();
+    }
+
+    const attempt: RevokeAttempt = {
+      operation,
+    };
+    activeRevokeAttemptsRef.current = [...activeRevokeAttemptsRef.current, attempt];
+    setRevokeAttempts((current) => [...current, attempt]);
+    setRevokeErrorSnapshot((current) => (current?.operation === operation ? null : current));
+
+    const completion = (async () => {
+      try {
+        const result = await operation.target.client.stashes
+          .tokens(operation.target.stash)
+          .revoke(operation.token.id);
+        if (!result.ok) throw result;
+
+        if (revokeSnapshotRef.current === operation) {
+          revokeSnapshotRef.current = null;
+          setRevokeSnapshot((current) => (current === operation ? null : current));
+        }
+        setRevokeErrorSnapshot((current) => (current?.operation === operation ? null : current));
+        if (isSameTokenTarget(activeTargetRef.current, operation.target)) refresh();
+      } catch (error) {
+        if (revokeSnapshotRef.current === operation) {
+          setRevokeErrorSnapshot({ operation, error });
+        }
+        throw error;
+      } finally {
+        activeRevokeAttemptsRef.current = activeRevokeAttemptsRef.current.filter(
+          (current) => current !== attempt,
+        );
+        setRevokeAttempts((current) => current.filter((item) => item !== attempt));
+      }
+    })();
+    attempt.completion = completion;
+    return completion;
   }
 
   if (!admin.ready) {
@@ -361,23 +446,19 @@ export function TokensPanel({ stash }: TokensPanelProps) {
           <p className="zhs-tokens-empty">No tokens have been minted for this stash.</p>
         ) : null}
         {listResult.state === "ready" && listResult.tokens.length > 0 ? (
-          <TokenTable
-            stash={stash}
-            tokens={listResult.tokens}
-            onRevoke={(token) => setRevokeSnapshot({ target, token })}
-          />
+          <TokenTable stash={stash} tokens={listResult.tokens} onRevoke={selectRevoke} />
         ) : null}
       </section>
 
       {visibleRevoke ? (
         <RevokeTokenDialog
           key={visibleRevoke.token.id}
+          error={visibleRevokeError}
           open={true}
           operationKey={visibleRevoke}
+          pending={visibleRevokeAttempt !== null}
           token={visibleRevoke.token}
-          onClose={() =>
-            setRevokeSnapshot((current) => (current === visibleRevoke ? null : current))
-          }
+          onClose={() => closeRevoke(visibleRevoke)}
           onConfirm={() => handleRevoke(visibleRevoke)}
         />
       ) : null}

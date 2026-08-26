@@ -5,7 +5,9 @@ import { Dialog } from "../primitives/dialog.js";
 import { ErrorBanner } from "./error-banner.js";
 
 export interface RevokeTokenDialogProps {
+  error?: unknown;
   open: boolean;
+  pending?: boolean;
   token: TokenRecord;
   onClose: () => void;
   onConfirm: () => Promise<void>;
@@ -22,7 +24,9 @@ type RevokeOperationSnapshot =
   | { operation: RevokeOperation; state: "error"; error: unknown };
 
 export function RevokeTokenDialog({
+  error: controlledError,
   open,
+  pending = false,
   token,
   onClose,
   onConfirm,
@@ -34,14 +38,16 @@ export function RevokeTokenDialog({
   const operationGenerationRef = useRef(0);
   const activeOperationRef = useRef<RevokeOperation | null>(null);
   const [operationSnapshot, setOperationSnapshot] = useState<RevokeOperationSnapshot | null>(null);
-  const submitting =
+  const localSubmitting =
     operationSnapshot?.operation.operationKey === operationKey &&
     operationSnapshot.state === "submitting";
-  const error =
+  const localError =
     operationSnapshot?.operation.operationKey === operationKey &&
     operationSnapshot.state === "error"
       ? operationSnapshot.error
       : null;
+  const submitting = pending || localSubmitting;
+  const error = controlledError ?? localError;
 
   useLayoutEffect(() => {
     if (activeOperationKeyRef.current === operationKey) return;
@@ -60,12 +66,12 @@ export function RevokeTokenDialog({
   }
 
   function handleClose() {
-    if (activeOperationRef.current?.operationKey === operationKey) return;
+    if (pending || activeOperationRef.current?.operationKey === operationKey) return;
     onClose();
   }
 
   async function handleConfirm() {
-    if (activeOperationRef.current?.operationKey === operationKey) return;
+    if (pending || activeOperationRef.current?.operationKey === operationKey) return;
 
     const operation: RevokeOperation = {
       operationKey,
