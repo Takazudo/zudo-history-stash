@@ -1,8 +1,9 @@
 import { ROUTES } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
-import { CLIENT_ROUTES } from "@takazudo/zudo-history-stash";
+import { CLIENT_ROUTES, parseClientResponse, StashHttpError } from "@takazudo/zudo-history-stash";
 import apiReference from "../../../docs/api.md?raw";
 import app from "../src/app.js";
+import { StashRpc } from "../src/rpc.js";
 
 type RouteTuple = readonly [string, string];
 
@@ -46,5 +47,28 @@ describe("route contract pin", () => {
     expect(registeredRouteSet()).toEqual(expected);
     expect(coreRouteSet(CLIENT_ROUTES)).toEqual(expected);
     expect(documentedRouteSet()).toEqual(expected);
+  });
+
+  it("exposes every route as an explicit StashRpc prototype method", () => {
+    const prototypeNames = new Set(Object.getOwnPropertyNames(StashRpc.prototype));
+    for (const { id } of ROUTES) {
+      expect(prototypeNames.has(id), `missing StashRpc.prototype.${id}`).toBe(true);
+      expect(typeof Object.getOwnPropertyDescriptor(StashRpc.prototype, id)?.value).toBe(
+        "function",
+      );
+    }
+  });
+
+  it("exports one parser and transport-error identity from the client package root", async () => {
+    const parsing = parseClientResponse(
+      new Response('{"error":{"code":"internal","message":"down"}}', {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+      "health",
+    );
+
+    await expect(parsing).rejects.toBeInstanceOf(StashHttpError);
+    await expect(parsing).rejects.toMatchObject({ status: 503, code: "internal" });
   });
 });

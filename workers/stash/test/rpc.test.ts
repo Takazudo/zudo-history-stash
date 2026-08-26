@@ -1,4 +1,5 @@
 import type { RpcRequest } from "@takazudo/zudo-history-stash-core";
+import { createStashClient } from "@takazudo/zudo-history-stash";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -477,5 +478,97 @@ describe("named-entrypoint RPC boundary", () => {
     expect(response.headers.get("x-stash-version")).toBe("1");
     expect(response.headers.get("content-type")).toBe("application/json");
     expect(await response.text()).toContain('"body":"boundary body\\n"');
+  });
+});
+
+async function typedParity<T>(
+  seed: (() => Promise<unknown>) | undefined,
+  direct: (rpc: StashRpc) => Promise<T>,
+  throughClient: (rpc: StashRpc) => Promise<T>,
+): Promise<[direct: T, throughClient: T]> {
+  const results: T[] = [];
+  for (const invoke of [direct, throughClient]) {
+    await resetDatabase();
+    await seedRpcFixture();
+    await seed?.();
+    results.push(await invoke(new StashRpc(createExecutionContext(), createTestEnv().env)));
+  }
+  const [directResult, clientResult] = results;
+  if (directResult === undefined || clientResult === undefined) {
+    throw new Error("Typed RPC parity invocation did not return a result");
+  }
+  return [directResult, clientResult];
+}
+
+describe("typed StashRpc methods", () => {
+  it("matches the rpc-transport client for putFile", async () => {
+    const input = { body: "typed put\n", expectedVersion: null };
+    const options = { idempotencyKey: "typed-put" };
+    const [direct, client] = await typedParity(
+      undefined,
+      (rpc) => rpc.putFile(RPC_WRITE_TOKEN, RPC_STASH, "docs/typed.txt", input, options),
+      (rpc) =>
+        createStashClient({
+          transport: { kind: "rpc", binding: rpc, token: RPC_WRITE_TOKEN },
+        })
+          .files(RPC_STASH)
+          .put("docs/typed.txt", input, options),
+    );
+    expect(direct).toEqual(client);
+  });
+
+  it("matches the rpc-transport client for getFile", async () => {
+    const [direct, client] = await typedParity(
+      () => seedFile("typed get\n"),
+      (rpc) => rpc.getFile(RPC_READ_TOKEN, RPC_STASH, "docs/rpc.txt"),
+      (rpc) =>
+        createStashClient({
+          transport: { kind: "rpc", binding: rpc, token: RPC_READ_TOKEN },
+        })
+          .files(RPC_STASH)
+          .get("docs/rpc.txt"),
+    );
+    expect(direct).toEqual(client);
+  });
+
+  it("matches the rpc-transport client for revokeToken", async () => {
+    const [direct, client] = await typedParity(
+      undefined,
+      (rpc) => rpc.revokeToken("test-admin", RPC_STASH, RPC_WRITE_TOKEN_ID),
+      (rpc) =>
+        createStashClient({ transport: { kind: "rpc", binding: rpc, token: "test-admin" } })
+          .stashes.tokens(RPC_STASH)
+          .revoke(RPC_WRITE_TOKEN_ID),
+    );
+    expect(direct).toEqual(client);
+  });
+
+  it("matches the rpc-transport client for listFiles", async () => {
+    const options = { includeDeleted: true, limit: 1 };
+    const [direct, client] = await typedParity(
+      () => seedFile("typed list\n"),
+      (rpc) => rpc.listFiles(RPC_READ_TOKEN, RPC_STASH, options),
+      (rpc) =>
+        createStashClient({
+          transport: { kind: "rpc", binding: rpc, token: RPC_READ_TOKEN },
+        })
+          .files(RPC_STASH)
+          .list(options),
+    );
+    expect(direct).toEqual(client);
+  });
+
+  it("returns an internal Result when request rejects", async () => {
+    const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
+    vi.spyOn(rpc, "request").mockRejectedValueOnce(new Error("typed request failed"));
+
+    await expect(rpc.listFiles(RPC_READ_TOKEN, RPC_STASH)).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "internal",
+        status: 500,
+        message: "History Stash request failed",
+      },
+    });
   });
 });

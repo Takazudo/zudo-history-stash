@@ -140,6 +140,9 @@ importers:
       '@hono/zod-validator':
         specifier: ^0.9.0
         version: 0.9.0(hono@4.13.4)(zod@4.4.3)
+      '@takazudo/zudo-history-stash':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@takazudo/zudo-history-stash-core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -156,9 +159,6 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20260825.1
         version: 5.20260825.1
-      '@takazudo/zudo-history-stash':
-        specifier: workspace:*
-        version: link:../../packages/client
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

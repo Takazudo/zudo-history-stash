@@ -1,4 +1,44 @@
-import type { RpcRequest } from "@takazudo/zudo-history-stash-core";
+import {
+  createStashClient,
+  type ChangesOptions,
+  type ClientResult,
+  type DiffOptions,
+  type FileGetOptions,
+  type FileGetResult,
+  type HistoryOptions,
+  type ListFilesOptions,
+  type ListStashesOptions,
+  type MutationOptions,
+  type StashRpcMethods,
+} from "@takazudo/zudo-history-stash";
+import type {
+  CandidateDiffResult,
+  ChangesPage,
+  CreateStashBody,
+  CreateStashResult,
+  CreateTokenBody,
+  CreateTokenResult,
+  DeleteFileBody,
+  DeleteResult,
+  DiffCandidateBody,
+  FileListResponse,
+  GetDiffResult,
+  GetHistoryResult,
+  HealthResponse,
+  ImportBody,
+  ImportResult,
+  ListChangesResult,
+  ListStashesResult,
+  ListTokensResult,
+  MeResponse,
+  PutFileBody,
+  PutResult,
+  RollbackBody,
+  RollbackResult,
+  RouteId,
+  RpcRequest,
+  StashRecord,
+} from "@takazudo/zudo-history-stash-core";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import app from "./app.js";
 import type { Env } from "./env.js";
@@ -12,7 +52,7 @@ function requestUrl(init: RpcRequest): string {
   return `https://stash.internal${init.path}${query === "" ? "" : `?${query}`}`;
 }
 
-export class StashRpc extends WorkerEntrypoint<Env> {
+export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
   async request(init: RpcRequest): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.delete("authorization");
@@ -24,4 +64,195 @@ export class StashRpc extends WorkerEntrypoint<Env> {
     });
     return app.fetch(request, this.env, this.ctx);
   }
+
+  async health(token: string): Promise<ClientResult<HealthResponse>> {
+    return noThrow(() => rpcClient(this, token).health());
+  }
+
+  async me(token: string): Promise<ClientResult<MeResponse>> {
+    return noThrow(() => rpcClient(this, token).me());
+  }
+
+  async listStashes(
+    token: string,
+    options?: ListStashesOptions,
+  ): Promise<ClientResult<ListStashesResult>> {
+    return noThrow(() => rpcClient(this, token).stashes.list(options));
+  }
+
+  async createStash(
+    token: string,
+    input: CreateStashBody,
+  ): Promise<ClientResult<CreateStashResult>> {
+    return noThrow(() => rpcClient(this, token).stashes.create(input));
+  }
+
+  async getStash(token: string, stash: string): Promise<ClientResult<StashRecord>> {
+    return noThrow(() => rpcClient(this, token).stashes.get(stash));
+  }
+
+  async createToken(
+    token: string,
+    stash: string,
+    input: CreateTokenBody,
+  ): Promise<ClientResult<CreateTokenResult>> {
+    return noThrow(() => rpcClient(this, token).stashes.tokens(stash).create(input));
+  }
+
+  async listTokens(token: string, stash: string): Promise<ClientResult<ListTokensResult>> {
+    return noThrow(() => rpcClient(this, token).stashes.tokens(stash).list());
+  }
+
+  async revokeToken(token: string, stash: string, id: string): Promise<ClientResult<undefined>> {
+    return noThrow(() => rpcClient(this, token).stashes.tokens(stash).revoke(id));
+  }
+
+  async importHistory(
+    token: string,
+    stash: string,
+    input: ImportBody,
+  ): Promise<ClientResult<ImportResult>> {
+    return noThrow(() => rpcClient(this, token).stashes.import(stash, input));
+  }
+
+  async listChanges(token: string, options?: ChangesOptions): Promise<ClientResult<ChangesPage>> {
+    return noThrow(() => rpcClient(this, token).changes(options));
+  }
+
+  async listFiles(
+    token: string,
+    stash: string,
+    options?: ListFilesOptions,
+  ): Promise<ClientResult<FileListResponse>> {
+    return noThrow(() => rpcClient(this, token).files(stash).list(options));
+  }
+
+  async getFile(
+    token: string,
+    stash: string,
+    path: string,
+    options?: FileGetOptions,
+  ): Promise<FileGetResult> {
+    return noThrowFile(() => rpcClient(this, token).files(stash).get(path, options));
+  }
+
+  async putFile(
+    token: string,
+    stash: string,
+    path: string,
+    input: PutFileBody,
+    options?: MutationOptions,
+  ): Promise<ClientResult<PutResult>> {
+    return noThrow(() => rpcClient(this, token).files(stash).put(path, input, options));
+  }
+
+  async deleteFile(
+    token: string,
+    stash: string,
+    path: string,
+    input: DeleteFileBody,
+    options?: MutationOptions,
+  ): Promise<ClientResult<DeleteResult>> {
+    return noThrow(() => rpcClient(this, token).files(stash).delete(path, input, options));
+  }
+
+  async rollbackFile(
+    token: string,
+    stash: string,
+    path: string,
+    input: RollbackBody,
+    options?: MutationOptions,
+  ): Promise<ClientResult<RollbackResult>> {
+    return noThrow(() => rpcClient(this, token).files(stash).rollback(path, input, options));
+  }
+
+  async getHistory(
+    token: string,
+    stash: string,
+    path: string,
+    options?: HistoryOptions,
+  ): Promise<ClientResult<GetHistoryResult>> {
+    return noThrow(() => rpcClient(this, token).files(stash).history(path, options));
+  }
+
+  async getDiff(
+    token: string,
+    stash: string,
+    path: string,
+    options: DiffOptions,
+  ): Promise<ClientResult<GetDiffResult>> {
+    return noThrow(() => rpcClient(this, token).files(stash).diff(path, options));
+  }
+
+  async diffCandidate(
+    token: string,
+    stash: string,
+    path: string,
+    input: DiffCandidateBody,
+  ): Promise<ClientResult<CandidateDiffResult>> {
+    return noThrow(() => rpcClient(this, token).files(stash).diffCandidate(path, input));
+  }
+
+  async getStashChanges(
+    token: string,
+    stash: string,
+    options?: ChangesOptions,
+  ): Promise<ClientResult<ListChangesResult>> {
+    return noThrow(() => rpcClient(this, token).files(stash).changes(options));
+  }
 }
+
+function rpcClient(binding: StashRpc, token: string) {
+  return createStashClient({ transport: { kind: "rpc", binding, token } });
+}
+
+function internalFailure(error: unknown): ClientResult<never> {
+  return {
+    ok: false,
+    error: {
+      code: "internal",
+      status: 500,
+      message: error instanceof Error ? error.message : "An internal error occurred.",
+    },
+  };
+}
+
+async function noThrow<T>(run: () => Promise<ClientResult<T>>): Promise<ClientResult<T>> {
+  try {
+    return await run();
+  } catch (error) {
+    return internalFailure(error);
+  }
+}
+
+async function noThrowFile(run: () => Promise<FileGetResult>): Promise<FileGetResult> {
+  try {
+    return await run();
+  } catch (error) {
+    return internalFailure(error);
+  }
+}
+
+const rpcMethodsByRoute = {
+  health: "health",
+  me: "me",
+  listStashes: "listStashes",
+  createStash: "createStash",
+  getStash: "getStash",
+  createToken: "createToken",
+  listTokens: "listTokens",
+  revokeToken: "revokeToken",
+  importHistory: "importHistory",
+  listChanges: "listChanges",
+  listFiles: "listFiles",
+  getFile: "getFile",
+  putFile: "putFile",
+  deleteFile: "deleteFile",
+  rollbackFile: "rollbackFile",
+  getHistory: "getHistory",
+  getDiff: "getDiff",
+  diffCandidate: "diffCandidate",
+  getStashChanges: "getStashChanges",
+} as const satisfies Record<RouteId, keyof StashRpc>;
+
+void rpcMethodsByRoute;
