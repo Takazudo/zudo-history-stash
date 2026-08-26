@@ -19,3 +19,14 @@ When changing a route or schema: update `ROUTE_CONTRACTS` and `docs/api.md`, run
 `pnpm openapi:generate`, and commit the regenerated `docs/openapi.json`.
 
 Before handoff, run `pnpm b4push` when the dependency stage supports it. CI also runs actionlint, package publint/attw checks, and the e2e mock/live lanes.
+
+## Releasing
+
+Run `/l-make-release` to prepare a release. Pushing the resulting `vX.Y.Z` tag triggers the
+publishing workflow, which publishes core first and then client using the `latest` dist-tag only;
+`next` is never used.
+
+To re-run a partial release, re-run the workflow for the same tag push. Its exact-version safeguards
+recognize packages that are already published and skip them, so the remaining package can finish.
+Running the workflow with `workflow_dispatch` exercises the complete chain as a dry run and never
+publishes to npm.
