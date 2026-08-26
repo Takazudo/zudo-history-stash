@@ -15,4 +15,7 @@ Keep a PR focused on one contract or implementation area. The description must i
 
 Do not put Cloudflare tokens, Worker secrets, or local `.dev.vars` files in commits. Update the relevant contract docs when a public API, stable viewer URL, or operational command changes.
 
+When changing a route or schema: update `ROUTE_CONTRACTS` and `docs/api.md`, run
+`pnpm openapi:generate`, and commit the regenerated `docs/openapi.json`.
+
 Before handoff, run `pnpm b4push` when the dependency stage supports it. CI also runs actionlint, package publint/attw checks, and the e2e mock/live lanes.

@@ -13,6 +13,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./openapi": {
+      "types": "./dist/openapi/index.d.ts",
+      "default": "./dist/openapi/index.js"
     }
   },
   "files": [
@@ -32,6 +36,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@scalar/openapi-parser": "0.28.16",
     "tsup": "^8.5.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
