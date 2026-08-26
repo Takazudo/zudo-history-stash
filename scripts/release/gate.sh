@@ -60,12 +60,6 @@ if (!Array.isArray(files) || requiredFiles.some((entry) => !files.includes(entry
   throw new Error(`${packageLabel} package.json files must include ${requiredFiles.join(", ")}`);
 }
 NODE
-  printf 'Running pinned package checks for %s.\n' "$package_label"
-  (
-    cd "$package_dir"
-    pnpm run lint:pkg
-  )
-
   printf 'Packing %s.\n' "$package_label"
   (
     cd "$package_dir"
@@ -79,6 +73,12 @@ NODE
     exit 1
   fi
   tarball=${tarballs[0]}
+
+  printf 'Running pinned package checks for %s.\n' "$package_label"
+  (
+    cd "$package_dir"
+    pnpm run lint:pkg -- "$tarball"
+  )
 
   tar -tzf "$tarball" >"$listing"
   for required_entry in \
@@ -179,7 +179,7 @@ packageJson.pnpm = {
 };
 fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
 NODE
-  pnpm add "$core_tarball" "$client_tarball" "$ui_tarball"
+  pnpm --store-dir "$gate_tmp/pnpm-store" add "$core_tarball" "$client_tarball" "$ui_tarball"
   EXPECTED_VERSION="$version" node -e '
     (async () => {
       const [{ VERSION: coreVersion }, { VERSION: clientVersion }, { VERSION: uiVersion }] = await Promise.all([

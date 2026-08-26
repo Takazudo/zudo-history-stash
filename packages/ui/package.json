@@ -35,7 +35,7 @@
     "check:examples": "tsc -p examples-check/tsconfig.json --noEmit",
     "lint": "eslint .",
     "lint:tokens": "design-token-lint && node scripts/lint-raw-px.mjs",
-    "lint:pkg": "pnpm dlx publint@0.3.12 && pnpm dlx @arethetypeswrong/cli@0.18.5 --pack . --profile esm-only --exclude-entrypoints ./styles.css",
+    "lint:pkg": "node ../../scripts/release/package-check.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
