@@ -1,0 +1,467 @@
+import type { CreateTokenBody, StashClient, TokenRecord } from "@takazudo/zudo-history-stash";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useIsAdmin, useStashClient, useStashClientForSignal } from "../provider/hooks.js";
+import { Button } from "../primitives/button.js";
+import { Input } from "../primitives/input.js";
+import { Notice } from "../primitives/notice.js";
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../primitives/table.js";
+import { ErrorBanner } from "./error-banner.js";
+import { MintTokenForm } from "./mint-token-form.js";
+import { RelativeTime } from "./relative-time.js";
+import { RevokeTokenDialog } from "./revoke-token-dialog.js";
+
+interface TokenTarget {
+  client: StashClient;
+  stash: string;
+}
+
+type TokenListResult =
+  | { state: "loading" }
+  | { state: "ready"; tokens: TokenRecord[] }
+  | { state: "error"; error: unknown };
+
+interface TokenListSnapshot {
+  target: TokenTarget;
+  result: TokenListResult;
+}
+
+interface SecretSnapshot {
+  originStash: string;
+  token: string;
+}
+
+interface MintAttempt {
+  target: TokenTarget;
+  generation: number;
+}
+
+interface RevokeSnapshot {
+  target: TokenTarget;
+  token: TokenRecord;
+}
+
+interface RevokeAttempt {
+  completion?: Promise<void>;
+  operation: RevokeSnapshot;
+}
+
+interface RevokeErrorSnapshot {
+  error: unknown;
+  operation: RevokeSnapshot;
+}
+
+export interface TokensPanelProps {
+  stash: string;
+}
+
+function newestFirst(tokens: readonly TokenRecord[]): TokenRecord[] {
+  return [...tokens].sort((left, right) => {
+    const leftCreatedAt = Date.parse(left.createdAt);
+    const rightCreatedAt = Date.parse(right.createdAt);
+    const createdOrder =
+      Number.isFinite(leftCreatedAt) && Number.isFinite(rightCreatedAt)
+        ? rightCreatedAt - leftCreatedAt
+        : 0;
+    if (createdOrder !== 0) return createdOrder;
+    return right.id.localeCompare(left.id);
+  });
+}
+
+function isSameTokenTarget(left: TokenTarget, right: TokenTarget): boolean {
+  return left.client === right.client && left.stash === right.stash;
+}
+
+function isSameRevokeSubject(left: RevokeSnapshot, right: RevokeSnapshot): boolean {
+  return isSameTokenTarget(left.target, right.target) && left.token.id === right.token.id;
+}
+
+function OneTimeSecret({
+  originStash,
+  token,
+  onDismiss,
+}: {
+  originStash: string;
+  token: string;
+  onDismiss: () => void;
+}) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+
+  async function copyToken() {
+    try {
+      if (navigator.clipboard === undefined) throw new Error("Clipboard access is unavailable");
+      await navigator.clipboard.writeText(token);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+  }
+
+  return (
+    <Notice className="zhs-tokens-secret" variant="warning">
+      <strong>Shown once — store it now</strong>
+      <p>
+        Origin stash: <code>{originStash}</code>
+      </p>
+      <div className="zhs-tokens-secret-value">
+        <Input
+          aria-label="New token secret"
+          className="zhs-tokens-secret-input"
+          readOnly
+          value={token}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+        <Button size="sm" onClick={() => void copyToken()}>
+          Copy
+        </Button>
+      </div>
+      {copyState === "copied" ? <p role="status">Copied to the clipboard.</p> : null}
+      {copyState === "error" ? (
+        <p role="alert">Copy failed. Select the secret above and copy it manually.</p>
+      ) : null}
+      <p>
+        If this response was lost before you copied it, the secret is unrecoverable: revoke this
+        token and mint a new one
+      </p>
+      <div className="zhs-tokens-secret-actions">
+        <Button size="sm" onClick={onDismiss}>
+          I stored it
+        </Button>
+      </div>
+    </Notice>
+  );
+}
+
+function TokenTable({
+  stash,
+  tokens,
+  onRevoke,
+}: {
+  stash: string;
+  tokens: TokenRecord[];
+  onRevoke: (token: TokenRecord) => void;
+}) {
+  return (
+    <div className="zhs-tokens-table-scroll">
+      <Table className="zhs-tokens-table">
+        <TableCaption>Tokens for {stash}</TableCaption>
+        <TableHead>
+          <TableRow>
+            <TableHeader scope="col">ID</TableHeader>
+            <TableHeader scope="col">Label</TableHeader>
+            <TableHeader scope="col">Scope</TableHeader>
+            <TableHeader scope="col">Created</TableHeader>
+            <TableHeader scope="col">Last used</TableHeader>
+            <TableHeader scope="col">Revoked</TableHeader>
+            <TableHeader scope="col">Actions</TableHeader>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {tokens.map((token) => (
+            <TableRow key={token.id} data-token-id={token.id}>
+              <TableCell className="zhs-tokens-table__id">
+                <code>{token.id}</code>
+              </TableCell>
+              <TableCell className="zhs-tokens-table__label">{token.label || "—"}</TableCell>
+              <TableCell className="zhs-tokens-table__compact">
+                <span className={`zhs-tokens-scope zhs-tokens-scope--${token.scope}`}>
+                  {token.scope}
+                </span>
+              </TableCell>
+              <TableCell className="zhs-tokens-table__compact">
+                <RelativeTime value={token.createdAt} />
+              </TableCell>
+              <TableCell className="zhs-tokens-table__compact">
+                {token.lastUsedAt ? <RelativeTime value={token.lastUsedAt} /> : "Never"}
+              </TableCell>
+              <TableCell className="zhs-tokens-table__compact">
+                {token.revokedAt ? <RelativeTime value={token.revokedAt} /> : "Active"}
+              </TableCell>
+              <TableCell className="zhs-tokens-table__actions">
+                {token.revokedAt ? (
+                  <span className="zhs-tokens-revoked-label">Revoked</span>
+                ) : (
+                  <Button
+                    aria-label={`Revoke ${token.label || token.id}`}
+                    size="sm"
+                    variant="danger"
+                    onClick={() => onRevoke(token)}
+                  >
+                    Revoke
+                  </Button>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+export function TokensPanel({ stash }: TokensPanelProps) {
+  const panelTitleId = useId();
+  const listTitleId = useId();
+  const client = useStashClient();
+  const clientForSignal = useStashClientForSignal();
+  const admin = useIsAdmin();
+  const target = useMemo<TokenTarget>(() => ({ client, stash }), [client, stash]);
+  const activeTargetRef = useRef(target);
+  const requestSequenceRef = useRef(0);
+  const mintGenerationRef = useRef(0);
+  const activeMintAttemptRef = useRef<MintAttempt | null>(null);
+  const secretSnapshotRef = useRef<SecretSnapshot | null>(null);
+  const activeRevokeAttemptsRef = useRef<RevokeAttempt[]>([]);
+  const revokeSnapshotRef = useRef<RevokeSnapshot | null>(null);
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const [mintAttempt, setMintAttempt] = useState<MintAttempt | null>(null);
+  const [listSnapshot, setListSnapshot] = useState<TokenListSnapshot | null>(null);
+  const [secretSnapshot, setSecretSnapshot] = useState<SecretSnapshot | null>(null);
+  const [revokeSnapshot, setRevokeSnapshot] = useState<RevokeSnapshot | null>(null);
+  const [revokeAttempts, setRevokeAttempts] = useState<RevokeAttempt[]>([]);
+  const [revokeErrorSnapshot, setRevokeErrorSnapshot] = useState<RevokeErrorSnapshot | null>(null);
+
+  useLayoutEffect(() => {
+    activeTargetRef.current = target;
+  }, [target]);
+
+  useEffect(() => {
+    const sequence = ++requestSequenceRef.current;
+    if (!admin.ready || !admin.isAdmin) return;
+
+    const controller = new AbortController();
+    setListSnapshot({ target, result: { state: "loading" } });
+    void Promise.resolve()
+      .then(() => clientForSignal(controller.signal).stashes.tokens(stash).list())
+      .then(
+        (result) => {
+          if (controller.signal.aborted || requestSequenceRef.current !== sequence) return;
+          setListSnapshot({
+            target,
+            result: result.ok
+              ? { state: "ready", tokens: newestFirst(result.value.tokens) }
+              : { state: "error", error: result },
+          });
+        },
+        (error: unknown) => {
+          if (controller.signal.aborted || requestSequenceRef.current !== sequence) return;
+          setListSnapshot({ target, result: { state: "error", error } });
+        },
+      );
+
+    return () => controller.abort();
+  }, [admin.isAdmin, admin.ready, clientForSignal, reloadVersion, stash, target]);
+
+  const refresh = useCallback(() => {
+    setReloadVersion((version) => version + 1);
+  }, []);
+
+  const handleMint = useCallback(
+    async (input: CreateTokenBody) => {
+      if (activeMintAttemptRef.current !== null || secretSnapshotRef.current !== null) return;
+
+      const attempt: MintAttempt = {
+        target,
+        generation: ++mintGenerationRef.current,
+      };
+      activeMintAttemptRef.current = attempt;
+      setMintAttempt(attempt);
+      try {
+        const result = await attempt.target.client.stashes
+          .tokens(attempt.target.stash)
+          .create(input);
+        if (!result.ok) throw result;
+
+        const secret = { originStash: attempt.target.stash, token: result.value.token };
+        secretSnapshotRef.current = secret;
+        setSecretSnapshot(secret);
+        if (isSameTokenTarget(activeTargetRef.current, attempt.target)) refresh();
+      } finally {
+        if (activeMintAttemptRef.current?.generation === attempt.generation) {
+          activeMintAttemptRef.current = null;
+          setMintAttempt((current) =>
+            current?.generation === attempt.generation ? null : current,
+          );
+        }
+      }
+    },
+    [refresh, target],
+  );
+
+  const visibleSecret = secretSnapshot;
+  const visibleRevoke =
+    revokeSnapshot !== null && isSameTokenTarget(revokeSnapshot.target, target)
+      ? revokeSnapshot
+      : null;
+  const visibleRevokeAttempt =
+    visibleRevoke === null
+      ? null
+      : (revokeAttempts.find((attempt) => attempt.operation === visibleRevoke) ?? null);
+  const visibleRevokeError =
+    visibleRevoke !== null && revokeErrorSnapshot?.operation === visibleRevoke
+      ? revokeErrorSnapshot.error
+      : null;
+  const listResult =
+    listSnapshot?.target === target
+      ? listSnapshot.result
+      : ({ state: "loading" } satisfies TokenListResult);
+
+  function selectRevoke(token: TokenRecord) {
+    const candidate = { target, token };
+    const activeAttempt = activeRevokeAttemptsRef.current.find((attempt) =>
+      isSameRevokeSubject(attempt.operation, candidate),
+    );
+    const operation = activeAttempt?.operation ?? candidate;
+    revokeSnapshotRef.current = operation;
+    setRevokeSnapshot(operation);
+    setRevokeErrorSnapshot((current) => (current?.operation === operation ? current : null));
+  }
+
+  function closeRevoke(operation: RevokeSnapshot) {
+    if (
+      activeRevokeAttemptsRef.current.some((attempt) => attempt.operation === operation) ||
+      revokeSnapshotRef.current !== operation
+    ) {
+      return;
+    }
+    revokeSnapshotRef.current = null;
+    setRevokeSnapshot((current) => (current === operation ? null : current));
+    setRevokeErrorSnapshot((current) => (current?.operation === operation ? null : current));
+  }
+
+  function handleRevoke(operation: RevokeSnapshot): Promise<void> {
+    const existingAttempt = activeRevokeAttemptsRef.current.find((attempt) =>
+      isSameRevokeSubject(attempt.operation, operation),
+    );
+    if (existingAttempt !== undefined) {
+      return existingAttempt.completion ?? Promise.resolve();
+    }
+
+    const attempt: RevokeAttempt = {
+      operation,
+    };
+    activeRevokeAttemptsRef.current = [...activeRevokeAttemptsRef.current, attempt];
+    setRevokeAttempts((current) => [...current, attempt]);
+    setRevokeErrorSnapshot((current) => (current?.operation === operation ? null : current));
+
+    const completion = (async () => {
+      try {
+        const result = await operation.target.client.stashes
+          .tokens(operation.target.stash)
+          .revoke(operation.token.id);
+        if (!result.ok) throw result;
+
+        if (revokeSnapshotRef.current === operation) {
+          revokeSnapshotRef.current = null;
+          setRevokeSnapshot((current) => (current === operation ? null : current));
+        }
+        setRevokeErrorSnapshot((current) => (current?.operation === operation ? null : current));
+        if (isSameTokenTarget(activeTargetRef.current, operation.target)) refresh();
+      } catch (error) {
+        if (revokeSnapshotRef.current === operation) {
+          setRevokeErrorSnapshot({ operation, error });
+        }
+        throw error;
+      } finally {
+        activeRevokeAttemptsRef.current = activeRevokeAttemptsRef.current.filter(
+          (current) => current !== attempt,
+        );
+        setRevokeAttempts((current) => current.filter((item) => item !== attempt));
+      }
+    })();
+    attempt.completion = completion;
+    return completion;
+  }
+
+  if (!admin.ready) {
+    return (
+      <section className="zhs-tokens-not-available" role="status">
+        <h2>Checking administrator access…</h2>
+      </section>
+    );
+  }
+
+  if (!admin.isAdmin) {
+    return (
+      <section className="zhs-tokens-not-available" role="status">
+        <h2>Token administration is not available</h2>
+        <p>An administrator token is required to manage stash tokens.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="zhs-tokens-panel" aria-labelledby={panelTitleId}>
+      <header className="zhs-tokens-panel__header">
+        <div>
+          <h2 id={panelTitleId}>Access tokens</h2>
+          <p>Manage scoped credentials for {stash}.</p>
+        </div>
+      </header>
+
+      <MintTokenForm
+        disabled={mintAttempt !== null || secretSnapshot !== null}
+        targetKey={target}
+        onMint={handleMint}
+      />
+
+      {visibleSecret ? (
+        <OneTimeSecret
+          key={visibleSecret.token}
+          originStash={visibleSecret.originStash}
+          token={visibleSecret.token}
+          onDismiss={() => {
+            if (secretSnapshotRef.current !== visibleSecret) return;
+            secretSnapshotRef.current = null;
+            setSecretSnapshot((current) => (current === visibleSecret ? null : current));
+          }}
+        />
+      ) : null}
+
+      <section className="zhs-tokens-list" aria-labelledby={listTitleId}>
+        <div className="zhs-tokens-section-heading">
+          <div>
+            <h3 id={listTitleId}>Issued tokens</h3>
+            <p>Secrets are never returned by this list.</p>
+          </div>
+        </div>
+        {listResult.state === "loading" ? (
+          <p className="zhs-tokens-loading" role="status">
+            Loading tokens…
+          </p>
+        ) : null}
+        {listResult.state === "error" ? (
+          <div className="zhs-tokens-list-error">
+            <ErrorBanner error={listResult.error} onRetry={refresh} title="Could not load tokens" />
+          </div>
+        ) : null}
+        {listResult.state === "ready" && listResult.tokens.length === 0 ? (
+          <p className="zhs-tokens-empty">No tokens have been minted for this stash.</p>
+        ) : null}
+        {listResult.state === "ready" && listResult.tokens.length > 0 ? (
+          <TokenTable stash={stash} tokens={listResult.tokens} onRevoke={selectRevoke} />
+        ) : null}
+      </section>
+
+      {visibleRevoke ? (
+        <RevokeTokenDialog
+          key={visibleRevoke.token.id}
+          error={visibleRevokeError}
+          open={true}
+          operationKey={visibleRevoke}
+          pending={visibleRevokeAttempt !== null}
+          token={visibleRevoke.token}
+          onClose={() => closeRevoke(visibleRevoke)}
+          onConfirm={() => handleRevoke(visibleRevoke)}
+        />
+      ) : null}
+    </section>
+  );
+}
