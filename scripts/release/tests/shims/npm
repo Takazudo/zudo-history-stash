@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${RELEASE_SHIM_LOG:?RELEASE_SHIM_LOG must be set}"
+: "${RELEASE_SHIM_STATE_DIR:?RELEASE_SHIM_STATE_DIR must be set}"
+printf 'npm' >>"$RELEASE_SHIM_LOG"
+printf ' %q' "$@" >>"$RELEASE_SHIM_LOG"
+printf '\n' >>"$RELEASE_SHIM_LOG"
+
+next=${NPM_EXPECTED_VERSION:-0.0.0}
+scenario=${NPM_SCENARIO:-success}
+
+if [[ "${1:-}" == 'view' && -n "${2:-}" && "${3:-}" == 'version' && $# -eq 3 ]]; then
+  package_spec=$2
+  state_key=${package_spec//@/}
+  state_key=${state_key//\//_}
+  state_key=${state_key//./_}
+  state_file="$RELEASE_SHIM_STATE_DIR/npm-view-$state_key"
+  attempt=0
+  if [[ -f "$state_file" ]]; then
+    attempt=$(<"$state_file")
+  fi
+  attempt=$((attempt + 1))
+  printf '%s\n' "$attempt" >"$state_file"
+  case "$scenario" in
+    e404_then_success)
+      if ((attempt == 1)); then
+        printf 'npm ERR! code E404\nnpm ERR! 404 Not Found\n' >&2
+        exit 1
+      fi
+      ;;
+    e404_forever)
+      printf 'npm ERR! code E404\nnpm ERR! 404 Not Found\n' >&2
+      exit 1
+      ;;
+    network)
+      printf 'npm ERR! code ECONNRESET\nnpm ERR! network socket disconnected\n' >&2
+      exit 1
+      ;;
+    version_mismatch)
+      printf '9.9.9\n'
+      exit 0
+      ;;
+  esac
+  printf '%s\n' "$next"
+  exit 0
+fi
+
+if [[ "${1:-}" == 'dist-tag' && "${2:-}" == 'ls' && -n "${3:-}" && $# -eq 3 ]]; then
+  case "$scenario" in
+    latest_wrong)
+      printf 'latest: 9.9.9\n'
+      ;;
+    extra_next)
+      printf 'latest: %s\nnext: %s\n' "$next" "$next"
+      ;;
+    historical)
+      printf 'latest: %s\nlegacy: 0.0.1\n' "$next"
+      ;;
+    dist_tag_error)
+      printf 'npm ERR! code ECONNRESET\n' >&2
+      exit 1
+      ;;
+    *)
+      printf 'latest: %s\n' "$next"
+      ;;
+  esac
+  exit 0
+fi
+
+printf 'unexpected npm invocation\n' >&2
+exit 64
