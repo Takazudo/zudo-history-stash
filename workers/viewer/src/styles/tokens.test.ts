@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const tokens = readFileSync(resolve(process.cwd(), "src/styles/tokens.css"), "utf8");
 const contract = readFileSync(resolve(process.cwd(), "../../docs/design-tokens.md"), "utf8");
+const index = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
 
 function namesIn(source: string): string[] {
   return [...source.matchAll(/^\s*(--[a-z0-9-]+)\s*:/gmu)].map((match) => match[1]!);
@@ -14,6 +15,10 @@ function referencesIn(source: string): string[] {
 }
 
 describe("the Viewer design-token contract", () => {
+  it("prefers dark UA chrome before the stylesheet establishes the theme", () => {
+    expect(index).toContain('<meta name="color-scheme" content="dark light" />');
+  });
+
   it("documents every public token declared from tier 2 onward", () => {
     const publicStart = tokens.indexOf("/* Tier 2:");
     const publicEnd = tokens.indexOf("/* No stored preference");
