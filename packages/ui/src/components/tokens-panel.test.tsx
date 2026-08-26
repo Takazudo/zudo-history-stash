@@ -10,7 +10,6 @@ import {
 import { createFakeStash, type FakeStash } from "@takazudo/zudo-history-stash/testing";
 import { describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
-import { MintTokenForm } from "./mint-token-form.js";
 import { RevokeTokenDialog } from "./revoke-token-dialog.js";
 import { TokensPanel } from "./tokens-panel.js";
 
@@ -111,65 +110,6 @@ function tokenRecord(id: string, label: string): TokenRecord {
 }
 
 describe("TokensPanel", () => {
-  it("does not let an old target's mint resolution clear the new target form", async () => {
-    const user = userEvent.setup();
-    const oldRequest = deferred();
-    const notesTarget = { client: "client-a", stash: "notes" };
-    const archiveTarget = { client: "client-a", stash: "archive" };
-    const mintNotes = vi.fn(() => oldRequest.promise);
-    const mintArchive = vi.fn(async () => {});
-    const rendered = render(<MintTokenForm targetKey={notesTarget} onMint={mintNotes} />);
-
-    await user.type(screen.getByRole("textbox", { name: "Label (optional)" }), "notes draft");
-    await user.click(screen.getByRole("button", { name: "Mint token" }));
-    expect((screen.getByRole("button", { name: "Minting…" }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-
-    rendered.rerender(<MintTokenForm targetKey={archiveTarget} onMint={mintArchive} />);
-    const archiveLabel = screen.getByRole("textbox", {
-      name: "Label (optional)",
-    }) as HTMLInputElement;
-    expect(archiveLabel.value).toBe("");
-    expect((screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
-    await user.type(archiveLabel, "archive draft");
-
-    await act(async () => {
-      oldRequest.resolve();
-      await oldRequest.promise;
-    });
-    expect(archiveLabel.value).toBe("archive draft");
-    expect(screen.queryByText("Could not mint the token")).toBeNull();
-    expect(mintArchive).not.toHaveBeenCalled();
-  });
-
-  it("does not let an old target's mint rejection reach the new target form", async () => {
-    const user = userEvent.setup();
-    const oldRequest = deferred();
-    const notesTarget = { client: "client-a", stash: "notes" };
-    const archiveTarget = { client: "client-b", stash: "archive" };
-    const rendered = render(
-      <MintTokenForm targetKey={notesTarget} onMint={() => oldRequest.promise} />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Mint token" }));
-    rendered.rerender(<MintTokenForm targetKey={archiveTarget} onMint={async () => undefined} />);
-    const archiveLabel = screen.getByRole("textbox", {
-      name: "Label (optional)",
-    }) as HTMLInputElement;
-    await user.type(archiveLabel, "keep this draft");
-
-    await act(async () => {
-      oldRequest.reject(new Error("old target failed"));
-      await oldRequest.promise.catch(() => undefined);
-    });
-    expect(archiveLabel.value).toBe("keep this draft");
-    expect(screen.queryByText("Could not mint the token")).toBeNull();
-    expect(screen.queryByText("old target failed")).toBeNull();
-  });
-
   it("waits for the admin capability to resolve before listing tokens", async () => {
     const fixture = makeFixture();
     let releaseMe = () => {};
@@ -290,51 +230,53 @@ describe("TokensPanel", () => {
     expect(document.documentElement.outerHTML).not.toContain(secret);
   });
 
-  it("blocks a second mint until the active one-time secret is acknowledged", async () => {
+  it("keeps a gated mint exclusive across a new client and exposes its exact origin secret", async () => {
     const fixture = makeFixture();
     const archive = "archive";
     fixture.fake.createStash(archive);
+    const postStarted = deferred();
+    const postGate = deferred();
+    const postFinished = deferred();
+    let mintedSecret = "";
+    const delayedFetch: StashFetch = async (input, init) => {
+      const request = new Request(input, init);
+      const pathname = new URL(request.url).pathname;
+      const isNotesMint = request.method === "POST" && pathname === `/v1/stashes/${STASH}/tokens`;
+      if (isNotesMint) {
+        postStarted.resolve();
+        await postGate.promise;
+      }
+      const response = await fixture.fake.fetch(request);
+      if (isNotesMint) {
+        const body = (await response.clone().json()) as CreateTokenResult;
+        mintedSecret = body.token;
+        postFinished.resolve();
+      }
+      return response;
+    };
+    fixture.requests.length = 0;
+    fixture.client = trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests);
+    fixture.clientForSignal = (signal) =>
+      trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests, signal);
     const user = userEvent.setup();
     const rendered = renderPanel(fixture);
     await screen.findByText("No tokens have been minted for this stash.");
 
     await user.type(screen.getByRole("textbox", { name: "Label (optional)" }), "first token");
     await user.click(screen.getByRole("button", { name: "Mint token" }));
-    const firstSecret = (await screen.findByRole("textbox", {
-      name: "New token secret",
-    })) as HTMLInputElement;
-    const firstValue = firstSecret.value;
-    const lockedMint = screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement;
-    expect(lockedMint.disabled).toBe(true);
-    expect(
-      (screen.getByRole("textbox", { name: "Label (optional)" }) as HTMLInputElement).disabled,
-    ).toBe(true);
-    expect((screen.getByRole("combobox", { name: "Scope" }) as HTMLSelectElement).disabled).toBe(
-      true,
-    );
+    await postStarted.promise;
 
-    const form = lockedMint.closest("form");
-    if (form === null) throw new Error("Expected the mint button to be inside a form");
-    fireEvent.submit(form);
-    await act(async () => Promise.resolve());
-    expect(firstSecret.value).toBe(firstValue);
-    expect(
-      fixture.requests.filter(
-        (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),
-      ),
-    ).toHaveLength(1);
-
+    const archiveClient = trackedClient(ADMIN_TOKEN, fixture.fake.fetch, fixture.requests);
+    const archiveClientForSignal = (signal: AbortSignal) =>
+      trackedClient(ADMIN_TOKEN, fixture.fake.fetch, fixture.requests, signal);
     rendered.rerender(
-      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+      <StashUiProvider client={archiveClient} clientForSignal={archiveClientForSignal}>
         <TokensPanel stash={archive} />
       </StashUiProvider>,
     );
-    expect(
-      await screen.findByText("A one-time secret is still awaiting acknowledgement"),
-    ).toBeTruthy();
-    expect(screen.getByText(/Return to the token page for notes/)).toBeTruthy();
-    expect(screen.queryByRole("textbox", { name: "New token secret" })).toBeNull();
-    const archiveMint = screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement;
+    const archiveMint = (await screen.findByRole("button", {
+      name: "Mint token",
+    })) as HTMLButtonElement;
     expect(archiveMint.disabled).toBe(true);
     const archiveForm = archiveMint.closest("form");
     if (archiveForm === null) throw new Error("Expected the mint button to be inside a form");
@@ -345,22 +287,34 @@ describe("TokensPanel", () => {
         (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),
       ),
     ).toHaveLength(1);
+    const archiveListPath = `/v1/stashes/${archive}/tokens`;
+    const archiveListsBeforeSettle = fixture.requests.filter(
+      (request) => request.method === "GET" && request.pathname === archiveListPath,
+    ).length;
 
-    rendered.rerender(
-      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
-        <TokensPanel stash={STASH} />
-      </StashUiProvider>,
-    );
-    const restoredSecret = (await screen.findByRole("textbox", {
+    await act(async () => {
+      postGate.resolve();
+      await postFinished.promise;
+    });
+    const visibleSecret = (await screen.findByRole("textbox", {
       name: "New token secret",
     })) as HTMLInputElement;
-    expect(restoredSecret.value).toBe(firstValue);
-    await user.click(screen.getByRole("button", { name: "I stored it" }));
-    rendered.rerender(
-      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
-        <TokensPanel stash={archive} />
-      </StashUiProvider>,
+    expect(mintedSecret).toMatch(/^zhs_/);
+    expect(visibleSecret.value).toBe(mintedSecret);
+    const secretPanel = visibleSecret.closest<HTMLElement>(".zhs-tokens-secret");
+    if (secretPanel === null) throw new Error("Expected the one-time secret panel");
+    expect(secretPanel.textContent).toContain("Origin stash: notes");
+    expect(within(secretPanel).getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "GET" && request.pathname === archiveListPath,
+      ),
+    ).toHaveLength(archiveListsBeforeSettle);
+    expect((screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement).disabled).toBe(
+      true,
     );
+
+    await user.click(screen.getByRole("button", { name: "I stored it" }));
     expect((screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement).disabled).toBe(
       false,
     );
@@ -369,7 +323,77 @@ describe("TokensPanel", () => {
     const secondSecret = (await screen.findByRole("textbox", {
       name: "New token secret",
     })) as HTMLInputElement;
-    expect(secondSecret.value).not.toBe(firstValue);
+    expect(secondSecret.value).not.toBe(mintedSecret);
+    const secondSecretPanel = secondSecret.closest(".zhs-tokens-secret");
+    if (secondSecretPanel === null) throw new Error("Expected the second one-time secret panel");
+    expect(secondSecretPanel.textContent).toContain("Origin stash: archive");
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("unlocks a new client after an old mint rejects without bleeding its error", async () => {
+    const fixture = makeFixture();
+    const archive = "archive";
+    fixture.fake.createStash(archive);
+    const postStarted = deferred();
+    const postGate = deferred();
+    const postRejected = deferred();
+    const delayedFetch: StashFetch = async (input, init) => {
+      const request = new Request(input, init);
+      const pathname = new URL(request.url).pathname;
+      if (request.method === "POST" && pathname === `/v1/stashes/${STASH}/tokens`) {
+        postStarted.resolve();
+        await postGate.promise;
+        postRejected.resolve();
+        throw new Error("old notes mint failed");
+      }
+      return fixture.fake.fetch(request);
+    };
+    fixture.requests.length = 0;
+    fixture.client = trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests);
+    fixture.clientForSignal = (signal) =>
+      trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests, signal);
+    const user = userEvent.setup();
+    const rendered = renderPanel(fixture);
+    await screen.findByText("No tokens have been minted for this stash.");
+
+    await user.click(screen.getByRole("button", { name: "Mint token" }));
+    await postStarted.promise;
+    const archiveClient = trackedClient(ADMIN_TOKEN, fixture.fake.fetch, fixture.requests);
+    const archiveClientForSignal = (signal: AbortSignal) =>
+      trackedClient(ADMIN_TOKEN, fixture.fake.fetch, fixture.requests, signal);
+    rendered.rerender(
+      <StashUiProvider client={archiveClient} clientForSignal={archiveClientForSignal}>
+        <TokensPanel stash={archive} />
+      </StashUiProvider>,
+    );
+    const archiveMint = (await screen.findByRole("button", {
+      name: "Mint token",
+    })) as HTMLButtonElement;
+    expect(archiveMint.disabled).toBe(true);
+
+    await act(async () => {
+      postGate.resolve();
+      await postRejected.promise;
+    });
+    await waitFor(() => expect(archiveMint.disabled).toBe(false));
+    expect(screen.queryByText("Could not mint the token")).toBeNull();
+    expect(screen.queryByText("old notes mint failed")).toBeNull();
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),
+      ),
+    ).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Label (optional)" }), "archive token");
+    await user.click(archiveMint);
+    const archiveSecret = await screen.findByRole("textbox", { name: "New token secret" });
+    const secretPanel = archiveSecret.closest(".zhs-tokens-secret");
+    if (secretPanel === null) throw new Error("Expected the archive one-time secret panel");
+    expect(secretPanel.textContent).toContain("Origin stash: archive");
     expect(
       fixture.requests.filter(
         (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),

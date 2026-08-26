@@ -34,8 +34,13 @@ interface TokenListSnapshot {
 }
 
 interface SecretSnapshot {
-  target: TokenTarget;
+  originStash: string;
   token: string;
+}
+
+interface MintAttempt {
+  target: TokenTarget;
+  generation: number;
 }
 
 interface RevokeSnapshot {
@@ -64,7 +69,15 @@ function isSameTokenTarget(left: TokenTarget, right: TokenTarget): boolean {
   return left.client === right.client && left.stash === right.stash;
 }
 
-function OneTimeSecret({ token, onDismiss }: { token: string; onDismiss: () => void }) {
+function OneTimeSecret({
+  originStash,
+  token,
+  onDismiss,
+}: {
+  originStash: string;
+  token: string;
+  onDismiss: () => void;
+}) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
 
   async function copyToken() {
@@ -80,6 +93,9 @@ function OneTimeSecret({ token, onDismiss }: { token: string; onDismiss: () => v
   return (
     <Notice className="zhs-tokens-secret" variant="warning">
       <strong>Shown once — store it now</strong>
+      <p>
+        Origin stash: <code>{originStash}</code>
+      </p>
       <div className="zhs-tokens-secret-value">
         <Input
           aria-label="New token secret"
@@ -185,7 +201,11 @@ export function TokensPanel({ stash }: TokensPanelProps) {
   const target = useMemo<TokenTarget>(() => ({ client, stash }), [client, stash]);
   const activeTargetRef = useRef(target);
   const requestSequenceRef = useRef(0);
+  const mintGenerationRef = useRef(0);
+  const activeMintAttemptRef = useRef<MintAttempt | null>(null);
+  const secretSnapshotRef = useRef<SecretSnapshot | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
+  const [mintAttempt, setMintAttempt] = useState<MintAttempt | null>(null);
   const [listSnapshot, setListSnapshot] = useState<TokenListSnapshot | null>(null);
   const [secretSnapshot, setSecretSnapshot] = useState<SecretSnapshot | null>(null);
   const [revokeSnapshot, setRevokeSnapshot] = useState<RevokeSnapshot | null>(null);
@@ -227,20 +247,37 @@ export function TokensPanel({ stash }: TokensPanelProps) {
 
   const handleMint = useCallback(
     async (input: CreateTokenBody) => {
-      const result = await target.client.stashes.tokens(target.stash).create(input);
-      if (!result.ok) throw result;
-      if (activeTargetRef.current !== target) return;
+      if (activeMintAttemptRef.current !== null || secretSnapshotRef.current !== null) return;
 
-      setSecretSnapshot({ target, token: result.value.token });
-      refresh();
+      const attempt: MintAttempt = {
+        target,
+        generation: ++mintGenerationRef.current,
+      };
+      activeMintAttemptRef.current = attempt;
+      setMintAttempt(attempt);
+      try {
+        const result = await attempt.target.client.stashes
+          .tokens(attempt.target.stash)
+          .create(input);
+        if (!result.ok) throw result;
+
+        const secret = { originStash: attempt.target.stash, token: result.value.token };
+        secretSnapshotRef.current = secret;
+        setSecretSnapshot(secret);
+        if (isSameTokenTarget(activeTargetRef.current, attempt.target)) refresh();
+      } finally {
+        if (activeMintAttemptRef.current?.generation === attempt.generation) {
+          activeMintAttemptRef.current = null;
+          setMintAttempt((current) =>
+            current?.generation === attempt.generation ? null : current,
+          );
+        }
+      }
     },
     [refresh, target],
   );
 
-  const visibleSecret =
-    secretSnapshot !== null && isSameTokenTarget(secretSnapshot.target, target)
-      ? secretSnapshot
-      : null;
+  const visibleSecret = secretSnapshot;
   const visibleRevoke = revokeSnapshot?.target === target ? revokeSnapshot : null;
   const listResult =
     listSnapshot?.target === target
@@ -284,26 +321,23 @@ export function TokensPanel({ stash }: TokensPanelProps) {
         </div>
       </header>
 
-      <MintTokenForm disabled={secretSnapshot !== null} targetKey={target} onMint={handleMint} />
+      <MintTokenForm
+        disabled={mintAttempt !== null || secretSnapshot !== null}
+        targetKey={target}
+        onMint={handleMint}
+      />
 
       {visibleSecret ? (
         <OneTimeSecret
           key={visibleSecret.token}
+          originStash={visibleSecret.originStash}
           token={visibleSecret.token}
-          onDismiss={() =>
-            setSecretSnapshot((current) => (current === visibleSecret ? null : current))
-          }
+          onDismiss={() => {
+            if (secretSnapshotRef.current !== visibleSecret) return;
+            secretSnapshotRef.current = null;
+            setSecretSnapshot((current) => (current === visibleSecret ? null : current));
+          }}
         />
-      ) : null}
-
-      {secretSnapshot !== null && visibleSecret === null ? (
-        <Notice className="zhs-tokens-secret-blocked" variant="warning">
-          <strong>A one-time secret is still awaiting acknowledgement</strong>
-          <p>
-            Return to the token page for {secretSnapshot.target.stash} and choose “I stored it”
-            before minting another token.
-          </p>
-        </Notice>
       ) : null}
 
       <section className="zhs-tokens-list" aria-labelledby={listTitleId}>

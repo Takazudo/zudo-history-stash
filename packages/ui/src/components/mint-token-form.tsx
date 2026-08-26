@@ -1,5 +1,5 @@
 import type { CreateTokenBody, TokenScope } from "@takazudo/zudo-history-stash";
-import { useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 import { Button } from "../primitives/button.js";
 import { Input } from "../primitives/input.js";
 import { Notice } from "../primitives/notice.js";
@@ -29,31 +29,21 @@ type MintOperationSnapshot =
 
 export function MintTokenForm({ disabled = false, onMint, targetKey }: MintTokenFormProps) {
   const titleId = useId();
-  const activeTargetKeyRef = useRef(targetKey);
   const operationGenerationRef = useRef(0);
   const activeOperationRef = useRef<MintOperation | null>(null);
   const [draft, setDraft] = useState<MintDraft>({ targetKey, label: "", scope: "read" });
   const [operationSnapshot, setOperationSnapshot] = useState<MintOperationSnapshot | null>(null);
   const label = draft.targetKey === targetKey ? draft.label : "";
   const scope = draft.targetKey === targetKey ? draft.scope : "read";
-  const submitting =
-    operationSnapshot?.operation.targetKey === targetKey &&
-    operationSnapshot.state === "submitting";
+  const submitting = operationSnapshot?.state === "submitting";
   const error =
     operationSnapshot?.operation.targetKey === targetKey && operationSnapshot.state === "error"
       ? operationSnapshot.error
       : null;
   const controlsDisabled = disabled || submitting;
 
-  useLayoutEffect(() => {
-    if (activeTargetKeyRef.current === targetKey) return;
-    activeTargetKeyRef.current = targetKey;
-    if (activeOperationRef.current?.targetKey !== targetKey) activeOperationRef.current = null;
-  }, [targetKey]);
-
   function isCurrentOperation(operation: MintOperation): boolean {
     return (
-      activeTargetKeyRef.current === operation.targetKey &&
       activeOperationRef.current?.targetKey === operation.targetKey &&
       activeOperationRef.current.generation === operation.generation
     );
@@ -61,7 +51,7 @@ export function MintTokenForm({ disabled = false, onMint, targetKey }: MintToken
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (disabled || activeOperationRef.current?.targetKey === targetKey) return;
+    if (disabled || activeOperationRef.current !== null) return;
 
     const operation: MintOperation = {
       targetKey,
