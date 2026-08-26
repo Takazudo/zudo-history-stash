@@ -1,6 +1,5 @@
 import {
   ROUTES,
-  formatEtag,
   statusForCode,
   validatePath,
   validateStashName,
@@ -17,7 +16,6 @@ import type {
   DeleteFileBody,
   DeleteResult,
   DiffCandidateBody,
-  ErrorCode,
   FileListResponse,
   FileRecord,
   FileGetQuery,
@@ -42,6 +40,7 @@ import type {
   StashRecord,
 } from "@takazudo/zudo-history-stash-core";
 import type { StashRpcBinding } from "./rpc-types.js";
+import { parseClientResponse, StashHttpError } from "./parse.js";
 import {
   createFetchSend,
   createRpcSend,
@@ -125,33 +124,6 @@ export type PutLatestOptions = Omit<PutFileBody, "body" | "expectedVersion"> & {
   retries?: number;
 };
 
-/** A request or transport failure that is not a business outcome. */
-export class StashHttpError extends Error {
-  override readonly name = "StashHttpError";
-  readonly status: number;
-  readonly code?: ErrorCode;
-  readonly body?: unknown;
-
-  constructor(status: number, code?: ErrorCode, body?: unknown, cause?: unknown) {
-    super(`History Stash request failed${status ? ` (${status})` : ""}`, { cause });
-    this.status = status;
-    this.code = code;
-    this.body = body;
-  }
-}
-
-type RawResponse = {
-  status: number;
-  body: unknown;
-  response: Response;
-  replayed: boolean;
-};
-
-type ErrorBody = {
-  error?: { code?: unknown; message?: unknown };
-  current?: unknown;
-};
-
 type RouteTemplate = Record<RouteId, string>;
 
 type RequestTarget = {
@@ -212,62 +184,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
 
-async function parseBody(response: Response): Promise<unknown> {
-  if (response.status === 204 || response.status === 304) return undefined;
-  if (typeof response.text !== "function") {
-    if (typeof response.json === "function") return response.json();
-    return undefined;
-  }
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return text;
-  }
-}
-
-function getErrorBody(body: unknown): ErrorBody {
-  return isRecord(body) ? (body as ErrorBody) : {};
-}
-
-function getErrorCode(body: unknown, fallback: string): string {
-  const error = getErrorBody(body).error;
-  return error && typeof error.code === "string" ? error.code : fallback;
-}
-
-function getErrorMessage(body: unknown, fallback: string): string {
-  const error = getErrorBody(body).error;
-  return error && typeof error.message === "string" ? error.message : fallback;
-}
-
-function getCurrent(body: unknown): Current | undefined {
-  const current = getErrorBody(body).current;
-  return current === undefined ? undefined : (current as Current);
-}
-
-function replayedHeader(response: Response): boolean {
-  return response.headers.get("Idempotent-Replayed")?.toLowerCase() === "true";
-}
-
-function withReplay<T>(value: T, replayed: boolean): ClientSuccess<T> {
-  return replayed ? { ok: true, value, replayed: true } : { ok: true, value };
-}
-
-function mapFailure<T>(raw: RawResponse): ClientResult<T> {
-  const fallback = raw.status >= 400 && raw.status < 500 ? "validation" : "internal";
-  const current = getCurrent(raw.body);
-  return {
-    ok: false,
-    error: {
-      code: getErrorCode(raw.body, fallback) as ApiError["code"],
-      message: getErrorMessage(raw.body, `History Stash request failed (${raw.status})`),
-      status: raw.status,
-    },
-    ...(current === undefined ? {} : { current }),
-  };
-}
-
 function requestHeaders(
   token: string | undefined,
   body: unknown,
@@ -282,15 +198,16 @@ function requestHeaders(
   return headers;
 }
 
-async function readRaw(
+async function request<T>(
   send: Send,
   authorizationToken: string | undefined,
+  routeId: RouteId,
   method: RouteMethod,
   requestTarget: RequestTarget,
   body?: unknown,
   idempotencyKey?: string,
   ifNoneMatch?: string,
-): Promise<RawResponse> {
+): Promise<ClientResult<T> | NotModifiedResult> {
   let response: Response;
   try {
     const serializedBody = body === undefined ? undefined : JSON.stringify(body);
@@ -305,50 +222,7 @@ async function readRaw(
     throw new StashHttpError(0, undefined, undefined, error);
   }
 
-  let parsedBody: unknown;
-  try {
-    parsedBody = await parseBody(response);
-  } catch (error) {
-    throw new StashHttpError(0, undefined, undefined, error);
-  }
-  const raw: RawResponse = {
-    status: response.status,
-    body: parsedBody,
-    response,
-    replayed: (response.status === 200 || response.status === 201) && replayedHeader(response),
-  };
-
-  if (response.status >= 500) {
-    throw new StashHttpError(
-      response.status,
-      getErrorCode(parsedBody, "internal") as ErrorCode,
-      parsedBody,
-    );
-  }
-  return raw;
-}
-
-async function request<T>(
-  send: Send,
-  authorizationToken: string | undefined,
-  method: RouteMethod,
-  requestTarget: RequestTarget,
-  body?: unknown,
-  idempotencyKey?: string,
-  ifNoneMatch?: string,
-): Promise<ClientResult<T> | NotModifiedResult> {
-  const raw = await readRaw(
-    send,
-    authorizationToken,
-    method,
-    requestTarget,
-    body,
-    idempotencyKey,
-    ifNoneMatch,
-  );
-  if (raw.status === 304) return { ok: true, notModified: true };
-  if (raw.status >= 200 && raw.status < 300) return withReplay(raw.body as T, raw.replayed);
-  return mapFailure<T>(raw);
+  return parseClientResponse<T>(response, routeId);
 }
 
 async function mintKey(
@@ -452,23 +326,24 @@ export function createStashClient(options: StashClientOptions): StashClient {
     keyFactory = options.idempotencyKey ?? (() => globalThis.crypto.randomUUID());
   }
 
-  const rawCall = (
-    method: RouteMethod,
-    requestTarget: RequestTarget,
-    body?: unknown,
-    idempotencyKey?: string,
-    ifNoneMatch?: string,
-  ): Promise<RawResponse> =>
-    readRaw(send, authorizationToken, method, requestTarget, body, idempotencyKey, ifNoneMatch);
-
   const call = <T>(
+    routeId: RouteId,
     method: RouteMethod,
     requestTarget: RequestTarget,
     body?: unknown,
     idempotencyKey?: string,
     ifNoneMatch?: string,
   ): Promise<ClientResult<T> | NotModifiedResult> =>
-    request(send, authorizationToken, method, requestTarget, body, idempotencyKey, ifNoneMatch);
+    request(
+      send,
+      authorizationToken,
+      routeId,
+      method,
+      requestTarget,
+      body,
+      idempotencyKey,
+      ifNoneMatch,
+    );
 
   const stashError = <T>(stash: string): ClientResult<T> | undefined => validateStash<T>(stash);
 
@@ -482,32 +357,21 @@ export function createStashClient(options: StashClientOptions): StashClient {
     async get(path, getOptions = {}) {
       const invalid = filePath<FileRecordWithEtag>(stash, path);
       if (invalid !== undefined) return invalid;
-      const requestTarget = target(route("getFile", stash, path), [
-        ["version", getOptions.version],
-      ]);
-      const raw = await rawCall("GET", requestTarget, undefined, undefined, getOptions.ifNoneMatch);
-      if (raw.status === 304) return { ok: true, notModified: true };
-      if (raw.status < 200 || raw.status >= 300) return mapFailure<FileRecordWithEtag>(raw);
-      const record = raw.body as FileRecord;
-      const headerEtag = raw.response.headers.get("ETag");
-      return {
-        ok: true,
-        value: {
-          ...record,
-          etag:
-            headerEtag ??
-            (record.deleted
-              ? formatEtag({ version: record.version, hash: null, deleted: true })
-              : formatEtag({ version: record.version, hash: record.hash ?? "", deleted: false })),
-        },
-        ...(raw.replayed ? { replayed: true as const } : {}),
-      };
+      return (await call<FileRecordWithEtag>(
+        "getFile",
+        "GET",
+        target(route("getFile", stash, path), [["version", getOptions.version]]),
+        undefined,
+        undefined,
+        getOptions.ifNoneMatch,
+      )) as FileGetResult;
     },
     async put(path, input, mutationOptions = {}) {
       const invalid = filePath<PutResult>(stash, path);
       if (invalid !== undefined) return invalid;
       const idempotencyKey = await mintKey(keyFactory, mutationOptions.idempotencyKey);
       return (await call<PutResult>(
+        "putFile",
         "PUT",
         target(route("putFile", stash, path)),
         input,
@@ -519,6 +383,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       if (invalid !== undefined) return invalid;
       const idempotencyKey = await mintKey(keyFactory, mutationOptions.idempotencyKey);
       return (await call<DeleteResult>(
+        "deleteFile",
         "POST",
         target(route("deleteFile", stash, path)),
         input,
@@ -530,6 +395,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       if (invalid !== undefined) return invalid;
       const idempotencyKey = await mintKey(keyFactory, mutationOptions.idempotencyKey);
       return (await call<RollbackResult>(
+        "rollbackFile",
         "POST",
         target(route("rollbackFile", stash, path)),
         input,
@@ -540,6 +406,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       const invalid = stashError<FileListResponse>(stash);
       if (invalid !== undefined) return invalid;
       return (await call<FileListResponse>(
+        "listFiles",
         "GET",
         target(route("listFiles", stash), [
           ["includeDeleted", listOptions.includeDeleted],
@@ -552,6 +419,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       const invalid = filePath<GetHistoryResult>(stash, path);
       if (invalid !== undefined) return invalid;
       return (await call<GetHistoryResult>(
+        "getHistory",
         "GET",
         target(route("getHistory", stash, path), [
           ["limit", historyOptions.limit],
@@ -563,6 +431,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       const invalid = filePath<GetDiffResult>(stash, path);
       if (invalid !== undefined) return invalid;
       return (await call<GetDiffResult>(
+        "getDiff",
         "GET",
         target(route("getDiff", stash, path), [
           ["from", diffOptions.from],
@@ -576,6 +445,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       const invalid = filePath<CandidateDiffResult>(stash, path);
       if (invalid !== undefined) return invalid;
       return (await call<CandidateDiffResult>(
+        "diffCandidate",
         "POST",
         target(route("diffCandidate", stash, path)),
         input,
@@ -588,6 +458,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
         return validationResult("validation", "since and before are mutually exclusive");
       }
       return (await call<ListChangesResult>(
+        "getStashChanges",
         "GET",
         target(route("getStashChanges", stash), [
           ["since", changesOptions.since],
@@ -601,6 +472,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
   const stashes = {
     async list(listOptions: ListStashesOptions = {}) {
       return (await call<ListStashesResult>(
+        "listStashes",
         "GET",
         target(route("listStashes"), [
           ["limit", listOptions.limit],
@@ -612,6 +484,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       const stashResult = validateStash<CreateStashResult>(input.name);
       if (stashResult !== undefined) return stashResult;
       return (await call<CreateStashResult>(
+        "createStash",
         "POST",
         target(route("createStash")),
         input,
@@ -621,6 +494,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       const invalid = stashError<StashRecord>(stash);
       if (invalid !== undefined) return invalid;
       return (await call<StashRecord>(
+        "getStash",
         "GET",
         target(route("getStash", stash)),
       )) as ClientResult<StashRecord>;
@@ -631,6 +505,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
           const invalid = stashError<CreateTokenResult>(stash);
           if (invalid !== undefined) return invalid;
           return (await call<CreateTokenResult>(
+            "createToken",
             "POST",
             target(route("createToken", stash)),
             input,
@@ -640,6 +515,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
           const invalid = stashError<ListTokensResult>(stash);
           if (invalid !== undefined) return invalid;
           return (await call<ListTokensResult>(
+            "listTokens",
             "GET",
             target(route("listTokens", stash)),
           )) as ClientResult<ListTokensResult>;
@@ -648,6 +524,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
           const invalid = stashError<undefined>(stash);
           if (invalid !== undefined) return invalid;
           return (await call<undefined>(
+            "revokeToken",
             "DELETE",
             target(route("revokeToken", stash, undefined, id)),
           )) as ClientResult<undefined>;
@@ -660,6 +537,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       const invalidPath = validateFilePath<ImportResult>(input.path);
       if (invalidPath !== undefined) return invalidPath;
       return (await call<ImportResult>(
+        "importHistory",
         "POST",
         target(route("importHistory", stash)),
         input,
@@ -672,6 +550,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       return validationResult<ChangesPage>("validation", "since and before are mutually exclusive");
     }
     return (await call<ChangesPage>(
+      "listChanges",
       "GET",
       target(route("listChanges"), [
         ["since", changesOptions.since],
@@ -684,12 +563,13 @@ export function createStashClient(options: StashClientOptions): StashClient {
   const client: StashClient = {
     async health() {
       return (await call<HealthResponse>(
+        "health",
         "GET",
         target(route("health")),
       )) as ClientResult<HealthResponse>;
     },
     async me() {
-      return (await call<MeResponse>("GET", target(route("me")))) as ClientResult<MeResponse>;
+      return (await call<MeResponse>("me", "GET", target(route("me")))) as ClientResult<MeResponse>;
     },
     stashes,
     changes,
