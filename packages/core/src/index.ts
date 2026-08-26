@@ -1,5 +1,6 @@
 export const VERSION = "0.0.0";
 export * from "./canonical.js";
+export * from "./diff-model.js";
 export * from "./diff.js";
 export * from "./errors.js";
 export * from "./etag.js";
