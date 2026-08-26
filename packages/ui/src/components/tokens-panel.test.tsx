@@ -5,10 +5,13 @@ import {
   type CreateTokenResult,
   type StashClient,
   type StashFetch,
+  type TokenRecord,
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash, type FakeStash } from "@takazudo/zudo-history-stash/testing";
 import { describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
+import { MintTokenForm } from "./mint-token-form.js";
+import { RevokeTokenDialog } from "./revoke-token-dialog.js";
 import { TokensPanel } from "./tokens-panel.js";
 
 const BASE_URL = "https://stash.test";
@@ -26,6 +29,16 @@ interface Fixture {
   client: StashClient;
   clientForSignal: (signal: AbortSignal) => StashClient;
   requests: RecordedRequest[];
+}
+
+function deferred() {
+  let resolve = () => {};
+  let reject = (_error: unknown) => {};
+  const promise = new Promise<void>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
 }
 
 function clientWithFetch(token: string, fetch: StashFetch): StashClient {
@@ -86,7 +99,77 @@ function renderPanel(fixture: Fixture, stash = STASH) {
   );
 }
 
+function tokenRecord(id: string, label: string): TokenRecord {
+  return {
+    id,
+    label,
+    scope: "read",
+    createdAt: "2026-08-26T09:00:00.000Z",
+    lastUsedAt: null,
+    revokedAt: null,
+  };
+}
+
 describe("TokensPanel", () => {
+  it("does not let an old target's mint resolution clear the new target form", async () => {
+    const user = userEvent.setup();
+    const oldRequest = deferred();
+    const notesTarget = { client: "client-a", stash: "notes" };
+    const archiveTarget = { client: "client-a", stash: "archive" };
+    const mintNotes = vi.fn(() => oldRequest.promise);
+    const mintArchive = vi.fn(async () => {});
+    const rendered = render(<MintTokenForm targetKey={notesTarget} onMint={mintNotes} />);
+
+    await user.type(screen.getByRole("textbox", { name: "Label (optional)" }), "notes draft");
+    await user.click(screen.getByRole("button", { name: "Mint token" }));
+    expect((screen.getByRole("button", { name: "Minting…" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    rendered.rerender(<MintTokenForm targetKey={archiveTarget} onMint={mintArchive} />);
+    const archiveLabel = screen.getByRole("textbox", {
+      name: "Label (optional)",
+    }) as HTMLInputElement;
+    expect(archiveLabel.value).toBe("");
+    expect((screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    await user.type(archiveLabel, "archive draft");
+
+    await act(async () => {
+      oldRequest.resolve();
+      await oldRequest.promise;
+    });
+    expect(archiveLabel.value).toBe("archive draft");
+    expect(screen.queryByText("Could not mint the token")).toBeNull();
+    expect(mintArchive).not.toHaveBeenCalled();
+  });
+
+  it("does not let an old target's mint rejection reach the new target form", async () => {
+    const user = userEvent.setup();
+    const oldRequest = deferred();
+    const notesTarget = { client: "client-a", stash: "notes" };
+    const archiveTarget = { client: "client-b", stash: "archive" };
+    const rendered = render(
+      <MintTokenForm targetKey={notesTarget} onMint={() => oldRequest.promise} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Mint token" }));
+    rendered.rerender(<MintTokenForm targetKey={archiveTarget} onMint={async () => undefined} />);
+    const archiveLabel = screen.getByRole("textbox", {
+      name: "Label (optional)",
+    }) as HTMLInputElement;
+    await user.type(archiveLabel, "keep this draft");
+
+    await act(async () => {
+      oldRequest.reject(new Error("old target failed"));
+      await oldRequest.promise.catch(() => undefined);
+    });
+    expect(archiveLabel.value).toBe("keep this draft");
+    expect(screen.queryByText("Could not mint the token")).toBeNull();
+    expect(screen.queryByText("old target failed")).toBeNull();
+  });
+
   it("waits for the admin capability to resolve before listing tokens", async () => {
     const fixture = makeFixture();
     let releaseMe = () => {};
@@ -207,6 +290,93 @@ describe("TokensPanel", () => {
     expect(document.documentElement.outerHTML).not.toContain(secret);
   });
 
+  it("blocks a second mint until the active one-time secret is acknowledged", async () => {
+    const fixture = makeFixture();
+    const archive = "archive";
+    fixture.fake.createStash(archive);
+    const user = userEvent.setup();
+    const rendered = renderPanel(fixture);
+    await screen.findByText("No tokens have been minted for this stash.");
+
+    await user.type(screen.getByRole("textbox", { name: "Label (optional)" }), "first token");
+    await user.click(screen.getByRole("button", { name: "Mint token" }));
+    const firstSecret = (await screen.findByRole("textbox", {
+      name: "New token secret",
+    })) as HTMLInputElement;
+    const firstValue = firstSecret.value;
+    const lockedMint = screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement;
+    expect(lockedMint.disabled).toBe(true);
+    expect(
+      (screen.getByRole("textbox", { name: "Label (optional)" }) as HTMLInputElement).disabled,
+    ).toBe(true);
+    expect((screen.getByRole("combobox", { name: "Scope" }) as HTMLSelectElement).disabled).toBe(
+      true,
+    );
+
+    const form = lockedMint.closest("form");
+    if (form === null) throw new Error("Expected the mint button to be inside a form");
+    fireEvent.submit(form);
+    await act(async () => Promise.resolve());
+    expect(firstSecret.value).toBe(firstValue);
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),
+      ),
+    ).toHaveLength(1);
+
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={archive} />
+      </StashUiProvider>,
+    );
+    expect(
+      await screen.findByText("A one-time secret is still awaiting acknowledgement"),
+    ).toBeTruthy();
+    expect(screen.getByText(/Return to the token page for notes/)).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "New token secret" })).toBeNull();
+    const archiveMint = screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement;
+    expect(archiveMint.disabled).toBe(true);
+    const archiveForm = archiveMint.closest("form");
+    if (archiveForm === null) throw new Error("Expected the mint button to be inside a form");
+    fireEvent.submit(archiveForm);
+    await act(async () => Promise.resolve());
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),
+      ),
+    ).toHaveLength(1);
+
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={STASH} />
+      </StashUiProvider>,
+    );
+    const restoredSecret = (await screen.findByRole("textbox", {
+      name: "New token secret",
+    })) as HTMLInputElement;
+    expect(restoredSecret.value).toBe(firstValue);
+    await user.click(screen.getByRole("button", { name: "I stored it" }));
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={archive} />
+      </StashUiProvider>,
+    );
+    expect((screen.getByRole("button", { name: "Mint token" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    await user.type(screen.getByRole("textbox", { name: "Label (optional)" }), "second token");
+    await user.click(screen.getByRole("button", { name: "Mint token" }));
+    const secondSecret = (await screen.findByRole("textbox", {
+      name: "New token secret",
+    })) as HTMLInputElement;
+    expect(secondSecret.value).not.toBe(firstValue);
+    expect(
+      fixture.requests.filter(
+        (request) => request.method === "POST" && request.pathname.endsWith("/tokens"),
+      ),
+    ).toHaveLength(2);
+  });
+
   it("requires an explicit revoke confirmation and refreshes the authoritative revoked row", async () => {
     const fixture = makeFixture();
     const token = await seedToken(fixture.seedClient, STASH, "release bot", "write");
@@ -243,6 +413,140 @@ describe("TokensPanel", () => {
         (request) => request.method === "GET" && request.pathname.endsWith("/tokens"),
       ).length,
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps a pending revoke dialog atomic when Escape requests close", async () => {
+    const user = userEvent.setup();
+    const request = deferred();
+    const onClose = vi.fn();
+    render(
+      <RevokeTokenDialog
+        open={true}
+        operationKey={{ stash: "notes", token: "token-a" }}
+        token={tokenRecord("token-a", "release bot")}
+        onClose={onClose}
+        onConfirm={() => request.promise}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "Revoke token" });
+    await user.click(within(dialog).getByRole("button", { name: "Confirm revoke" }));
+    expect(
+      (within(dialog).getByRole("button", { name: "Revoking…" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Revoke token" })).toBeTruthy();
+
+    await act(async () => {
+      request.resolve();
+      await request.promise;
+    });
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds revoke errors to the exact target and token operation", async () => {
+    const user = userEvent.setup();
+    const oldRequest = deferred();
+    const oldOperation = { stash: "notes", token: "token-shared" };
+    const newOperation = { stash: "archive", token: "token-shared" };
+    const newConfirm = vi.fn(async () => {
+      throw new Error("new selection failed");
+    });
+    const rendered = render(
+      <RevokeTokenDialog
+        open={true}
+        operationKey={oldOperation}
+        token={tokenRecord("token-shared", "notes bot")}
+        onClose={() => undefined}
+        onConfirm={() => oldRequest.promise}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Confirm revoke" }));
+    rendered.rerender(
+      <RevokeTokenDialog
+        open={true}
+        operationKey={newOperation}
+        token={tokenRecord("token-shared", "archive bot")}
+        onClose={() => undefined}
+        onConfirm={newConfirm}
+      />,
+    );
+    expect(screen.getByText("archive bot")).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Confirm revoke" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    await act(async () => {
+      oldRequest.reject(new Error("old selection failed"));
+      await oldRequest.promise.catch(() => undefined);
+    });
+    expect(screen.queryByText("old selection failed")).toBeNull();
+    expect(screen.getByText("archive bot")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Confirm revoke" }));
+    expect(await screen.findByText("new selection failed")).toBeTruthy();
+    expect(newConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an old revoke completion clear a newer target selection", async () => {
+    const fixture = makeFixture();
+    const archive = "archive";
+    fixture.fake.createStash(archive);
+    await seedToken(fixture.seedClient, STASH, "notes bot", "write");
+    await seedToken(fixture.seedClient, archive, "archive bot", "write");
+    const oldDeleteStarted = deferred();
+    const oldDeleteGate = deferred();
+    const oldDeleteFinished = deferred();
+    const delayedFetch: StashFetch = async (input, init) => {
+      const request = new Request(input, init);
+      const pathname = new URL(request.url).pathname;
+      const isOldDelete =
+        request.method === "DELETE" && pathname.includes(`/stashes/${STASH}/tokens/`);
+      if (isOldDelete) {
+        oldDeleteStarted.resolve();
+        await oldDeleteGate.promise;
+      }
+      const response = await fixture.fake.fetch(request);
+      if (isOldDelete) oldDeleteFinished.resolve();
+      return response;
+    };
+    fixture.requests.length = 0;
+    fixture.client = trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests);
+    fixture.clientForSignal = (signal) =>
+      trackedClient(ADMIN_TOKEN, delayedFetch, fixture.requests, signal);
+    const user = userEvent.setup();
+    const rendered = renderPanel(fixture);
+
+    await user.click(await screen.findByRole("button", { name: "Revoke notes bot" }));
+    await user.click(screen.getByRole("button", { name: "Confirm revoke" }));
+    await oldDeleteStarted.promise;
+    rendered.rerender(
+      <StashUiProvider client={fixture.client} clientForSignal={fixture.clientForSignal}>
+        <TokensPanel stash={archive} />
+      </StashUiProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Revoke archive bot" }));
+    let archiveDialog = screen.getByRole("dialog", { name: "Revoke token" });
+    expect(within(archiveDialog).getByText("archive bot")).toBeTruthy();
+
+    await act(async () => {
+      oldDeleteGate.resolve();
+      await oldDeleteFinished.promise;
+    });
+    await waitFor(() => {
+      archiveDialog = screen.getByRole("dialog", { name: "Revoke token" });
+      expect(within(archiveDialog).getByText("archive bot")).toBeTruthy();
+    });
+    expect(
+      (
+        within(archiveDialog).getByRole("button", {
+          name: "Confirm revoke",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
   });
 
   it("renders not available for a stash principal and records only the me request", async () => {

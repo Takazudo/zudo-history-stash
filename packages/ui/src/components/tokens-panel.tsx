@@ -60,6 +60,10 @@ function newestFirst(tokens: readonly TokenRecord[]): TokenRecord[] {
   });
 }
 
+function isSameTokenTarget(left: TokenTarget, right: TokenTarget): boolean {
+  return left.client === right.client && left.stash === right.stash;
+}
+
 function OneTimeSecret({ token, onDismiss }: { token: string; onDismiss: () => void }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
 
@@ -233,20 +237,24 @@ export function TokensPanel({ stash }: TokensPanelProps) {
     [refresh, target],
   );
 
-  const visibleSecret = secretSnapshot?.target === target ? secretSnapshot.token : null;
-  const visibleRevoke = revokeSnapshot?.target === target ? revokeSnapshot.token : null;
+  const visibleSecret =
+    secretSnapshot !== null && isSameTokenTarget(secretSnapshot.target, target)
+      ? secretSnapshot
+      : null;
+  const visibleRevoke = revokeSnapshot?.target === target ? revokeSnapshot : null;
   const listResult =
     listSnapshot?.target === target
       ? listSnapshot.result
       : ({ state: "loading" } satisfies TokenListResult);
 
-  async function handleRevoke() {
-    if (visibleRevoke === null) return;
-    const result = await target.client.stashes.tokens(target.stash).revoke(visibleRevoke.id);
+  async function handleRevoke(operation: RevokeSnapshot) {
+    const result = await operation.target.client.stashes
+      .tokens(operation.target.stash)
+      .revoke(operation.token.id);
     if (!result.ok) throw result;
-    if (activeTargetRef.current !== target) return;
+    if (activeTargetRef.current !== operation.target) return;
 
-    setRevokeSnapshot(null);
+    setRevokeSnapshot((current) => (current === operation ? null : current));
     refresh();
   }
 
@@ -276,14 +284,26 @@ export function TokensPanel({ stash }: TokensPanelProps) {
         </div>
       </header>
 
-      <MintTokenForm onMint={handleMint} />
+      <MintTokenForm disabled={secretSnapshot !== null} targetKey={target} onMint={handleMint} />
 
       {visibleSecret ? (
         <OneTimeSecret
-          key={visibleSecret}
-          token={visibleSecret}
-          onDismiss={() => setSecretSnapshot(null)}
+          key={visibleSecret.token}
+          token={visibleSecret.token}
+          onDismiss={() =>
+            setSecretSnapshot((current) => (current === visibleSecret ? null : current))
+          }
         />
+      ) : null}
+
+      {secretSnapshot !== null && visibleSecret === null ? (
+        <Notice className="zhs-tokens-secret-blocked" variant="warning">
+          <strong>A one-time secret is still awaiting acknowledgement</strong>
+          <p>
+            Return to the token page for {secretSnapshot.target.stash} and choose “I stored it”
+            before minting another token.
+          </p>
+        </Notice>
       ) : null}
 
       <section className="zhs-tokens-list" aria-labelledby={listTitleId}>
@@ -317,11 +337,14 @@ export function TokensPanel({ stash }: TokensPanelProps) {
 
       {visibleRevoke ? (
         <RevokeTokenDialog
-          key={visibleRevoke.id}
+          key={visibleRevoke.token.id}
           open={true}
-          token={visibleRevoke}
-          onClose={() => setRevokeSnapshot(null)}
-          onConfirm={handleRevoke}
+          operationKey={visibleRevoke}
+          token={visibleRevoke.token}
+          onClose={() =>
+            setRevokeSnapshot((current) => (current === visibleRevoke ? null : current))
+          }
+          onConfirm={() => handleRevoke(visibleRevoke)}
         />
       ) : null}
     </section>

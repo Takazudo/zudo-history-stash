@@ -1,5 +1,5 @@
 import type { CreateTokenBody, TokenScope } from "@takazudo/zudo-history-stash";
-import { useId, useRef, useState, type FormEvent } from "react";
+import { useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "../primitives/button.js";
 import { Input } from "../primitives/input.js";
 import { Notice } from "../primitives/notice.js";
@@ -7,37 +7,90 @@ import { Select } from "../primitives/select.js";
 import { ErrorBanner } from "./error-banner.js";
 
 export interface MintTokenFormProps {
+  disabled?: boolean;
   onMint: (input: CreateTokenBody) => Promise<void>;
+  targetKey: object;
 }
 
-export function MintTokenForm({ onMint }: MintTokenFormProps) {
+interface MintDraft {
+  targetKey: object;
+  label: string;
+  scope: TokenScope;
+}
+
+interface MintOperation {
+  targetKey: object;
+  generation: number;
+}
+
+type MintOperationSnapshot =
+  | { operation: MintOperation; state: "submitting" }
+  | { operation: MintOperation; state: "error"; error: unknown };
+
+export function MintTokenForm({ disabled = false, onMint, targetKey }: MintTokenFormProps) {
   const titleId = useId();
-  const [label, setLabel] = useState("");
-  const [scope, setScope] = useState<TokenScope>("read");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<unknown | null>(null);
-  const submittingRef = useRef(false);
+  const activeTargetKeyRef = useRef(targetKey);
+  const operationGenerationRef = useRef(0);
+  const activeOperationRef = useRef<MintOperation | null>(null);
+  const [draft, setDraft] = useState<MintDraft>({ targetKey, label: "", scope: "read" });
+  const [operationSnapshot, setOperationSnapshot] = useState<MintOperationSnapshot | null>(null);
+  const label = draft.targetKey === targetKey ? draft.label : "";
+  const scope = draft.targetKey === targetKey ? draft.scope : "read";
+  const submitting =
+    operationSnapshot?.operation.targetKey === targetKey &&
+    operationSnapshot.state === "submitting";
+  const error =
+    operationSnapshot?.operation.targetKey === targetKey && operationSnapshot.state === "error"
+      ? operationSnapshot.error
+      : null;
+  const controlsDisabled = disabled || submitting;
+
+  useLayoutEffect(() => {
+    if (activeTargetKeyRef.current === targetKey) return;
+    activeTargetKeyRef.current = targetKey;
+    if (activeOperationRef.current?.targetKey !== targetKey) activeOperationRef.current = null;
+  }, [targetKey]);
+
+  function isCurrentOperation(operation: MintOperation): boolean {
+    return (
+      activeTargetKeyRef.current === operation.targetKey &&
+      activeOperationRef.current?.targetKey === operation.targetKey &&
+      activeOperationRef.current.generation === operation.generation
+    );
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submittingRef.current) return;
+    if (disabled || activeOperationRef.current?.targetKey === targetKey) return;
 
-    submittingRef.current = true;
-    setSubmitting(true);
-    setError(null);
+    const operation: MintOperation = {
+      targetKey,
+      generation: ++operationGenerationRef.current,
+    };
+    activeOperationRef.current = operation;
+    setOperationSnapshot({ operation, state: "submitting" });
     try {
       const normalizedLabel = label.trim();
       await onMint({
         scope,
         ...(normalizedLabel ? { label: normalizedLabel } : {}),
       });
-      setLabel("");
-      setScope("read");
+      if (!isCurrentOperation(operation)) return;
+      setDraft({ targetKey, label: "", scope: "read" });
+      setOperationSnapshot(null);
     } catch (requestError) {
-      setError(requestError);
+      if (isCurrentOperation(operation)) {
+        setOperationSnapshot({ operation, state: "error", error: requestError });
+      }
     } finally {
-      submittingRef.current = false;
-      setSubmitting(false);
+      if (isCurrentOperation(operation)) {
+        activeOperationRef.current = null;
+        setOperationSnapshot((current) =>
+          current?.operation.generation === operation.generation && current.state === "submitting"
+            ? null
+            : current,
+        );
+      }
     }
   }
 
@@ -54,19 +107,21 @@ export function MintTokenForm({ onMint }: MintTokenFormProps) {
           <span className="zhs-tokens-field__label">Label (optional)</span>
           <Input
             autoComplete="off"
-            disabled={submitting}
+            disabled={controlsDisabled}
             name="label"
             value={label}
-            onChange={(event) => setLabel(event.currentTarget.value)}
+            onChange={(event) => setDraft({ targetKey, label: event.currentTarget.value, scope })}
           />
         </label>
         <label className="zhs-tokens-field">
           <span className="zhs-tokens-field__label">Scope</span>
           <Select
-            disabled={submitting}
+            disabled={controlsDisabled}
             name="scope"
             value={scope}
-            onChange={(event) => setScope(event.currentTarget.value as TokenScope)}
+            onChange={(event) =>
+              setDraft({ targetKey, label, scope: event.currentTarget.value as TokenScope })
+            }
           >
             <option value="read">Read</option>
             <option value="write">Write</option>
@@ -81,7 +136,7 @@ export function MintTokenForm({ onMint }: MintTokenFormProps) {
         ) : null}
         {error ? <ErrorBanner error={error} title="Could not mint the token" /> : null}
         <div className="zhs-tokens-form-actions">
-          <Button disabled={submitting} type="submit" variant="primary">
+          <Button disabled={controlsDisabled} type="submit" variant="primary">
             {submitting ? "Minting…" : "Mint token"}
           </Button>
         </div>

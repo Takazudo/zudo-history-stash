@@ -1,5 +1,5 @@
 import type { TokenRecord } from "@takazudo/zudo-history-stash";
-import { useId, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.js";
 import { Dialog } from "../primitives/dialog.js";
 import { ErrorBanner } from "./error-banner.js";
@@ -9,28 +9,86 @@ export interface RevokeTokenDialogProps {
   token: TokenRecord;
   onClose: () => void;
   onConfirm: () => Promise<void>;
+  operationKey: object;
 }
 
-export function RevokeTokenDialog({ open, token, onClose, onConfirm }: RevokeTokenDialogProps) {
+interface RevokeOperation {
+  operationKey: object;
+  generation: number;
+}
+
+type RevokeOperationSnapshot =
+  | { operation: RevokeOperation; state: "submitting" }
+  | { operation: RevokeOperation; state: "error"; error: unknown };
+
+export function RevokeTokenDialog({
+  open,
+  token,
+  onClose,
+  onConfirm,
+  operationKey,
+}: RevokeTokenDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<unknown | null>(null);
-  const submittingRef = useRef(false);
+  const activeOperationKeyRef = useRef(operationKey);
+  const operationGenerationRef = useRef(0);
+  const activeOperationRef = useRef<RevokeOperation | null>(null);
+  const [operationSnapshot, setOperationSnapshot] = useState<RevokeOperationSnapshot | null>(null);
+  const submitting =
+    operationSnapshot?.operation.operationKey === operationKey &&
+    operationSnapshot.state === "submitting";
+  const error =
+    operationSnapshot?.operation.operationKey === operationKey &&
+    operationSnapshot.state === "error"
+      ? operationSnapshot.error
+      : null;
+
+  useLayoutEffect(() => {
+    if (activeOperationKeyRef.current === operationKey) return;
+    activeOperationKeyRef.current = operationKey;
+    if (activeOperationRef.current?.operationKey !== operationKey) {
+      activeOperationRef.current = null;
+    }
+  }, [operationKey]);
+
+  function isCurrentOperation(operation: RevokeOperation): boolean {
+    return (
+      activeOperationKeyRef.current === operation.operationKey &&
+      activeOperationRef.current?.operationKey === operation.operationKey &&
+      activeOperationRef.current.generation === operation.generation
+    );
+  }
+
+  function handleClose() {
+    if (activeOperationRef.current?.operationKey === operationKey) return;
+    onClose();
+  }
 
   async function handleConfirm() {
-    if (submittingRef.current) return;
+    if (activeOperationRef.current?.operationKey === operationKey) return;
 
-    submittingRef.current = true;
-    setSubmitting(true);
-    setError(null);
+    const operation: RevokeOperation = {
+      operationKey,
+      generation: ++operationGenerationRef.current,
+    };
+    activeOperationRef.current = operation;
+    setOperationSnapshot({ operation, state: "submitting" });
     try {
       await onConfirm();
+      if (isCurrentOperation(operation)) setOperationSnapshot(null);
     } catch (requestError) {
-      setError(requestError);
+      if (isCurrentOperation(operation)) {
+        setOperationSnapshot({ operation, state: "error", error: requestError });
+      }
     } finally {
-      submittingRef.current = false;
-      setSubmitting(false);
+      if (isCurrentOperation(operation)) {
+        activeOperationRef.current = null;
+        setOperationSnapshot((current) =>
+          current?.operation.generation === operation.generation && current.state === "submitting"
+            ? null
+            : current,
+        );
+      }
     }
   }
 
@@ -40,7 +98,7 @@ export function RevokeTokenDialog({ open, token, onClose, onConfirm }: RevokeTok
       aria-labelledby={titleId}
       className="zhs-tokens-revoke-dialog"
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
     >
       <header className="zhs-tokens-dialog-header">
         <div>
@@ -51,7 +109,7 @@ export function RevokeTokenDialog({ open, token, onClose, onConfirm }: RevokeTok
           aria-label="Close revoke token dialog"
           disabled={submitting}
           size="sm"
-          onClick={onClose}
+          onClick={handleClose}
         >
           Close
         </Button>
@@ -76,7 +134,7 @@ export function RevokeTokenDialog({ open, token, onClose, onConfirm }: RevokeTok
         {error ? <ErrorBanner error={error} title="Could not revoke the token" /> : null}
       </div>
       <footer className="zhs-tokens-dialog-footer">
-        <Button disabled={submitting} onClick={onClose}>
+        <Button disabled={submitting} onClick={handleClose}>
           Cancel
         </Button>
         <Button disabled={submitting} variant="danger" onClick={() => void handleConfirm()}>
