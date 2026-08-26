@@ -30,6 +30,7 @@ export async function resetDatabase(): Promise<void> {
   for (const table of ["idempotency", "versions", "files", "blobs", "tokens", "stashes"]) {
     await db.prepare(`DELETE FROM ${table}`).run();
   }
+  await db.prepare("DELETE FROM sqlite_sequence WHERE name = 'versions'").run();
 }
 
 export async function mintToken(stash: string, scope: "read" | "write") {

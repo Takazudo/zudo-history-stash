@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_ROUTES, StashHttpError, createStashClient, validatePath } from "./index.js";
-import type { StashFetch } from "./index.js";
+import { createRpcSend } from "./transport.js";
+import type { StashFetch, StashRpcBinding } from "./index.js";
 import {
   ROUTES as coreRoutes,
   validatePath as coreValidatePath,
@@ -43,6 +44,115 @@ describe("route and validator pins", () => {
       coreRoutes.map(({ method, template }) => [method, template]),
     );
     expect(validatePath).toBe(coreValidatePath);
+  });
+});
+
+describe("transport options", () => {
+  it("keeps explicit fetch transport options on the existing fetch path", async () => {
+    mock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const c = createStashClient({
+      baseUrl: "https://stash.example",
+      token: "admin-token",
+      fetch: mock,
+      transport: { kind: "fetch" },
+    });
+
+    await expect(c.health()).resolves.toEqual({ ok: true, value: { ok: true } });
+    expect(mock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an rpc transport without a non-empty token", () => {
+    const binding = { request: vi.fn(async () => new Response(null, { status: 204 })) };
+    expect(() =>
+      createStashClient({
+        transport: { kind: "rpc", binding },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport requires a non-empty token");
+    expect(() =>
+      createStashClient({
+        transport: { kind: "rpc", binding, token: "   " },
+      }),
+    ).toThrow("rpc transport requires a non-empty token");
+  });
+
+  it("rejects an rpc transport without a request-capable binding", () => {
+    expect(() =>
+      createStashClient({
+        transport: { kind: "rpc", binding: {}, token: "rpc-token" },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport requires a binding with a request function");
+  });
+
+  it("rejects fetch-only fields on the rpc branch", () => {
+    const binding = { request: vi.fn(async () => new Response(null, { status: 204 })) };
+    expect(() =>
+      createStashClient({
+        baseUrl: "https://stash.example",
+        transport: { kind: "rpc", binding, token: "rpc-token" },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport does not accept baseUrl or fetch");
+    expect(() =>
+      createStashClient({
+        fetch: mock,
+        transport: { kind: "rpc", binding, token: "rpc-token" },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport does not accept baseUrl or fetch");
+  });
+
+  it("uses rpc without touching global fetch and sends the transport token separately", async () => {
+    const binding = {
+      request: vi.fn<StashRpcBinding["request"]>(async () => jsonResponse({ ok: true })),
+    };
+    const c = createStashClient({ transport: { kind: "rpc", binding, token: "rpc-token" } });
+
+    await expect(c.health()).resolves.toEqual({ ok: true, value: { ok: true } });
+    expect(mock).not.toHaveBeenCalled();
+    expect(binding.request).toHaveBeenCalledWith({
+      method: "GET",
+      path: "/v1/health",
+      token: "rpc-token",
+    });
+  });
+
+  it("ignores caller-supplied Authorization headers in favor of the rpc token", async () => {
+    const binding = {
+      request: vi.fn<StashRpcBinding["request"]>(async () => new Response(null, { status: 204 })),
+    };
+    const send = createRpcSend(binding, "rpc-token");
+
+    await send(
+      "GET",
+      "/v1/me",
+      undefined,
+      { Authorization: "Bearer caller-token", authorization: "Bearer second", "X-Test": "kept" },
+      undefined,
+    );
+
+    expect(binding.request).toHaveBeenCalledWith({
+      method: "GET",
+      path: "/v1/me",
+      headers: { "X-Test": "kept" },
+      token: "rpc-token",
+    });
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("preserves local validation boundaries before rpc dispatch", async () => {
+    const binding = {
+      request: vi.fn<StashRpcBinding["request"]>(async () => jsonResponse({ ok: true })),
+    };
+    const c = createStashClient({ transport: { kind: "rpc", binding, token: "rpc-token" } });
+
+    await expect(c.files("demo").get("bad path")).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid-path" },
+    });
+    await expect(c.changes({ since: 1, before: 2 })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "validation" },
+    });
+    expect(binding.request).not.toHaveBeenCalled();
+    expect(mock).not.toHaveBeenCalled();
   });
 });
 
@@ -300,6 +410,35 @@ describe("response mapping and safety", () => {
     });
   });
 
+  it("wraps request serialization failures before either transport dispatches", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const input = { body: "x", expectedVersion: null, meta: circular } as never;
+    const binding = {
+      request: vi.fn<StashRpcBinding["request"]>(async () => jsonResponse({ ok: true })),
+    };
+    const rpcClient = createStashClient({
+      transport: { kind: "rpc", binding, token: "rpc-token" },
+    });
+
+    await expect(
+      client().files("demo").put("a.txt", input, { idempotencyKey: "fetch-circular" }),
+    ).rejects.toMatchObject({
+      name: "StashHttpError",
+      status: 0,
+      cause: expect.any(TypeError),
+    });
+    await expect(
+      rpcClient.files("demo").put("a.txt", input, { idempotencyKey: "rpc-circular" }),
+    ).rejects.toMatchObject({
+      name: "StashHttpError",
+      status: 0,
+      cause: expect.any(TypeError),
+    });
+    expect(mock).not.toHaveBeenCalled();
+    expect(binding.request).not.toHaveBeenCalled();
+  });
+
   it("validates paths before fetch and never percent-encodes route paths", async () => {
     const c = client();
     const result = await c.files("demo").get("bad path");
@@ -359,5 +498,31 @@ describe("putLatest", () => {
       error: { code: "stale", message: "stale-3" },
     });
     expect(mock).toHaveBeenCalledTimes(6);
+  });
+
+  it("shares head reads and stale retries with the rpc transport", async () => {
+    const responses = [
+      jsonResponse({ path: "a.txt", version: 1, hash: "h1", deleted: false }),
+      jsonResponse({ error: { code: "stale", message: "moved" }, current: { version: 2 } }, 409),
+      jsonResponse({ path: "a.txt", version: 2, hash: "h2", deleted: false }),
+      jsonResponse({ version: 3, hash: "h3", size: 1, changeId: 3 }),
+    ];
+    const binding = {
+      request: vi.fn<StashRpcBinding["request"]>(async () => {
+        const response = responses.shift();
+        if (response === undefined) throw new Error("unexpected rpc request");
+        return response;
+      }),
+    };
+    const c = createStashClient({ transport: { kind: "rpc", binding, token: "rpc-token" } });
+
+    await expect(c.putLatest("demo", "a.txt", "new")).resolves.toEqual({
+      ok: true,
+      value: { version: 3, hash: "h3", size: 1, changeId: 3 },
+    });
+    expect(binding.request).toHaveBeenCalledTimes(4);
+    expect(binding.request.mock.calls[1]?.[0].body).toContain('"expectedVersion":1');
+    expect(binding.request.mock.calls[3]?.[0].body).toContain('"expectedVersion":2');
+    expect(mock).not.toHaveBeenCalled();
   });
 });
