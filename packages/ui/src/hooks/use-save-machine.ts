@@ -32,11 +32,15 @@ export type SaveMachineState =
   | { state: "error"; message: string };
 
 export type SaveMachine = SaveMachineState & {
+  /** Opaque identity for the active client/stash/path lifecycle. */
+  targetIdentity: object;
   canRetry: boolean;
   save: (metadata: SaveMetadata) => Promise<void>;
   retry: () => Promise<void>;
   reloadAndCompare: () => Promise<FileRecordWithEtag>;
   reconcile: () => Promise<boolean>;
+  /** Clears terminal state and a frozen retry when no operation is pending. */
+  resetSession: () => boolean;
 };
 
 interface FrozenSaveAttempt {
@@ -119,6 +123,7 @@ export function useSaveMachine({
   const mountedRef = useRef(true);
   const inFlightTargetsRef = useRef(new Set<SaveTarget>());
   const reloadingTargetsRef = useRef(new Set<SaveTarget>());
+  const reconcilingTargetsRef = useRef(new Set<SaveTarget>());
   const retryAttemptRef = useRef<FrozenSaveAttempt | null>(null);
   const initialSnapshot: RenderSnapshot = {
     target: renderedTarget,
@@ -331,28 +336,65 @@ export function useSaveMachine({
     const runtime = runtimeRef.current;
     if (runtime.target !== target || runtime.committedSnapshot !== renderSnapshot) return false;
 
-    if (inFlightTargetsRef.current.has(target) || reloadingTargetsRef.current.has(target)) {
+    if (
+      inFlightTargetsRef.current.has(target) ||
+      reloadingTargetsRef.current.has(target) ||
+      reconcilingTargetsRef.current.has(target)
+    ) {
       return false;
     }
 
     const generation = ++runtime.generation;
     const expectedHead = { ...runtime.effectiveHead };
-    const hash = await sha256Hex(applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding));
+    reconcilingTargetsRef.current.add(target);
+    try {
+      const hash = await sha256Hex(
+        applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding),
+      );
+      if (
+        runtimeRef.current !== runtime ||
+        runtime.committedSnapshot !== renderSnapshot ||
+        runtime.generation !== generation ||
+        inFlightTargetsRef.current.has(target) ||
+        reloadingTargetsRef.current.has(target) ||
+        hash !== expectedHead.hash
+      ) {
+        return false;
+      }
+
+      if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
+      transition(target, { state: "unchanged", version: expectedHead.version });
+      return true;
+    } finally {
+      reconcilingTargetsRef.current.delete(target);
+    }
+  }, [renderSnapshot, target, transition]);
+
+  const resetSession = useCallback((): boolean => {
+    const runtime = runtimeRef.current;
     if (
-      runtimeRef.current !== runtime ||
-      runtime.committedSnapshot !== renderSnapshot ||
-      runtime.generation !== generation ||
+      runtime.target !== target ||
       inFlightTargetsRef.current.has(target) ||
       reloadingTargetsRef.current.has(target) ||
-      hash !== expectedHead.hash
+      reconcilingTargetsRef.current.has(target)
     ) {
       return false;
     }
 
+    runtime.generation += 1;
     if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
-    transition(target, { state: "unchanged", version: expectedHead.version });
+    transition(target, IDLE_STATE);
     return true;
-  }, [renderSnapshot, target, transition]);
+  }, [target, transition]);
 
-  return { ...machine, canRetry, save, retry, reloadAndCompare, reconcile } as SaveMachine;
+  return {
+    ...machine,
+    targetIdentity: target,
+    canRetry,
+    save,
+    retry,
+    reloadAndCompare,
+    reconcile,
+    resetSession,
+  } as SaveMachine;
 }

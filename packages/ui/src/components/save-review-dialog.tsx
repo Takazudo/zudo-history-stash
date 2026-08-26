@@ -20,6 +20,10 @@ import { DiffPane } from "./diff-pane.js";
 const AUTHOR_STORAGE_KEY = "zhs.author";
 const MAX_AUTHOR_BYTES = 200;
 const MAX_MESSAGE_BYTES = 2_000;
+const targetIdentityKeys = new WeakMap<object, number>();
+let nextTargetIdentityKey = 1;
+
+type PendingOperation = "save" | "retry" | "reload";
 
 export type SaveReviewCompletion = Extract<SaveMachineState, { state: "saved" | "unchanged" }>;
 
@@ -87,6 +91,15 @@ function sameCompletion(left: SaveReviewCompletion | null, right: SaveReviewComp
   );
 }
 
+function keyForTargetIdentity(identity: object): number {
+  const existing = targetIdentityKeys.get(identity);
+  if (existing !== undefined) return existing;
+  const key = nextTargetIdentityKey;
+  nextTargetIdentityKey += 1;
+  targetIdentityKeys.set(identity, key);
+  return key;
+}
+
 function SaveReviewDialogOpen({
   head,
   draft,
@@ -112,8 +125,7 @@ function SaveReviewDialogOpen({
   const lifecycleRef = useRef(0);
   const renderEpochRef = useRef(0);
   const hashSequenceRef = useRef(0);
-  const freshSavePendingRef = useRef(false);
-  const retryPendingRef = useRef(false);
+  const pendingOperationRef = useRef<PendingOperation | null>(null);
   const completionArmedRef = useRef(false);
   const reportedCompletionRef = useRef<SaveReviewCompletion | null>(null);
   const machineStateRef = useRef(machine.state);
@@ -150,8 +162,7 @@ function SaveReviewDialogOpen({
     () => () => {
       lifecycleRef.current += 1;
       hashSequenceRef.current += 1;
-      freshSavePendingRef.current = false;
-      retryPendingRef.current = false;
+      pendingOperationRef.current = null;
       completionArmedRef.current = false;
     },
     [],
@@ -183,6 +194,9 @@ function SaveReviewDialogOpen({
     const completion = completionFrom(machine);
     if (completion === null || !completionArmedRef.current) return;
     completionArmedRef.current = false;
+    if (pendingOperationRef.current === "save" || pendingOperationRef.current === "retry") {
+      pendingOperationRef.current = null;
+    }
     if (sameCompletion(reportedCompletionRef.current, completion)) return;
     reportedCompletionRef.current = completion;
     onSaved(completion);
@@ -191,8 +205,23 @@ function SaveReviewDialogOpen({
   useEffect(() => {
     if (machine.state === "error" || machine.state === "stale") {
       completionArmedRef.current = false;
+      if (pendingOperationRef.current === "save" || pendingOperationRef.current === "retry") {
+        pendingOperationRef.current = null;
+      }
     }
   }, [machine.state]);
+
+  function requestClose() {
+    if (pendingOperationRef.current !== null || machine.state === "saving") return;
+    if (!machine.resetSession()) return;
+    onClose();
+  }
+
+  function requestDiscard() {
+    if (pendingOperationRef.current !== null || machine.state === "saving") return;
+    if (!machine.resetSession()) return;
+    onDiscard();
+  }
 
   async function saveFresh(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -200,7 +229,7 @@ function SaveReviewDialogOpen({
       machine.state !== "idle" ||
       sameAsHead !== false ||
       busy ||
-      freshSavePendingRef.current ||
+      pendingOperationRef.current !== null ||
       authorBytes > MAX_AUTHOR_BYTES ||
       messageBytes > MAX_MESSAGE_BYTES
     ) {
@@ -210,7 +239,7 @@ function SaveReviewDialogOpen({
     const lifecycle = lifecycleRef.current;
     const renderEpoch = renderEpochRef.current;
     const metadata = { author, message };
-    freshSavePendingRef.current = true;
+    pendingOperationRef.current = "save";
     completionArmedRef.current = true;
     setReconciling(true);
 
@@ -218,25 +247,30 @@ function SaveReviewDialogOpen({
       const unchanged = await machine.reconcile();
       if (lifecycleRef.current !== lifecycle || renderEpochRef.current !== renderEpoch) {
         completionArmedRef.current = false;
+        if (pendingOperationRef.current === "save") pendingOperationRef.current = null;
         return;
       }
       if (unchanged) return;
       if (machineStateRef.current !== "idle") {
         completionArmedRef.current = false;
+        if (pendingOperationRef.current === "save") pendingOperationRef.current = null;
         return;
       }
       await machine.save(metadata);
+    } catch {
+      completionArmedRef.current = false;
+      if (pendingOperationRef.current === "save") pendingOperationRef.current = null;
     } finally {
       if (lifecycleRef.current === lifecycle) {
-        freshSavePendingRef.current = false;
         setReconciling(false);
       }
     }
   }
 
   async function reloadAndCompare() {
-    if (machine.state !== "stale" || busy) return;
+    if (machine.state !== "stale" || busy || pendingOperationRef.current !== null) return;
     const lifecycle = lifecycleRef.current;
+    pendingOperationRef.current = "reload";
     setReloading(true);
     try {
       const record = await machine.reloadAndCompare();
@@ -244,21 +278,33 @@ function SaveReviewDialogOpen({
     } catch {
       // useSaveMachine exposes the request failure through its error state.
     } finally {
-      if (lifecycleRef.current === lifecycle) setReloading(false);
+      if (lifecycleRef.current === lifecycle) {
+        if (pendingOperationRef.current === "reload") pendingOperationRef.current = null;
+        setReloading(false);
+      }
     }
   }
 
   async function retryFrozenAttempt() {
-    if (machine.state !== "error" || !machine.canRetry || busy || retryPendingRef.current) return;
+    if (
+      machine.state !== "error" ||
+      !machine.canRetry ||
+      busy ||
+      pendingOperationRef.current !== null
+    ) {
+      return;
+    }
     const lifecycle = lifecycleRef.current;
-    retryPendingRef.current = true;
+    pendingOperationRef.current = "retry";
     completionArmedRef.current = true;
     setRetrying(true);
     try {
       await machine.retry();
+    } catch {
+      completionArmedRef.current = false;
+      if (pendingOperationRef.current === "retry") pendingOperationRef.current = null;
     } finally {
       if (lifecycleRef.current === lifecycle) {
-        retryPendingRef.current = false;
         setRetrying(false);
       }
     }
@@ -274,7 +320,7 @@ function SaveReviewDialogOpen({
       aria-labelledby={titleId}
       className="zhs-save-review-dialog"
       open={true}
-      onClose={onClose}
+      onClose={requestClose}
     >
       <form
         aria-busy={busy ? "true" : undefined}
@@ -288,7 +334,7 @@ function SaveReviewDialogOpen({
               Review save against head v{displayHead.version}
             </h2>
           </div>
-          <Button aria-label="Close save review" size="sm" onClick={onClose}>
+          <Button aria-label="Close save review" disabled={busy} size="sm" onClick={requestClose}>
             Close
           </Button>
         </header>
@@ -427,13 +473,13 @@ function SaveReviewDialogOpen({
               <Button disabled={busy} onClick={() => void reloadAndCompare()}>
                 {reloading ? "Reloading…" : "Reload & compare"}
               </Button>
-              <Button disabled={busy} variant="danger" onClick={onDiscard}>
+              <Button disabled={busy} variant="danger" onClick={requestDiscard}>
                 Discard
               </Button>
             </>
           ) : machine.state === "error" ? (
             <>
-              <Button disabled={busy} onClick={onClose}>
+              <Button disabled={busy} onClick={requestClose}>
                 Close
               </Button>
               {machine.canRetry ? (
@@ -443,10 +489,12 @@ function SaveReviewDialogOpen({
               ) : null}
             </>
           ) : machine.state === "saved" || machine.state === "unchanged" ? (
-            <Button onClick={onClose}>Close</Button>
+            <Button disabled={busy} onClick={requestClose}>
+              Close
+            </Button>
           ) : (
             <>
-              <Button disabled={busy} onClick={onClose}>
+              <Button disabled={busy} onClick={requestClose}>
                 Cancel
               </Button>
               <Button disabled={busy || sameAsHead !== false} type="submit" variant="primary">
@@ -466,6 +514,11 @@ function SaveReviewDialogOpen({
 
 export function SaveReviewDialog(props: SaveReviewDialogProps) {
   if (!props.open) return null;
-  const targetKey = JSON.stringify([props.head.path, props.head.version, props.head.hash]);
+  const targetKey = JSON.stringify([
+    keyForTargetIdentity(props.machine.targetIdentity),
+    props.head.path,
+    props.head.version,
+    props.head.hash,
+  ]);
   return <SaveReviewDialogOpen key={targetKey} {...props} />;
 }

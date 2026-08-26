@@ -30,6 +30,7 @@ interface Fixture {
   puts: RecordedPut[];
   failNextPut: () => void;
   failNextPutBeforeSend: () => void;
+  deferNextGet: () => () => void;
   deferNextPut: () => () => void;
 }
 
@@ -63,9 +64,16 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
   const puts: RecordedPut[] = [];
   let rejectedPuts = 0;
   let rejectedPutsBeforeSend = 0;
+  let getGate: Promise<void> | null = null;
   let putGate: Promise<void> | null = null;
   const fetch: StashFetch = async (input, init) => {
     const isPut = init?.method === "PUT";
+    const isGet = init?.method === undefined || init.method === "GET";
+    if (isGet && getGate !== null) {
+      const gate = getGate;
+      getGate = null;
+      await gate;
+    }
     if (init?.method === "PUT") {
       if (typeof init.body !== "string") throw new Error("Expected a JSON request body");
       puts.push({
@@ -134,6 +142,13 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
     failNextPutBeforeSend() {
       rejectedPutsBeforeSend += 1;
     },
+    deferNextGet() {
+      let release = () => {};
+      getGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
     deferNextPut() {
       let release = () => {};
       putGate = new Promise<void>((resolve) => {
@@ -183,6 +198,40 @@ function deferSha256(hash: string | null): {
 }
 
 describe("useSaveMachine", () => {
+  it("exposes a stable identity that changes for client, stash, or path targets", async () => {
+    const firstFixture = await makeFixture();
+    const secondFixture = await makeFixture();
+    const { result, rerender } = renderHook((props: HookProps) => useSaveMachine(props), {
+      initialProps: options(firstFixture),
+    });
+    const firstIdentity = result.current.targetIdentity;
+
+    rerender(options(firstFixture, { draft: "same target, new draft\n" }));
+    expect(result.current.targetIdentity).toBe(firstIdentity);
+
+    rerender(options(firstFixture, { stash: "archive" }));
+    const stashIdentity = result.current.targetIdentity;
+    expect(stashIdentity).not.toBe(firstIdentity);
+
+    rerender(
+      options(secondFixture, {
+        client: secondFixture.client,
+        head: secondFixture.head,
+      }),
+    );
+    const clientIdentity = result.current.targetIdentity;
+    expect(clientIdentity).not.toBe(stashIdentity);
+
+    rerender(
+      options(secondFixture, {
+        client: secondFixture.client,
+        path: OTHER_PATH,
+        head: secondFixture.otherHead,
+      }),
+    );
+    expect(result.current.targetIdentity).not.toBe(clientIdentity);
+  });
+
   it("retries a transport failure with the same frozen body, fence, metadata, and key", async () => {
     const fixture = await makeFixture();
     fixture.failNextPut();
@@ -224,6 +273,75 @@ describe("useSaveMachine", () => {
       author: "alice",
       message: "first attempt",
     });
+  });
+
+  it("resets a settled retry session and mints a fresh canonical key", async () => {
+    const fixture = await makeFixture();
+    fixture.failNextPutBeforeSend();
+    const { result } = renderHook(() => useSaveMachine(options(fixture)));
+
+    await act(async () => {
+      await result.current.save({ author: "alice", message: "failed session" });
+    });
+    expect(result.current.state).toBe("error");
+    expect(result.current.canRetry).toBe(true);
+    const failedKey = fixture.puts[0]?.idempotencyKey;
+
+    let reset = false;
+    act(() => {
+      reset = result.current.resetSession();
+    });
+    expect(reset).toBe(true);
+    expect(result.current.state).toBe("idle");
+    expect(result.current.canRetry).toBe(false);
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(fixture.puts).toHaveLength(1);
+
+    await act(async () => {
+      await result.current.save({ author: "alice", message: "fresh session" });
+    });
+    expect(result.current.state).toBe("saved");
+    expect(fixture.puts).toHaveLength(2);
+    expect(failedKey).toBeTruthy();
+    expect(fixture.puts[1]?.idempotencyKey).not.toBe(failedKey);
+  });
+
+  it("refuses to reset while a save, reload, or reconciliation is pending", async () => {
+    const fixture = await makeFixture();
+    const releaseSave = fixture.deferNextPut();
+    const saving = renderHook(() => useSaveMachine(options(fixture)));
+    let savePromise!: Promise<void>;
+    act(() => {
+      savePromise = saving.result.current.save({ author: "alice", message: "pending" });
+    });
+    expect(saving.result.current.resetSession()).toBe(false);
+    releaseSave();
+    await act(async () => savePromise);
+
+    const reloading = renderHook(() => useSaveMachine(options(fixture)));
+    const releaseReload = fixture.deferNextGet();
+    let reloadPromise!: Promise<FileRecordWithEtag>;
+    act(() => {
+      reloadPromise = reloading.result.current.reloadAndCompare();
+    });
+    expect(reloading.result.current.resetSession()).toBe(false);
+    releaseReload();
+    await act(async () => reloadPromise);
+
+    const reconciling = renderHook(() =>
+      useSaveMachine(options(fixture, { draft: fixture.head.body ?? "" })),
+    );
+    const digest = deferSha256(fixture.head.hash);
+    let reconcilePromise!: Promise<boolean>;
+    act(() => {
+      reconcilePromise = reconciling.result.current.reconcile();
+    });
+    expect(reconciling.result.current.resetSession()).toBe(false);
+    digest.resolve();
+    await act(async () => reconcilePromise);
+    digest.restore();
   });
 
   it("stops after a stale PUT, reloads the head, then saves with a fresh fence and key", async () => {

@@ -11,6 +11,7 @@ import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useSaveMachine,
@@ -38,6 +39,7 @@ interface Fixture {
   head: FileRecordWithEtag;
   puts: RecordedPut[];
   deferNextPut: () => () => void;
+  failNextPutBeforeSend: () => void;
   failNextPutResponse: () => void;
 }
 
@@ -59,6 +61,7 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
   fake.createStash(STASH);
   const puts: RecordedPut[] = [];
   let putGate: Promise<void> | null = null;
+  let rejectedBeforeSend = 0;
   let lostResponses = 0;
   const fetch: StashFetch = async (input, init) => {
     const isPut = init?.method === "PUT";
@@ -68,6 +71,10 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
         body: JSON.parse(init.body) as Record<string, unknown>,
         idempotencyKey: new Headers(init.headers).get("Idempotency-Key"),
       });
+      if (rejectedBeforeSend > 0) {
+        rejectedBeforeSend -= 1;
+        throw new TypeError("request not sent");
+      }
       if (putGate !== null) {
         const gate = putGate;
         putGate = null;
@@ -115,6 +122,9 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
       });
       return release;
     },
+    failNextPutBeforeSend() {
+      rejectedBeforeSend += 1;
+    },
     failNextPutResponse() {
       lostResponses += 1;
     },
@@ -154,6 +164,42 @@ function FakeBackedHost({
   );
 }
 
+function ReopenFakeBackedHost({
+  fixture,
+  draft,
+  onSaved,
+}: {
+  fixture: Fixture;
+  draft: string;
+  onSaved: (completion: SaveReviewCompletion) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const machine = useSaveMachine({
+    client: fixture.client,
+    stash: STASH,
+    path: fixture.head.path,
+    head: fixture.head,
+    draft,
+    lineEnding: "lf",
+  });
+
+  return (
+    <>
+      {!open ? <button onClick={() => setOpen(true)}>Open save review</button> : null}
+      <SaveReviewDialog
+        draft={draft}
+        head={fixture.head}
+        lineEnding="lf"
+        machine={machine}
+        open={open}
+        onClose={() => setOpen(false)}
+        onDiscard={vi.fn()}
+        onSaved={onSaved}
+      />
+    </>
+  );
+}
+
 function fileRecord(body: string, overrides: Partial<FileRecord> = {}): FileRecord {
   return {
     path: PATH,
@@ -171,9 +217,14 @@ function fileRecord(body: string, overrides: Partial<FileRecord> = {}): FileReco
   };
 }
 
-function stubMachine(state: SaveMachineState, canRetry = false): SaveMachine {
+function stubMachine(
+  state: SaveMachineState,
+  canRetry = false,
+  overrides: Partial<SaveMachine> = {},
+): SaveMachine {
   return {
     ...state,
+    targetIdentity: {},
     canRetry,
     save: vi.fn<SaveMachine["save"]>().mockResolvedValue(undefined),
     retry: vi.fn<SaveMachine["retry"]>().mockResolvedValue(undefined),
@@ -181,6 +232,8 @@ function stubMachine(state: SaveMachineState, canRetry = false): SaveMachine {
       .fn<SaveMachine["reloadAndCompare"]>()
       .mockRejectedValue(new Error("Unused reload")),
     reconcile: vi.fn<SaveMachine["reconcile"]>().mockResolvedValue(false),
+    resetSession: vi.fn<SaveMachine["resetSession"]>().mockReturnValue(true),
+    ...overrides,
   } as SaveMachine;
 }
 
@@ -212,6 +265,24 @@ function narrowMediaQuery(): MediaQueryList {
   };
 }
 
+function deferred<T>() {
+  let resolvePromise!: (value: T | PromiseLike<T>) => void;
+  let rejectPromise!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return { promise, resolve: resolvePromise, reject: rejectPromise };
+}
+
+function attemptDialogClose(footerButtonName?: string): void {
+  fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Close save review" }));
+  if (footerButtonName) {
+    fireEvent.click(screen.getByRole("button", { name: footerButtonName }));
+  }
+}
+
 beforeEach(() => {
   window.localStorage.clear();
 });
@@ -220,6 +291,7 @@ describe("SaveReviewDialog", () => {
   it("reviews and saves exact CRLF bytes through the fake backend with exact-once completion", async () => {
     const fixture = await makeFixture("base\r\n");
     const releasePut = fixture.deferNextPut();
+    const onClose = vi.fn();
     const onSaved = vi.fn();
     window.localStorage.setItem("zhs.author", "remembered-author");
     render(
@@ -227,6 +299,7 @@ describe("SaveReviewDialog", () => {
         draft={"base\nlocal edit\n"}
         fixture={fixture}
         lineEnding="crlf"
+        onClose={onClose}
         onSaved={onSaved}
       />,
     );
@@ -259,11 +332,85 @@ describe("SaveReviewDialog", () => {
     });
     expect(fixture.puts[0]?.idempotencyKey).toBeTruthy();
 
+    attemptDialogClose("Cancel");
+    expect(onClose).not.toHaveBeenCalled();
+
     await act(async () => releasePut());
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ state: "saved", version: 2 }));
     await act(async () => Promise.resolve());
     expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks every close surface synchronously while reconciliation is pending", async () => {
+    const reconciliation = deferred<boolean>();
+    const onClose = vi.fn();
+    const resetSession = vi.fn(() => true);
+    const reconcile = vi.fn<SaveMachine["reconcile"]>(() => {
+      attemptDialogClose("Cancel");
+      return reconciliation.promise;
+    });
+    const save = vi.fn<SaveMachine["save"]>().mockResolvedValue(undefined);
+    renderDirect(
+      stubMachine({ state: "idle" }, false, {
+        reconcile,
+        resetSession,
+        save,
+      }),
+      { onClose },
+    );
+
+    const saveButton = screen.getByRole("button", { name: "Save v5" });
+    await waitFor(() => expect(saveButton.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(saveButton);
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(resetSession).not.toHaveBeenCalled();
+    reconciliation.resolve(false);
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  });
+
+  it("blocks close and discard synchronously while a stale reload is pending", async () => {
+    const reload = deferred<FileRecordWithEtag>();
+    const onClose = vi.fn();
+    const onDiscard = vi.fn();
+    const resetSession = vi.fn(() => true);
+    const reloadAndCompare = vi.fn<SaveMachine["reloadAndCompare"]>(() => {
+      attemptDialogClose("Discard");
+      return reload.promise;
+    });
+    const machine = stubMachine(
+      {
+        state: "stale",
+        current: {
+          version: 5,
+          hash: `sha256-${"b".repeat(64)}`,
+          deleted: false,
+          kind: "put",
+          author: "Grace",
+          createdAt: "2026-08-26T01:00:00.000Z",
+        },
+      },
+      false,
+      { reloadAndCompare, resetSession },
+    );
+    renderDirect(machine, { onClose, onDiscard });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload & compare" }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onDiscard).not.toHaveBeenCalled();
+    expect(resetSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      reload.resolve({
+        ...fileRecord("new head\n", { version: 5, message: "new message" }),
+        etag: '"new-head"',
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close save review" }));
+    expect(resetSession).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("completes an asynchronously reconciled unchanged save without issuing a PUT", async () => {
@@ -339,8 +486,16 @@ describe("SaveReviewDialog", () => {
   it("offers only the machine's exact frozen retry after a transport error", async () => {
     const fixture = await makeFixture();
     fixture.failNextPutResponse();
+    const onClose = vi.fn();
     const onSaved = vi.fn();
-    render(<FakeBackedHost draft={"retry body\n"} fixture={fixture} onSaved={onSaved} />);
+    render(
+      <FakeBackedHost
+        draft={"retry body\n"}
+        fixture={fixture}
+        onClose={onClose}
+        onSaved={onSaved}
+      />,
+    );
     fireEvent.change(screen.getByRole("textbox", { name: "Author" }), {
       target: { value: "Lin" },
     });
@@ -355,11 +510,70 @@ describe("SaveReviewDialog", () => {
     expect(screen.getByText("History Stash request failed")).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "Author" }).hasAttribute("disabled")).toBe(true);
     expect(fixture.puts).toHaveLength(1);
-    await userEvent.click(retry);
+    const releaseRetry = fixture.deferNextPut();
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(fixture.puts).toHaveLength(2));
+    attemptDialogClose("Cancel");
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => releaseRetry());
 
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(fixture.puts).toHaveLength(2);
     expect(fixture.puts[1]).toEqual(fixture.puts[0]);
+  });
+
+  it("blocks every close surface synchronously while a frozen retry starts", async () => {
+    const retry = deferred<void>();
+    const onClose = vi.fn();
+    const resetSession = vi.fn(() => true);
+    const retryAttempt = vi.fn<SaveMachine["retry"]>(() => {
+      attemptDialogClose("Close");
+      return retry.promise;
+    });
+    renderDirect(
+      stubMachine({ state: "error", message: "response lost" }, true, {
+        resetSession,
+        retry: retryAttempt,
+      }),
+      { onClose },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retryAttempt).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(resetSession).not.toHaveBeenCalled();
+    await act(async () => retry.resolve());
+  });
+
+  it("drops a retryable frozen attempt on close and starts a fresh session on reopen", async () => {
+    const fixture = await makeFixture();
+    fixture.failNextPutBeforeSend();
+    const onSaved = vi.fn();
+    render(
+      <ReopenFakeBackedHost draft={"fresh session body\n"} fixture={fixture} onSaved={onSaved} />,
+    );
+
+    const firstSave = screen.getByRole("button", { name: "Save v2" });
+    await waitFor(() => expect(firstSave.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(firstSave);
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(fixture.puts).toHaveLength(1);
+    const firstKey = fixture.puts[0]?.idempotencyKey;
+
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open save review" }));
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+
+    const secondSave = screen.getByRole("button", { name: "Save v2" });
+    await waitFor(() => expect(secondSave.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(secondSave);
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(fixture.puts).toHaveLength(2);
+    expect(firstKey).toBeTruthy();
+    expect(fixture.puts[1]?.idempotencyKey).toBeTruthy();
+    expect(fixture.puts[1]?.idempotencyKey).not.toBe(firstKey);
   });
 
   it("shows Close without Retry for a nonretryable error", async () => {
@@ -406,15 +620,10 @@ describe("SaveReviewDialog", () => {
     expect(author.value).toBe("Still usable");
   });
 
-  it("resets target-local fields and ignores an old same-as-head hash result", async () => {
-    const firstHead = fileRecord("first head\n", {
-      path: "first.txt",
-      version: 3,
-      hash: await sha256Hex("first head\n"),
-    });
+  it("resets target-local fields and ignores an old hash across an opaque target switch", async () => {
     const secondBody = "second head\n";
-    const secondHead = fileRecord(secondBody, {
-      path: "second.txt",
+    const sharedHead = fileRecord(secondBody, {
+      path: "same.txt",
       version: 7,
       hash: await sha256Hex(secondBody),
     });
@@ -427,14 +636,15 @@ describe("SaveReviewDialog", () => {
       .spyOn(globalThis.crypto.subtle, "digest")
       .mockImplementationOnce(() => oldDigest)
       .mockImplementation((algorithm, data) => nativeDigest(algorithm, data));
-    const machine = stubMachine({ state: "idle" });
+    const firstMachine = stubMachine({ state: "idle" });
+    const secondMachine = stubMachine({ state: "idle" });
     const onSaved = vi.fn();
     const rendered = render(
       <SaveReviewDialog
         draft="first draft\n"
-        head={firstHead}
+        head={sharedHead}
         lineEnding="lf"
-        machine={machine}
+        machine={firstMachine}
         open={true}
         onClose={vi.fn()}
         onDiscard={vi.fn()}
@@ -449,9 +659,9 @@ describe("SaveReviewDialog", () => {
     rendered.rerender(
       <SaveReviewDialog
         draft={secondBody}
-        head={secondHead}
+        head={sharedHead}
         lineEnding="lf"
-        machine={machine}
+        machine={secondMachine}
         open={true}
         onClose={vi.fn()}
         onDiscard={vi.fn()}
@@ -470,6 +680,102 @@ describe("SaveReviewDialog", () => {
 
     await act(async () => resolveOldDigest(new Uint8Array(32).buffer));
     expect(save.hasAttribute("disabled")).toBe(true);
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it("does not deliver an old client completion when identical head coordinates switch targets", async () => {
+    const firstFixture = await makeFixture("shared head\n");
+    const secondFixture = await makeFixture("shared head\n");
+    const releaseFirstSave = firstFixture.deferNextPut();
+    const onSaved = vi.fn();
+    const rendered = render(
+      <FakeBackedHost draft={"first client edit\n"} fixture={firstFixture} onSaved={onSaved} />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+      target: { value: "first client message" },
+    });
+    const firstSave = screen.getByRole("button", { name: "Save v2" });
+    await waitFor(() => expect(firstSave.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(firstSave);
+    await waitFor(() => expect(firstFixture.puts).toHaveLength(1));
+
+    rendered.rerender(
+      <FakeBackedHost draft={"second client edit\n"} fixture={secondFixture} onSaved={onSaved} />,
+    );
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe(
+      "",
+    );
+    expect(screen.getByRole("heading", { name: "Review save against head v1" })).toBeTruthy();
+
+    releaseFirstSave();
+    await waitFor(async () => {
+      const saved = await firstFixture.client.files(STASH).get(PATH);
+      expect(saved.ok && !("notModified" in saved) ? saved.value.version : 0).toBe(2);
+    });
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Review save against head v1" })).toBeTruthy();
+  });
+
+  it("ignores a reloaded record that resolves after an opaque target switch", async () => {
+    const sharedHead = fileRecord("shared head\n");
+    const oldReload = deferred<FileRecordWithEtag>();
+    const oldMachine = stubMachine(
+      {
+        state: "stale",
+        current: {
+          version: 5,
+          hash: `sha256-${"b".repeat(64)}`,
+          deleted: false,
+          kind: "put",
+          author: "Old author",
+          createdAt: "2026-08-26T01:00:00.000Z",
+        },
+      },
+      false,
+      {
+        reloadAndCompare: vi.fn(() => oldReload.promise),
+      },
+    );
+    const nextMachine = stubMachine({ state: "idle" });
+    const onSaved = vi.fn();
+    const rendered = render(
+      <SaveReviewDialog
+        draft="old draft\n"
+        head={sharedHead}
+        lineEnding="lf"
+        machine={oldMachine}
+        open={true}
+        onClose={vi.fn()}
+        onDiscard={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reload & compare" }));
+
+    rendered.rerender(
+      <SaveReviewDialog
+        draft="new draft\n"
+        head={sharedHead}
+        lineEnding="lf"
+        machine={nextMachine}
+        open={true}
+        onClose={vi.fn()}
+        onDiscard={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    oldReload.resolve({
+      ...fileRecord("old reloaded head\n", {
+        version: 9,
+        author: "Old author",
+        message: "old reloaded message",
+      }),
+      etag: '"old-reload"',
+    });
+    await act(async () => Promise.resolve());
+
+    expect(screen.queryByText("old reloaded message")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Review save against head v4" })).toBeTruthy();
     expect(onSaved).not.toHaveBeenCalled();
   });
 
