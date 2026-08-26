@@ -1,5 +1,6 @@
 import { Fragment } from "react";
-import type { DiffModel, DiffSegment, DiffUnifiedRow } from "@takazudo/zudo-history-stash-core";
+import type { DiffModel, DiffUnifiedRow } from "@takazudo/zudo-history-stash-core";
+import { DiffCellSegments, SplitDiffTable } from "./split-diff-table.js";
 import "./diff-table.css";
 
 export type DiffPaneLayout = "unified" | "split";
@@ -22,46 +23,6 @@ function displayLineKind(kind: DiffCodeRow["kind"]): DisplayLineKind {
   if (kind === "added") return "add";
   if (kind === "removed") return "remove";
   return "context";
-}
-
-function DiffSegments({ segments }: { segments: readonly DiffSegment[] }) {
-  const hasChange = segments.some((segment) => segment.kind !== "same");
-
-  return (
-    <>
-      {/* Keep exact full-line text lookup compatible without duplicating screen-reader speech. */}
-      {hasChange ? (
-        <span aria-hidden="true" hidden>
-          {segments.map((segment) => segment.text).join("")}
-        </span>
-      ) : null}
-      {segments.map((segment, segmentIndex) => {
-        const key = `${segment.kind}-${segmentIndex}`;
-
-        if (segment.kind === "added") {
-          return (
-            <ins className="diff-mark diff-mark--added" key={key}>
-              <span className="sr-only">added text: </span>
-              {segment.text}
-              <span className="sr-only"> end of change</span>
-            </ins>
-          );
-        }
-
-        if (segment.kind === "removed") {
-          return (
-            <del className="diff-mark diff-mark--removed" key={key}>
-              <span className="sr-only">removed text: </span>
-              {segment.text}
-              <span className="sr-only"> end of change</span>
-            </del>
-          );
-        }
-
-        return <Fragment key={key}>{segment.text}</Fragment>;
-      })}
-    </>
-  );
 }
 
 function UnifiedCodeRow({ row }: { row: DiffCodeRow }) {
@@ -95,7 +56,7 @@ function UnifiedCodeRow({ row }: { row: DiffCodeRow }) {
         {sign}
       </td>
       <td className="diff-table__content" data-column="content">
-        <DiffSegments segments={row.segments} />
+        <DiffCellSegments segments={row.segments} />
       </td>
     </tr>
   );
@@ -154,28 +115,31 @@ export function DiffPane({ model, layout, marks, wrap, fromLabel, toLabel }: Dif
 
   return (
     <div className={paneClasses} data-wrap={wrap ? "on" : "off"}>
-      {layout === "split" ? <p className="sr-only">split view not available yet</p> : null}
-      <table className="diff-table" aria-label="Unified diff">
-        <thead>
-          <tr>
-            <th className="diff-table__gutter" scope="col">
-              {fromLabel}
-            </th>
-            <th className="diff-table__gutter" scope="col">
-              {toLabel}
-            </th>
-            <th className="diff-table__sign" scope="col">
-              Change
-            </th>
-            <th className="diff-table__content" scope="col">
-              Content
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <UnifiedRows rows={model.unified} />
-        </tbody>
-      </table>
+      {layout === "split" ? (
+        <SplitDiffTable fromLabel={fromLabel} rows={model.rows} toLabel={toLabel} />
+      ) : (
+        <table className="diff-table diff-table--unified" aria-label="Unified diff">
+          <thead>
+            <tr>
+              <th className="diff-table__gutter" scope="col">
+                {fromLabel}
+              </th>
+              <th className="diff-table__gutter" scope="col">
+                {toLabel}
+              </th>
+              <th className="diff-table__sign" scope="col">
+                Change
+              </th>
+              <th className="diff-table__content" scope="col">
+                Content
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <UnifiedRows rows={model.unified} />
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

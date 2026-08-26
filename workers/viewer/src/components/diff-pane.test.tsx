@@ -168,12 +168,15 @@ describe("DiffPane", () => {
     ).toBe(true);
   });
 
-  it("uses the unified fallback and announces split unavailability when split is requested", () => {
-    render(pane({ layout: "split" }));
+  it("selects the semantic split table when split is requested", () => {
+    const { container } = render(pane({ layout: "split", wrap: false }));
 
-    expect(screen.getByRole("table", { name: "Unified diff" })).toBeTruthy();
-    const note = screen.getByText("split view not available yet");
-    expect(note.className).toContain("sr-only");
+    const table = screen.getByRole("table", { name: "Split diff" });
+    const paneElement = container.querySelector<HTMLElement>(".diff-table-pane");
+    expect(table).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Unified diff" })).toBeNull();
+    expect(screen.queryByText("split view not available yet")).toBeNull();
+    expect(paneElement?.className).toContain("diff-table-pane--nowrap");
   });
 
   it("keeps wrap state on the pane without changing the unified rows", () => {

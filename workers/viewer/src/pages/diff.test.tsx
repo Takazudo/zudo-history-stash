@@ -141,6 +141,19 @@ function renderDiffRoute(initialEntry: string, client: ViewerStashClient) {
   return { router, ...render(<RouterProvider router={router} />) };
 }
 
+function mockNarrowViewport(isNarrow: boolean) {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(max-width: 56rem)" && isNarrow,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
 function cell(row: Element, column: string): HTMLElement {
   const value = row.querySelector<HTMLElement>(`[data-column="${column}"]`);
   if (!value) throw new Error(`Missing ${column} cell`);
@@ -303,8 +316,9 @@ describe("DiffPage", () => {
     expect(await screen.findByText("Word-level marks were skipped on 1 long line")).toBeTruthy();
   });
 
-  it("persists view controls and changes presentation without refetching", async () => {
+  it("persists view controls and renders split on a wide viewport without refetching", async () => {
     localStorage.setItem("zhs.diff.wrap", "false");
+    mockNarrowViewport(false);
     const { client, diff } = createDiffClient({ ok: true, value: READY });
     renderDiffRoute("/s/notes/diff/docs/readme.txt?from=2&to=3", client);
 
@@ -328,8 +342,23 @@ describe("DiffPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Split" }));
     expect(screen.getByRole("button", { name: "Split" }).getAttribute("aria-pressed")).toBe("true");
     expect(localStorage.getItem("zhs.diff.layout")).toBe("split");
-    expect(screen.getByText("split view not available yet")).toBeTruthy();
+    expect(screen.getByRole("table", { name: "Split diff" })).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Unified diff" })).toBeNull();
     expect(diff.mock.calls.length).toBe(requestCount);
+  });
+
+  it("keeps a stored split preference while forcing the effective narrow layout to unified", async () => {
+    localStorage.setItem("zhs.diff.layout", "split");
+    mockNarrowViewport(true);
+    const { client } = createDiffClient({ ok: true, value: READY });
+    renderDiffRoute("/s/notes/diff/docs/readme.txt?from=2&to=3", client);
+
+    expect(await screen.findByRole("table", { name: "Unified diff" })).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Split diff" })).toBeNull();
+    const split = screen.getByRole("button", { name: "Split" }) as HTMLButtonElement;
+    expect(split.getAttribute("aria-pressed")).toBe("true");
+    expect(split.disabled).toBe(true);
+    expect(localStorage.getItem("zhs.diff.layout")).toBe("split");
   });
 
   it("updates comparison controls and resolves head before swapping", async () => {
