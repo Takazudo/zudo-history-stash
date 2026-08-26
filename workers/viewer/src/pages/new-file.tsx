@@ -1,10 +1,10 @@
 import { useNavigate, useParams } from "react-router-dom";
-import { ErrorBanner } from "../../../../packages/ui/src/components/error-banner.js";
 import {
+  ErrorBanner,
   NewFileForm,
+  useStashHref,
   type NewFileCreated,
-} from "../../../../packages/ui/src/components/new-file-form.js";
-import { useStashHref } from "../../../../packages/ui/src/provider/hooks.js";
+} from "@takazudo/zudo-history-stash-ui";
 import { Page } from "../app/shell/page.js";
 
 export default function NewFilePage() {

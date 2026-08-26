@@ -14,9 +14,8 @@ import {
   LoadMore,
   PathCell,
   RelativeTime,
-  clientValue,
-  stashErrorMessage,
-} from "./relocated.js";
+} from "../index.js";
+import { clientValue, stashErrorMessage } from "./error-banner.js";
 
 const change: ChangeItem = {
   changeId: 1,
@@ -48,7 +47,7 @@ function FakeAnchor({ children, href, ...props }: StashAnchorProps) {
   );
 }
 
-describe("relocated stateless components", () => {
+describe("stateless components", () => {
   it("renders namespaced kind, byte, and time metadata", () => {
     const rendered = render(
       <>

@@ -1,18 +1,20 @@
 import type { ChangeItem, FileSummary } from "@takazudo/zudo-history-stash";
-import { useState, type ChangeEvent } from "react";
-import { useParams } from "react-router-dom";
-import { useStashClient } from "../app/auth/stash-client-provider.js";
-import { Page } from "../app/shell/page.js";
-import { Table } from "../app/shell/table.js";
 import {
   Bytes,
   ChangeRow,
-  ErrorBanner,
   LoadMore,
   PathCell,
   RelativeTime,
-  clientValue,
-} from "../components/index.js";
+  useCanWrite,
+  useIsAdmin,
+  useStashHref,
+} from "@takazudo/zudo-history-stash-ui";
+import { useState, type ChangeEvent } from "react";
+import { Link, useParams } from "react-router-dom";
+import { useStashClient } from "../app/auth/stash-client-provider.js";
+import { Page } from "../app/shell/page.js";
+import { Table } from "../app/shell/table.js";
+import { ErrorBanner, clientValue } from "../components/error-banner.js";
 import { usePagedData } from "./use-paged-data.js";
 
 const fileKey = (file: FileSummary) => file.path;
@@ -43,7 +45,7 @@ function FileTable({ files, stash }: { files: FileSummary[]; stash: string }) {
             <PathCell
               className="data-table__path"
               path={file.path}
-              to={`/s/${stash}/f/${file.path}`}
+              route={{ kind: "file", stash, path: file.path }}
             />
             <td className="data-table__version">v{file.headVersion}</td>
             <td className="data-table__size data-table__mobile-optional">
@@ -65,6 +67,9 @@ function FileTable({ files, stash }: { files: FileSummary[]; stash: string }) {
 export default function StashPage() {
   const { stash } = useParams();
   const { client } = useStashClient();
+  const write = useCanWrite(stash ?? "");
+  const admin = useIsAdmin();
+  const hrefFor = useStashHref();
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const files = usePagedData<FileSummary, string>(
     async (signal, after) => {
@@ -105,7 +110,32 @@ export default function StashPage() {
 
   const newestChanges = [...changes.items].sort((left, right) => right.changeId - left.changeId);
   return (
-    <Page title={stash ?? "Stash"} description="Files and recent changes in this stash.">
+    <Page
+      title={stash ?? "Stash"}
+      description="Files and recent changes in this stash."
+      actions={
+        stash && ((write.ready && write.canWrite) || (admin.ready && admin.isAdmin)) ? (
+          <div className="page-actions">
+            {write.ready && write.canWrite ? (
+              <Link
+                className="zhs-button zhs-button--primary"
+                to={hrefFor({ kind: "new-file", stash })}
+              >
+                New file
+              </Link>
+            ) : null}
+            {admin.ready && admin.isAdmin ? (
+              <Link
+                className="zhs-button zhs-button--secondary"
+                to={hrefFor({ kind: "tokens", stash })}
+              >
+                Tokens
+              </Link>
+            ) : null}
+          </div>
+        ) : null
+      }
+    >
       {!stash ? (
         <ErrorBanner error={new Error("The stash name is missing from this URL.")} />
       ) : null}

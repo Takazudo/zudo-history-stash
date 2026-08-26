@@ -163,6 +163,17 @@ textarea:focus {
   color: var(--theme-ink-muted);
 }
 
+.page-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--hsp-sm);
+}
+
+.page-actions .zhs-button {
+  text-decoration: none;
+}
+
 .page__scroll {
   min-width: 0;
   min-height: 0;

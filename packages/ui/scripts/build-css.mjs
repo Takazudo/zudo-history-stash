@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -28,13 +28,61 @@ async function walkCssFiles(directory) {
 }
 
 export async function discoverStyleFiles(root) {
-  return (await walkCssFiles(root))
-    .filter((file) => relativeStylePath(root, file) !== centralStyleIndex)
-    .sort((left, right) => {
-      const leftPath = relativeStylePath(root, left);
-      const rightPath = relativeStylePath(root, right);
-      return leftPath < rightPath ? -1 : leftPath > rightPath ? 1 : 0;
-    });
+  const indexFile = resolve(root, centralStyleIndex);
+  const indexSource = await readFile(indexFile, "utf8");
+  const sourceWithoutComments = indexSource.replace(/\/\*[\s\S]*?\*\//gu, "");
+  const importPattern = /@import\s+["']([^"']+)["']\s*;/gu;
+  const imports = [...sourceWithoutComments.matchAll(importPattern)];
+  const unexpectedSource = sourceWithoutComments.replace(importPattern, "").trim();
+
+  if (imports.length === 0) {
+    throw new Error(`${centralStyleIndex} must import at least one stylesheet`);
+  }
+  if (unexpectedSource) {
+    throw new Error(`${centralStyleIndex} may contain only quoted @import statements`);
+  }
+
+  const indexedFiles = [];
+  const indexedPaths = new Set();
+  for (const match of imports) {
+    const specifier = match[1];
+    if (!specifier?.startsWith(".") || !specifier.endsWith(".css")) {
+      throw new Error(`${centralStyleIndex} contains an invalid stylesheet import: ${specifier}`);
+    }
+    const file = resolve(dirname(indexFile), specifier);
+    const path = relativeStylePath(root, file);
+    const rootRelativePath = relative(root, file);
+    if (
+      rootRelativePath === "" ||
+      rootRelativePath === ".." ||
+      rootRelativePath.startsWith(`..${sep}`) ||
+      isAbsolute(rootRelativePath) ||
+      path === centralStyleIndex
+    ) {
+      throw new Error(`${centralStyleIndex} imports a stylesheet outside its source manifest`);
+    }
+    if (indexedPaths.has(path)) {
+      throw new Error(`${centralStyleIndex} imports ${path} more than once`);
+    }
+    indexedPaths.add(path);
+    indexedFiles.push(file);
+  }
+
+  const discoveredPaths = new Set(
+    (await walkCssFiles(root))
+      .map((file) => relativeStylePath(root, file))
+      .filter((path) => path !== centralStyleIndex),
+  );
+  const missing = [...indexedPaths].filter((path) => !discoveredPaths.has(path));
+  const omitted = [...discoveredPaths].filter((path) => !indexedPaths.has(path)).sort();
+  if (missing.length > 0) {
+    throw new Error(`${centralStyleIndex} imports missing stylesheets: ${missing.join(", ")}`);
+  }
+  if (omitted.length > 0) {
+    throw new Error(`${centralStyleIndex} does not list stylesheets: ${omitted.join(", ")}`);
+  }
+
+  return indexedFiles;
 }
 
 export async function createStylesheet(root) {
@@ -44,7 +92,11 @@ export async function createStylesheet(root) {
   const sources = await Promise.all(
     styleFiles.map(async (file) => {
       const path = relativeStylePath(root, file);
-      return `/* ${path} */\n${(await readFile(file, "utf8")).trim()}\n`;
+      const source = await readFile(file, "utf8");
+      if (/@import\b/iu.test(source.replace(/\/\*[\s\S]*?\*\//gu, ""))) {
+        throw new Error(`${path} contains a nested @import; add it to ${centralStyleIndex}`);
+      }
+      return `/* ${path} */\n${source.trim()}\n`;
     }),
   );
 

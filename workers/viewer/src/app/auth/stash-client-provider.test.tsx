@@ -1,5 +1,17 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { createViewerStashClient } from "./stash-client-provider.js";
+import { TOKEN_STORAGE_KEY } from "./token-store.js";
+import {
+  StashClientProvider,
+  createViewerStashClient,
+  useStashClient,
+} from "./stash-client-provider.js";
+
+function LogoutHarness() {
+  const { logOut } = useStashClient();
+  return <button onClick={logOut}>Log out</button>;
+}
 
 describe("createViewerStashClient", () => {
   it("uses the real SDK against /api with the token and request signal", async () => {
@@ -40,5 +52,24 @@ describe("createViewerStashClient", () => {
       ok: false,
       error: { status: 503, code: "internal", message: "D1 unavailable" },
     });
+  });
+
+  it("clears every workbench draft with the Viewer credential on logout", async () => {
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    sessionStorage.setItem("zhs.draft.notes.docs/readme.txt", "draft one");
+    sessionStorage.setItem("zhs.draft.other.file.txt", "draft two");
+    sessionStorage.setItem("viewer.preference", "keep");
+    render(
+      <StashClientProvider>
+        <LogoutHarness />
+      </StashClientProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem("zhs.draft.notes.docs/readme.txt")).toBeNull();
+    expect(sessionStorage.getItem("zhs.draft.other.file.txt")).toBeNull();
+    expect(sessionStorage.getItem("viewer.preference")).toBe("keep");
   });
 });

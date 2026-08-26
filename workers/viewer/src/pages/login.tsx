@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { defaultPathForPrincipal, isSafeNext } from "../app/safe-next.js";
 import { Button } from "../app/shell/button.js";
-import { stashErrorMessage } from "../components/index.js";
+import { stashErrorMessage } from "../components/error-banner.js";
 
 export default function LoginPage() {
   const { authenticate } = useStashClient();
