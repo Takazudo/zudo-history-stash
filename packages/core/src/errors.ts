@@ -1,6 +1,28 @@
 import type { Current, ErrorCode } from "./types.js";
 
-const STATUSES: Record<ErrorCode, number> = {
+export const ERROR_CODES = [
+  "validation",
+  "invalid-path",
+  "body-not-well-formed",
+  "unauthorized",
+  "scope",
+  "not-found",
+  "file-deleted",
+  "version-not-found",
+  "stale",
+  "exists",
+  "already-deleted",
+  "payload-too-large",
+  "idempotency-key-reused",
+  "rollback-target-tombstone",
+  "internal",
+] as const satisfies readonly ErrorCode[];
+
+type _AssertNever<T extends never> = T;
+type _NoMissingErrorCodes = _AssertNever<Exclude<ErrorCode, (typeof ERROR_CODES)[number]>>;
+type _NoUnexpectedErrorCodes = _AssertNever<Exclude<(typeof ERROR_CODES)[number], ErrorCode>>;
+
+const STATUSES: Record<(typeof ERROR_CODES)[number], number> = {
   validation: 400,
   "invalid-path": 400,
   "body-not-well-formed": 400,
