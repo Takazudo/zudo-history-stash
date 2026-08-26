@@ -1,0 +1,12 @@
+@layer zhs-components {
+  .zhs-tombstone-restore {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  @media (pointer: coarse) {
+    .zhs-tombstone-restore > .zhs-button {
+      min-block-size: calc(var(--control-height) + (2 * var(--vsp-md)));
+    }
+  }
+}

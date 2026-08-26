@@ -1,0 +1,92 @@
+@layer zhs-components {
+  .zhs-delete-file-dialog {
+    inline-size: min(calc(100% - (2 * var(--hsp-xl))), 34rem);
+  }
+
+  .zhs-delete-file-dialog__form,
+  .zhs-delete-file-dialog__body,
+  .zhs-delete-file-dialog__field {
+    display: grid;
+  }
+
+  .zhs-delete-file-dialog__header,
+  .zhs-delete-file-dialog__body,
+  .zhs-delete-file-dialog__actions {
+    padding-block: var(--vsp-lg);
+    padding-inline: var(--hsp-lg);
+  }
+
+  .zhs-delete-file-dialog__header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: var(--hsp-lg);
+    border-block-end: var(--border-hairline) solid var(--theme-border);
+  }
+
+  .zhs-delete-file-dialog__title,
+  .zhs-delete-file-dialog__eyebrow {
+    margin: 0;
+  }
+
+  .zhs-delete-file-dialog__title {
+    color: var(--theme-ink-strong);
+    font-size: var(--text-lg);
+    line-height: var(--line-tight);
+  }
+
+  .zhs-delete-file-dialog__eyebrow,
+  .zhs-delete-file-dialog__optional,
+  .zhs-delete-file-dialog__byte-count {
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+    line-height: var(--line-body);
+  }
+
+  .zhs-delete-file-dialog__path {
+    font-family: var(--font-family-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .zhs-delete-file-dialog__body {
+    gap: var(--vsp-lg);
+  }
+
+  .zhs-delete-file-dialog__field {
+    gap: var(--vsp-sm);
+  }
+
+  .zhs-delete-file-dialog__field > label {
+    color: var(--theme-ink-strong);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .zhs-delete-file-dialog__byte-count {
+    justify-self: end;
+  }
+
+  .zhs-delete-file-dialog__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--hsp-sm);
+    border-block-start: var(--border-hairline) solid var(--theme-border);
+  }
+
+  @media (max-width: 30rem) {
+    .zhs-delete-file-dialog__header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .zhs-delete-file-dialog__actions > .zhs-button {
+      flex: 1 1 auto;
+    }
+  }
+
+  @media (pointer: coarse) {
+    .zhs-delete-file-dialog .zhs-button {
+      min-block-size: calc(var(--control-height) + (2 * var(--vsp-md)));
+    }
+  }
+}
