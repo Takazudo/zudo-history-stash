@@ -10,14 +10,15 @@ import {
   DeleteFileDialog,
   HistoryList,
   KindBadge,
+  Notice,
   RelativeTime,
   TombstoneRestore,
   useCanWrite,
   useFileHistory,
   useStashHref,
 } from "@takazudo/zudo-history-stash-ui";
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { Page } from "../app/shell/page.js";
 import { ErrorBanner } from "../components/error-banner.js";
@@ -372,8 +373,11 @@ function FileRouteContent({
   function refreshAfterRollback() {
     // HistoryList has already appended the successful rollback and its toast. Reload only the
     // representation here so that local confirmation remains visible while the new head arrives.
-    file.reload();
-    navigate(hrefFor({ kind: "file", stash, path }), { replace: requestedVersion !== null });
+    if (requestedVersion === null) {
+      file.reload();
+      return;
+    }
+    navigate(hrefFor({ kind: "file", stash, path }), { replace: true });
   }
 
   return (
@@ -432,15 +436,80 @@ function positiveVersion(value: string | null): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+function saveFlashFromState(state: unknown): string | null {
+  if (!state || typeof state !== "object" || !("flash" in state)) return null;
+  const flash = (state as { flash?: unknown }).flash;
+  if (typeof flash !== "string") return null;
+  return /^(?:Saved v[1-9]\d*|No write was needed; the file already matches v[1-9]\d*)\.$/u.test(
+    flash,
+  )
+    ? flash
+    : null;
+}
+
+function stateWithoutFlash(state: unknown): unknown {
+  if (!state || typeof state !== "object" || Array.isArray(state) || !("flash" in state)) {
+    return state;
+  }
+  const next = { ...(state as Record<string, unknown>) };
+  delete next.flash;
+  return Object.keys(next).length === 0 ? null : next;
+}
+
 export default function FilePage() {
   const { stash, "*": path } = useParams();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const incomingSaveFlash = saveFlashFromState(location.state);
+  const consumedLocationRef = useRef<string | null>(null);
+  const [saveFlash, setSaveFlash] = useState<string | null>(incomingSaveFlash);
   const versionParam = searchParams.get("version");
   const requestedVersion = positiveVersion(versionParam);
   const invalidVersion = versionParam !== null && requestedVersion === null;
 
+  useEffect(() => {
+    if (incomingSaveFlash !== null) {
+      setSaveFlash(incomingSaveFlash);
+      consumedLocationRef.current = location.key;
+      navigate(
+        {
+          pathname: location.pathname,
+          search: location.search,
+          hash: location.hash,
+        },
+        { replace: true, state: stateWithoutFlash(location.state) },
+      );
+      return;
+    }
+
+    // The replace above produces a new location key. Keep the visible confirmation for that one
+    // transition, then clear it normally when a later navigation reaches this route without one.
+    if (consumedLocationRef.current !== null) {
+      consumedLocationRef.current = null;
+      return;
+    }
+    setSaveFlash(null);
+  }, [
+    incomingSaveFlash,
+    location.hash,
+    location.key,
+    location.pathname,
+    location.search,
+    location.state,
+    navigate,
+  ]);
+
   return (
     <Page title={path ?? "File"} description="File content and append-only version history.">
+      {saveFlash ? (
+        <Notice aria-label="Save confirmation" aria-live="polite" variant="success">
+          <span>{saveFlash}</span>
+          <Button size="sm" onClick={() => setSaveFlash(null)}>
+            Dismiss
+          </Button>
+        </Notice>
+      ) : null}
       {!stash || !path ? (
         <ErrorBanner error={new Error("The stash name or file path is missing from this URL.")} />
       ) : invalidVersion ? (

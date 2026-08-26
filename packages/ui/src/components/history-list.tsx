@@ -1,5 +1,5 @@
 import type { HistoryPage, VersionRecord } from "@takazudo/zudo-history-stash";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Anchor, useCanWrite, useStashClientForSignal, useStashHref } from "../provider/hooks.js";
 import { Button } from "../primitives/button.js";
 import {
@@ -271,26 +271,29 @@ function HistoryListForTarget({
   const hrefFor = useStashHref();
   const capability = useCanWrite(stash);
   const initialComparison = defaultComparison(page);
-  const [versions, setVersions] = useState(() => newestFirst(page.versions));
+  const [confirmedVersions, setConfirmedVersions] = useState<VersionRecord[]>([]);
+  const versions = useMemo(
+    () => mergeVersions(confirmedVersions, page.versions),
+    [confirmedVersions, page.versions],
+  );
   const [fromVersion, setFromVersion] = useState<number | null>(initialComparison.from);
   const [toVersion, setToVersion] = useState<number | null>(initialComparison.to);
-  const [total, setTotal] = useState(page.total);
+  const [confirmedTotal, setConfirmedTotal] = useState(page.total);
+  const total = Math.max(confirmedTotal, page.total);
   const [rollbackTarget, setRollbackTarget] = useState<VersionRecord | null>(null);
   const [rollbackToast, setRollbackToast] = useState<string | null>(null);
 
   useEffect(() => {
-    const nextVersions = newestFirst(page.versions);
-    const available = new Set(nextVersions.map((version) => version.version));
-    const comparison = defaultComparison(page);
-    setVersions(nextVersions);
-    setTotal(page.total);
+    const available = new Set(versions.map((version) => version.version));
+    const comparison = defaultComparison({ ...page, versions });
+    setConfirmedTotal((current) => Math.max(current, page.total));
     setFromVersion((current) =>
       current !== null && available.has(current) ? current : comparison.from,
     );
     setToVersion((current) =>
       current !== null && available.has(current) ? current : comparison.to,
     );
-  }, [page]);
+  }, [page, versions]);
 
   const closeRollback = useCallback(() => setRollbackTarget(null), []);
 
@@ -310,8 +313,8 @@ function HistoryListForTarget({
       meta: {},
       createdAt: result.createdAt,
     };
-    setVersions((current) => mergeVersions(current, [created]));
-    setTotal((current) => Math.max(current + 1, result.version));
+    setConfirmedVersions((current) => mergeVersions(current, [created]));
+    setConfirmedTotal((current) => Math.max(current + 1, result.version));
     setFromVersion(target.version);
     setToVersion(result.version);
     setRollbackToast(
