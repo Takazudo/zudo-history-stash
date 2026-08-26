@@ -90,14 +90,17 @@ describe("buildOpenApiDocument", () => {
   it("puts response examples on their response entries and keeps them schema-valid", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
+    for (const name of Object.keys(RESPONSE_SCHEMAS) as Array<keyof typeof RESPONSE_SCHEMAS>) {
+      expect(() => RESPONSE_SCHEMAS[name].parse(SAMPLES[name]), name).not.toThrow();
+    }
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);
       const responses = operation?.responses as Record<string, ObjectValue>;
       for (const [status, response] of Object.entries(ROUTE_CONTRACTS[route.id].responses)) {
         if (!response?.schema || !response.example) continue;
-        expect(RESPONSE_SCHEMAS[response.schema].safeParse(SAMPLES[response.example]).success).toBe(
-          true,
-        );
+        const schema = RESPONSE_SCHEMAS[response.schema];
+        const example = SAMPLES[response.example];
+        expect(() => schema.parse(example)).not.toThrow();
         expect(
           ((responses[status]?.content as ObjectValue)["application/json"] as ObjectValue).example,
         ).toEqual(SAMPLES[response.example]);

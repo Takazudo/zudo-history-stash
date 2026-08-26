@@ -13,6 +13,7 @@ describe("projectRequestSchema", () => {
     expect(propertiesOf(list).limit).toMatchObject({
       type: "integer",
       default: 50,
+      minimum: 1,
       maximum: 200,
     });
 
