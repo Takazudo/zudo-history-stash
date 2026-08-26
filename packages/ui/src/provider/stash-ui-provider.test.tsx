@@ -14,13 +14,13 @@ import {
 } from "./hooks.js";
 import type { StashAnchorProps } from "./types.js";
 
-function responseFor(me: MeResponse) {
+async function responseFor(me: MeResponse) {
   const adminToken = "test-admin-token";
   const fake = createFakeStash({ adminToken });
   let token = adminToken;
   if (me.principal === "stash") {
     fake.createStash(me.stash);
-    token = fake.mintToken(me.stash, me.scope);
+    token = await fake.mintToken(me.stash, me.scope);
   }
   const fetch = vi.fn(fake.fetch);
   return {
@@ -76,7 +76,7 @@ describe("StashUiProvider capabilities", () => {
       false,
     ],
   ])("resolves the %s matrix entry", async (_label, principal, stash, canWrite, isAdmin) => {
-    const { client, fetch } = responseFor(principal);
+    const { client, fetch } = await responseFor(principal);
     render(
       <StashUiProvider client={client}>
         <CapabilityProbe stash={stash} />
@@ -112,7 +112,7 @@ describe("StashUiProvider capabilities", () => {
   });
 
   it("calls me once per provider mount across child rerenders", async () => {
-    const { client, fetch } = responseFor({ principal: "admin" });
+    const { client, fetch } = await responseFor({ principal: "admin" });
     const rendered = render(
       <StashUiProvider client={client}>
         <CapabilityProbe stash="notes" />
@@ -129,7 +129,7 @@ describe("StashUiProvider capabilities", () => {
   });
 
   it("deduplicates the me request across StrictMode effect replay", async () => {
-    const { client, fetch } = responseFor({ principal: "admin" });
+    const { client, fetch } = await responseFor({ principal: "admin" });
     render(
       <StrictMode>
         <StashUiProvider client={client}>
@@ -143,7 +143,7 @@ describe("StashUiProvider capabilities", () => {
   });
 
   it("starts a new me request after a genuine provider remount", async () => {
-    const { client, fetch } = responseFor({ principal: "admin" });
+    const { client, fetch } = await responseFor({ principal: "admin" });
     const firstMount = render(
       <StashUiProvider client={client}>
         <CapabilityProbe stash="notes" />
@@ -163,7 +163,7 @@ describe("StashUiProvider capabilities", () => {
   });
 
   it("denies capabilities synchronously when the provider client changes", async () => {
-    const { client: adminClient } = responseFor({ principal: "admin" });
+    const { client: adminClient } = await responseFor({ principal: "admin" });
     const pendingFetch = vi.fn(() => new Promise<Response>(() => undefined));
     const pendingClient = createStashClient({
       baseUrl: "https://fake.invalid",
@@ -195,7 +195,7 @@ describe("StashUiProvider capabilities", () => {
       resolveFirstRequest = resolve;
     });
     const firstMe = vi.spyOn(firstClient, "me").mockReturnValue(firstRequest);
-    const { client: readClient, fetch: readFetch } = responseFor({
+    const { client: readClient, fetch: readFetch } = await responseFor({
       principal: "stash",
       stash: "notes",
       tokenId: "tok_1",
@@ -265,8 +265,8 @@ function BridgeProbe({
 
 describe("StashUiProvider bridges", () => {
   it("provides the client, signal client, custom href builder, and accessible Anchor", async () => {
-    const { client } = responseFor({ principal: "admin" });
-    const { client: signalClient } = responseFor({ principal: "admin" });
+    const { client } = await responseFor({ principal: "admin" });
+    const { client: signalClient } = await responseFor({ principal: "admin" });
     const clientForSignal = vi.fn((_signal: AbortSignal) => signalClient);
     const onSignalClient = vi.fn();
 
