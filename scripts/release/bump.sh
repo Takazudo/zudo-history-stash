@@ -65,14 +65,18 @@ if ! client_version_constant=$(release_version_constant "$RELEASE_ROOT/packages/
   exit 1
 fi
 
-if [[ "$core_package_version" != "$client_package_version" ||
-  "$core_package_version" != "$core_version_constant" ||
-  "$core_package_version" != "$client_version_constant" ]]; then
+if [[ "$core_package_version" == "$client_package_version" &&
+  "$core_package_version" == "$core_version_constant" &&
+  "$core_package_version" == "$client_version_constant" ]]; then
+  :
+else
   release_error "Version mismatch: packages/core/package.json=$core_package_version, packages/client/package.json=$client_package_version, packages/core/src/index.ts=$core_version_constant, packages/client/src/index.ts=$client_version_constant."
   exit 1
 fi
 
 current=$core_package_version
+# `plain_semver_re` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
 if [[ ! "$current" =~ $plain_semver_re ]]; then
   release_error "Current version '$current' does not match the plain SemVer rule $plain_semver_re."
   exit 1
@@ -105,6 +109,8 @@ case "$requested" in
     ;;
 esac
 
+# `plain_semver_re` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
 if [[ ! "$next" =~ $plain_semver_re ]]; then
   release_error "NEXT=$next violates the plain SemVer rule $plain_semver_re; prerelease and build metadata are not allowed."
   exit 1

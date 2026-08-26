@@ -10,6 +10,8 @@ if [[ $# -ne 0 ]]; then
 fi
 
 next=$(current_version)
+# `plain_semver_re` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
 if [[ ! "$next" =~ $plain_semver_re ]]; then
   release_error "NEXT=$next violates the plain SemVer rule $plain_semver_re."
   exit 1

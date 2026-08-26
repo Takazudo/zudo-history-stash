@@ -56,6 +56,7 @@ run_tag 1 'Working tree must be clean' GIT_DIRTY=1
 run_tag 1 "must run on branch 'base/sweep-260826-release'" GIT_BRANCH=wrong-branch
 run_tag 1 'must exactly match origin/base/sweep-260826-release' \
   GIT_ORIGIN_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+run_tag 1 'No release bump commit for v0.0.0 is reachable from HEAD' GIT_BUMP_COMMIT=0
 run_tag 1 'already exists locally' GIT_LOCAL_TAG=1
 run_tag 1 'already exists on origin' GIT_REMOTE_TAG=1
 run_tag 1 "concluded 'failure', not success" GH_SCENARIO=failure

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Shared by command scripts that source this file.
+# shellcheck disable=SC2034
 plain_semver_re='^[0-9]+\.[0-9]+\.[0-9]+$'
 
 if [[ -z "${RELEASE_ROOT:-}" ]]; then

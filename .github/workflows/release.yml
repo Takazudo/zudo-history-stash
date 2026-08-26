@@ -130,7 +130,7 @@ jobs:
               return 0
             fi
 
-            if grep -Eq '(^|[^[:alnum:]])E404([^[:alnum:]]|$)' <<<"$output"; then
+            if grep -Eq '^npm (ERR!|error) code E404([[:space:]]|$)' <<<"$output"; then
               return 0
             fi
 
@@ -179,7 +179,7 @@ jobs:
               echo "::error::npm returned version '$output' for ${PACKAGE_NAME}@${VERSION}"
               exit 1
             fi
-            if ! grep -Eq '(^|[^[:alnum:]])E404([^[:alnum:]]|$)' <<<"$output"; then
+            if ! grep -Eq '^npm (ERR!|error) code E404([[:space:]]|$)' <<<"$output"; then
               echo "::error::Unable to verify ${PACKAGE_NAME}@${VERSION}: $output"
               exit 1
             fi
@@ -226,7 +226,7 @@ jobs:
               echo "::error::npm returned version '$output' for ${PACKAGE_NAME}@${VERSION}"
               exit 1
             fi
-            if ! grep -Eq '(^|[^[:alnum:]])E404([^[:alnum:]]|$)' <<<"$output"; then
+            if ! grep -Eq '^npm (ERR!|error) code E404([[:space:]]|$)' <<<"$output"; then
               echo "::error::Unable to verify ${PACKAGE_NAME}@${VERSION}: $output"
               exit 1
             fi

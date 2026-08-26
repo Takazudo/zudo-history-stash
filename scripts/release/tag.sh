@@ -84,6 +84,8 @@ if ! client_version_constant=$(release_version_constant "$RELEASE_ROOT/packages/
   exit 1
 fi
 next=$core_package_version
+# `plain_semver_re` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
 if [[ ! "$next" =~ $plain_semver_re ]]; then
   release_error "NEXT=$next violates the plain SemVer rule $plain_semver_re."
   exit 1
@@ -102,6 +104,19 @@ if [[ "$openapi_version" != "$next" ]]; then
 fi
 
 tag_name="v$next"
+expected_bump_subject="chore(release): bump to $tag_name"
+bump_commit_found=0
+while IFS= read -r subject; do
+  if [[ "$subject" == "$expected_bump_subject" ]]; then
+    bump_commit_found=1
+    break
+  fi
+done < <(git log --format=%s HEAD)
+if ((!bump_commit_found)); then
+  release_error "No release bump commit for $tag_name is reachable from HEAD; run the guarded bump and commit flow first."
+  exit 1
+fi
+
 if [[ -n "$(git tag -l "$tag_name")" ]]; then
   release_error "Tag $tag_name already exists locally."
   exit 1

@@ -36,6 +36,14 @@ case "${1:-}" in
       *) exit 64 ;;
     esac
     ;;
+  log)
+    [[ "${2:-}" == '--format=%s' && "${3:-}" == 'HEAD' && $# -eq 3 ]]
+    if [[ "${GIT_BUMP_COMMIT:-1}" == '1' ]]; then
+      printf 'chore(release): bump to v0.0.0\n'
+    else
+      printf 'fix: ordinary commit\n'
+    fi
+    ;;
   tag)
     if [[ "${2:-}" == '-l' && $# -eq 3 ]]; then
       if [[ "${GIT_LOCAL_TAG:-0}" == '1' ]]; then
