@@ -212,6 +212,7 @@
 }
 
 .diff-table-pane {
+  position: relative;
   container-type: inline-size;
   width: 100%;
   max-width: 100%;
