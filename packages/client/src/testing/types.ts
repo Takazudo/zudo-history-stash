@@ -27,6 +27,9 @@ export interface FakeTokenRow {
   label: string;
   scope: TokenScope;
   createdAt: number;
+  expiresAt: number | null;
+  rotatedFrom: string | null;
+  rotatedTo: string | null;
   revokedAt: number | null;
   lastUsedAt: number | null;
 }

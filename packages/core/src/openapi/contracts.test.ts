@@ -52,6 +52,7 @@ describe("route contract coverage", () => {
       getStash: [],
       createToken: [],
       listTokens: [],
+      rotateToken: [],
       revokeToken: [],
       importHistory: ["stale", "exists"],
       listChanges: [],
@@ -94,5 +95,31 @@ describe("route contract coverage", () => {
     });
     expect(contract.responses[304]?.schema).toBeUndefined();
     expect(contract.responses[304]?.example).toBeUndefined();
+  });
+
+  it("declares rate limiting only for stash-principal routes with Retry-After", () => {
+    const expected = new Set([
+      "me",
+      "getStash",
+      "listFiles",
+      "getFile",
+      "putFile",
+      "deleteFile",
+      "rollbackFile",
+      "getHistory",
+      "getDiff",
+      "diffCandidate",
+      "getStashChanges",
+    ]);
+    for (const route of ROUTES) {
+      const rateLimit = ROUTE_CONTRACTS[route.id].errors.find(
+        ({ code }) => code === "rate-limited",
+      );
+      if (expected.has(route.id)) {
+        expect(rateLimit?.headers, route.id).toEqual(["Retry-After"]);
+      } else {
+        expect(rateLimit, route.id).toBeUndefined();
+      }
+    }
   });
 });

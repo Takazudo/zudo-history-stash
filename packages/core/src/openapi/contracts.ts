@@ -14,13 +14,14 @@ import {
   ListQuery,
   PutFileBody,
   RollbackBody,
+  RotateTokenBody,
 } from "../schemas.js";
 import type { RouteId } from "../routes.js";
 import type { RESPONSE_SCHEMAS } from "./responses.js";
 import type { SAMPLES } from "./samples.js";
 
 export type RequestHeader = "Idempotency-Key" | "If-None-Match";
-export type ResponseHeader = "ETag" | "X-Stash-Version" | "Idempotent-Replayed";
+export type ResponseHeader = "ETag" | "X-Stash-Version" | "Idempotent-Replayed" | "Retry-After";
 export type ResponseStatus = 200 | 201 | 204 | 304;
 
 export interface RouteResponse {
@@ -34,6 +35,7 @@ export interface RouteError {
   code: ErrorCode;
   current: boolean;
   note?: string;
+  headers?: ResponseHeader[];
 }
 
 export interface RouteContract {
@@ -57,11 +59,19 @@ const response = (
 
 const noContentResponse = (description: string): RouteResponse => ({ description });
 
-const error = (code: ErrorCode, current = false, note?: string): RouteError => ({
+const error = (
+  code: ErrorCode,
+  current = false,
+  note?: string,
+  headers?: ResponseHeader[],
+): RouteError => ({
   code,
   current,
   ...(note ? { note } : {}),
+  ...(headers ? { headers } : {}),
 });
+
+const rateLimited = (): RouteError => error("rate-limited", false, undefined, ["Retry-After"]);
 
 export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
   health: {
@@ -81,7 +91,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     responses: {
       200: response("The authenticated principal.", "MeResponse", "MeResponse"),
     },
-    errors: [error("unauthorized")],
+    errors: [error("unauthorized"), rateLimited()],
     wildcardPath: false,
   },
   listStashes: {
@@ -119,7 +129,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     responses: {
       200: response("The stash record.", "GetStashResult", "GetStashResult"),
     },
-    errors: [error("validation"), error("unauthorized"), error("not-found")],
+    errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
     wildcardPath: false,
   },
   createToken: {
@@ -150,6 +160,28 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       200: response("The stash token records.", "ListTokensResult", "ListTokensResult"),
     },
     errors: [error("validation"), error("unauthorized"), error("not-found")],
+    wildcardPath: false,
+  },
+  rotateToken: {
+    summary: "Rotate a stash token",
+    description: "Creates one successor token and shortens the predecessor to a grace period.",
+    principalNote: "admin; administrator only.",
+    body: RotateTokenBody,
+    responses: {
+      201: response(
+        "The newly created successor token and the predecessor's shortened expiry.",
+        "RotateTokenResult",
+        "RotateTokenResult",
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("not-found"),
+      error("already-rotated"),
+      error("token-expired"),
+      error("payload-too-large"),
+    ],
     wildcardPath: false,
   },
   revokeToken: {
@@ -208,7 +240,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     responses: {
       200: response("A page of file summaries.", "ListFilesResult", "ListFilesResult"),
     },
-    errors: [error("validation"), error("unauthorized"), error("not-found")],
+    errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
     wildcardPath: false,
   },
   getFile: {
@@ -234,6 +266,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("not-found"),
       error("file-deleted", true),
       error("version-not-found"),
+      rateLimited(),
       error("internal"),
     ],
     wildcardPath: true,
@@ -266,6 +299,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("exists", true),
       error("payload-too-large"),
       error("idempotency-key-reused"),
+      rateLimited(),
       error("internal"),
     ],
     wildcardPath: true,
@@ -291,6 +325,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("already-deleted", true),
       error("payload-too-large"),
       error("idempotency-key-reused"),
+      rateLimited(),
       error("internal"),
     ],
     wildcardPath: true,
@@ -317,6 +352,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("payload-too-large"),
       error("idempotency-key-reused"),
       error("rollback-target-tombstone", true),
+      rateLimited(),
       error("internal"),
     ],
     wildcardPath: true,
@@ -329,7 +365,13 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     responses: {
       200: response("A page of file history.", "GetHistoryResult", "GetHistoryResult"),
     },
-    errors: [error("validation"), error("invalid-path"), error("unauthorized"), error("not-found")],
+    errors: [
+      error("validation"),
+      error("invalid-path"),
+      error("unauthorized"),
+      error("not-found"),
+      rateLimited(),
+    ],
     wildcardPath: true,
   },
   getDiff: {
@@ -346,6 +388,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("unauthorized"),
       error("not-found"),
       error("version-not-found"),
+      rateLimited(),
       error("internal"),
     ],
     wildcardPath: true,
@@ -366,6 +409,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("not-found"),
       error("version-not-found"),
       error("payload-too-large"),
+      rateLimited(),
       error("internal"),
     ],
     wildcardPath: true,
@@ -378,7 +422,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     responses: {
       200: response("A page of changes for the stash.", "ListChangesResult", "ListChangesResult"),
     },
-    errors: [error("validation"), error("unauthorized"), error("not-found")],
+    errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
     wildcardPath: false,
   },
 };

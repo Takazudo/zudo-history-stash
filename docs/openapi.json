@@ -248,11 +248,33 @@
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
             "type": "string"
           },
+          "expiresAt": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
           "label": {
             "type": "string"
+          },
+          "rotatedFrom": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "scope": {
             "enum": ["read", "write"],
@@ -262,7 +284,7 @@
             "type": "string"
           }
         },
-        "required": ["id", "label", "scope", "createdAt", "token"],
+        "required": ["id", "label", "scope", "createdAt", "token", "expiresAt", "rotatedFrom"],
         "type": "object"
       },
       "CreatedToken": {
@@ -273,11 +295,33 @@
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
             "type": "string"
           },
+          "expiresAt": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
           "label": {
             "type": "string"
+          },
+          "rotatedFrom": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "scope": {
             "enum": ["read", "write"],
@@ -287,7 +331,7 @@
             "type": "string"
           }
         },
-        "required": ["id", "label", "scope", "createdAt", "token"],
+        "required": ["id", "label", "scope", "createdAt", "token", "expiresAt", "rotatedFrom"],
         "type": "object"
       },
       "Current": {
@@ -498,6 +542,9 @@
               "stale",
               "exists",
               "already-deleted",
+              "already-rotated",
+              "token-expired",
+              "rate-limited",
               "payload-too-large",
               "idempotency-key-reused",
               "rollback-target-tombstone",
@@ -506,6 +553,9 @@
             "type": "string"
           },
           "message": {
+            "type": "string"
+          },
+          "successorId": {
             "type": "string"
           }
         },
@@ -1221,6 +1271,18 @@
           {
             "additionalProperties": false,
             "properties": {
+              "expiresAt": {
+                "oneOf": [
+                  {
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "principal": {
                 "const": "stash",
                 "type": "string"
@@ -1236,7 +1298,7 @@
                 "type": "string"
               }
             },
-            "required": ["principal", "stash", "tokenId", "scope"],
+            "required": ["principal", "stash", "tokenId", "scope", "expiresAt"],
             "type": "object"
           }
         ]
@@ -1320,6 +1382,84 @@
           }
         },
         "required": ["version", "hash", "rollbackOf", "identicalToHead", "changeId", "createdAt"],
+        "type": "object"
+      },
+      "RotateTokenResult": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "expiresAt": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "predecessor": {
+            "additionalProperties": false,
+            "properties": {
+              "expiresAt": {
+                "oneOf": [
+                  {
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "expiresAt"],
+            "type": "object"
+          },
+          "rotatedFrom": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "enum": ["read", "write"],
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "scope",
+          "createdAt",
+          "token",
+          "expiresAt",
+          "rotatedFrom",
+          "predecessor"
+        ],
         "type": "object"
       },
       "StashListResponse": {
@@ -1496,6 +1636,18 @@
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
             "type": "string"
           },
+          "expiresAt": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -1526,12 +1678,42 @@
               }
             ]
           },
+          "rotatedFrom": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rotatedTo": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "scope": {
             "enum": ["read", "write"],
             "type": "string"
           }
         },
-        "required": ["id", "label", "scope", "createdAt", "revokedAt", "lastUsedAt"],
+        "required": [
+          "id",
+          "label",
+          "scope",
+          "createdAt",
+          "expiresAt",
+          "rotatedFrom",
+          "rotatedTo",
+          "revokedAt",
+          "lastUsedAt"
+        ],
         "type": "object"
       },
       "VersionRecord": {
@@ -1766,6 +1948,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
                   "principal": "stash",
                   "scope": "read",
                   "stash": "demo",
@@ -1787,6 +1970,25 @@
               }
             },
             "description": "Errors: `unauthorized`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Inspect the authenticated principal",
@@ -2063,6 +2265,25 @@
               }
             },
             "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Get a stash",
@@ -2180,6 +2401,25 @@
               }
             },
             "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "List stash changes",
@@ -2341,6 +2581,25 @@
               }
             },
             "description": "Errors: `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "500": {
             "content": {
@@ -2508,6 +2767,25 @@
             },
             "description": "Errors: `not-found`, `version-not-found`."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
           "500": {
             "content": {
               "application/json": {
@@ -2652,6 +2930,25 @@
             },
             "description": "Errors: `payload-too-large`."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
           "500": {
             "content": {
               "application/json": {
@@ -2770,6 +3067,25 @@
               }
             },
             "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "List files",
@@ -2907,6 +3223,25 @@
               }
             },
             "description": "Errors: `not-found`, `file-deleted` (includes current), `version-not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "500": {
             "content": {
@@ -3130,6 +3465,25 @@
             },
             "description": "Errors: `idempotency-key-reused`."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
           "500": {
             "content": {
               "application/json": {
@@ -3258,6 +3612,25 @@
               }
             },
             "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Get file history",
@@ -3692,6 +4065,25 @@
             },
             "description": "Errors: `idempotency-key-reused`, `rollback-target-tombstone` (includes current)."
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
           "500": {
             "content": {
               "application/json": {
@@ -3731,10 +4123,13 @@
                   "tokens": [
                     {
                       "createdAt": "2026-08-26T00:00:00.000Z",
+                      "expiresAt": "2026-09-25T00:00:00.000Z",
                       "id": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7",
                       "label": "read-only example",
                       "lastUsedAt": null,
                       "revokedAt": null,
+                      "rotatedFrom": null,
+                      "rotatedTo": null,
                       "scope": "read"
                     }
                   ]
@@ -3799,7 +4194,14 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
+                "description": "expiresAt and ttlSeconds are mutually exclusive.",
                 "properties": {
+                  "expiresAt": {
+                    "description": "Mutually exclusive with ttlSeconds.",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                    "type": "string"
+                  },
                   "label": {
                     "description": "Must be a well-formed Unicode string.",
                     "type": "string"
@@ -3807,6 +4209,12 @@
                   "scope": {
                     "enum": ["read", "write"],
                     "type": "string"
+                  },
+                  "ttlSeconds": {
+                    "description": "Mutually exclusive with expiresAt.",
+                    "exclusiveMinimum": 0,
+                    "maximum": 315360000,
+                    "type": "integer"
                   }
                 },
                 "required": ["scope"],
@@ -3822,8 +4230,10 @@
               "application/json": {
                 "example": {
                   "createdAt": "2026-08-26T00:00:00.000Z",
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
                   "id": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7",
                   "label": "read-only example",
+                  "rotatedFrom": null,
                   "scope": "read",
                   "token": "zhs_example_read_token"
                 },
@@ -3939,6 +4349,141 @@
           }
         },
         "summary": "Revoke a stash token",
+        "x-principal": "admin"
+      }
+    },
+    "/v1/stashes/{stash}/tokens/{id}/rotate": {
+      "post": {
+        "description": "Creates one successor token and shortens the predecessor to a grace period.\n\nadmin; administrator only.",
+        "operationId": "rotateToken",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "expiresAt and ttlSeconds are mutually exclusive.",
+                "properties": {
+                  "expiresAt": {
+                    "description": "Mutually exclusive with ttlSeconds.",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                    "type": "string"
+                  },
+                  "graceSeconds": {
+                    "default": 300,
+                    "maximum": 86400,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ttlSeconds": {
+                    "description": "Mutually exclusive with expiresAt.",
+                    "exclusiveMinimum": 0,
+                    "maximum": 315360000,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "createdAt": "2026-08-26T00:00:00.000Z",
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "id": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D8",
+                  "label": "read-only example",
+                  "predecessor": {
+                    "expiresAt": "2026-08-26T00:05:00.000Z",
+                    "id": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7"
+                  },
+                  "rotatedFrom": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7",
+                  "scope": "read",
+                  "token": "zhs_example_rotated_token"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/RotateTokenResult"
+                }
+              }
+            },
+            "description": "The newly created successor token and the predecessor's shortened expiry."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `already-rotated`, `token-expired`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          }
+        },
+        "summary": "Rotate a stash token",
         "x-principal": "admin"
       }
     }

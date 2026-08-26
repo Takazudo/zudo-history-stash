@@ -104,6 +104,9 @@ function tokenRecord(id: string, label: string): TokenRecord {
     label,
     scope: "read",
     createdAt: "2026-08-26T09:00:00.000Z",
+    expiresAt: null,
+    rotatedFrom: null,
+    rotatedTo: null,
     lastUsedAt: null,
     revokedAt: null,
   };

@@ -10,6 +10,7 @@ const rpcMethodsByRoute = {
   getStash: "getStash",
   createToken: "createToken",
   listTokens: "listTokens",
+  rotateToken: "rotateToken",
   revokeToken: "revokeToken",
   importHistory: "importHistory",
   listChanges: "listChanges",

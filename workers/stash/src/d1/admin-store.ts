@@ -252,6 +252,9 @@ function mapToken(row: TokenListRow): TokenRecord | null {
     label: row.label,
     scope: row.scope,
     createdAt: toIso(row.created_at),
+    expiresAt: null,
+    rotatedFrom: null,
+    rotatedTo: null,
     revokedAt: row.revoked_at === null ? null : toIso(row.revoked_at),
     lastUsedAt: row.last_used_at === null ? null : toIso(row.last_used_at),
   };
@@ -367,6 +370,8 @@ export function createAdminStore(
         label: parsed.data.label ?? "",
         scope: parsed.data.scope,
         createdAt: toIso(createdAt),
+        expiresAt: null,
+        rotatedFrom: null,
       };
     },
 

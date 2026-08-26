@@ -73,7 +73,14 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
 ]);
 
 type Principal =
-  { kind: "admin" } | { kind: "stash"; stash: string; tokenId: string; scope: TokenScope };
+  | { kind: "admin" }
+  | {
+      kind: "stash";
+      stash: string;
+      tokenId: string;
+      scope: TokenScope;
+      expiresAt: number | null;
+    };
 
 interface MatchedRoute {
   routeId: RouteId;
@@ -408,6 +415,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       label,
       scope,
       createdAt,
+      expiresAt: null,
+      rotatedFrom: null,
+      rotatedTo: null,
       revokedAt: null,
       lastUsedAt: null,
     };
@@ -433,7 +443,13 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (row.lastUsedAt === null || row.lastUsedAt <= usedAt - LAST_USED_INTERVAL_MS) {
       row.lastUsedAt = usedAt;
     }
-    return { kind: "stash", stash: row.stash, tokenId: row.id, scope: row.scope };
+    return {
+      kind: "stash",
+      stash: row.stash,
+      tokenId: row.id,
+      scope: row.scope,
+      expiresAt: row.expiresAt,
+    };
   };
 
   const authorize = (principal: Principal, match: MatchedRoute): void => {
@@ -602,6 +618,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         label: row.label,
         scope: row.scope,
         createdAt: iso(row.createdAt),
+        expiresAt: row.expiresAt === null ? null : iso(row.expiresAt),
+        rotatedFrom: row.rotatedFrom,
       },
       201,
     );
@@ -621,6 +639,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         label: row.label,
         scope: row.scope,
         createdAt: iso(row.createdAt),
+        expiresAt: row.expiresAt === null ? null : iso(row.expiresAt),
+        rotatedFrom: row.rotatedFrom,
+        rotatedTo: row.rotatedTo,
         revokedAt: row.revokedAt === null ? null : iso(row.revokedAt),
         lastUsedAt: row.lastUsedAt === null ? null : iso(row.lastUsedAt),
       }));
@@ -1054,6 +1075,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
                   stash: principal.stash,
                   tokenId: principal.tokenId,
                   scope: principal.scope,
+                  expiresAt: principal.expiresAt === null ? null : iso(principal.expiresAt),
                 },
           );
         case "listStashes":

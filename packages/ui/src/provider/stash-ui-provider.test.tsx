@@ -56,21 +56,39 @@ describe("StashUiProvider capabilities", () => {
     ["admin", { principal: "admin" } satisfies MeResponse, "notes", true, true],
     [
       "matching write token",
-      { principal: "stash", stash: "notes", tokenId: "tok_1", scope: "write" } satisfies MeResponse,
+      {
+        principal: "stash",
+        stash: "notes",
+        tokenId: "tok_1",
+        scope: "write",
+        expiresAt: null,
+      } satisfies MeResponse,
       "notes",
       true,
       false,
     ],
     [
       "matching read token",
-      { principal: "stash", stash: "notes", tokenId: "tok_1", scope: "read" } satisfies MeResponse,
+      {
+        principal: "stash",
+        stash: "notes",
+        tokenId: "tok_1",
+        scope: "read",
+        expiresAt: null,
+      } satisfies MeResponse,
       "notes",
       false,
       false,
     ],
     [
       "foreign write token",
-      { principal: "stash", stash: "other", tokenId: "tok_1", scope: "write" } satisfies MeResponse,
+      {
+        principal: "stash",
+        stash: "other",
+        tokenId: "tok_1",
+        scope: "write",
+        expiresAt: null,
+      } satisfies MeResponse,
       "notes",
       false,
       false,
@@ -200,6 +218,7 @@ describe("StashUiProvider capabilities", () => {
       stash: "notes",
       tokenId: "tok_1",
       scope: "read",
+      expiresAt: null,
     });
     const rendered = render(
       <StashUiProvider client={firstClient}>
