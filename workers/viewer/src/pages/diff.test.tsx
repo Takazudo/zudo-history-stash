@@ -195,6 +195,8 @@ describe("DiffPage", () => {
     expect(cell(context, "sign").dataset.diffSign).toBe(" ");
     expect(screen.getByText("\\ No newline at end of file")).toBeTruthy();
     expect(screen.getByLabelText("1 lines added and 1 lines removed").textContent).toBe("+1−1");
+    expect(screen.queryByText(/CRLF line endings/u)).toBeNull();
+    expect(screen.queryByText(/Word-level marks were skipped/u)).toBeNull();
 
     const fromSelect = screen.getByLabelText("From version") as HTMLSelectElement;
     expect([...fromSelect.options].map((option) => option.text)).toEqual([
@@ -254,7 +256,54 @@ describe("DiffPage", () => {
     expect(screen.getByText("new line")).toBeTruthy();
   });
 
-  it("persists the wrap toggle and changes the pane mode without refetching", async () => {
+  it.each([
+    {
+      name: "old",
+      lines: ["-old line\r", "+new line"],
+      copy: "CRLF line endings on the old side are shown normalized",
+    },
+    {
+      name: "new",
+      lines: ["-old line", "+new line\r"],
+      copy: "CRLF line endings on the new side are shown normalized",
+    },
+    {
+      name: "both",
+      lines: [" shared line\r"],
+      copy: "CRLF line endings are shown normalized",
+    },
+  ])("shows the $name-side CRLF notice copy", async ({ lines, copy }) => {
+    const withCrlf: GetDiffResult = {
+      ...READY,
+      hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines }],
+    };
+    const { client } = createDiffClient({ ok: true, value: withCrlf });
+    renderDiffRoute("/s/notes/diff/docs/readme.txt?from=2&to=3", client);
+
+    expect(await screen.findByText(copy)).toBeTruthy();
+  });
+
+  it("reports when word-level marks are skipped for a long changed line", async () => {
+    const prefix = "a".repeat(801);
+    const withSkippedMarks: GetDiffResult = {
+      ...READY,
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: [`-${prefix}x`, `+${prefix}y`],
+        },
+      ],
+    };
+    const { client } = createDiffClient({ ok: true, value: withSkippedMarks });
+    renderDiffRoute("/s/notes/diff/docs/readme.txt?from=2&to=3", client);
+
+    expect(await screen.findByText("Word-level marks were skipped on 1 long line")).toBeTruthy();
+  });
+
+  it("persists view controls and changes presentation without refetching", async () => {
     localStorage.setItem("zhs.diff.wrap", "false");
     const { client, diff } = createDiffClient({ ok: true, value: READY });
     renderDiffRoute("/s/notes/diff/docs/readme.txt?from=2&to=3", client);
@@ -262,15 +311,25 @@ describe("DiffPage", () => {
     const table = await screen.findByRole("table", { name: "Unified diff" });
     const pane = table.closest(".diff-table-pane");
     expect(pane?.className).toContain("diff-table-pane--nowrap");
-    const checkbox = screen.getByRole("checkbox", {
-      name: "Wrap long lines",
-    }) as HTMLInputElement;
-    expect(checkbox.checked).toBe(false);
+    const requestCount = diff.mock.calls.length;
+    const wrap = screen.getByRole("checkbox", { name: "Wrap" }) as HTMLInputElement;
+    const marks = screen.getByRole("checkbox", { name: "Marks" }) as HTMLInputElement;
+    expect(wrap.checked).toBe(false);
+    expect(marks.checked).toBe(true);
 
-    await userEvent.click(checkbox);
+    await userEvent.click(wrap);
     expect(pane?.className).toContain("diff-table-pane--wrap");
     expect(localStorage.getItem("zhs.diff.wrap")).toBe("true");
-    expect(diff).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(marks);
+    expect(pane?.className).toContain("diff-table-pane--no-marks");
+    expect(localStorage.getItem("zhs.diff.marks")).toBe("false");
+
+    await userEvent.click(screen.getByRole("button", { name: "Split" }));
+    expect(screen.getByRole("button", { name: "Split" }).getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("zhs.diff.layout")).toBe("split");
+    expect(screen.getByText("split view not available yet")).toBeTruthy();
+    expect(diff.mock.calls.length).toBe(requestCount);
   });
 
   it("updates comparison controls and resolves head before swapping", async () => {
