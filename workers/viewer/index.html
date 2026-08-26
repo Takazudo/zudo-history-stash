@@ -9,11 +9,11 @@
       (() => {
         try {
           const theme = localStorage.getItem("zhs.theme");
-          if (theme === "light" || theme === "dark") {
+          if (theme === "system" || theme === "light" || theme === "dark") {
             document.documentElement.dataset.theme = theme;
           }
         } catch {
-          // Storage can be unavailable in privacy-restricted contexts; the system theme remains valid.
+          // Storage can be unavailable in privacy-restricted contexts; dark remains the default.
         }
       })();
     </script>
