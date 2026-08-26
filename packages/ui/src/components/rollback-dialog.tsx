@@ -204,6 +204,11 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
     setPreviewAttempt((attempt) => attempt + 1);
   }
 
+  function requestClose() {
+    if (submittingRef.current) return;
+    onClose();
+  }
+
   async function submitRollback(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     if (
@@ -271,7 +276,7 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
       className="zhs-rollback-dialog"
       open={true}
       ref={dialogRef}
-      onClose={onClose}
+      onClose={requestClose}
     >
       <header className="zhs-rollback-dialog__header">
         <div>
@@ -280,7 +285,12 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
             Rollback <span className="zhs-rollback-dialog__path">{path}</span> to v{target.version}
           </h2>
         </div>
-        <Button aria-label="Close rollback dialog" size="sm" onClick={onClose}>
+        <Button
+          aria-label="Close rollback dialog"
+          disabled={submitting}
+          size="sm"
+          onClick={requestClose}
+        >
           Close
         </Button>
       </header>
@@ -390,7 +400,7 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
             ) : null}
 
             <div className="zhs-rollback-dialog__actions">
-              <Button disabled={submitting} onClick={onClose}>
+              <Button disabled={submitting} onClick={requestClose}>
                 Cancel
               </Button>
               <Button
