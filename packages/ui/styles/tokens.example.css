@@ -1,5 +1,7 @@
-@import "tailwindcss/preflight";
-@import "tailwindcss/utilities";
+@layer base, zhs-components, utilities;
+
+@import "tailwindcss/preflight" layer(base);
+@import "tailwindcss/utilities" layer(utilities);
 
 @theme {
   /* Tier 1: palette. Raw color values live only here. */

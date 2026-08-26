@@ -54,27 +54,10 @@ if [[ -z "$requested" ]]; then
   exit 2
 fi
 
-core_package_version=$(release_package_version "$RELEASE_ROOT/packages/core/package.json")
-client_package_version=$(release_package_version "$RELEASE_ROOT/packages/client/package.json")
-if ! core_version_constant=$(release_version_constant "$RELEASE_ROOT/packages/core/src/index.ts"); then
-  release_error 'Could not read exactly one VERSION constant from packages/core/src/index.ts.'
-  exit 1
-fi
-if ! client_version_constant=$(release_version_constant "$RELEASE_ROOT/packages/client/src/index.ts"); then
-  release_error 'Could not read exactly one VERSION constant from packages/client/src/index.ts.'
+if ! current=$(release_lockstep_version); then
   exit 1
 fi
 
-if [[ "$core_package_version" == "$client_package_version" &&
-  "$core_package_version" == "$core_version_constant" &&
-  "$core_package_version" == "$client_version_constant" ]]; then
-  :
-else
-  release_error "Version mismatch: packages/core/package.json=$core_package_version, packages/client/package.json=$client_package_version, packages/core/src/index.ts=$core_version_constant, packages/client/src/index.ts=$client_version_constant."
-  exit 1
-fi
-
-current=$core_package_version
 # `plain_semver_re` is assigned by the sourced lib.sh.
 # shellcheck disable=SC2154
 if [[ ! "$current" =~ $plain_semver_re ]]; then
@@ -121,9 +104,10 @@ if ! release_semver_greater "$next" "$current"; then
   exit 1
 fi
 
-core_changelog="$RELEASE_ROOT/packages/core/CHANGELOG.md"
-client_changelog="$RELEASE_ROOT/packages/client/CHANGELOG.md"
-for changelog in "$core_changelog" "$client_changelog"; do
+# `release_changelog_paths` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
+for changelog_path in "${release_changelog_paths[@]}"; do
+  changelog="$RELEASE_ROOT/$changelog_path"
   heading_count=$(release_changelog_heading_count "$changelog" "$next")
   if [[ "$heading_count" != '1' ]]; then
     relative_changelog=${changelog#"$RELEASE_ROOT/"}
@@ -133,10 +117,8 @@ for changelog in "$core_changelog" "$client_changelog"; do
 done
 
 version_files=(
-  'packages/core/package.json'
-  'packages/client/package.json'
-  'packages/core/src/index.ts'
-  'packages/client/src/index.ts'
+  "${release_package_manifest_paths[@]}"
+  "${release_version_source_paths[@]}"
   'docs/openapi.json'
 )
 
@@ -148,7 +130,8 @@ fi
 
 require_bump_tree
 
-for package_file in "$RELEASE_ROOT/packages/core/package.json" "$RELEASE_ROOT/packages/client/package.json"; do
+for package_path in "${release_package_manifest_paths[@]}"; do
+  package_file="$RELEASE_ROOT/$package_path"
   node -e '
 const fs = require("node:fs");
 const packageFile = process.argv[1];
@@ -159,7 +142,8 @@ fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
 ' "$package_file" "$next"
 done
 
-for source_file in "$RELEASE_ROOT/packages/core/src/index.ts" "$RELEASE_ROOT/packages/client/src/index.ts"; do
+for source_path in "${release_version_source_paths[@]}"; do
+  source_file="$RELEASE_ROOT/$source_path"
   node -e '
 const fs = require("node:fs");
 const sourceFile = process.argv[1];

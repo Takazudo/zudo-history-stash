@@ -9,6 +9,39 @@ if [[ -z "${RELEASE_ROOT:-}" ]]; then
   RELEASE_ROOT=$(git rev-parse --show-toplevel)
 fi
 
+# These arrays are consumed by sibling scripts after sourcing this library.
+# shellcheck disable=SC2034
+release_package_manifest_paths=(
+  'packages/core/package.json'
+  'packages/client/package.json'
+  'packages/ui/package.json'
+)
+# shellcheck disable=SC2034
+release_version_source_paths=(
+  'packages/core/src/index.ts'
+  'packages/client/src/index.ts'
+  'packages/ui/src/index.ts'
+)
+# shellcheck disable=SC2034
+release_changelog_paths=(
+  'packages/core/CHANGELOG.md'
+  'packages/client/CHANGELOG.md'
+  'packages/ui/CHANGELOG.md'
+)
+# shellcheck disable=SC2034
+release_package_names=(
+  '@takazudo/zudo-history-stash-core'
+  '@takazudo/zudo-history-stash'
+  '@takazudo/zudo-history-stash-ui'
+)
+# shellcheck disable=SC2034
+release_atomic_commit_paths=(
+  "${release_package_manifest_paths[@]}"
+  "${release_version_source_paths[@]}"
+  "${release_changelog_paths[@]}"
+  'docs/openapi.json'
+)
+
 release_error() {
   printf '::error::%s\n' "$*" >&2
 }
@@ -33,6 +66,35 @@ process.stdout.write(packageJson.version);
 
 current_version() {
   release_package_version "$RELEASE_ROOT/packages/core/package.json"
+}
+
+release_lockstep_version() {
+  local expected
+  local path
+  local value
+
+  expected=$(current_version)
+  for path in "${release_package_manifest_paths[@]}"; do
+    if ! value=$(release_package_version "$RELEASE_ROOT/$path"); then
+      release_error "Could not read the package version from $path."
+      return 1
+    fi
+    if [[ "$value" != "$expected" ]]; then
+      release_error "Version mismatch: $path=$value; expected $expected."
+      return 1
+    fi
+  done
+  for path in "${release_version_source_paths[@]}"; do
+    if ! value=$(release_version_constant "$RELEASE_ROOT/$path"); then
+      release_error "Could not read exactly one VERSION constant from $path."
+      return 1
+    fi
+    if [[ "$value" != "$expected" ]]; then
+      release_error "Version mismatch: $path=$value; expected $expected."
+      return 1
+    fi
+  done
+  printf '%s\n' "$expected"
 }
 
 release_version_constant() {
@@ -72,15 +134,17 @@ require_clean_tree() {
   fi
 }
 
-# The release skill edits both changelogs before invoking `release:bump`. Keep
+# The release skill edits all three changelogs before invoking `release:bump`. Keep
 # the guard strict for every other path (including staged, deleted, renamed,
-# copied, and untracked entries), while allowing the two intended changelog
+# copied, and untracked entries), while allowing the three intended changelog
 # edits in either the index or the worktree.
 require_bump_tree() {
   local changes
   local line
   local status
   local path
+  local allowed_changelog
+  local changelog_path
 
   changes=$(git status --porcelain=v1 --untracked-files=all)
   [[ -n "$changes" ]] || return 0
@@ -105,15 +169,18 @@ require_bump_tree() {
         ;;
     esac
 
-    case "$path" in
-      packages/core/CHANGELOG.md|packages/client/CHANGELOG.md)
-        ;;
-      *)
-        release_error 'Only packages/core/CHANGELOG.md and packages/client/CHANGELOG.md may be changed before a release bump.'
-        printf '%s\n' "$changes" >&2
-        return 1
-        ;;
-    esac
+    allowed_changelog=0
+    for changelog_path in "${release_changelog_paths[@]}"; do
+      if [[ "$path" == "$changelog_path" ]]; then
+        allowed_changelog=1
+        break
+      fi
+    done
+    if ((!allowed_changelog)); then
+      release_error 'Only package changelogs may be changed before a release bump.'
+      printf '%s\n' "$changes" >&2
+      return 1
+    fi
   done <<<"$changes"
 }
 

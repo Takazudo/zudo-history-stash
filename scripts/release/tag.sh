@@ -73,30 +73,15 @@ if [[ "$head_sha" != "$origin_sha" ]]; then
   exit 1
 fi
 
-core_package_version=$(release_package_version "$RELEASE_ROOT/packages/core/package.json")
-client_package_version=$(release_package_version "$RELEASE_ROOT/packages/client/package.json")
-if ! core_version_constant=$(release_version_constant "$RELEASE_ROOT/packages/core/src/index.ts"); then
-  release_error 'Could not read exactly one VERSION constant from packages/core/src/index.ts.'
+if ! next=$(release_lockstep_version); then
   exit 1
 fi
-if ! client_version_constant=$(release_version_constant "$RELEASE_ROOT/packages/client/src/index.ts"); then
-  release_error 'Could not read exactly one VERSION constant from packages/client/src/index.ts.'
-  exit 1
-fi
-next=$core_package_version
 # `plain_semver_re` is assigned by the sourced lib.sh.
 # shellcheck disable=SC2154
 if [[ ! "$next" =~ $plain_semver_re ]]; then
   release_error "NEXT=$next violates the plain SemVer rule $plain_semver_re."
   exit 1
 fi
-if [[ "$client_package_version" != "$next" ||
-  "$core_version_constant" != "$next" ||
-  "$client_version_constant" != "$next" ]]; then
-  release_error "Bump commit is incomplete at HEAD: core package=$next, client package=$client_package_version, core VERSION=$core_version_constant, client VERSION=$client_version_constant."
-  exit 1
-fi
-
 openapi_version=$(release_openapi_version)
 if [[ "$openapi_version" != "$next" ]]; then
   release_error "Bump commit is incomplete at HEAD: docs/openapi.json info.version=$openapi_version, expected $next."

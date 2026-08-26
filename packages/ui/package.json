@@ -31,7 +31,8 @@
   "scripts": {
     "build": "tsup && node scripts/build-css.mjs",
     "test": "vitest run && node --test scripts/*.test.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm check:examples",
+    "check:examples": "tsc -p examples-check/tsconfig.json --noEmit",
     "lint": "eslint .",
     "lint:tokens": "design-token-lint && node scripts/lint-raw-px.mjs",
     "lint:pkg": "pnpm dlx publint@0.3.12 && pnpm dlx @arethetypeswrong/cli@0.18.5 --pack . --profile esm-only --exclude-entrypoints ./styles.css",
