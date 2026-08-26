@@ -95,6 +95,12 @@ if [[ "$client_package_version" != "$next" ||
   exit 1
 fi
 
+openapi_version=$(release_openapi_version)
+if [[ "$openapi_version" != "$next" ]]; then
+  release_error "Bump commit is incomplete at HEAD: docs/openapi.json info.version=$openapi_version, expected $next."
+  exit 1
+fi
+
 tag_name="v$next"
 if [[ -n "$(git tag -l "$tag_name")" ]]; then
   release_error "Tag $tag_name already exists locally."

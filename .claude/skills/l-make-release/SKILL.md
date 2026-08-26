@@ -73,14 +73,17 @@ Run from the repository root on `main`.
    changelogs already contain `0.1.0`, so reuse those sections. Never create a duplicate heading,
    reorder sections, or rewrite an older release section.
 
-4. **Bump the four version-bearing files.** Run the requested mode or explicit version exactly:
+4. **Bump the four version-bearing files and regenerate the OpenAPI artifact.** The generated
+   document's `info.version` is intentionally pinned to the core package version, so it is part of
+   the atomic release diff. Run the requested mode or explicit version exactly:
 
    ```bash
    pnpm release:bump "$MODE"
    ```
 
-   The command updates both package manifests and both exported `VERSION` constants, installs
-   dependencies, and stops if the lockfile changes. Do not hand-edit these four version values.
+   The command updates both package manifests and both exported `VERSION` constants, regenerates
+   `docs/openapi.json`, installs dependencies, and stops if the lockfile changes. Do not hand-edit
+   these four version values or the generated OpenAPI artifact.
 
 5. **Gate before committing.** Run both checks after the changelog and version changes and before
    creating the release commit:
@@ -93,12 +96,13 @@ Run from the repository root on `main`.
    Fix only release-scope failures, then rerun both commands. The gate builds, inspects, installs,
    and dry-runs publication of the package tarballs; it does not publish.
 
-6. **Create one atomic release commit.** Stage exactly these six paths and commit once:
+6. **Create one atomic release commit.** Stage exactly these seven paths and commit once:
 
    ```bash
    git add packages/core/package.json packages/client/package.json \
      packages/core/src/index.ts packages/client/src/index.ts \
-     packages/core/CHANGELOG.md packages/client/CHANGELOG.md
+     packages/core/CHANGELOG.md packages/client/CHANGELOG.md \
+     docs/openapi.json
    git commit -m "chore(release): bump to v$VERSION"
    ```
 
@@ -113,13 +117,15 @@ Run from the repository root on `main`.
    git show --stat --oneline HEAD
    git diff HEAD^ HEAD -- packages/core/package.json packages/client/package.json \
      packages/core/src/index.ts packages/client/src/index.ts \
-     packages/core/CHANGELOG.md packages/client/CHANGELOG.md
+     packages/core/CHANGELOG.md packages/client/CHANGELOG.md \
+     docs/openapi.json
    ```
 
-   Require an empty status and exactly the four version-bearing files plus the two changelogs in
-   the name-only output. Confirm all four versions equal `X.Y.Z`, each changelog has exactly one
-   heading for it, older sections are unchanged, and no hook touched another file. If any other
-   path changed, stop; do not push.
+   Require an empty status and exactly the four version-bearing files, the two changelogs, and the
+   generated OpenAPI document in the name-only output. Confirm all four versions and
+   `docs/openapi.json`'s `info.version` equal `X.Y.Z`, each changelog has exactly one heading for
+   it, older sections are unchanged, and no hook touched another file. If any other path changed,
+   stop; do not push.
 
 8. **Push `main` and wait for CI.** Run:
 
@@ -192,13 +198,13 @@ Run from the repository root on `main`.
 
 ## Recovery playbook
 
-| Failure                                                                      | Recovery                                                                                                                                                                                                                                             |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The tag was pushed, but `release.yml` failed before either package published | Fix forward on `main`, then use `gh run rerun <run-id>` and `gh run watch <run-id> --exit-status` to rerun and watch the tag-push workflow for the existing tag. The workflow safeguards make the retry idempotent; do not move or recreate the tag. |
-| Core published, but client failed                                            | Use `gh run rerun <run-id>` and `gh run watch <run-id> --exit-status` for the same tag. The exact-version safeguard detects and skips the published core, then retries client.                                                                       |
-| The wrong version was tagged or published                                    | Never delete a published version. Correct the files and changelogs on `main`, then publish a new patch release through the complete flow.                                                                                                            |
-| CI is red on the bump commit before the tag exists                           | Fix forward on `main`, push, wait for CI on the new `HEAD`, then run `pnpm release:tag` again.                                                                                                                                                       |
-| `release:check` finds the bump commit at current `HEAD` with no tag          | Verify its six-file committed diff and that `origin/main` reaches the same commit, then resume at `pnpm release:tag`. If `HEAD` moved, block as specified above.                                                                                     |
+| Failure                                                                      | Recovery                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The tag was pushed, but `release.yml` failed before either package published | If the failure is transient and the tagged commit is correct, use `gh run rerun <run-id>` and `gh run watch <run-id> --exit-status` to retry the workflow for the existing tag. A rerun checks out the immutable tagged commit; a fix-forward on `main` cannot repair that run. If code or workflow changes are required, fix forward on `main` and cut a new patch release through the complete flow. Never move or recreate the existing tag. |
+| Core published, but client failed                                            | If the failure is transient and the tagged commit is correct, use `gh run rerun <run-id>` and `gh run watch <run-id> --exit-status` for the same tag; the exact-version safeguard skips the published core and retries client. A rerun still checks out the immutable tagged commit. If code or workflow changes are required, fix forward on `main` and cut a new patch release; leave the already-published core version intact.              |
+| The wrong version was tagged or published                                    | Never delete a published version. Correct the files and changelogs on `main`, then publish a new patch release through the complete flow.                                                                                                                                                                                                                                                                                                       |
+| CI is red on the bump commit before the tag exists                           | Fix forward on `main`, push, wait for CI on the new `HEAD`, then run `pnpm release:tag` again.                                                                                                                                                                                                                                                                                                                                                  |
+| `release:check` finds the bump commit at current `HEAD` with no tag          | Verify its seven-file committed diff and that `origin/main` reaches the same commit, then resume at `pnpm release:tag`. If `HEAD` moved, block as specified above.                                                                                                                                                                                                                                                                              |
 
 Do not “repair” release state by deleting registry versions, rewriting `main`, moving a tag, or
 force-pushing. Preserve the failed run URL and command output in the recovery report.

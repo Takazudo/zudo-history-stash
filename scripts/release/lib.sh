@@ -44,7 +44,20 @@ if (matches.length !== 1) {
   throw new Error(`Expected exactly one VERSION constant in ${sourceFile}`);
 }
 process.stdout.write(matches[0][1]);
-' "$source_file"
+  ' "$source_file"
+}
+
+release_openapi_version() {
+  node - "$RELEASE_ROOT/docs/openapi.json" <<'NODE'
+const fs = require("node:fs");
+
+const [documentPath] = process.argv.slice(2);
+const document = JSON.parse(fs.readFileSync(documentPath, "utf8"));
+if (typeof document.info?.version !== "string") {
+  throw new Error(`OpenAPI document ${documentPath} is missing info.version`);
+}
+process.stdout.write(document.info.version);
+NODE
 }
 
 require_clean_tree() {
@@ -55,6 +68,51 @@ require_clean_tree() {
     printf '%s\n' "$changes" >&2
     return 1
   fi
+}
+
+# The release skill edits both changelogs before invoking `release:bump`. Keep
+# the guard strict for every other path (including staged, deleted, renamed,
+# copied, and untracked entries), while allowing the two intended changelog
+# edits in either the index or the worktree.
+require_bump_tree() {
+  local changes
+  local line
+  local status
+  local path
+
+  changes=$(git status --porcelain=v1 --untracked-files=all)
+  [[ -n "$changes" ]] || return 0
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    if [[ ${#line} -lt 4 ]]; then
+      release_error 'Working tree has an unrecognised status entry; release bump stopped.'
+      printf '%s\n' "$changes" >&2
+      return 1
+    fi
+
+    status=${line:0:2}
+    path=${line:3}
+    case "$status" in
+      ' M'|'M '|'MM')
+        ;;
+      *)
+        release_error 'Only modified release changelogs may be changed before a release bump.'
+        printf '%s\n' "$changes" >&2
+        return 1
+        ;;
+    esac
+
+    case "$path" in
+      packages/core/CHANGELOG.md|packages/client/CHANGELOG.md)
+        ;;
+      *)
+        release_error 'Only packages/core/CHANGELOG.md and packages/client/CHANGELOG.md may be changed before a release bump.'
+        printf '%s\n' "$changes" >&2
+        return 1
+        ;;
+    esac
+  done <<<"$changes"
 }
 
 require_branch() {

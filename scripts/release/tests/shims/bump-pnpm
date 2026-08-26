@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${BUMP_PNPM_LOG:?BUMP_PNPM_LOG must be set}"
+printf '%s\n' "$*" >>"$BUMP_PNPM_LOG"
