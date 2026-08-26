@@ -1,6 +1,6 @@
 # Lints GitHub Actions workflow files with rhysd/actionlint.
-# Path-filtered: runs ONLY when a workflow or this lint's own config changes,
-# so it stays off the critical path for ordinary PRs.
+# Path-filtered: runs when workflow/config or shell-script files change, so it
+# stays off the critical path for ordinary PRs.
 name: actionlint
 
 on:
@@ -11,6 +11,7 @@ on:
     paths:
       - ".github/workflows/**"
       - ".github/actionlint.yaml"
+      - "scripts/**/*.sh"
     types: [opened, synchronize, reopened]
   push:
     branches:
@@ -19,6 +20,7 @@ on:
     paths:
       - ".github/workflows/**"
       - ".github/actionlint.yaml"
+      - "scripts/**/*.sh"
 
 permissions:
   contents: read
@@ -38,8 +40,30 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
 
-      # The ubuntu-22.04 runner ships shellcheck preinstalled, so actionlint
-      # additionally lints run: shell blocks through it (no extra setup).
+      - name: Install pinned ShellCheck
+        env:
+          SHELLCHECK_VERSION: "0.10.0"
+          SHELLCHECK_SHA256: "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+        run: |
+          set -euo pipefail
+          curl --retry 5 --retry-all-errors --retry-delay 5 -fsSL \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            -o shellcheck.tar.xz
+          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum --check
+          tar -xJf shellcheck.tar.xz "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$PWD/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Run ShellCheck
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          shell_files=(scripts/**/*.sh)
+          if (( ${#shell_files[@]} == 0 )); then
+            echo "No shell scripts found under scripts/"
+            exit 0
+          fi
+          shellcheck --severity=warning "${shell_files[@]}"
+
       - name: Run actionlint
         env:
           # Pinned release + checksum (tamper-evident). Bump both together;
