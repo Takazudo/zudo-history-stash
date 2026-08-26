@@ -50,7 +50,7 @@ import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 
 const fake = createFakeStash({ adminToken: "test-admin" });
 fake.createStash("docs");
-const token = fake.mintToken("docs", "write");
+const token = await fake.mintToken("docs", "write");
 
 const client = createStashClient({
   baseUrl: "https://stash.test",
@@ -63,10 +63,11 @@ const client = createStashClient({
 direct fixture setup and assertions. `fake.reset()` clears those tables without replacing the
 state object. Pass `now` to freeze timestamps.
 
-The fake implements only `GET /v1/me`, `POST /v1/stashes`, and the stash-scoped file list, file
-read/write/delete/rollback, history, changes, and stored/candidate diff routes. All other routes —
-including health, stash listing/details, token management, import, and cross-stash changes — return
-`501 not-implemented`. Token-management setup therefore uses `fake.mintToken()` directly.
+The fake implements `GET /v1/me`, stash list/create/detail, token create/list/revoke, and the
+stash-scoped file list, file read/write/delete/rollback, history, changes, and stored/candidate diff
+routes. Health, import, cross-stash changes, and unknown routes return `501 not-implemented`.
+`await fake.mintToken()` remains available for direct fixture setup and uses the same hash-only
+storage path as the token-management routes.
 
 The same exported conformance runner is used to detect drift between the fake and the real Worker:
 
@@ -78,5 +79,5 @@ await runConformance(fetch, "http://localhost:8787/api", {
 });
 ```
 
-Fake-only conformance runs additionally pass `mintToken: fake.mintToken`; real-worker runs mint the
-read token through the server's admin endpoint.
+Fake and real-Worker conformance runs use the same options object; the trace creates, authenticates,
+lists, and revokes its read/write tokens through the admin endpoints.
