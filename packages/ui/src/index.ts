@@ -17,7 +17,7 @@ export { useFileHistory } from "./hooks/use-file-history.js";
 export { useIdempotencyKey } from "./hooks/use-idempotency-key.js";
 export { useMediaQuery } from "./hooks/use-media-query.js";
 export { useSaveMachine } from "./hooks/use-save-machine.js";
-export { useWorkbench } from "./hooks/use-workbench.js";
+export { clearWorkbenchDraftsForCredentialChange, useWorkbench } from "./hooks/use-workbench.js";
 
 export { Bytes } from "./components/bytes.js";
 export { ChangeRow } from "./components/change-row.js";

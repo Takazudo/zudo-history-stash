@@ -1,6 +1,7 @@
 import { buildDiffModel, type DiffHunk } from "@takazudo/zudo-history-stash-core";
 import type { StashClient } from "@takazudo/zudo-history-stash";
 import {
+  clearWorkbenchDraftsForCredentialChange,
   defaultStashHrefFor,
   DiffPane,
   EditWorkbench,
@@ -14,6 +15,36 @@ import {
 const stash = "docs";
 const path = "guides/start.md";
 const hrefFor: StashHrefFor = (route) => `/operator${defaultStashHrefFor(route)}`;
+
+export function removeHostCredential(
+  removePersistedCredential: () => boolean,
+  deactivateCredential: () => void,
+): boolean {
+  const draftsCleared = clearWorkbenchDraftsForCredentialChange();
+  let credentialRemoved = false;
+  try {
+    credentialRemoved = removePersistedCredential();
+  } catch {
+    credentialRemoved = false;
+  } finally {
+    deactivateCredential();
+  }
+  return draftsCleared && credentialRemoved;
+}
+
+export function installHostCredential(
+  persistCredential: () => boolean,
+  activateCredential: () => void,
+): boolean {
+  if (!clearWorkbenchDraftsForCredentialChange()) return false;
+  try {
+    if (!persistCredential()) return false;
+  } catch {
+    return false;
+  }
+  activateCredential();
+  return true;
+}
 
 function Anchor({ href, ...props }: StashAnchorProps) {
   return <a href={href} {...props} />;

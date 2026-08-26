@@ -130,5 +130,45 @@ surface such as the Viewer protected by Cloudflare Access. The provider neither 
 implements login/logout. The host owns credential storage, request transport, and its response to
 `401`; package components render typed API failures returned by the supplied client.
 
+Workbench drafts are retained in the tab's `sessionStorage` and keyed by stash and path, not by
+credential. This preserves unsaved work across navigation and client re-renders for one principal,
+but it also makes credential changes an explicit host responsibility. Import
+`clearWorkbenchDraftsForCredentialChange` from the package root and call it immediately before:
+
+- removing the active credential during logout or `401` handling; and
+- installing a validated credential during login, account switching, or credential replacement.
+
+Cleanup should run at both boundaries so a later principal cannot restore a previous principal's
+draft, even when credential storage was cleared independently. A `false` result means draft cleanup
+could not be confirmed. Logout must still deactivate the runtime credential and client in a
+`finally` path. Attempt persisted-credential removal independently and surface a failure: the stored
+credential can become active again after reload, so the operator should close the tab and clear its
+site data. Do not install or activate a new credential until draft cleanup and credential persistence
+both succeed.
+
+```ts
+import { clearWorkbenchDraftsForCredentialChange } from "@takazudo/zudo-history-stash-ui";
+
+function logOut() {
+  const draftsCleared = clearWorkbenchDraftsForCredentialChange();
+  let credentialRemoved = false;
+  try {
+    credentialRemoved = removePersistedCredential();
+  } catch {
+    credentialRemoved = false;
+  } finally {
+    deactivateCredentialInMemory();
+  }
+  if (!draftsCleared || !credentialRemoved) showCredentialStorageWarning();
+}
+
+function installValidatedCredential(credential: string) {
+  if (!clearWorkbenchDraftsForCredentialChange()) return false;
+  if (!storeCredential(credential)) return false;
+  activateCredentialInMemory(credential);
+  return true;
+}
+```
+
 The Viewer integration and its operational credential guidance are documented in the repository's
 [Viewer operations runbook](https://github.com/Takazudo/zudo-history-stash/blob/main/docs/viewer-operations.md).
