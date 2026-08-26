@@ -217,7 +217,7 @@
   max-width: 100%;
   min-width: 0;
   overflow: auto;
-  overscroll-behavior-inline: contain;
+  overscroll-behavior-x: contain;
   border: var(--border-hairline) solid var(--theme-border);
   border-radius: var(--radius-md);
   background: var(--theme-surface-raised);
@@ -236,11 +236,11 @@
   table-layout: fixed;
 }
 
-.diff-table-pane--wrap .diff-table__gutter {
+.diff-table-pane--wrap .diff-table--unified .diff-table__gutter {
   width: 7ch;
 }
 
-.diff-table-pane--wrap .diff-table__sign {
+.diff-table-pane--wrap .diff-table--unified .diff-table__sign {
   width: 8ch;
 }
 
@@ -265,6 +265,27 @@
   font-family: var(--font-sans);
   font-weight: 680;
   text-align: left;
+}
+
+.diff-table__caption {
+  padding-block: var(--vsp-xs);
+  padding-inline: var(--hsp-xs);
+  border-bottom: var(--border-hairline) solid var(--theme-border);
+  background: var(--table-header-bg);
+  color: var(--theme-ink-muted);
+  font-family: var(--font-sans);
+  font-weight: 680;
+  text-align: left;
+}
+
+.diff-table__caption-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: var(--hsp-sm);
+}
+
+.diff-table__caption-content > :last-child {
+  text-align: right;
 }
 
 .diff-table__gutter,
@@ -300,23 +321,74 @@
   word-break: normal;
 }
 
-.diff-table__row--add > * {
-  background: var(--theme-diff-add-bg);
+.diff-table--split {
+  --_diff-void-hatch: color-mix(in oklch, var(--theme-diff-context-fg) 8%, transparent);
 }
 
-.diff-table__row--add .diff-table__sign {
-  color: var(--theme-diff-add-fg);
+.diff-table--split .diff-table__divider {
+  width: 0;
+  padding: 0;
+  border-inline-start: var(--border-hairline) solid var(--theme-border-strong);
 }
 
-.diff-table__row--remove > * {
+.diff-table--split .diff-table__cell--context {
+  background: var(--theme-diff-context-bg);
+}
+
+.diff-table--split .diff-table__cell--removed {
   background: var(--theme-diff-remove-bg);
 }
 
-.diff-table__row--remove .diff-table__sign {
+.diff-table--split .diff-table__sign.diff-table__cell--removed {
   color: var(--theme-diff-remove-fg);
 }
 
-.diff-table__row--context > * {
+.diff-table--split .diff-table__cell--added {
+  background: var(--theme-diff-add-bg);
+}
+
+.diff-table--split .diff-table__sign.diff-table__cell--added {
+  color: var(--theme-diff-add-fg);
+}
+
+.diff-table--split .diff-table__cell--void {
+  background-color: var(--theme-diff-context-bg);
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 var(--hsp-sm),
+    var(--_diff-void-hatch) var(--hsp-sm) calc(var(--hsp-sm) + var(--border-hairline))
+  );
+}
+
+.diff-table__side-marker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  gap: var(--hsp-lg);
+}
+
+.diff-table__side-marker-old,
+.diff-table__side-marker-new {
+  min-width: 0;
+}
+
+.diff-table--unified .diff-table__row--add > * {
+  background: var(--theme-diff-add-bg);
+}
+
+.diff-table--unified .diff-table__row--add .diff-table__sign {
+  color: var(--theme-diff-add-fg);
+}
+
+.diff-table--unified .diff-table__row--remove > * {
+  background: var(--theme-diff-remove-bg);
+}
+
+.diff-table--unified .diff-table__row--remove .diff-table__sign {
+  color: var(--theme-diff-remove-fg);
+}
+
+.diff-table--unified .diff-table__row--context > * {
   background: var(--theme-diff-context-bg);
 }
 
