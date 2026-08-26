@@ -175,8 +175,8 @@ export interface AdminStore {
 }
 
 const defaultDependencies: AdminStoreDependencies = {
-  now: Date.now,
-  mintToken,
+  now: () => Date.now(),
+  mintToken: () => mintToken(),
 };
 
 function validation(message: string): never {

@@ -8,7 +8,7 @@ export interface StoreDependencies {
 }
 
 const defaultDependencies: StoreDependencies = {
-  now: Date.now,
+  now: () => Date.now(),
   createId: () => crypto.randomUUID(),
 };
 
