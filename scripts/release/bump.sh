@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
         shift
       done
       ;;
-    -* )
+    -*)
       usage
       release_usage_error "Unknown bump argument: $1"
       ;;
