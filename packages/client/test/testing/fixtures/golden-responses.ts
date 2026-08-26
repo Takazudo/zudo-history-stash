@@ -2,8 +2,90 @@ export const GOLDEN_NOW = Date.parse("2026-08-25T00:00:00.000Z");
 export const GOLDEN_CREATED_AT = "2026-08-25T00:00:00.000Z";
 export const GOLDEN_HELLO_HASH =
   "sha256-2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+export const GOLDEN_READ_TOKEN_ID = `tok_${"0".repeat(31)}1`;
+export const GOLDEN_WRITE_TOKEN_ID = `tok_${"0".repeat(31)}2`;
+export const GOLDEN_READ_TOKEN_SECRET = `zhs_${"0".repeat(42)}1`;
+export const GOLDEN_WRITE_TOKEN_SECRET = `zhs_${"0".repeat(42)}2`;
 
 export const GOLDEN_RESPONSES = {
+  stash: {
+    name: "golden-admin",
+    description: "Golden admin fixture",
+    meta: { owner: "viewer" },
+    fileCount: 0,
+    deletedFileCount: 0,
+    lastChangeId: null,
+    lastChangeAt: null,
+    createdAt: GOLDEN_CREATED_AT,
+  },
+  stashList: {
+    stashes: [
+      {
+        name: "golden-admin",
+        description: "Golden admin fixture",
+        fileCount: 0,
+        deletedFileCount: 0,
+        lastChangeId: null,
+        lastChangeAt: null,
+        createdAt: GOLDEN_CREATED_AT,
+      },
+    ],
+    nextAfter: null,
+  },
+  readToken: {
+    id: GOLDEN_READ_TOKEN_ID,
+    token: GOLDEN_READ_TOKEN_SECRET,
+    label: "Reader",
+    scope: "read",
+    createdAt: GOLDEN_CREATED_AT,
+  },
+  writeToken: {
+    id: GOLDEN_WRITE_TOKEN_ID,
+    token: GOLDEN_WRITE_TOKEN_SECRET,
+    label: "Writer",
+    scope: "write",
+    createdAt: GOLDEN_CREATED_AT,
+  },
+  tokenList: {
+    tokens: [
+      {
+        id: GOLDEN_WRITE_TOKEN_ID,
+        label: "Writer",
+        scope: "write",
+        createdAt: GOLDEN_CREATED_AT,
+        revokedAt: null,
+        lastUsedAt: null,
+      },
+      {
+        id: GOLDEN_READ_TOKEN_ID,
+        label: "Reader",
+        scope: "read",
+        createdAt: GOLDEN_CREATED_AT,
+        revokedAt: null,
+        lastUsedAt: null,
+      },
+    ],
+  },
+  tokenListAfterUseAndRevoke: {
+    tokens: [
+      {
+        id: GOLDEN_WRITE_TOKEN_ID,
+        label: "Writer",
+        scope: "write",
+        createdAt: GOLDEN_CREATED_AT,
+        revokedAt: null,
+        lastUsedAt: GOLDEN_CREATED_AT,
+      },
+      {
+        id: GOLDEN_READ_TOKEN_ID,
+        label: "Reader",
+        scope: "read",
+        createdAt: GOLDEN_CREATED_AT,
+        revokedAt: GOLDEN_CREATED_AT,
+        lastUsedAt: GOLDEN_CREATED_AT,
+      },
+    ],
+  },
   put: {
     version: 1,
     hash: GOLDEN_HELLO_HASH,

@@ -15,7 +15,6 @@ describe("shared conformance trace", () => {
 
     const report = await runConformance(fake.fetch, "https://fake.invalid", {
       adminToken: "conformance-admin",
-      mintToken: fake.mintToken,
       stashName: "conformance-test",
     });
 
@@ -26,6 +25,11 @@ describe("shared conformance trace", () => {
     );
     expect(CONFORMANCE_TRACE.map((step) => step.name)).toEqual(
       expect.arrayContaining([
+        "stash list exposes a keyset continuation",
+        "get stash returns its aggregate",
+        "create read token returns its secret once",
+        "token list is newest first and omits secrets",
+        "stash token may get its own stash",
         "read scope cannot write",
         "foreign stash is concealed",
         "create file",
@@ -50,6 +54,9 @@ describe("shared conformance trace", () => {
         "stored diff truncates unified output at line boundaries",
         "candidate diff reports oversized bytes",
         "file list rejects an excessive limit",
+        "token revocation returns an empty 204",
+        "revoked token fails authentication",
+        "token list reports revocation without exposing secrets",
       ]),
     );
   });

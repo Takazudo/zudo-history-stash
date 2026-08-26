@@ -3,6 +3,7 @@ import {
   IDEMPOTENCY_KEY_MAX_CHARS,
   MAX_BODY_BYTES,
   ROUTES,
+  sha256Hex,
   type RouteId,
 } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
@@ -34,11 +35,6 @@ const UNSUPPORTED_SAMPLES: Record<
   { method: string; path: string }
 > = {
   health: { method: "GET", path: "/v1/health" },
-  listStashes: { method: "GET", path: "/v1/stashes" },
-  getStash: { method: "GET", path: "/v1/stashes/demo" },
-  createToken: { method: "POST", path: "/v1/stashes/demo/tokens" },
-  listTokens: { method: "GET", path: "/v1/stashes/demo/tokens" },
-  revokeToken: { method: "DELETE", path: "/v1/stashes/demo/tokens/tok_1" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
 };
@@ -76,7 +72,7 @@ describe("inspectable state and fixture helpers", () => {
     const fake = createFakeStash({ adminToken: ADMIN, now: () => 1_700_000_000_000 });
     const exposed = fake.state;
     expect(fake.createStash("demo")).toBe("demo");
-    const token = fake.mintToken("demo", "write");
+    const token = await fake.mintToken("demo", "write");
 
     const response = await fake.fetch("https://fake.invalid/v1/stashes/demo/files/a.txt", {
       method: "PUT",
@@ -103,6 +99,233 @@ describe("inspectable state and fixture helpers", () => {
     expect(exposed.files.size).toBe(0);
     expect(exposed.versions).toHaveLength(0);
     expect(exposed.idempotency.size).toBe(0);
+  });
+});
+
+describe("stash administration routes", () => {
+  it("creates, gets, and keyset-paginates strict stash records", async () => {
+    const timestamp = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => timestamp });
+    const alpha = await request(fake, "/v1/stashes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "alpha",
+        description: "Alpha stash",
+        meta: { owner: "viewer" },
+      }),
+    });
+    expect(alpha.status).toBe(201);
+    await expect(alpha.json()).resolves.toEqual({
+      name: "alpha",
+      description: "Alpha stash",
+      meta: { owner: "viewer" },
+      fileCount: 0,
+      deletedFileCount: 0,
+      lastChangeId: null,
+      lastChangeAt: null,
+      createdAt: "2026-08-26T00:00:00.000Z",
+    });
+    fake.createStash("beta");
+    fake.createStash("gamma");
+
+    const first = await request(fake, "/v1/stashes?limit=1");
+    expect(first.status).toBe(200);
+    await expect(first.json()).resolves.toEqual({
+      stashes: [
+        {
+          name: "alpha",
+          description: "Alpha stash",
+          fileCount: 0,
+          deletedFileCount: 0,
+          lastChangeId: null,
+          lastChangeAt: null,
+          createdAt: "2026-08-26T00:00:00.000Z",
+        },
+      ],
+      nextAfter: "alpha",
+    });
+    const second = await request(fake, "/v1/stashes?limit=1&after=alpha");
+    await expect(second.json()).resolves.toMatchObject({
+      stashes: [{ name: "beta" }],
+      nextAfter: "beta",
+    });
+
+    const detail = await request(fake, "/v1/stashes/alpha");
+    expect(detail.status).toBe(200);
+    await expect(detail.json()).resolves.toMatchObject({
+      name: "alpha",
+      meta: { owner: "viewer" },
+    });
+    const duplicate = await request(fake, "/v1/stashes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "alpha" }),
+    });
+    expect(duplicate.status).toBe(409);
+    expect(await errorCode(duplicate)).toBe("exists");
+  });
+
+  it("validates admin inputs and reports missing stashes without leaking access", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    const missing = await request(fake, "/v1/stashes/missing");
+    expect(missing.status).toBe(404);
+    expect(await errorCode(missing)).toBe("not-found");
+
+    for (const path of ["/v1/stashes?limit=201", "/v1/stashes?unexpected=true"]) {
+      const invalid = await request(fake, path);
+      expect(invalid.status).toBe(400);
+      expect(await errorCode(invalid)).toBe("validation");
+    }
+
+    const unauthenticated = await fake.fetch("https://fake.invalid/v1/stashes");
+    expect(unauthenticated.status).toBe(401);
+    expect(await errorCode(unauthenticated)).toBe("unauthorized");
+  });
+});
+
+describe("token administration and capabilities", () => {
+  it("stores only hashes, lists newest first, and resolves read/write principals", async () => {
+    let timestamp = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => timestamp });
+    fake.createStash("demo");
+    fake.createStash("foreign");
+    const create = async (label: string, scope: "read" | "write") => {
+      const response = await request(fake, "/v1/stashes/demo/tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label, scope }),
+      });
+      expect(response.status).toBe(201);
+      return (await response.json()) as {
+        id: string;
+        token: string;
+        label: string;
+        scope: "read" | "write";
+        createdAt: string;
+      };
+    };
+
+    const reader = await create("Reader", "read");
+    timestamp += 1;
+    const writer = await create("Writer", "write");
+    expect(reader.id).toMatch(/^tok_[0-9a-f]{32}$/);
+    expect(reader.token).toMatch(/^zhs_[A-Za-z0-9_-]{43}$/);
+    const storedReader = fake.state.tokens.get(reader.id);
+    expect(storedReader?.tokenHash).toBe(
+      (await sha256Hex(reader.token)).slice("sha256-".length),
+    );
+    expect(storedReader?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify([...fake.state.tokens.values()])).not.toContain(reader.token);
+
+    const listed = await request(fake, "/v1/stashes/demo/tokens");
+    expect(listed.status).toBe(200);
+    const listedBody = (await listed.json()) as { tokens: Array<Record<string, unknown>> };
+    expect(listedBody).toEqual({
+      tokens: [
+        {
+          id: writer.id,
+          label: "Writer",
+          scope: "write",
+          createdAt: writer.createdAt,
+          revokedAt: null,
+          lastUsedAt: null,
+        },
+        {
+          id: reader.id,
+          label: "Reader",
+          scope: "read",
+          createdAt: reader.createdAt,
+          revokedAt: null,
+          lastUsedAt: null,
+        },
+      ],
+    });
+    expect(JSON.stringify(listedBody)).not.toContain(reader.token);
+    expect(JSON.stringify(listedBody)).not.toContain("tokenHash");
+
+    const asToken = (token: string, path: string, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers);
+      headers.set("Authorization", `Bearer ${token}`);
+      return fake.fetch(`https://fake.invalid${path}`, { ...init, headers });
+    };
+    await expect((await asToken(reader.token, "/v1/me")).json()).resolves.toEqual({
+      principal: "stash",
+      stash: "demo",
+      tokenId: reader.id,
+      scope: "read",
+    });
+    expect((await asToken(reader.token, "/v1/stashes/demo")).status).toBe(200);
+    expect((await asToken(reader.token, "/v1/stashes/foreign")).status).toBe(404);
+    expect((await asToken(reader.token, "/v1/stashes")).status).toBe(404);
+    expect((await asToken(reader.token, "/v1/stashes/demo/tokens")).status).toBe(404);
+
+    const denied = await asToken(reader.token, "/v1/stashes/demo/files/read-only.txt", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "denied", expectedVersion: null }),
+    });
+    expect(denied.status).toBe(403);
+    expect(await errorCode(denied)).toBe("scope");
+    const allowed = await asToken(writer.token, "/v1/stashes/demo/files/write.txt", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "allowed", expectedVersion: null }),
+    });
+    expect(allowed.status).toBe(201);
+  });
+
+  it("revokes immediately and handles missing, foreign, and invalid token operations", async () => {
+    const timestamp = Date.parse("2026-08-26T01:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => timestamp });
+    fake.createStash("demo");
+    fake.createStash("foreign");
+    const secret = await fake.mintToken("demo", "write");
+    const row = [...fake.state.tokens.values()][0];
+    if (row === undefined) throw new Error("fixture token was not stored");
+
+    const revoke = await request(fake, `/v1/stashes/demo/tokens/${row.id}`, {
+      method: "DELETE",
+    });
+    expect(revoke.status).toBe(204);
+    expect(await revoke.text()).toBe("");
+    expect(row.revokedAt).toBe(timestamp);
+
+    const rejected = await fake.fetch("https://fake.invalid/v1/me", {
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    expect(rejected.status).toBe(401);
+    expect(await errorCode(rejected)).toBe("unauthorized");
+    const list = await request(fake, "/v1/stashes/demo/tokens");
+    await expect(list.json()).resolves.toMatchObject({
+      tokens: [{ id: row.id, revokedAt: "2026-08-26T01:00:00.000Z" }],
+    });
+
+    for (const path of [
+      "/v1/stashes/demo/tokens/tok_missing",
+      `/v1/stashes/foreign/tokens/${row.id}`,
+    ]) {
+      const missing = await request(fake, path, { method: "DELETE" });
+      expect(missing.status).toBe(404);
+      expect(await errorCode(missing)).toBe("not-found");
+    }
+    const missingCreate = await request(fake, "/v1/stashes/missing/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "read" }),
+    });
+    expect(missingCreate.status).toBe(404);
+    expect((await request(fake, "/v1/stashes/missing/tokens")).status).toBe(404);
+
+    for (const body of [{ scope: "admin" }, { label: "missing scope" }, { scope: "read", x: 1 }]) {
+      const invalid = await request(fake, "/v1/stashes/demo/tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(invalid.status).toBe(400);
+      expect(await errorCode(invalid)).toBe("validation");
+    }
   });
 });
 
