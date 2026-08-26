@@ -257,10 +257,13 @@ function EditWorkbenchReady({
   const [railOpen, setRailOpen] = useState(true);
   const [paneTab, setPaneTab] = useState<PaneTab>("editor");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [reviewHead, setReviewHead] = useState<FileRecord | null>(null);
   const [sourceConfirmation, setSourceConfirmation] = useState<SourceConfirmation | null>(null);
+  const [sourceRequestPending, setSourceRequestPending] = useState(false);
   const [flash, setFlash] = useState<WorkbenchFlash | null>(null);
   const [completionError, setCompletionError] = useState<unknown | null>(null);
   const [completionPending, setCompletionPending] = useState(false);
+  const sourceRequestPendingRef = useRef(false);
   const completionPendingRef = useRef(false);
   const handledCompletionRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -290,9 +293,11 @@ function EditWorkbenchReady({
     [machine, reloadAndCompare],
   );
 
+  const sourceLoadPending = sourceRequestPending || workbench.sourceLoading;
   const canSave =
     !workbench.sameAsHead &&
     !workbench.sameAsHeadPending &&
+    !sourceLoadPending &&
     !completionPending &&
     machine.state !== "saving";
   const banner = bannerFor({
@@ -307,20 +312,26 @@ function EditWorkbenchReady({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      sourceRequestPendingRef.current = false;
       completionPendingRef.current = false;
     };
   }, []);
+
+  const openDialog = useCallback((): void => {
+    setReviewHead(head);
+    setDialogOpen(true);
+  }, [head]);
 
   useEffect(() => {
     function handleSaveShortcut(event: KeyboardEvent): void {
       if (event.key.toLowerCase() !== "s" || (!event.ctrlKey && !event.metaKey)) return;
       event.preventDefault();
-      if (canSave && !dialogOpen) setDialogOpen(true);
+      if (canSave && !dialogOpen) openDialog();
     }
 
     window.addEventListener("keydown", handleSaveShortcut);
     return () => window.removeEventListener("keydown", handleSaveShortcut);
-  }, [canSave, dialogOpen]);
+  }, [canSave, dialogOpen, openDialog]);
 
   useLayoutEffect(() => {
     const pane = diffRegionRef.current?.querySelector<HTMLElement>(".zhs-diff-table-pane");
@@ -329,11 +340,21 @@ function EditWorkbenchReady({
 
   const requestSource = useCallback(
     async (version: number): Promise<void> => {
+      if (sourceRequestPendingRef.current || workbench.sourceLoading) return;
       setFlash(null);
       setCompletionError(null);
       setSourceConfirmation(null);
-      const result = await workbench.loadSource(version);
-      if (result.status === "confirmation-required") setSourceConfirmation(result);
+      sourceRequestPendingRef.current = true;
+      setSourceRequestPending(true);
+      try {
+        const result = await workbench.loadSource(version);
+        if (result.status === "confirmation-required" && mountedRef.current) {
+          setSourceConfirmation(result);
+        }
+      } finally {
+        sourceRequestPendingRef.current = false;
+        if (mountedRef.current) setSourceRequestPending(false);
+      }
     },
     [workbench],
   );
@@ -341,9 +362,20 @@ function EditWorkbenchReady({
   const resolveSource = useCallback(
     async (confirmed: boolean): Promise<void> => {
       const request = sourceConfirmation;
-      if (request === null) return;
+      if (request === null || sourceRequestPendingRef.current) return;
       setSourceConfirmation(null);
-      await request.resolve(confirmed);
+      if (!confirmed) {
+        await request.resolve(false);
+        return;
+      }
+      sourceRequestPendingRef.current = true;
+      setSourceRequestPending(true);
+      try {
+        await request.resolve(true);
+      } finally {
+        sourceRequestPendingRef.current = false;
+        if (mountedRef.current) setSourceRequestPending(false);
+      }
     },
     [sourceConfirmation],
   );
@@ -363,6 +395,7 @@ function EditWorkbenchReady({
         const refresh = workbench.afterSaved(record);
         machine.resetSession();
         setDialogOpen(false);
+        setReviewHead(null);
         setSourceConfirmation(null);
         setFlash({
           variant: completion.state === "saved" ? "success" : "info",
@@ -382,6 +415,7 @@ function EditWorkbenchReady({
   );
 
   function handleDraftChange(value: string): void {
+    if (sourceRequestPendingRef.current || workbench.sourceLoading) return;
     setFlash(null);
     setCompletionError(null);
     workbench.setDraft(value);
@@ -398,6 +432,7 @@ function EditWorkbenchReady({
   function closeDialog(): void {
     if (completionPendingRef.current) return;
     setDialogOpen(false);
+    setReviewHead(null);
   }
 
   function handleDiffScroll(event: UIEvent<HTMLDivElement>): void {
@@ -431,10 +466,10 @@ function EditWorkbenchReady({
           </div>
         </div>
         <div className="zhs-edit-workbench__actions">
-          <Button disabled={completionPending} onClick={handleDiscard}>
+          <Button disabled={completionPending || sourceLoadPending} onClick={handleDiscard}>
             Discard
           </Button>
-          <Button disabled={!canSave} variant="primary" onClick={() => setDialogOpen(true)}>
+          <Button disabled={!canSave} variant="primary" onClick={openDialog}>
             Save…
           </Button>
         </div>
@@ -526,7 +561,7 @@ function EditWorkbenchReady({
           <Textarea
             aria-label="Draft body"
             className="zhs-edit-workbench__editor"
-            disabled={completionPending}
+            disabled={completionPending || sourceLoadPending}
             spellCheck={false}
             value={workbench.draft}
             onChange={(event) => handleDraftChange(event.currentTarget.value)}
@@ -591,7 +626,7 @@ function EditWorkbenchReady({
 
       <SaveReviewDialog
         draft={workbench.draft}
-        head={head}
+        head={reviewHead ?? head}
         lineEnding={workbench.lineEnding}
         machine={dialogMachine}
         open={dialogOpen}

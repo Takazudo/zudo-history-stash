@@ -43,17 +43,67 @@ async function put(
   body: string,
   expectedVersion: number | null,
   author = "Fixture",
+  message = `Write ${String((expectedVersion ?? 0) + 1)}`,
 ): Promise<FileRecordWithEtag> {
   const result = await client.files(STASH).put(PATH, {
     body,
     expectedVersion,
     author,
-    message: `Write ${String((expectedVersion ?? 0) + 1)}`,
+    message,
   });
   if (!result.ok) throw new Error(result.error.message);
   const record = await client.files(STASH).get(PATH, { version: result.value.version });
   if (!record.ok || "notModified" in record) throw new Error("Fixture record did not load");
   return record.value;
+}
+
+function delayVersionRead(
+  fixture: Fixture,
+  version: number,
+): {
+  fixture: Fixture;
+  started: Promise<void>;
+  release: () => void;
+} {
+  let release!: () => void;
+  let markStarted!: () => void;
+  let delayed = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const fetch: StashFetch = async (input, init) => {
+    const request = new Request(input, init);
+    fixture.requests.push(request);
+    const url = new URL(request.url);
+    if (
+      !delayed &&
+      request.method === "GET" &&
+      url.pathname === `/v1/stashes/${STASH}/files/${PATH}` &&
+      url.searchParams.get("version") === String(version)
+    ) {
+      delayed = true;
+      markStarted();
+      await gate;
+    }
+    return fixture.fake.fetch(input, init);
+  };
+  return {
+    fixture: {
+      ...fixture,
+      client: createStashClient({ baseUrl: BASE_URL, token: ADMIN_TOKEN, fetch }),
+      clientForSignal: (signal) =>
+        createStashClient({
+          baseUrl: BASE_URL,
+          token: ADMIN_TOKEN,
+          fetch: signalFetch(fetch, signal),
+        }),
+    },
+    started,
+    release,
+  };
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -181,6 +231,35 @@ describe("EditWorkbench", () => {
     expect(screen.getByText(/still saves on top of head v2/u)).toBeTruthy();
   });
 
+  it("prevents intervening edits while an accepted A-load is delayed", async () => {
+    const baseFixture = await createFixture();
+    const delayed = delayVersionRead(baseFixture, 1);
+    renderWorkbench(delayed.fixture);
+    const editor = await readyEditor();
+    fireEvent.change(editor, { target: { value: "confirmed draft\n" } });
+
+    await userEvent.click(screen.getByRole("button", { name: "Use v1 as source A" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Load v1" }));
+    await delayed.started;
+    await waitFor(() => expect(editor.disabled).toBe(true));
+    expect((screen.getByRole("button", { name: "Save…" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole("button", { name: "Discard" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    await userEvent.type(editor, "intervening edit");
+    expect(editor.value).toBe("confirmed draft\n");
+    expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).not.toContain(
+      "intervening edit",
+    );
+
+    delayed.release();
+    await waitFor(() => expect(editor.value).toBe("alpha\nfirst\n"));
+    expect(editor.disabled).toBe(false);
+  });
+
   it("uses one semantic pane under 56rem and describes why Split is disabled", async () => {
     mockNarrowViewport(true);
     const fixture = await createFixture();
@@ -260,7 +339,6 @@ describe("EditWorkbench", () => {
     const fixture = await createFixture();
     renderWorkbench(fixture);
     const editor = await readyEditor();
-    await put(fixture.remoteClient, "alpha\nremote head\n", 2, "Remote");
     fixture.requests.length = 0;
     fireEvent.change(editor, { target: { value: "alpha\nmy draft\n" } });
     await waitFor(() =>
@@ -270,6 +348,11 @@ describe("EditWorkbench", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Save…" }));
     const dialog = await screen.findByRole("dialog");
+    const message = within(dialog).getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const author = within(dialog).getByRole("textbox", { name: "Author" }) as HTMLInputElement;
+    await userEvent.type(message, "Typed local message");
+    await userEvent.type(author, "Local author");
+    await put(fixture.remoteClient, "alpha\nremote head\n", 2, "Remote", "Remote head message");
     const save = within(dialog).getByRole("button", { name: "Save v3" });
     await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(save);
@@ -277,7 +360,10 @@ describe("EditWorkbench", () => {
     expect(await within(dialog).findByText("Head moved to v3 by Remote")).toBeTruthy();
     expect(mutationRequests(fixture)).toHaveLength(1);
     await userEvent.click(within(dialog).getByRole("button", { name: "Reload & compare" }));
-    await waitFor(() => expect(screen.getByText(/Saves as v4 on top of v3/u)).toBeTruthy());
+    expect(await within(dialog).findByText("Remote head message")).toBeTruthy();
+    expect(message.value).toBe("Typed local message");
+    expect(author.value).toBe("Local author");
+    expect(within(dialog).getByText(/Saves as v4 on top of v3/u)).toBeTruthy();
     expect(mutationRequests(fixture)).toHaveLength(1);
     expect(editor.value).toBe("alpha\nmy draft\n");
   });
