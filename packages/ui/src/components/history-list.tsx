@@ -246,7 +246,7 @@ function HistoryRow({
   );
 }
 
-export function HistoryList({
+function HistoryListForTarget({
   stash,
   path,
   page,
@@ -434,4 +434,8 @@ export function HistoryList({
       ) : null}
     </section>
   );
+}
+
+export function HistoryList(props: HistoryListProps) {
+  return <HistoryListForTarget key={JSON.stringify([props.stash, props.path])} {...props} />;
 }

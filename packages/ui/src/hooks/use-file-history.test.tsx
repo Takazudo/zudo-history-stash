@@ -92,6 +92,56 @@ describe("useFileHistory", () => {
     expect(result.current.page.versions.map((item) => item.version)).toEqual([4, 3, 2]);
   });
 
+  it("binds initial-page adoption and its cursor to the original client, stash, and path", async () => {
+    const originalHistory = vi
+      .fn<StashFilesClient["history"]>()
+      .mockResolvedValue({ ok: true, value: page([9], null) });
+    const originalClient = clientWithHistory(originalHistory);
+    let resolveNext!: (result: ClientResult<HistoryPage>) => void;
+    const nextRequest = new Promise<ClientResult<HistoryPage>>((resolve) => {
+      resolveNext = resolve;
+    });
+    const nextHistory = vi.fn<StashFilesClient["history"]>().mockReturnValue(nextRequest);
+    const nextClient = clientWithHistory(nextHistory);
+    const initialPage = page([3, 2], 2);
+    let activeClient = originalClient;
+    function Provider({ children }: PropsWithChildren) {
+      return <StashUiProvider client={activeClient}>{children}</StashUiProvider>;
+    }
+    const rendered = renderHook(({ stash, path }) => useFileHistory(stash, path, { initialPage }), {
+      initialProps: { stash: "notes", path: "docs/readme.txt" },
+      wrapper: Provider,
+    });
+
+    expect(rendered.result.current.state).toBe("ready");
+    expect(originalHistory).not.toHaveBeenCalled();
+
+    activeClient = nextClient;
+    rendered.rerender({ stash: "archive", path: "next.txt" });
+    expect(rendered.result.current.state).toBe("loading");
+    expect(rendered.result.current.page).toBeNull();
+    act(() => rendered.result.current.loadMore());
+    expect(nextHistory).toHaveBeenCalledOnce();
+    expect(nextHistory).toHaveBeenCalledWith("next.txt", undefined);
+    expect(nextClient.files).toHaveBeenCalledWith("archive");
+    expect(originalHistory).not.toHaveBeenCalled();
+
+    await act(async () => resolveNext({ ok: true, value: page([8], null, "next.txt") }));
+    await waitFor(() => expect(rendered.result.current.state).toBe("ready"));
+    if (rendered.result.current.state !== "ready") throw new Error("Expected ready history");
+    expect(rendered.result.current.page.path).toBe("next.txt");
+
+    activeClient = originalClient;
+    rendered.rerender({ stash: "notes", path: "docs/readme.txt" });
+    expect(rendered.result.current.state).toBe("loading");
+    await waitFor(() => expect(rendered.result.current.state).toBe("ready"));
+    expect(originalHistory).toHaveBeenCalledOnce();
+    expect(originalHistory).toHaveBeenCalledWith("docs/readme.txt", undefined);
+    expect(originalClient.files).toHaveBeenCalledWith("notes");
+    if (rendered.result.current.state !== "ready") throw new Error("Expected ready history");
+    expect(rendered.result.current.page.versions[0]?.version).toBe(9);
+  });
+
   it("uses before-keyset pagination, newest-first merge, dedupe, and signal clients", async () => {
     const history = vi
       .fn<StashFilesClient["history"]>()

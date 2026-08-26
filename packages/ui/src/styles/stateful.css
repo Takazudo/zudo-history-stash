@@ -77,6 +77,11 @@
     padding-block: var(--vsp-xs);
   }
 
+  .zhs-history-table .zhs-table__header:first-child,
+  .zhs-history-table .zhs-table__cell:first-child {
+    border-inline-start: var(--active-indicator-width) solid var(--theme-transparent);
+  }
+
   .zhs-history-table__choice,
   .zhs-history-table__version,
   .zhs-history-table__kind,
@@ -134,7 +139,12 @@
   }
 
   .zhs-history-table .zhs-table__row[aria-current="true"] > .zhs-table__cell {
-    background: var(--theme-accent-soft);
+    background: var(--table-row-active-bg);
+    color: var(--table-row-active-fg);
+  }
+
+  .zhs-history-table .zhs-table__row[aria-current="true"] > .zhs-table__cell:first-child {
+    border-inline-start-color: var(--table-row-active-border);
   }
 
   .zhs-history-diff-stats {

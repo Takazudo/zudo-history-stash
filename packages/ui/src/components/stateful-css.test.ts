@@ -16,6 +16,15 @@ describe("relocated stateful CSS contract", () => {
   it("pins dense tables, copy-safe wrapping, hover capability, and CSS-owned dialog scrolling", () => {
     expect(css).toContain("block-size: var(--row-dense)");
     expect(css).toContain("min-block-size: var(--control-height)");
+    expect(css).toMatch(
+      /\.zhs-history-table \.zhs-table__header:first-child,\s*\.zhs-history-table \.zhs-table__cell:first-child\s*\{[^}]*border-inline-start: var\(--active-indicator-width\) solid var\(--theme-transparent\);/su,
+    );
+    expect(css).toMatch(
+      /\.zhs-history-table \.zhs-table__row\[aria-current="true"\] > \.zhs-table__cell\s*\{[^}]*background: var\(--table-row-active-bg\);[^}]*color: var\(--table-row-active-fg\);/su,
+    );
+    expect(css).toMatch(
+      /\.zhs-history-table \.zhs-table__row\[aria-current="true"\] > \.zhs-table__cell:first-child\s*\{[^}]*border-inline-start-color: var\(--table-row-active-border\);/su,
+    );
     expect(css).toContain("overflow-wrap: anywhere");
     expect(css).not.toContain("word-break: break-all");
     expect(css).toContain("@media (hover: hover)");

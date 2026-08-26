@@ -32,31 +32,35 @@ function successResult(version = 3): ClientResult<RollbackResult> {
   };
 }
 
-async function seededClient(): Promise<{ client: StashClient; target: VersionRecord }> {
+async function seededClient(
+  stashName = stash,
+  pathName = path,
+  targetVersion = 1,
+): Promise<{ client: StashClient; target: VersionRecord }> {
   const adminToken = globalThis.crypto.randomUUID();
   const fake = createFakeStash({ adminToken });
-  fake.createStash(stash);
+  fake.createStash(stashName);
   const client = createStashClient({
     baseUrl: "https://fake.invalid",
     token: adminToken,
     fetch: fake.fetch,
   });
-  const files = client.files(stash);
-  await files.put(path, {
+  const files = client.files(stashName);
+  await files.put(pathName, {
     body: "target\n",
     expectedVersion: null,
     author: "Ada",
     message: "target",
   });
-  await files.put(path, {
+  await files.put(pathName, {
     body: "head\n",
     expectedVersion: 1,
     author: "Grace",
     message: "head",
   });
-  const history = await files.history(path);
+  const history = await files.history(pathName);
   if (!history.ok) throw new Error(history.error.message);
-  const target = history.value.versions.find((item) => item.version === 1);
+  const target = history.value.versions.find((item) => item.version === targetVersion);
   if (!target) throw new Error("Missing target fixture");
   return { client, target };
 }
@@ -191,6 +195,86 @@ describe("package RollbackDialog", () => {
       rollback.mock.calls[0]?.[2]?.idempotencyKey,
     );
   });
+
+  it.each(["success", "transport failure"] as const)(
+    "ignores a deferred %s from an old client and target lifecycle",
+    async (outcome) => {
+      const original = await seededClient();
+      const nextStash = "archive";
+      const nextPath = "other.txt";
+      const next = await seededClient(nextStash, nextPath, 2);
+      let resolveCurrent!: (result: ClientResult<RollbackResult>) => void;
+      const currentRequest = new Promise<ClientResult<RollbackResult>>((resolve) => {
+        resolveCurrent = resolve;
+      });
+      const nextFiles = next.client.files(nextStash);
+      const nextRollback = vi.fn<StashFilesClient["rollback"]>().mockReturnValue(currentRequest);
+      vi.spyOn(next.client, "files").mockImplementation(() => ({
+        ...nextFiles,
+        rollback: nextRollback,
+      }));
+      let settleOld!: () => void;
+      const oldRequest = new Promise<ClientResult<RollbackResult>>((resolve, reject) => {
+        settleOld =
+          outcome === "success"
+            ? () => resolve(successResult())
+            : () => reject(new Error("old transport failed"));
+      });
+      const originalFiles = original.client.files(stash);
+      const rollback = vi.fn<StashFilesClient["rollback"]>().mockReturnValue(oldRequest);
+      vi.spyOn(original.client, "files").mockImplementation(() => ({
+        ...originalFiles,
+        rollback,
+      }));
+      const onSuccess = vi.fn();
+      const rendered = renderDialog(original.client, original.target, onSuccess);
+
+      const confirm = await screen.findByRole("button", { name: "Confirm rollback" });
+      await waitFor(() => expect(confirm.hasAttribute("disabled")).toBe(false));
+      const message = screen.getByRole("textbox", { name: "Message (optional)" });
+      await userEvent.clear(message);
+      await userEvent.type(message, "old target message");
+      await userEvent.click(confirm);
+      expect(rollback).toHaveBeenCalledOnce();
+
+      rendered.rerender(
+        <StashUiProvider client={next.client}>
+          <RollbackDialog
+            path={nextPath}
+            stash={nextStash}
+            target={next.target}
+            onClose={vi.fn()}
+            onSuccess={onSuccess}
+          />
+        </StashUiProvider>,
+      );
+
+      const nextMessage = await screen.findByRole("textbox", { name: "Message (optional)" });
+      expect((nextMessage as HTMLTextAreaElement).value).toBe("Rollback to v2");
+      const nextConfirm = screen.getByRole("button", { name: "Confirm rollback" });
+      await waitFor(() => expect(nextConfirm.hasAttribute("disabled")).toBe(false));
+      await userEvent.click(nextConfirm);
+      expect(nextRollback).toHaveBeenCalledOnce();
+      expect(screen.getByRole("button", { name: "Rolling back…" })).toBeTruthy();
+
+      await act(async () => settleOld());
+      expect(onSuccess).not.toHaveBeenCalled();
+      expect(screen.queryByText("old transport failed")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Rolling back…" }).hasAttribute("disabled")).toBe(
+        true,
+      );
+
+      await act(async () => resolveCurrent(successResult(4)));
+      await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
+      expect(onSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          result: expect.objectContaining({ version: 4 }),
+          message: "Rollback to v2",
+        }),
+      );
+    },
+  );
 
   it("routes native Escape cancellation only to onClose", async () => {
     const { client, target } = await seededClient();

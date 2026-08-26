@@ -1,6 +1,7 @@
 import { createStashClient } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { useFileHistory } from "../hooks/use-file-history.js";
 import { defaultStashHref } from "../provider/routes.js";
@@ -93,5 +94,40 @@ describe("fake-backed HistoryList host bridge", () => {
       from: 2,
       to: "head",
     });
+  });
+
+  it("synchronously discards an open rollback when the history target changes", async () => {
+    const nextPath = "docs/transition.txt";
+    const files = client.files(stash);
+    await files.put(nextPath, {
+      body: "next target\n",
+      expectedVersion: null,
+      author: "Lin",
+      message: "next target",
+    });
+    const originalResult = await files.history(path);
+    const nextResult = await files.history(nextPath);
+    if (!originalResult.ok || !nextResult.ok) throw new Error("Missing history fixture");
+    const rendered = render(
+      <StashUiProvider client={client}>
+        <HistoryList page={originalResult.value} path={path} stash={stash} onLoadMore={vi.fn()} />
+      </StashUiProvider>,
+    );
+
+    const rollback = screen.getByRole("button", { name: "Rollback to v1" });
+    await waitFor(() => expect(rollback.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(rollback);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    rendered.rerender(
+      <StashUiProvider client={client}>
+        <HistoryList page={nextResult.value} path={nextPath} stash={stash} onLoadMore={vi.fn()} />
+      </StashUiProvider>,
+    );
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("link", { name: "Compare" }).getAttribute("href")).toContain(
+      "docs/transition.txt",
+    );
   });
 });

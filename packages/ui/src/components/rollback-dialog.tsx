@@ -138,6 +138,7 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
   const dialogRef = useRef<HTMLDialogElement>(null);
   const submittingRef = useRef(false);
   const rollbackAttemptRef = useRef<RollbackAttempt | null>(null);
+  const mutationLifecycleRef = useRef(0);
   const previewSequenceRef = useRef(0);
   const [previewAttempt, setPreviewAttempt] = useState(0);
   const [preview, setPreview] = useState<PreviewState>({ state: "loading" });
@@ -151,6 +152,24 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
     () => (readyHunks === null ? null : buildDiffModel(readyHunks)),
     [readyHunks],
   );
+
+  useLayoutEffect(() => {
+    const lifecycle = mutationLifecycleRef.current + 1;
+    mutationLifecycleRef.current = lifecycle;
+    submittingRef.current = false;
+    rollbackAttemptRef.current = null;
+    setMessage(`Rollback to v${target.version}`);
+    setSubmitting(false);
+    setSubmitFailure(null);
+    setStaleHead(null);
+    setPreview({ state: "loading" });
+
+    return () => {
+      if (mutationLifecycleRef.current === lifecycle) mutationLifecycleRef.current += 1;
+      submittingRef.current = false;
+      rollbackAttemptRef.current = null;
+    };
+  }, [client, path, stash, target.hash, target.kind, target.version]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -204,10 +223,13 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
     const attempt =
       rollbackAttemptRef.current ?? freezeAttempt(target.version, preview.head.version, message);
     rollbackAttemptRef.current = attempt;
+    const lifecycle = mutationLifecycleRef.current;
+    const isCurrentLifecycle = () => mutationLifecycleRef.current === lifecycle;
     let completed: RollbackSuccess | null = null;
 
     try {
       const result = await client.files(stash).rollback(path, attempt.input, attempt.options);
+      if (!isCurrentLifecycle()) return;
       if (!result.ok) {
         rollbackAttemptRef.current = null;
         if (result.error.code === "stale" && result.current) setStaleHead(result.current);
@@ -216,13 +238,16 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
         completed = { result: result.value, message: attempt.input.message ?? "" };
       }
     } catch (error) {
+      if (!isCurrentLifecycle()) return;
       // A transport retry must replay the exact immutable body and key from this attempt.
       setSubmitFailure({ error, transport: true });
     } finally {
-      submittingRef.current = false;
-      setSubmitting(false);
+      if (isCurrentLifecycle()) {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
     }
-    if (completed) onSuccess(completed);
+    if (completed && isCurrentLifecycle()) onSuccess(completed);
   }
 
   const diffHref =
