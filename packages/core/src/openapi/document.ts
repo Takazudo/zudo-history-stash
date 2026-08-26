@@ -8,6 +8,8 @@ import { projectRequestSchema, projectResponseSchemas } from "./project.js";
 import type { JsonSchema } from "./project.js";
 import { SAMPLES } from "./samples.js";
 
+declare const __CORE_VERSION__: string;
+
 type OpenApiValue = unknown;
 type OpenApiObject = Record<string, OpenApiValue>;
 
@@ -188,7 +190,9 @@ function buildOperation(
   };
 }
 
-export function buildOpenApiDocument({ version }: { version: string }): OpenApiDocument {
+export function buildOpenApiDocument({
+  version = typeof __CORE_VERSION__ === "string" ? __CORE_VERSION__ : "0.0.0",
+} = {}): OpenApiDocument {
   const paths: OpenApiDocument["paths"] = {};
   for (const route of ROUTES) {
     const path = pathTemplate(route.template);
