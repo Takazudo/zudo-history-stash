@@ -1,0 +1,19 @@
+{
+  "name": "zudo-history-stash-example-rpc-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@takazudo/zudo-history-stash": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260825.1",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.125.0"
+  }
+}
