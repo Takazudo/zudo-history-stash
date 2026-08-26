@@ -576,6 +576,46 @@ describe("SaveReviewDialog", () => {
     expect(fixture.puts[1]?.idempotencyKey).not.toBe(firstKey);
   });
 
+  it("restores the displayed prop head and matching CAS fence after reload, close, and reopen", async () => {
+    const fixture = await makeFixture();
+    const advanced = await fixture.client.files(STASH).put(
+      PATH,
+      {
+        body: "remote edit\n",
+        expectedVersion: fixture.head.version,
+        author: "Bob",
+        message: "remote",
+      },
+      { idempotencyKey: "fixture-remote-before-reopen" },
+    );
+    if (!advanced.ok || "unchanged" in advanced.value) throw new Error("Remote edit did not land");
+    fixture.puts.length = 0;
+    render(<ReopenFakeBackedHost draft={"local edit\n"} fixture={fixture} onSaved={vi.fn()} />);
+
+    const firstSave = screen.getByRole("button", { name: "Save v2" });
+    await waitFor(() => expect(firstSave.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(firstSave);
+    await userEvent.click(await screen.findByRole("button", { name: "Reload & compare" }));
+    expect(
+      await screen.findByRole("heading", { name: "Review save against head v2" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/Saves as v3 on top of v2/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Close save review" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open save review" }));
+    expect(screen.getByRole("heading", { name: "Review save against head v1" })).toBeTruthy();
+    expect(screen.getByText(/Saves as v2 on top of v1/)).toBeTruthy();
+
+    const reopenedSave = screen.getByRole("button", { name: "Save v2" });
+    await waitFor(() => expect(reopenedSave.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(reopenedSave);
+    await screen.findByRole("button", { name: "Reload & compare" });
+
+    expect(fixture.puts).toHaveLength(2);
+    expect(fixture.puts[0]?.body.expectedVersion).toBe(1);
+    expect(fixture.puts[1]?.body.expectedVersion).toBe(1);
+  });
+
   it("shows Close without Retry for a nonretryable error", async () => {
     const machine = stubMachine({ state: "error", message: "validation failed" }, false);
     const { props } = renderDirect(machine);

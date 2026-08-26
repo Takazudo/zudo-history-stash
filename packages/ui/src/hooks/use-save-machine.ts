@@ -382,6 +382,7 @@ export function useSaveMachine({
     }
 
     runtime.generation += 1;
+    runtime.effectiveHead = { ...runtime.committedSnapshot.head };
     if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
     transition(target, IDLE_STATE);
     return true;
