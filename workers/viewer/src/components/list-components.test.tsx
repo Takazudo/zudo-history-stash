@@ -6,9 +6,9 @@ import { Bytes, ChangeRow, KindBadge, PathCell, RelativeTime, stashErrorMessage 
 import { change } from "../test/fake-viewer-client.js";
 
 describe("shared list components", () => {
-  it("renders kind with a glyph, text, and rollback target", () => {
-    render(<KindBadge kind="rollback" rollbackOf={3} />);
-    expect(screen.getByText("↩")).toBeTruthy();
+  it("renders kind with a sized icon, text, and rollback target", () => {
+    const rendered = render(<KindBadge kind="rollback" rollbackOf={3} />);
+    expect(rendered.container.querySelector(".zhs-kind-badge__icon")).toBeTruthy();
     expect(screen.getByText("rollback")).toBeTruthy();
     expect(screen.getByText("→ v3")).toBeTruthy();
   });

@@ -1,20 +1,3 @@
-import { Button } from "../app/shell/button.js";
-
-export function LoadMore({
-  hasMore,
-  loading,
-  onLoadMore,
-}: {
-  hasMore: boolean;
-  loading: boolean;
-  onLoadMore: () => void;
-}) {
-  if (!hasMore) return null;
-  return (
-    <div className="load-more">
-      <Button compact disabled={loading} onClick={onLoadMore}>
-        {loading ? "Loading…" : "Load more"}
-      </Button>
-    </div>
-  );
-}
+// Temporary source deep import: #99 replaces Viewer shims with the package's public entrypoint.
+export { LoadMore } from "../../../../packages/ui/src/components/relocated.js";
+export type { LoadMoreProps } from "../../../../packages/ui/src/components/relocated.js";
