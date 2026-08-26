@@ -40,18 +40,36 @@ import type {
   RouteId,
   StashRecord,
 } from "@takazudo/zudo-history-stash-core";
+import type { StashRpcBinding } from "./rpc-types.js";
 
 export { ROUTES, validatePath, validateStashName } from "@takazudo/zudo-history-stash-core";
 
 /** A fetch implementation supplied by the host (browser, Node, or a Worker binding). */
 export type StashFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-/** Configuration for {@link createStashClient}. */
-export interface StashClientOptions {
+/** Configuration for the existing fetch transport. */
+export interface StashFetchClientOptions {
   baseUrl: string;
   token?: string;
   fetch?: StashFetch;
   idempotencyKey?: () => string | Promise<string>;
+  transport?: { kind: "fetch" };
+}
+
+/** Configuration for an in-process Worker RPC binding. */
+export interface StashRpcClientOptions {
+  transport: { kind: "rpc"; binding: StashRpcBinding; token: string };
+  baseUrl?: never;
+  token?: never;
+  fetch?: never;
+  idempotencyKey?: never;
+}
+
+/** Configuration for {@link createStashClient}. */
+export type StashClientOptions = StashFetchClientOptions | StashRpcClientOptions;
+
+function isRpcClientOptions(options: StashClientOptions): options is StashRpcClientOptions {
+  return options.transport?.kind === "rpc";
 }
 
 /** An optional key for a mutation that should be safely replayable. */
@@ -398,6 +416,25 @@ export interface StashClient {
  * `fetch: (input, init) => env.STASH.fetch(input, init)`.
  */
 export function createStashClient(options: StashClientOptions): StashClient {
+  if (isRpcClientOptions(options)) {
+    if ("baseUrl" in options || "fetch" in options) {
+      throw new TypeError("rpc transport does not accept baseUrl or fetch");
+    }
+    if (
+      !isRecord(options.transport.binding) ||
+      typeof options.transport.binding.request !== "function"
+    ) {
+      throw new TypeError("rpc transport requires a binding with a request function");
+    }
+    if (
+      typeof options.transport.token !== "string" ||
+      options.transport.token.trim().length === 0
+    ) {
+      throw new TypeError("rpc transport requires a non-empty token");
+    }
+    throw new TypeError("rpc transport is implemented in a later change");
+  }
+
   const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   const token = options.token;
   const keyFactory = options.idempotencyKey ?? (() => globalThis.crypto.randomUUID());
