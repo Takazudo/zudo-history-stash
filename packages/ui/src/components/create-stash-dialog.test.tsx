@@ -72,13 +72,31 @@ function renderDialog(
   };
 }
 
-function ControlledDialog({ fixture }: { fixture: Fixture }) {
+function ControlledDialog({
+  fixture,
+  onClose = () => undefined,
+  onCreated = () => undefined,
+}: {
+  fixture: Fixture;
+  onClose?: () => void;
+  onCreated?: (name: string) => void;
+}) {
   const [open, setOpen] = useState(true);
   return (
     <>
       <button onClick={() => setOpen(true)}>Open create dialog</button>
       <StashUiProvider client={fixture.client}>
-        <CreateStashDialog open={open} onClose={() => setOpen(false)} onCreated={() => undefined} />
+        <CreateStashDialog
+          open={open}
+          onClose={() => {
+            onClose();
+            setOpen(false);
+          }}
+          onCreated={(name) => {
+            onCreated(name);
+            setOpen(false);
+          }}
+        />
       </StashUiProvider>
     </>
   );
@@ -183,6 +201,72 @@ describe("CreateStashDialog", () => {
     await act(async () => releaseCreate());
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
     expect(fixture.fake.state.stashes.has("one-request")).toBe(true);
+  });
+
+  it("ignores Escape while creation is pending, then reports once and resets on reopen", async () => {
+    const adminToken = "test-admin-token";
+    const fake = createFakeStash({ adminToken });
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    const fetch = vi.fn<StashFetch>(async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST" && new URL(request.url).pathname === "/v1/stashes") {
+        await createGate;
+      }
+      return fake.fetch(input, init);
+    });
+    const fixture: Fixture = {
+      fake,
+      fetch,
+      client: createStashClient({ baseUrl: "https://fake.invalid", token: adminToken, fetch }),
+    };
+    const onClose = vi.fn();
+    const onCreated = vi.fn();
+    const user = userEvent.setup();
+    render(<ControlledDialog fixture={fixture} onClose={onClose} onCreated={onCreated} />);
+    let dialog = await screen.findByRole("dialog", { name: "Create stash" });
+    await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "pending-create");
+    await user.type(within(dialog).getByRole("textbox", { name: /Description/ }), "Pending");
+
+    await user.click(within(dialog).getByRole("button", { name: "Create stash" }));
+    await waitFor(() =>
+      expect(
+        fetch.mock.calls.map(requestFor).filter((request) => request.method === "POST"),
+      ).toHaveLength(1),
+    );
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(
+      true,
+    );
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(dialog.hasAttribute("open")).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Create stash" })).toBe(dialog);
+
+    await act(async () => releaseCreate());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+    expect(onCreated).toHaveBeenCalledWith("pending-create");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(fake.state.stashes.get("pending-create")).toMatchObject({ description: "Pending" });
+    expect(
+      fetch.mock.calls.map(requestFor).filter((request) => request.method === "POST"),
+    ).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "Open create dialog" }));
+    dialog = await screen.findByRole("dialog", { name: "Create stash" });
+    expect((within(dialog).getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe(
+      "",
+    );
+    expect(
+      (within(dialog).getByRole("textbox", { name: /Description/ }) as HTMLTextAreaElement).value,
+    ).toBe("");
+    expect(
+      within(dialog).getByRole("button", { name: "Create stash" }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 
   it("renders no create surface before capability readiness or for a non-admin principal", async () => {

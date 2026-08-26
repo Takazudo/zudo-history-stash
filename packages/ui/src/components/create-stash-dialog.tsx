@@ -98,13 +98,18 @@ export function CreateStashDialog({ open, onClose, onCreated }: CreateStashDialo
     }
   }
 
+  function handleClose() {
+    if (submittingRef.current) return;
+    onClose();
+  }
+
   if (!ready || !isAdmin) return null;
 
   return (
     <Dialog
       className="zhs-create-stash-dialog"
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       aria-describedby={descriptionId}
       aria-labelledby={titleId}
     >
@@ -175,7 +180,7 @@ export function CreateStashDialog({ open, onClose, onCreated }: CreateStashDialo
         </div>
 
         <footer className="zhs-create-stash-dialog__actions">
-          <Button disabled={submitting} onClick={onClose}>
+          <Button disabled={submitting} onClick={handleClose}>
             Cancel
           </Button>
           <Button disabled={!validation.ok || submitting} type="submit" variant="primary">
