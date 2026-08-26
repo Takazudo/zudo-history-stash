@@ -20,6 +20,8 @@
     "format:check": "prettier --check .",
     "openapi:generate": "node scripts/generate-openapi.mjs",
     "openapi:check": "node scripts/generate-openapi.mjs --check",
+    "release:check": "bash scripts/release.sh check",
+    "release:bump": "bash scripts/release.sh bump",
     "format:md": "pnpm exec mdx-formatter --write .",
     "lint:tokens": "pnpm --filter zudo-history-stash-viewer lint:tokens",
     "check:b4push-ci-parity": "node scripts/check-b4push-ci-parity.mjs",
