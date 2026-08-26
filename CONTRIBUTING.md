@@ -1,5 +1,7 @@
 # Contributing
 
+Project-scope skills live under `.claude/skills/`.
+
 ## Branches and merges
 
 `main` is the parent branch. Integration branches use `base/**`; regular feature branches target the appropriate base branch. Use regular merges, never force-push a shared branch, and do not rewrite history that another contributor may have pulled.
