@@ -15,6 +15,12 @@ function referencesIn(source: string): string[] {
 }
 
 describe("the Viewer design-token contract", () => {
+  it("keeps the host reset below package components in the cascade", () => {
+    expect(tokens).toContain("@layer base, zhs-components, utilities;");
+    expect(tokens).toContain('@import "tailwindcss/preflight" layer(base);');
+    expect(tokens).toContain('@import "tailwindcss/utilities" layer(utilities);');
+  });
+
   it("prefers dark UA chrome before the stylesheet establishes the theme", () => {
     expect(index).toContain('<meta name="color-scheme" content="dark light" />');
   });

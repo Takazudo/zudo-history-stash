@@ -192,9 +192,7 @@ test("dark default, compact geometry, square shape, and persisted theme cycle", 
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate((element) => getComputedStyle(element).borderRadius)).toBe("0px");
   expect(
-    await page
-      .locator(".rollback-dialog__backdrop")
-      .evaluate((element) => getComputedStyle(element).backgroundColor),
+    await dialog.evaluate((element) => getComputedStyle(element, "::backdrop").backgroundColor),
   ).toBe("rgba(0, 0, 0, 0.6)");
 
   await page.getByRole("button", { name: "Close rollback dialog" }).click();
