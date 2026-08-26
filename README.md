@@ -77,7 +77,7 @@ Bots and other consumers can post stable viewer links without knowing the viewer
 
 Browser-direct code must use a `read` token. A `write` token is a full-stash credential and can
 replace, delete, or roll back every path in that stash; keep it in a trusted server or Worker
-secret. See the complete [API reference](docs/api.md) and the
+secret. See the complete [API reference](docs/api.md), the generated [OpenAPI document](docs/openapi.json), and the
 [Cloudflare setup guide](docs/cloudflare-setup.md) for bindings, D1, secrets, CORS, and deployment.
 
 ## Quick start
