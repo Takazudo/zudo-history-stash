@@ -136,6 +136,34 @@ function equal(actual, expected, message) {
   );
 }
 
+function requestSignature(method, url) {
+  return `${method} ${url}`;
+}
+
+function classifyRequestFailures(requestFailures, successfulResponseSignatures) {
+  const successful = new Set(successfulResponseSignatures);
+  const toleratedRequestAborts = [];
+  const unexpectedRequestFailures = [];
+
+  for (const failure of requestFailures) {
+    let apiRequest = false;
+    try {
+      apiRequest = new URL(failure.url).pathname.startsWith("/api/");
+    } catch {
+      apiRequest = false;
+    }
+    const supersededStrictModeGet =
+      failure.method === "GET" &&
+      apiRequest &&
+      failure.errorText === "net::ERR_ABORTED" &&
+      successful.has(requestSignature(failure.method, failure.url));
+    if (supersededStrictModeGet) toleratedRequestAborts.push(failure);
+    else unexpectedRequestFailures.push(failure);
+  }
+
+  return { toleratedRequestAborts, unexpectedRequestFailures };
+}
+
 function outputDirectory() {
   const configured = process.env[OUTPUT_ENV];
   if (configured === undefined) return DEFAULT_OUTPUT_DIRECTORY;
@@ -335,6 +363,12 @@ async function prepareRoute(page, route) {
       "aria-current",
       "true",
     );
+    await expect(
+      page.getByText("The draft matches head v2; there are no visible line changes.", {
+        exact: true,
+      }),
+    ).toHaveCount(1);
+    await expect(page.getByText("Updating candidate diff…", { exact: true })).toHaveCount(0);
     return;
   }
   if (route.id === "tokens") {
@@ -451,17 +485,26 @@ async function verifyCase(browser, baseUrl, output, route, width, theme) {
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
   const browserErrors = [];
+  const requestFailures = [];
+  const successfulResponseSignatures = [];
   page.on("console", (message) => {
     if (message.type() === "error") browserErrors.push(`console: ${message.text()}`);
   });
   page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));
-  page.on("requestfailed", (request) =>
-    browserErrors.push(`requestfailed: ${request.method()} ${request.url()}`),
-  );
+  page.on("requestfailed", (request) => {
+    requestFailures.push({
+      method: request.method(),
+      url: request.url(),
+      errorText: request.failure()?.errorText ?? null,
+    });
+  });
   page.on("response", (response) => {
-    if (response.status() >= 400) {
-      browserErrors.push(`response: ${String(response.status())} ${response.url()}`);
+    const method = response.request().method();
+    if (response.status() < 400) {
+      successfulResponseSignatures.push(requestSignature(method, response.url()));
+      return;
     }
+    browserErrors.push(`response: ${String(response.status())} ${method} ${response.url()}`);
   });
   await page.addInitScript(
     ({ storedTheme }) => {
@@ -505,18 +548,36 @@ async function verifyCase(browser, baseUrl, output, route, width, theme) {
     failure = failure === null ? `screenshot: ${message}` : `${failure}\nscreenshot: ${message}`;
   }
 
+  const apiRequests = [...api.requests];
+  const unexpectedApiRequests = [...api.unexpected];
+  const capturedBrowserErrors = [...browserErrors];
+  const capturedRequestFailures = requestFailures.map((requestFailure) => ({
+    ...requestFailure,
+  }));
+  const capturedSuccessfulResponseSignatures = [...successfulResponseSignatures];
+  const { toleratedRequestAborts, unexpectedRequestFailures } = classifyRequestFailures(
+    capturedRequestFailures,
+    capturedSuccessfulResponseSignatures,
+  );
+
   if (failure === null) {
     try {
-      equal(api.unexpected.length, 0, `${id} unexpected API requests after evidence capture`);
-      equal(browserErrors.length, 0, `${id} browser errors after evidence capture`);
+      equal(
+        unexpectedApiRequests.length,
+        0,
+        `${id} unexpected API requests after evidence capture`,
+      );
+      equal(capturedBrowserErrors.length, 0, `${id} browser errors after evidence capture`);
+      equal(
+        unexpectedRequestFailures.length,
+        0,
+        `${id} unexpected request failures after evidence capture`,
+      );
     } catch (error) {
       failure = error instanceof Error ? (error.stack ?? error.message) : String(error);
     }
   }
 
-  const apiRequests = [...api.requests];
-  const unexpectedApiRequests = [...api.unexpected];
-  const capturedBrowserErrors = [...browserErrors];
   try {
     await context.close();
   } catch (error) {
@@ -551,10 +612,15 @@ async function verifyCase(browser, baseUrl, output, route, width, theme) {
     observed,
     apiRequests,
     unexpectedApiRequests,
+    successfulResponseSignatures: capturedSuccessfulResponseSignatures,
+    requestFailures: capturedRequestFailures,
+    toleratedRequestAborts,
+    unexpectedRequestFailures,
     browserErrors: capturedBrowserErrors,
     stillDifferent: failure === null ? [] : [failure],
     forbidden: {
       unexpectedApiRequests,
+      unexpectedRequestFailures,
       browserErrors: capturedBrowserErrors,
       pageLevelHorizontalOverflow: Object.values(observed?.overflow ?? {}).some(
         (measurement) => measurement !== null && measurement.scrollWidth > measurement.clientWidth,
@@ -598,7 +664,23 @@ function markdownReport(results, output, baseUrl, matrixErrors) {
   const rows = results
     .map(
       (result) =>
-        `| ${result.routeId} | \`${result.route}\` | ${String(result.width)} | ${result.theme} | ${result.observed?.bodyBackground ?? "unavailable"} | ${result.verdict} | \`${result.screenshot}\` |`,
+        `| ${result.routeId} | \`${result.route}\` | ${String(result.width)} | ${result.theme} | ${result.observed?.bodyBackground ?? "unavailable"} | ${String(result.toleratedRequestAborts.length)} | ${String(result.unexpectedRequestFailures.length)} | ${result.verdict} | \`${result.screenshot}\` |`,
+    )
+    .join("\n");
+  const requestFailureDescription = (failure) =>
+    `\`${failure.method} ${failure.url}\` (${failure.errorText ?? "missing errorText"})`;
+  const toleratedRequestDetails = results
+    .flatMap((result) =>
+      result.toleratedRequestAborts.map(
+        (failure) => `- **${result.id}:** ${requestFailureDescription(failure)}`,
+      ),
+    )
+    .join("\n");
+  const unexpectedRequestDetails = results
+    .flatMap((result) =>
+      result.unexpectedRequestFailures.map(
+        (failure) => `- **${result.id}:** ${requestFailureDescription(failure)}`,
+      ),
     )
     .join("\n");
   const differences = [
@@ -628,14 +710,25 @@ Cases: ${String(results.length)} (${String(ROUTES.length)} routes × ${String(WI
 - Every rendered dialog, button, and text input/select/textarea has \`border-radius: 0px\`.
 - File/history selections expose a 2px solid theme-accent start bar.
 - Document, body, shell, main, page scroller, and route root have no page-level horizontal overflow.
+- Request failures are forbidden except \`net::ERR_ABORTED\` GETs under \`/api/**\` superseded by an identical successful response in the same case.
 
 ## Observed
 
-| Route | Path | Width | Theme | Body | Verdict | Screenshot |
-| --- | --- | ---: | --- | --- | --- | --- |
+| Route | Path | Width | Theme | Body | Tolerated GET aborts | Unexpected request failures | Verdict | Screenshot |
+| --- | --- | ---: | --- | --- | ---: | ---: | --- | --- |
 ${rows}
 
-Machine-readable per-case computed styles, overflow widths, requests, errors, and verdicts are in \`evidence.json\`.
+Tolerated superseded StrictMode GET aborts: ${String(results.reduce((count, result) => count + result.toleratedRequestAborts.length, 0))}.
+
+Machine-readable per-case computed styles, overflow widths, successful response signatures, structured request failures, tolerated aborts, unexpected failures, and verdicts are in \`evidence.json\`.
+
+### Tolerated superseded GET aborts
+
+${toleratedRequestDetails || "- None."}
+
+### Unexpected request failures
+
+${unexpectedRequestDetails || "- None."}
 
 ## Still different
 
@@ -644,7 +737,8 @@ ${differences || "- None. All 30 route/width/theme cases matched the frozen cont
 ## Forbidden
 
 - Unexpected API requests: ${String(results.reduce((count, result) => count + result.unexpectedApiRequests.length, 0))}.
-- Browser console/page/network errors: ${String(results.reduce((count, result) => count + result.browserErrors.length, 0))}.
+- Unexpected request failures: ${String(results.reduce((count, result) => count + result.unexpectedRequestFailures.length, 0))}.
+- Browser console/page/HTTP response errors: ${String(results.reduce((count, result) => count + result.browserErrors.length, 0))}.
 - Cases with page-level horizontal overflow: ${String(results.filter((result) => result.forbidden.pageLevelHorizontalOverflow).length)}.
 - Mutating API requests: ${String(results.flatMap((result) => result.apiRequests).filter((request) => /^(?:POST|PUT|PATCH|DELETE) /u.test(request)).length)}.
 
