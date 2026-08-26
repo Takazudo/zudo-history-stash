@@ -60,12 +60,6 @@ if (!Array.isArray(files) || requiredFiles.some((entry) => !files.includes(entry
   throw new Error(`${packageLabel} package.json files must include ${requiredFiles.join(", ")}`);
 }
 NODE
-  printf 'Running pinned package checks for %s.\n' "$package_label"
-  (
-    cd "$package_dir"
-    pnpm run lint:pkg
-  )
-
   printf 'Packing %s.\n' "$package_label"
   (
     cd "$package_dir"
@@ -79,6 +73,12 @@ NODE
     exit 1
   fi
   tarball=${tarballs[0]}
+
+  printf 'Running pinned package checks for %s.\n' "$package_label"
+  (
+    cd "$package_dir"
+    pnpm run lint:pkg -- "$tarball"
+  )
 
   tar -tzf "$tarball" >"$listing"
   for required_entry in \
@@ -209,20 +209,16 @@ NODE
 )
 printf 'Install-from-tarball VERSION smoke passed for %s.\n' "$version"
 
-printf 'Running publish dry-run for %s.\n' "$core_package_name"
-(
-  cd "$core_package_dir"
-  pnpm publish --dry-run --no-git-checks
-)
-printf 'Running publish dry-run for %s.\n' "$client_package_name"
-(
-  cd "$client_package_dir"
-  pnpm publish --dry-run --no-git-checks
-)
-printf 'Running publish dry-run for %s.\n' "$ui_package_name"
-(
-  cd "$ui_package_dir"
-  pnpm publish --dry-run --no-git-checks
-)
+publish_package() {
+  local package_name=$1
+  local tarball=$2
+
+  printf 'Running publish dry-run for %s from %s.\n' "$package_name" "$tarball"
+  pnpm publish "$tarball" --dry-run --no-git-checks
+}
+
+publish_package "$core_package_name" "$core_tarball"
+publish_package "$client_package_name" "$client_tarball"
+publish_package "$ui_package_name" "$ui_tarball"
 
 printf 'Release packaging gate passed for %s.\n' "$version"
