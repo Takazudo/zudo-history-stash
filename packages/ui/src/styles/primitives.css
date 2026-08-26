@@ -22,13 +22,13 @@
     }
 
     .zhs-button--primary:hover:not(:disabled):not([aria-pressed="true"]) {
-      background: var(--button-primary-bg);
-      filter: brightness(1.08);
+      background: var(--button-primary-hover-bg);
+      color: var(--button-primary-hover-fg);
     }
 
     .zhs-button--danger:hover:not(:disabled):not([aria-pressed="true"]) {
-      background: var(--button-danger-bg);
-      filter: brightness(1.08);
+      background: var(--button-danger-hover-bg);
+      color: var(--button-danger-hover-fg);
     }
   }
 
@@ -52,20 +52,20 @@
   }
 
   .zhs-button--primary {
-    border-color: transparent;
+    border-color: var(--theme-transparent);
     background: var(--button-primary-bg);
     color: var(--button-primary-fg);
   }
 
   .zhs-button--danger {
-    border-color: transparent;
+    border-color: var(--theme-transparent);
     background: var(--button-danger-bg);
     color: var(--button-danger-fg);
   }
 
   .zhs-button--ghost {
-    border-color: transparent;
-    background: transparent;
+    border-color: var(--theme-transparent);
+    background: var(--theme-transparent);
     color: var(--theme-ink);
   }
 

@@ -30,7 +30,7 @@
   ],
   "scripts": {
     "build": "tsup && node scripts/build-css.mjs",
-    "test": "vitest run && node --test scripts/lint-raw-px.test.mjs",
+    "test": "vitest run && node --test scripts/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:tokens": "design-token-lint && node scripts/lint-raw-px.mjs",

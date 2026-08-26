@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type PropsWithChildren } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PropsWithChildren } from "react";
 import type { StashClient } from "@takazudo/zudo-history-stash";
 import { StashUiContext } from "./context.js";
 import { defaultStashHrefFor } from "./routes.js";
@@ -16,12 +16,25 @@ interface MeSnapshot {
   state: StashMeState;
 }
 
+interface MeRequest {
+  client: StashClient;
+  promise: ReturnType<StashClient["me"]>;
+}
+
 function DefaultAnchor({ children, ...props }: StashAnchorProps) {
   return <a {...props}>{children}</a>;
 }
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error("Unable to load the current principal");
+}
+
+function requestMe(client: StashClient): ReturnType<StashClient["me"]> {
+  try {
+    return client.me();
+  } catch (error: unknown) {
+    return Promise.reject(error);
+  }
 }
 
 export interface StashUiProviderProps extends PropsWithChildren {
@@ -38,6 +51,7 @@ export function StashUiProvider({
   Anchor = DefaultAnchor,
   children,
 }: StashUiProviderProps) {
+  const meRequestRef = useRef<MeRequest | null>(null);
   const [meSnapshot, setMeSnapshot] = useState<MeSnapshot>(() => ({
     client,
     state: INITIAL_ME_STATE,
@@ -54,9 +68,16 @@ export function StashUiProvider({
         : { client, state: INITIAL_ME_STATE },
     );
 
-    void client.me().then(
+    const cachedRequest = meRequestRef.current;
+    const request =
+      cachedRequest?.client === client
+        ? cachedRequest
+        : ({ client, promise: requestMe(client) } satisfies MeRequest);
+    meRequestRef.current = request;
+
+    void request.promise.then(
       (result) => {
-        if (!active) return;
+        if (!active || meRequestRef.current !== request) return;
         setMeSnapshot({
           client,
           state: result.ok
@@ -65,7 +86,7 @@ export function StashUiProvider({
         });
       },
       (error: unknown) => {
-        if (active) {
+        if (active && meRequestRef.current === request) {
           setMeSnapshot({
             client,
             state: { ready: true, me: null, error: asError(error) },

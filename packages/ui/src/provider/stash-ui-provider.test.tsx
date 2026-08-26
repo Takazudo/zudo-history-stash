@@ -1,7 +1,7 @@
 import { createStashClient, type MeResponse, type StashClient } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
-import { render, screen, waitFor } from "@testing-library/react";
-import { useLayoutEffect } from "react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode, useLayoutEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "./stash-ui-provider.js";
 import {
@@ -128,6 +128,40 @@ describe("StashUiProvider capabilities", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("deduplicates the me request across StrictMode effect replay", async () => {
+    const { client, fetch } = responseFor({ principal: "admin" });
+    render(
+      <StrictMode>
+        <StashUiProvider client={client}>
+          <CapabilityProbe stash="notes" />
+        </StashUiProvider>
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(screen.getByRole("status").dataset.writeReady).toBe("true"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a new me request after a genuine provider remount", async () => {
+    const { client, fetch } = responseFor({ principal: "admin" });
+    const firstMount = render(
+      <StashUiProvider client={client}>
+        <CapabilityProbe stash="notes" />
+      </StashUiProvider>,
+    );
+    await waitFor(() => expect(screen.getByRole("status").dataset.writeReady).toBe("true"));
+    firstMount.unmount();
+
+    render(
+      <StashUiProvider client={client}>
+        <CapabilityProbe stash="notes" />
+      </StashUiProvider>,
+    );
+    await waitFor(() => expect(screen.getByRole("status").dataset.writeReady).toBe("true"));
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("denies capabilities synchronously when the provider client changes", async () => {
     const { client: adminClient } = responseFor({ principal: "admin" });
     const pendingFetch = vi.fn(() => new Promise<Response>(() => undefined));
@@ -152,6 +186,46 @@ describe("StashUiProvider capabilities", () => {
 
     expect(onWrite).not.toHaveBeenCalled();
     expect(pendingFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a stale me result after the provider client changes", async () => {
+    const firstClient = createStashClient({ baseUrl: "https://fake.invalid" });
+    let resolveFirstRequest!: (result: Awaited<ReturnType<StashClient["me"]>>) => void;
+    const firstRequest = new Promise<Awaited<ReturnType<StashClient["me"]>>>((resolve) => {
+      resolveFirstRequest = resolve;
+    });
+    const firstMe = vi.spyOn(firstClient, "me").mockReturnValue(firstRequest);
+    const { client: readClient, fetch: readFetch } = responseFor({
+      principal: "stash",
+      stash: "notes",
+      tokenId: "tok_1",
+      scope: "read",
+    });
+    const rendered = render(
+      <StashUiProvider client={firstClient}>
+        <CapabilityProbe stash="notes" />
+      </StashUiProvider>,
+    );
+    expect(firstMe).toHaveBeenCalledTimes(1);
+
+    rendered.rerender(
+      <StashUiProvider client={readClient}>
+        <CapabilityProbe stash="notes" />
+      </StashUiProvider>,
+    );
+    const output = screen.getByRole("status");
+    await waitFor(() => expect(output.dataset.writeReady).toBe("true"));
+    expect(output.dataset.canWrite).toBe("false");
+    expect(output.dataset.isAdmin).toBe("false");
+    expect(readFetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirstRequest({ ok: true, value: { principal: "admin" } });
+      await firstRequest;
+    });
+
+    expect(output.dataset.canWrite).toBe("false");
+    expect(output.dataset.isAdmin).toBe("false");
   });
 });
 
