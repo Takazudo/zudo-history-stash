@@ -212,9 +212,7 @@ describe("token administration and capabilities", () => {
     expect(reader.id).toMatch(/^tok_[0-9a-f]{32}$/);
     expect(reader.token).toMatch(/^zhs_[A-Za-z0-9_-]{43}$/);
     const storedReader = fake.state.tokens.get(reader.id);
-    expect(storedReader?.tokenHash).toBe(
-      (await sha256Hex(reader.token)).slice("sha256-".length),
-    );
+    expect(storedReader?.tokenHash).toBe((await sha256Hex(reader.token)).slice("sha256-".length));
     expect(storedReader?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify([...fake.state.tokens.values()])).not.toContain(reader.token);
 

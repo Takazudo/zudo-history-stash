@@ -576,9 +576,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const parsed = ListQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid stash list query.");
     const candidates = [...state.stashes.values()]
-      .sort((left, right) =>
-        left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
-      )
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
       .filter((row) => parsed.data.after === undefined || row.name > parsed.data.after);
     const hasMore = candidates.length > parsed.data.limit;
     const page = candidates.slice(0, parsed.data.limit);
@@ -596,11 +594,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const handleCreateToken = async (request: Request, stash: string): Promise<Response> => {
     const parsed = CreateTokenBody.safeParse(await requestJson(request));
     if (!parsed.success) return fail("validation", "Invalid token input.");
-    const { row, token } = await mintStoredToken(
-      stash,
-      parsed.data.scope,
-      parsed.data.label ?? "",
-    );
+    const { row, token } = await mintStoredToken(stash, parsed.data.scope, parsed.data.label ?? "");
     return json(
       {
         id: row.id,
