@@ -46,6 +46,65 @@ describe("route and validator pins", () => {
   });
 });
 
+describe("transport options", () => {
+  const binding = { request: vi.fn(async () => new Response(null, { status: 204 })) };
+
+  it("keeps explicit fetch transport options on the existing fetch path", async () => {
+    mock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const c = createStashClient({
+      baseUrl: "https://stash.example",
+      token: "admin-token",
+      fetch: mock,
+      transport: { kind: "fetch" },
+    });
+
+    await expect(c.health()).resolves.toEqual({ ok: true, value: { ok: true } });
+    expect(mock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an rpc transport without a non-empty token", () => {
+    expect(() =>
+      createStashClient({
+        transport: { kind: "rpc", binding },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport requires a non-empty token");
+    expect(() =>
+      createStashClient({
+        transport: { kind: "rpc", binding, token: "   " },
+      }),
+    ).toThrow("rpc transport requires a non-empty token");
+  });
+
+  it("rejects an rpc transport without a request-capable binding", () => {
+    expect(() =>
+      createStashClient({
+        transport: { kind: "rpc", binding: {}, token: "rpc-token" },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport requires a binding with a request function");
+  });
+
+  it("rejects fetch-only fields on the rpc branch", () => {
+    expect(() =>
+      createStashClient({
+        baseUrl: "https://stash.example",
+        transport: { kind: "rpc", binding, token: "rpc-token" },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport does not accept baseUrl or fetch");
+    expect(() =>
+      createStashClient({
+        fetch: mock,
+        transport: { kind: "rpc", binding, token: "rpc-token" },
+      } as unknown as Parameters<typeof createStashClient>[0]),
+    ).toThrow("rpc transport does not accept baseUrl or fetch");
+  });
+
+  it("accepts valid rpc options up to the deliberate implementation placeholder", () => {
+    expect(() =>
+      createStashClient({ transport: { kind: "rpc", binding, token: "rpc-token" } }),
+    ).toThrow("rpc transport is implemented in a later change");
+  });
+});
+
 describe("golden requests", () => {
   it("covers every public route with exact URL, method, headers, and body", async () => {
     const c = client();

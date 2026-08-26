@@ -7,6 +7,7 @@ export * from "./etag.js";
 export * from "./hash.js";
 export * from "./limits.js";
 export * from "./paths.js";
+export * from "./rpc.js";
 export * from "./routes.js";
 export * from "./schemas.js";
 export * from "./types.js";
