@@ -20,10 +20,11 @@ control, analytics, support captures, or URLs. Prefer a short-lived Access sessi
 Viewer and provision the narrowest stash token needed by the operator deployment.
 
 The current Viewer stores a manually entered token in the tab's `sessionStorage` under
-`zhs.token`. It is not persisted across browser sessions and is removed on logout or an
-authentication failure. Close the tab and clear site data after using a shared workstation. A
-server-side session or BFF is an optional host architecture, not behavior supplied by the UI
-package.
+`zhs.token`. It is not persisted across browser sessions. Logout and authentication failure always
+deactivate the token and client in the running page, then attempt to remove the stored token. If the
+browser blocks that removal, the login page warns that a reload can restore the old token; close the
+tab and clear its site data before continuing. Always do that after using a shared workstation. A
+server-side session or BFF is an optional host architecture, not behavior supplied by the UI package.
 
 ## Operational recovery
 
@@ -38,10 +39,11 @@ not replay the stale request or reuse its idempotency key for different content.
 
 Unsaved editor text is held per tab in `sessionStorage` using keys shaped like
 `zhs.draft.<stash>.<path>`. A draft records the source version and content needed to restore the
-workbench. It is cleared after a successful save or an explicit discard, and all Viewer drafts are
-cleared at logout. Storage denial or quota exhaustion is reported in the workbench; the editor
-continues without durable draft recovery. Treat draft content as sensitive and avoid shared
-browser profiles.
+workbench. It is cleared after a successful save or an explicit discard, and Viewer attempts to
+clear every draft before logout and before installing a validated credential. If browser storage
+blocks cleanup, the Viewer deactivates the current in-memory credential, warns on the login page,
+and will not activate another credential until cleanup succeeds. Treat draft content as sensitive
+and avoid shared browser profiles.
 
 ### One-time token secrets
 

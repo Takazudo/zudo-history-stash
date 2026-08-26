@@ -12,7 +12,23 @@ import {
 
 function LogoutHarness() {
   const { logOut } = useStashClient();
-  return <button onClick={logOut}>Log out</button>;
+  return (
+    <>
+      <button onClick={logOut}>Log out</button>
+      <ProviderState />
+    </>
+  );
+}
+
+function ProviderState() {
+  const { client, credentialBoundaryWarning, token } = useStashClient();
+  return (
+    <>
+      <output aria-label="Provider token">{token ?? "none"}</output>
+      <output aria-label="Provider client">{client === null ? "none" : "active"}</output>
+      {credentialBoundaryWarning ? <p role="alert">{credentialBoundaryWarning}</p> : null}
+    </>
+  );
 }
 
 function AuthenticateHarness() {
@@ -29,6 +45,7 @@ function AuthenticateHarness() {
         Replace credential
       </button>
       <output>{outcome}</output>
+      <ProviderState />
     </>
   );
 }
@@ -91,6 +108,39 @@ describe("createViewerStashClient", () => {
     expect(sessionStorage.getItem("zhs.draft.notes.docs/readme.txt")).toBeNull();
     expect(sessionStorage.getItem("zhs.draft.other.file.txt")).toBeNull();
     expect(sessionStorage.getItem("viewer.preference")).toBe("keep");
+    expect(screen.getByLabelText("Provider token").textContent).toBe("none");
+    expect(screen.getByLabelText("Provider client").textContent).toBe("none");
+  });
+
+  it("deactivates the provider without leaking an event error when logout storage cleanup fails", async () => {
+    const onWindowError = vi.fn((event: ErrorEvent) => event.preventDefault());
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    sessionStorage.setItem("zhs.draft.notes.docs/readme.txt", "principal A draft");
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    window.addEventListener("error", onWindowError);
+    try {
+      render(
+        <StashClientProvider>
+          <LogoutHarness />
+        </StashClientProvider>,
+      );
+      expect(screen.getByLabelText("Provider token").textContent).toBe("zhs_admin");
+      expect(screen.getByLabelText("Provider client").textContent).toBe("active");
+
+      await expect(
+        userEvent.click(screen.getByRole("button", { name: "Log out" })),
+      ).resolves.toBeUndefined();
+      await waitFor(() => expect(screen.getByLabelText("Provider token").textContent).toBe("none"));
+
+      expect(screen.getByLabelText("Provider client").textContent).toBe("none");
+      expect(screen.getByRole("alert").textContent).toContain("saved token");
+      expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe("zhs_admin");
+      expect(onWindowError).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("error", onWindowError);
+    }
   });
 
   it("uses the public package cleanup before installing a replacement credential", async () => {
@@ -132,5 +182,28 @@ describe("createViewerStashClient", () => {
     ).toBeTruthy();
     expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe("zhs_admin");
     expect(sessionStorage.getItem("zhs.draft.notes.docs/readme.txt")).toBe("principal A draft");
+  });
+
+  it("does not activate a validated credential when token persistence fails", async () => {
+    const clientFactory = vi.fn(() => createFakeViewerClient());
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    render(
+      <StashClientProvider clientFactory={clientFactory}>
+        <AuthenticateHarness />
+      </StashClientProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Replace credential" }));
+
+    expect(
+      await screen.findByText(
+        "The credential could not be stored in this tab. Allow session storage and try again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Provider token").textContent).toBe("none");
+    expect(screen.getByLabelText("Provider client").textContent).toBe("none");
+    expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
   });
 });

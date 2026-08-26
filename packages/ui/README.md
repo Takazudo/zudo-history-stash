@@ -140,20 +140,32 @@ but it also makes credential changes an explicit host responsibility. Import
 
 Cleanup should run at both boundaries so a later principal cannot restore a previous principal's
 draft, even when credential storage was cleared independently. A `false` result means draft cleanup
-could not be confirmed. Logout should still remove the old credential, but the host must not install
-a new credential in that tab until a later cleanup attempt succeeds.
+could not be confirmed. Logout must still deactivate the runtime credential and client in a
+`finally` path. Attempt persisted-credential removal independently and surface a failure: the stored
+credential can become active again after reload, so the operator should close the tab and clear its
+site data. Do not install or activate a new credential until draft cleanup and credential persistence
+both succeed.
 
 ```ts
 import { clearWorkbenchDraftsForCredentialChange } from "@takazudo/zudo-history-stash-ui";
 
 function logOut() {
-  clearWorkbenchDraftsForCredentialChange();
-  removeCredential();
+  const draftsCleared = clearWorkbenchDraftsForCredentialChange();
+  let credentialRemoved = false;
+  try {
+    credentialRemoved = removePersistedCredential();
+  } catch {
+    credentialRemoved = false;
+  } finally {
+    deactivateCredentialInMemory();
+  }
+  if (!draftsCleared || !credentialRemoved) showCredentialStorageWarning();
 }
 
 function installValidatedCredential(credential: string) {
   if (!clearWorkbenchDraftsForCredentialChange()) return false;
-  storeCredential(credential);
+  if (!storeCredential(credential)) return false;
+  activateCredentialInMemory(credential);
   return true;
 }
 ```

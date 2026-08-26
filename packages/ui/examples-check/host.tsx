@@ -16,14 +16,33 @@ const stash = "docs";
 const path = "guides/start.md";
 const hrefFor: StashHrefFor = (route) => `/operator${defaultStashHrefFor(route)}`;
 
-export function removeHostCredential(removeCredential: () => void): void {
-  clearWorkbenchDraftsForCredentialChange();
-  removeCredential();
+export function removeHostCredential(
+  removePersistedCredential: () => boolean,
+  deactivateCredential: () => void,
+): boolean {
+  const draftsCleared = clearWorkbenchDraftsForCredentialChange();
+  let credentialRemoved = false;
+  try {
+    credentialRemoved = removePersistedCredential();
+  } catch {
+    credentialRemoved = false;
+  } finally {
+    deactivateCredential();
+  }
+  return draftsCleared && credentialRemoved;
 }
 
-export function installHostCredential(installCredential: () => void): boolean {
+export function installHostCredential(
+  persistCredential: () => boolean,
+  activateCredential: () => void,
+): boolean {
   if (!clearWorkbenchDraftsForCredentialChange()) return false;
-  installCredential();
+  try {
+    if (!persistCredential()) return false;
+  } catch {
+    return false;
+  }
+  activateCredential();
   return true;
 }
 
