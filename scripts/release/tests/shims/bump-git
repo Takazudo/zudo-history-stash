@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${BUMP_STATUS_FILE:?BUMP_STATUS_FILE must be set}"
+
+case "${1:-}" in
+  status)
+    [[ "${2:-}" == '--porcelain=v1' && "${3:-}" == '--untracked-files=all' && $# -eq 3 ]]
+    cat "$BUMP_STATUS_FILE"
+    ;;
+  diff)
+    [[ "${2:-}" == '--exit-code' && "${3:-}" == '--' && "${4:-}" == 'pnpm-lock.yaml' && $# -eq 4 ]]
+    ;;
+  *)
+    printf 'unexpected git invocation: %q ' "$@" >&2
+    printf '\n' >&2
+    exit 64
+    ;;
+esac

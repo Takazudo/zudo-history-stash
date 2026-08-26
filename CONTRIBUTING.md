@@ -1,5 +1,7 @@
 # Contributing
 
+Project-scope skills live under `.claude/skills/`.
+
 ## Branches and merges
 
 `main` is the parent branch. Integration branches use `base/**`; regular feature branches target the appropriate base branch. Use regular merges, never force-push a shared branch, and do not rewrite history that another contributor may have pulled.
@@ -19,3 +21,19 @@ When changing a route or schema: update `ROUTE_CONTRACTS` and `docs/api.md`, run
 `pnpm openapi:generate`, and commit the regenerated `docs/openapi.json`.
 
 Before handoff, run `pnpm b4push` when the dependency stage supports it. CI also runs actionlint, package publint/attw checks, and the e2e mock/live lanes.
+
+## Releasing
+
+Run `/l-make-release` to prepare a release. Pushing the resulting `vX.Y.Z` tag triggers the
+publishing workflow, which publishes core first and then client using the `latest` dist-tag only;
+`next` is never used. The bump also regenerates `docs/openapi.json`, whose `info.version` must be
+committed atomically with the package manifests, exported `VERSION` constants, and changelogs.
+
+To re-run a partial release after a transient failure, re-run the workflow for the same tag push.
+Its exact-version safeguards recognize packages that are already published and skip them, so the
+remaining package can finish. A rerun uses the immutable tagged commit; if a code or workflow fix
+is required, fix forward on `main` and cut a new patch release instead of trying to repair the old
+tag.
+
+Running the workflow with `workflow_dispatch` exercises the complete chain as a dry run and never
+publishes to npm.
