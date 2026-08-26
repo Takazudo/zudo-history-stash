@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../../..",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@takazudo/zudo-history-stash": ["packages/client/src/index.ts"],
+      "@takazudo/zudo-history-stash-core": ["packages/core/src/index.ts"],
+      "@takazudo/zudo-history-stash-ui": ["packages/ui/src/index.ts"]
+    },
+    "types": ["node", "react", "react-dom"]
+  },
+  "include": ["host.tsx"]
+}

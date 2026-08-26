@@ -20,6 +20,7 @@ viewer Worker ── service binding ──► stash Worker
 | ----------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `@takazudo/zudo-history-stash-core` (`packages/core`) | Runtime-agnostic types, schemas, validators, hashes, limits, and diff engine |
 | `@takazudo/zudo-history-stash` (`packages/client`)    | Node, browser, and Worker client with CAS writes and bounded retries         |
+| `@takazudo/zudo-history-stash-ui` (`packages/ui`)     | Router-independent React workflows, hooks, and components                    |
 | `zudo-history-stash` (`workers/stash`)                | Hono `/v1` API and the D1 system of record                                   |
 | `zudo-history-stash-viewer` (`workers/viewer`)        | React/Tailwind standalone viewer and service-binding proxy                   |
 
@@ -80,8 +81,9 @@ Bots and other consumers can post stable viewer links without knowing the viewer
 
 Browser-direct code must use a `read` token. A `write` token is a full-stash credential and can
 replace, delete, or roll back every path in that stash; keep it in a trusted server or Worker
-secret. See the complete [API reference](docs/api.md), the generated [OpenAPI document](docs/openapi.json), and the
-[Cloudflare setup guide](docs/cloudflare-setup.md) for bindings, D1, secrets, CORS, and deployment.
+secret. See the [UI package guide](packages/ui/README.md), complete [API reference](docs/api.md),
+generated [OpenAPI document](docs/openapi.json), [Cloudflare setup guide](docs/cloudflare-setup.md),
+and [Viewer operations runbook](docs/viewer-operations.md).
 
 ## Quick start
 
@@ -115,7 +117,8 @@ To preserve the fixture while exercising a reset,
 `demo-reset-...` stash because stash deletion is deferred.
 
 See [docs/api.md](docs/api.md) for the API reference and
-[docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning.
+[docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning. Operators should
+also read [docs/viewer-operations.md](docs/viewer-operations.md) before deploying the Viewer.
 
 | Command                                | Purpose                                                           |
 | -------------------------------------- | ----------------------------------------------------------------- |
@@ -124,7 +127,7 @@ See [docs/api.md](docs/api.md) for the API reference and
 | `pnpm dev:migrate`                     | Apply pending migrations to the local stash D1                    |
 | `pnpm dev:full`                        | Build, migrate, then run the viewer-primary multi-Worker topology |
 | `pnpm wait:full` / `pnpm seed:dev`     | Wait for proxied health, then seed `demo` through `/api`          |
-| `pnpm build:libs`                      | Build the two public packages first                               |
+| `pnpm build:libs`                      | Build the three public packages first                             |
 | `pnpm build:viewer`                    | Build static viewer assets for the full local Worker              |
 | `pnpm build`                           | Build every workspace package and Worker dry-run                  |
 | `pnpm test`                            | Run workspace unit/Worker tests                                   |

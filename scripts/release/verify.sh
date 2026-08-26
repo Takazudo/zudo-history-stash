@@ -9,11 +9,18 @@ if [[ $# -ne 0 ]]; then
   release_usage_error 'Usage: bash scripts/release.sh verify'
 fi
 
-next=$(current_version)
+if ! next=$(release_lockstep_version); then
+  exit 1
+fi
 # `plain_semver_re` is assigned by the sourced lib.sh.
 # shellcheck disable=SC2154
 if [[ ! "$next" =~ $plain_semver_re ]]; then
   release_error "NEXT=$next violates the plain SemVer rule $plain_semver_re."
+  exit 1
+fi
+openapi_version=$(release_openapi_version)
+if [[ "$openapi_version" != "$next" ]]; then
+  release_error "docs/openapi.json has info.version $openapi_version; expected $next."
   exit 1
 fi
 
@@ -28,12 +35,9 @@ if [[ ! "$verify_max_attempts" =~ ^[1-9][0-9]*$ || ! "$verify_poll_seconds" =~ ^
   exit 2
 fi
 
-packages=(
-  '@takazudo/zudo-history-stash-core'
-  '@takazudo/zudo-history-stash'
-)
-
-for package_name in "${packages[@]}"; do
+# `release_package_names` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
+for package_name in "${release_package_names[@]}"; do
   published=0
   for ((attempt = 1; attempt <= verify_max_attempts; attempt++)); do
     if output=$(npm view "$package_name@$next" version 2>&1); then

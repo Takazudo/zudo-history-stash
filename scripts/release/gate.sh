@@ -22,39 +22,14 @@ trap cleanup EXIT
 
 core_package_dir="$RELEASE_ROOT/packages/core"
 client_package_dir="$RELEASE_ROOT/packages/client"
+ui_package_dir="$RELEASE_ROOT/packages/ui"
 core_package_name='@takazudo/zudo-history-stash-core'
 client_package_name='@takazudo/zudo-history-stash'
+ui_package_name='@takazudo/zudo-history-stash-ui'
 
-version=$(current_version)
-if [[ -z "$version" ]]; then
-  release_error 'Could not determine the current package version.'
+if ! version=$(release_lockstep_version); then
   exit 1
 fi
-
-assert_version_files() {
-  local package_file=$1
-  local source_file=$2
-  local package_version
-  local source_version
-
-  package_version=$(release_package_version "$package_file")
-  source_version=$(release_version_constant "$source_file")
-  if [[ "$package_version" != "$version" ]]; then
-    release_error "$package_file has version $package_version; expected $version."
-    exit 1
-  fi
-  if [[ "$source_version" != "$version" ]]; then
-    release_error "$source_file has VERSION $source_version; expected $version."
-    exit 1
-  fi
-}
-
-assert_version_files \
-  "$core_package_dir/package.json" \
-  "$core_package_dir/src/index.ts"
-assert_version_files \
-  "$client_package_dir/package.json" \
-  "$client_package_dir/src/index.ts"
 
 openapi_version=$(release_openapi_version)
 if [[ "$openapi_version" != "$version" ]]; then
@@ -124,6 +99,16 @@ NODE
     release_error "$package_label tarball unexpectedly contains package/src/."
     exit 1
   fi
+  if [[ "$package_label" == 'ui' ]]; then
+    for required_entry in \
+      'package/dist/styles.css' \
+      'package/styles/tokens.example.css'; do
+      if ! grep -Fxq "$required_entry" "$listing"; then
+        release_error "$package_label tarball is missing $required_entry."
+        exit 1
+      fi
+    done
+  fi
 
   packed_tarball=$tarball
 }
@@ -133,6 +118,8 @@ pack_package "$core_package_dir" core
 core_tarball=$packed_tarball
 pack_package "$client_package_dir" client
 client_tarball=$packed_tarball
+pack_package "$ui_package_dir" ui
+ui_tarball=$packed_tarball
 
 client_manifest="$gate_tmp/client-package.json"
 tar -xOzf "$client_tarball" package/package.json >"$client_manifest"
@@ -150,15 +137,36 @@ if (dependency !== expectedVersion) {
 NODE
 printf 'Packed client workspace dependency rewritten to %s.\n' "$version"
 
+ui_manifest="$gate_tmp/ui-package.json"
+tar -xOzf "$ui_tarball" package/package.json >"$ui_manifest"
+node - "$ui_manifest" "$version" <<'NODE'
+const fs = require("node:fs");
+
+const [manifestPath, expectedVersion] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+for (const dependencyName of [
+  "@takazudo/zudo-history-stash-core",
+  "@takazudo/zudo-history-stash",
+]) {
+  const dependency = manifest.dependencies?.[dependencyName];
+  if (dependency !== expectedVersion) {
+    throw new Error(
+      `Packed UI dependency ${dependencyName} is ${JSON.stringify(dependency)}; expected ${expectedVersion}`,
+    );
+  }
+}
+NODE
+printf 'Packed UI workspace dependencies rewritten to %s.\n' "$version"
+
 smoke_dir="$gate_tmp/smoke"
 mkdir "$smoke_dir"
 (
   cd "$smoke_dir"
   pnpm init
-  node - "$core_tarball" <<'NODE'
+  node - "$core_tarball" "$client_tarball" <<'NODE'
 const fs = require("node:fs");
 
-const [coreTarball] = process.argv.slice(2);
+const [coreTarball, clientTarball] = process.argv.slice(2);
 const packageFile = "package.json";
 const packageJson = JSON.parse(fs.readFileSync(packageFile, "utf8"));
 packageJson.pnpm = {
@@ -166,22 +174,32 @@ packageJson.pnpm = {
   overrides: {
     ...(packageJson.pnpm?.overrides ?? {}),
     "@takazudo/zudo-history-stash-core": `file:${coreTarball}`,
+    "@takazudo/zudo-history-stash": `file:${clientTarball}`,
   },
 };
 fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
 NODE
-  pnpm add "$core_tarball" "$client_tarball"
+  pnpm add "$core_tarball" "$client_tarball" "$ui_tarball"
   EXPECTED_VERSION="$version" node -e '
     (async () => {
-      const [{ VERSION: coreVersion }, { VERSION: clientVersion }] = await Promise.all([
+      const [{ VERSION: coreVersion }, { VERSION: clientVersion }, { VERSION: uiVersion }] = await Promise.all([
         import("@takazudo/zudo-history-stash-core"),
         import("@takazudo/zudo-history-stash"),
+        import("@takazudo/zudo-history-stash-ui"),
       ]);
       const expectedVersion = process.env.EXPECTED_VERSION;
-      if (coreVersion !== expectedVersion || clientVersion !== expectedVersion) {
+      if (
+        coreVersion !== expectedVersion ||
+        clientVersion !== expectedVersion ||
+        uiVersion !== expectedVersion
+      ) {
         throw new Error(
-          `Tarball VERSION mismatch: core=${coreVersion}, client=${clientVersion}, expected=${expectedVersion}`,
+          `Tarball VERSION mismatch: core=${coreVersion}, client=${clientVersion}, ui=${uiVersion}, expected=${expectedVersion}`,
         );
+      }
+      const styles = require.resolve("@takazudo/zudo-history-stash-ui/styles.css");
+      if (!require("node:fs").readFileSync(styles, "utf8").includes(".zhs-button")) {
+        throw new Error("The installed UI stylesheet export is missing package component CSS");
       }
     })().catch((error) => {
       console.error(error);
@@ -199,6 +217,11 @@ printf 'Running publish dry-run for %s.\n' "$core_package_name"
 printf 'Running publish dry-run for %s.\n' "$client_package_name"
 (
   cd "$client_package_dir"
+  pnpm publish --dry-run --no-git-checks
+)
+printf 'Running publish dry-run for %s.\n' "$ui_package_name"
+(
+  cd "$ui_package_dir"
   pnpm publish --dry-run --no-git-checks
 )
 

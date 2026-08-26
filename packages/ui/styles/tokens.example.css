@@ -1,7 +1,4 @@
-@import "tailwindcss/preflight";
-@import "tailwindcss/utilities";
-
-@theme {
+:root {
   /* Tier 1: palette. Raw color values live only here. */
   --palette-dark-0: #e0e0e0;
   --palette-dark-1: #b8b8b8;

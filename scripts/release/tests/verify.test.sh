@@ -6,6 +6,7 @@ repo_root=$(cd "$test_dir/../../.." && pwd)
 shim_dir="$test_dir/shims"
 temp_dir=$(mktemp -d)
 trap 'rm -rf "$temp_dir"' EXIT
+command_root=$repo_root
 
 assert_contains() {
   local output=$1
@@ -33,7 +34,7 @@ run_verify() {
     RELEASE_SHIM_LOG="$temp_dir/invocations" \
     RELEASE_SHIM_STATE_DIR="$temp_dir/state" \
     NPM_SCENARIO="$scenario" \
-    bash "$repo_root/scripts/release.sh" verify 2>&1)
+    bash "$command_root/scripts/release.sh" verify 2>&1)
   actual_status=$?
   set -e
   if [[ "$actual_status" != "$expected_status" ]]; then
@@ -45,6 +46,15 @@ run_verify() {
   if grep -Ev '^npm (view|dist-tag) ' "$temp_dir/invocations" | grep -q .; then
     printf 'unexpected registry operation reached a shim\n' >&2
     exit 1
+  fi
+  if [[ "$scenario" == 'success' && "$expected_status" == '0' ]]; then
+    for package_name in \
+      '@takazudo/zudo-history-stash-core' \
+      '@takazudo/zudo-history-stash' \
+      '@takazudo/zudo-history-stash-ui'; do
+      grep -Fxq "npm view ${package_name}@0.0.0 version" "$temp_dir/invocations"
+      grep -Fxq "npm dist-tag ls $package_name" "$temp_dir/invocations"
+    done
   fi
 }
 
@@ -62,5 +72,18 @@ run_verify latest_wrong 1 'does not have latest: 0.0.0'
 run_verify extra_next 1 "dist-tag 'next' must not point at NEXT=0.0.0"
 run_verify historical 0 'historical dist-tag legacy points at 0.0.1'
 run_verify dist_tag_error 1 'Unable to query dist-tags'
+
+mismatch_dir="$temp_dir/ui-mismatch"
+rsync -a --exclude='.git' --exclude='node_modules' --exclude='.wrangler' \
+  --exclude='dist' "$repo_root/" "$mismatch_dir/"
+node -e '
+const fs = require("node:fs");
+const path = process.argv[1];
+const value = JSON.parse(fs.readFileSync(path, "utf8"));
+value.version = "9.9.9";
+fs.writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+' "$mismatch_dir/packages/ui/package.json"
+command_root=$mismatch_dir
+run_verify success 1 'Version mismatch: packages/ui/package.json=9.9.9; expected 0.0.0.'
 
 printf 'verify tests passed\n'
