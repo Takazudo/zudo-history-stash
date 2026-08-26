@@ -50,6 +50,11 @@
     overflow-wrap: break-word;
   }
 
+  .zhs-path-cell {
+    font-family: var(--font-family-mono);
+    line-height: var(--line-code);
+  }
+
   .zhs-change-row {
     display: grid;
     min-inline-size: 0;
