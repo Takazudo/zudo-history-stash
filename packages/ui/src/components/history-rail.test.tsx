@@ -119,5 +119,12 @@ describe("HistoryRail", () => {
     expect(css).toContain(".zhs-history-rail__chevron");
     expect(css).toContain("border-block-start:");
     expect(css).toContain("data-rail");
+    const hoverCapabilityStart = css.indexOf("@media (hover: hover)");
+    expect(hoverCapabilityStart).toBeGreaterThan(-1);
+    expect(css.slice(0, hoverCapabilityStart)).not.toContain(":hover");
+    expect(css.slice(hoverCapabilityStart).match(/:hover/gu)).toHaveLength(3);
+    expect(css.slice(hoverCapabilityStart)).toContain(".zhs-history-rail__row:hover");
+    expect(css.slice(hoverCapabilityStart)).toContain(".zhs-history-rail__slot:hover");
+    expect(css.slice(hoverCapabilityStart)).toContain(".zhs-history-rail__toggle:hover");
   });
 });

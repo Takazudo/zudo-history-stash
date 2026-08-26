@@ -338,6 +338,7 @@ describe("useWorkbench", () => {
         savedAt: Date.now(),
       }),
     );
+    sessionStorage.setItem(workbenchDraftKey(STASH, OTHER_PATH), "unrelated draft");
     const rendered = renderHook(() => useWorkbench({ stash: STASH, path: PATH }), {
       wrapper: providerFor(fixture.client),
     });
@@ -346,6 +347,87 @@ describe("useWorkbench", () => {
     expect(rendered.result.current.source?.version).toBe(2);
     expect(rendered.result.current.draft).toBe("head\n");
     expect(rendered.result.current.draftRestored).toBe(false);
+    expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).toBeNull();
+    expect(sessionStorage.getItem(workbenchDraftKey(STASH, OTHER_PATH))).toBe("unrelated draft");
+  });
+
+  it("clears a non-dirty stored draft and starts from authoritative head", async () => {
+    const fixture = await fixtureWith();
+    sessionStorage.setItem(
+      workbenchDraftKey(STASH, PATH),
+      JSON.stringify({
+        sourceVersion: 1,
+        fenceVersion: 2,
+        text: "base\n",
+        lineEnding: "lf",
+        savedAt: Date.now(),
+      }),
+    );
+    const rendered = renderHook(() => useWorkbench({ stash: STASH, path: PATH }), {
+      wrapper: providerFor(fixture.client),
+    });
+    await ready(rendered.result);
+
+    expect(rendered.result.current.source?.version).toBe(2);
+    expect(rendered.result.current.draft).toBe("head\n");
+    expect(rendered.result.current.draftRestored).toBe(false);
+    expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).toBeNull();
+  });
+
+  it("falls back to head and clears storage when a storage-only source is missing", async () => {
+    const fixture = await fixtureWith();
+    sessionStorage.setItem(
+      workbenchDraftKey(STASH, PATH),
+      JSON.stringify({
+        sourceVersion: 99,
+        fenceVersion: 99,
+        text: "orphaned draft\n",
+        lineEnding: "lf",
+        savedAt: Date.now(),
+      }),
+    );
+    const rendered = renderHook(() => useWorkbench({ stash: STASH, path: PATH }), {
+      wrapper: providerFor(fixture.client),
+    });
+    await ready(rendered.result);
+
+    expect(rendered.result.current.source?.version).toBe(2);
+    expect(rendered.result.current.draft).toBe("head\n");
+    expect(rendered.result.current.draftRestored).toBe(false);
+    expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).toBeNull();
+
+    rendered.unmount();
+    const explicit = renderHook(
+      () => useWorkbench({ stash: STASH, path: PATH, initialSource: 99 }),
+      { wrapper: providerFor(fixture.client) },
+    );
+    await waitFor(() => expect(explicit.result.current.state).toBe("error"));
+    expect(explicit.result.current.source).toBeNull();
+  });
+
+  it("reports a storage error when an unsafe draft cannot be cleared", async () => {
+    const fixture = await fixtureWith();
+    sessionStorage.setItem(
+      workbenchDraftKey(STASH, PATH),
+      JSON.stringify({
+        sourceVersion: 1,
+        fenceVersion: 99,
+        text: "unsafe edit\n",
+        lineEnding: "lf",
+        savedAt: Date.now(),
+      }),
+    );
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    const rendered = renderHook(() => useWorkbench({ stash: STASH, path: PATH }), {
+      wrapper: providerFor(fixture.client),
+    });
+    await ready(rendered.result);
+
+    expect(rendered.result.current.source?.version).toBe(2);
+    expect(rendered.result.current.draft).toBe("head\n");
+    expect(rendered.result.current.draftPersistError).toBe("draft not persisted");
   });
 
   it("clears drafts on discard and logout and reports storage quota failures", async () => {

@@ -470,8 +470,12 @@ export function useWorkbench({ stash, path, initialSource }: UseWorkbenchOptions
     const files = signalClient.files(stash);
     const headRequest = readHead(files, path);
     const historyRequest = clientValue(files.history(path));
-    const sourceRequest =
-      requestedSource === undefined ? null : readFile(files, path, requestedSource);
+    const sourceRequest: Promise<FileRecord | null> =
+      requestedSource === undefined
+        ? Promise.resolve(null)
+        : initialSource === undefined
+          ? readFile(files, path, requestedSource).catch(() => null)
+          : readFile(files, path, requestedSource);
 
     void Promise.all([headRequest, historyRequest, sourceRequest])
       .then(([head, history, selectedSource]) => {
@@ -485,9 +489,14 @@ export function useWorkbench({ stash, path, initialSource }: UseWorkbenchOptions
         const selected = selectedSource ?? head;
         const storedDraftIsSafe =
           stored.record !== null &&
+          selectedSource !== null &&
           canRestoreDraft(stored.record, selected, head, initialSource) &&
           normalizeTextareaText(stored.record.text) !== bodyText(selected);
         const source = initialSource !== undefined || storedDraftIsSafe ? selected : head;
+        let draftPersistError = initial.draftPersistError;
+        if (stored.record !== null && !storedDraftIsSafe) {
+          if (!clearWorkbenchDraft(stash, path)) draftPersistError = "draft not persisted";
+        }
         runtime.records.set(head.version, head);
         runtime.records.set(source.version, source);
         const sourceLineEnding = detectLineEnding(source.body);
@@ -508,6 +517,7 @@ export function useWorkbench({ stash, path, initialSource }: UseWorkbenchOptions
           draft,
           draftRecord: restoredRecord,
           draftRestored: restoredRecord !== null,
+          draftPersistError,
           lineEnding: restoredRecord?.lineEnding ?? sourceLineEnding,
           sourceNotice: noticeForSource(source),
         };
