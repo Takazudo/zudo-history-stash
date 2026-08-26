@@ -132,7 +132,7 @@ also read [docs/viewer-operations.md](docs/viewer-operations.md) before deployin
 | `pnpm build`                           | Build every workspace package and Worker dry-run                  |
 | `pnpm test`                            | Run workspace unit/Worker tests                                   |
 | `pnpm typecheck`                       | Type-check every workspace package                                |
-| `pnpm lint` / `pnpm lint:tokens`       | Run ESLint and viewer token lint                                  |
+| `pnpm lint` / `pnpm lint:tokens`       | Run ESLint and Viewer + UI package token lint                     |
 | `pnpm format:check` / `pnpm format:md` | Check or format source and Markdown                               |
 | `pnpm b4push`                          | Run the local pre-push quality sequence                           |
 

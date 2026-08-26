@@ -11,9 +11,9 @@ import { DIFF_MAX_BYTES } from "@takazudo/zudo-history-stash-core";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearWorkbenchDraftsForCredentialChange } from "../index.js";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
 import {
-  clearWorkbenchDraftsForLogout,
   useWorkbench,
   workbenchDraftKey,
   type SourceLoadResult,
@@ -326,6 +326,39 @@ describe("useWorkbench", () => {
     expect(rendered.result.current.dirtyFromSource).toBe(true);
   });
 
+  it("uses the public credential boundary to prevent a new client from restoring another principal's draft", async () => {
+    const firstPrincipal = await fixtureWith({ [PATH]: ["principal A body\n"] });
+    const secondPrincipal = await fixtureWith({ [PATH]: ["principal B body\n"] });
+    let activeClient = firstPrincipal.client;
+    function Provider({ children }: PropsWithChildren) {
+      return <StashUiProvider client={activeClient}>{children}</StashUiProvider>;
+    }
+    const rendered = renderHook(() => useWorkbench({ stash: STASH, path: PATH }), {
+      wrapper: Provider,
+    });
+    await ready(rendered.result);
+
+    act(() => rendered.result.current.setDraft("principal A secret draft\n"));
+    expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).not.toBeNull();
+
+    expect(clearWorkbenchDraftsForCredentialChange()).toBe(true);
+    activeClient = secondPrincipal.client;
+    rendered.rerender();
+    await ready(rendered.result);
+
+    expect(rendered.result.current.draft).toBe("principal B body\n");
+    expect(rendered.result.current.draftRestored).toBe(false);
+    expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).toBeNull();
+  });
+
+  it("fails closed when browser storage cannot be inspected at a credential boundary", () => {
+    vi.spyOn(window, "sessionStorage", "get").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+
+    expect(clearWorkbenchDraftsForCredentialChange()).toBe(false);
+  });
+
   it("rejects draft metadata that cannot be safely reconciled with the current fence", async () => {
     const fixture = await fixtureWith();
     sessionStorage.setItem(
@@ -480,7 +513,7 @@ describe("useWorkbench", () => {
     expect(rendered.result.current.clearForLogout()).toBe(true);
     expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).toBeNull();
     expect(sessionStorage.getItem(workbenchDraftKey(STASH, OTHER_PATH))).toBeNull();
-    expect(clearWorkbenchDraftsForLogout()).toBe(true);
+    expect(clearWorkbenchDraftsForCredentialChange()).toBe(true);
 
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("quota", "QuotaExceededError");

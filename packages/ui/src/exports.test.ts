@@ -43,6 +43,7 @@ const PUBLIC_RUNTIME_EXPORTS = [
   "VERSION",
   "defaultStashHref",
   "defaultStashHrefFor",
+  "clearWorkbenchDraftsForCredentialChange",
   "useCanWrite",
   "useCandidateDiff",
   "useDiffViewPreferences",

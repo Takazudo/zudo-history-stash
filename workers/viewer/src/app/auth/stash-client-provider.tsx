@@ -6,6 +6,7 @@ import {
   type StashClient,
   type StashFetch,
 } from "@takazudo/zudo-history-stash";
+import { clearWorkbenchDraftsForCredentialChange } from "@takazudo/zudo-history-stash-ui";
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { clearToken as clearStoredToken, getToken, setToken as storeToken } from "./token-store.js";
 
@@ -27,20 +28,6 @@ interface StashClientContextValue {
 }
 
 const StashClientContext = createContext<StashClientContextValue | null>(null);
-const DRAFT_KEY_PREFIX = "zhs.draft.";
-
-function clearWorkbenchDrafts(): void {
-  try {
-    const keys: string[] = [];
-    for (let index = 0; index < sessionStorage.length; index += 1) {
-      const key = sessionStorage.key(index);
-      if (key?.startsWith(DRAFT_KEY_PREFIX)) keys.push(key);
-    }
-    for (const key of keys) sessionStorage.removeItem(key);
-  } catch {
-    // Logging out must still clear the credential when storage access is unavailable.
-  }
-}
 
 function messageFromHttpError(error: StashHttpError): string {
   if (error.body && typeof error.body === "object" && "error" in error.body) {
@@ -106,7 +93,7 @@ export function StashClientProvider({
   const [token, setCurrentToken] = useState(getToken);
 
   const logOut = useCallback(() => {
-    clearWorkbenchDrafts();
+    clearWorkbenchDraftsForCredentialChange();
     clearStoredToken();
     setCurrentToken(null);
   }, []);
@@ -117,10 +104,20 @@ export function StashClientProvider({
   );
 
   const authenticate = useCallback(
-    async (candidate: string) => {
+    async (candidate: string): Promise<ClientResult<MeResponse>> => {
       const candidateClient = clientFactory(candidate, logOut);
       const result = await candidateClient.me();
       if (result.ok) {
+        if (!clearWorkbenchDraftsForCredentialChange()) {
+          return {
+            ok: false,
+            error: {
+              status: 500,
+              code: "internal",
+              message: "Workbench drafts could not be cleared. Try signing in again.",
+            },
+          };
+        }
         storeToken(candidate);
         setCurrentToken(candidate);
       }

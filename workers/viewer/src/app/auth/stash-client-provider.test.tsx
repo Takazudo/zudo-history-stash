@@ -1,6 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { createFakeViewerClient } from "../../test/fake-viewer-client.js";
 import { TOKEN_STORAGE_KEY } from "./token-store.js";
 import {
   StashClientProvider,
@@ -11,6 +13,24 @@ import {
 function LogoutHarness() {
   const { logOut } = useStashClient();
   return <button onClick={logOut}>Log out</button>;
+}
+
+function AuthenticateHarness() {
+  const { authenticate } = useStashClient();
+  const [outcome, setOutcome] = useState("idle");
+  return (
+    <>
+      <button
+        onClick={async () => {
+          const result = await authenticate("zhs_replacement");
+          setOutcome(result.ok ? "authenticated" : result.error.message);
+        }}
+      >
+        Replace credential
+      </button>
+      <output>{outcome}</output>
+    </>
+  );
 }
 
 describe("createViewerStashClient", () => {
@@ -71,5 +91,46 @@ describe("createViewerStashClient", () => {
     expect(sessionStorage.getItem("zhs.draft.notes.docs/readme.txt")).toBeNull();
     expect(sessionStorage.getItem("zhs.draft.other.file.txt")).toBeNull();
     expect(sessionStorage.getItem("viewer.preference")).toBe("keep");
+  });
+
+  it("uses the public package cleanup before installing a replacement credential", async () => {
+    const clientFactory = vi.fn(() => createFakeViewerClient());
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    sessionStorage.setItem("zhs.draft.notes.docs/readme.txt", "principal A draft");
+    sessionStorage.setItem("viewer.preference", "keep");
+    render(
+      <StashClientProvider clientFactory={clientFactory}>
+        <AuthenticateHarness />
+      </StashClientProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Replace credential" }));
+    await waitFor(() => expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe("zhs_replacement"));
+
+    expect(sessionStorage.getItem("zhs.draft.notes.docs/readme.txt")).toBeNull();
+    expect(sessionStorage.getItem("viewer.preference")).toBe("keep");
+    expect(screen.getByText("authenticated")).toBeTruthy();
+  });
+
+  it("keeps the current credential when draft cleanup cannot be confirmed", async () => {
+    const clientFactory = vi.fn(() => createFakeViewerClient());
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    sessionStorage.setItem("zhs.draft.notes.docs/readme.txt", "principal A draft");
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    render(
+      <StashClientProvider clientFactory={clientFactory}>
+        <AuthenticateHarness />
+      </StashClientProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Replace credential" }));
+
+    expect(
+      await screen.findByText("Workbench drafts could not be cleared. Try signing in again."),
+    ).toBeTruthy();
+    expect(sessionStorage.getItem(TOKEN_STORAGE_KEY)).toBe("zhs_admin");
+    expect(sessionStorage.getItem("zhs.draft.notes.docs/readme.txt")).toBe("principal A draft");
   });
 });

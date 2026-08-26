@@ -130,5 +130,33 @@ surface such as the Viewer protected by Cloudflare Access. The provider neither 
 implements login/logout. The host owns credential storage, request transport, and its response to
 `401`; package components render typed API failures returned by the supplied client.
 
+Workbench drafts are retained in the tab's `sessionStorage` and keyed by stash and path, not by
+credential. This preserves unsaved work across navigation and client re-renders for one principal,
+but it also makes credential changes an explicit host responsibility. Import
+`clearWorkbenchDraftsForCredentialChange` from the package root and call it immediately before:
+
+- removing the active credential during logout or `401` handling; and
+- installing a validated credential during login, account switching, or credential replacement.
+
+Cleanup should run at both boundaries so a later principal cannot restore a previous principal's
+draft, even when credential storage was cleared independently. A `false` result means draft cleanup
+could not be confirmed. Logout should still remove the old credential, but the host must not install
+a new credential in that tab until a later cleanup attempt succeeds.
+
+```ts
+import { clearWorkbenchDraftsForCredentialChange } from "@takazudo/zudo-history-stash-ui";
+
+function logOut() {
+  clearWorkbenchDraftsForCredentialChange();
+  removeCredential();
+}
+
+function installValidatedCredential(credential: string) {
+  if (!clearWorkbenchDraftsForCredentialChange()) return false;
+  storeCredential(credential);
+  return true;
+}
+```
+
 The Viewer integration and its operational credential guidance are documented in the repository's
 [Viewer operations runbook](https://github.com/Takazudo/zudo-history-stash/blob/main/docs/viewer-operations.md).

@@ -355,11 +355,16 @@ export function clearWorkbenchDraft(stash: string, path: string): boolean {
   }
 }
 
-/** Clears every workbench draft before the host removes its session credential. */
-export function clearWorkbenchDraftsForLogout(): boolean {
-  const storage = sessionStorageOrNull();
-  if (storage === null) return true;
+/**
+ * Clears every persisted workbench draft before the host removes or replaces its credential.
+ *
+ * A false result means cleanup could not be confirmed, so the host must not install a credential
+ * for another principal in this tab.
+ */
+export function clearWorkbenchDraftsForCredentialChange(): boolean {
+  if (typeof window === "undefined") return true;
   try {
+    const storage = window.sessionStorage;
     const keys: string[] = [];
     for (let index = 0; index < storage.length; index += 1) {
       const key = storage.key(index);
@@ -830,7 +835,7 @@ export function useWorkbench({ stash, path, initialSource }: UseWorkbenchOptions
   }, [commit, target]);
 
   const clearForLogout = useCallback((): boolean => {
-    const cleared = clearWorkbenchDraftsForLogout();
+    const cleared = clearWorkbenchDraftsForCredentialChange();
     const runtime = runtimeRef.current;
     if (sameTarget(runtime.target, target)) {
       commit(runtime, {
