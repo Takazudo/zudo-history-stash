@@ -158,7 +158,7 @@ const fs = require("node:fs");
 const sourceFile = process.argv[1];
 const nextVersion = process.argv[2];
 const source = fs.readFileSync(sourceFile, "utf8");
-const pattern = /^export const VERSION = "[^"\\r\\n]+";$/m;
+const pattern = /^export const VERSION = "[^"\r\n]+";$/m;
 if (!pattern.test(source)) throw new Error(`Missing VERSION constant in ${sourceFile}`);
 fs.writeFileSync(sourceFile, source.replace(pattern, `export const VERSION = "${nextVersion}";`));
 ' "$source_file" "$next"

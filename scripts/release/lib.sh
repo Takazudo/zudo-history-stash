@@ -39,7 +39,7 @@ release_version_constant() {
 const fs = require("node:fs");
 const sourceFile = process.argv[1];
 const source = fs.readFileSync(sourceFile, "utf8");
-const matches = [...source.matchAll(/^export const VERSION = "([^"\\r\\n]+)";$/gm)];
+const matches = [...source.matchAll(/^export const VERSION = "([^"\r\n]+)";$/gm)];
 if (matches.length !== 1) {
   throw new Error(`Expected exactly one VERSION constant in ${sourceFile}`);
 }
