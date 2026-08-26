@@ -72,7 +72,7 @@
   gap: var(--vsp-lg);
 }
 
-.rollback-dialog__preview {
+.rollback-dialog__summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -83,6 +83,14 @@
   border: var(--border-hairline) solid var(--theme-border);
   border-radius: var(--radius-md);
   background: var(--theme-surface-muted);
+}
+
+.rollback-dialog__preview {
+  min-width: 0;
+}
+
+.rollback-dialog__preview-notice {
+  color: var(--theme-ink-muted);
 }
 
 .rollback-dialog__stats {
@@ -191,7 +199,7 @@
     padding-inline: var(--hsp-md);
   }
 
-  .rollback-dialog__preview {
+  .rollback-dialog__summary {
     align-items: start;
     flex-direction: column;
   }

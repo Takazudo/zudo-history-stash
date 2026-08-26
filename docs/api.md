@@ -8,6 +8,20 @@ Examples use `https://stash.example.com` as the public Worker origin, `demo` as 
 and `docs/guide.md` as the file path. File paths are ASCII segments made from letters, numbers,
 `.`, `_`, and `-`, joined by `/`; they are sent without percent-encoding.
 
+## OpenAPI
+
+The machine-readable [OpenAPI 3.1 document](openapi.json) is generated from the route list,
+route contracts, and response schemas. Regenerate it with:
+
+```bash
+pnpm openapi:generate
+```
+
+Do not hand-edit `docs/openapi.json`; regenerate it and commit the resulting file. Operations
+whose route contains `*path` use a wildcard `{path}` parameter in the document. OpenAPI 3.1 path
+templating does not permit unescaped slashes in that value, so generated clients must not be
+assumed to work for wildcard operations.
+
 ## Authentication and principals
 
 Except for health, requests carry one bearer credential:
@@ -42,7 +56,7 @@ An expected failure is JSON. Conflicts can also include the current head at the 
   "error": { "code": "stale", "message": "Expected version is stale" },
   "current": {
     "version": 7,
-    "hash": "sha256-…",
+    "hash": "sha256-0000000000000000000000000000000000000000000000000000000000000000",
     "deleted": false,
     "kind": "put",
     "author": "bot",
@@ -143,7 +157,7 @@ must be awaited so the downstream Worker is not terminated early.
 - **Response:** `200` with
   `{ "ok": true, "service": "zudo-history-stash", "marker": "ZHS_HEALTH_OK" }`.
 - **Errors:** No route-level business errors. Infrastructure failures may still produce a network
-  error or `500 internal`.
+  error or an internal response.
 
 ### `GET /v1/me`
 
@@ -245,7 +259,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Response:** `200` with the fields `path`, `version`, `hash`, `size`, `kind`, `author`,
   `message`, `meta`, `createdAt`, `deleted`, and `body`, plus `ETag` and `X-Stash-Version`. A
   requested tombstone version is `200` with `deleted: true`, `hash: null`, and `body: null`. A
-  matching conditional request is `304` with no body.
+  matching conditional request is `304` with no body and includes `ETag` and `X-Stash-Version`.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `404 not-found`,
   `404 file-deleted` for a tombstoned head, `404 version-not-found`, `500 internal`.
 
@@ -269,7 +283,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Request:** JSON `{ expectedVersion, author?, message? }`, optionally with
   `Idempotency-Key`. This is `POST`, not `DELETE`, because intermediaries can discard DELETE
   bodies.
-- **Response:** `200 { version, changeId, createdAt }`; the new version is a tombstone.
+- **Response:** `200 { version, changeId, createdAt }`; the new version is a tombstone. A replay
+  adds `Idempotent-Replayed: true`.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `403 scope`,
   `404 not-found`, `409 stale`, `409 already-deleted`, `413 payload-too-large`,
   `422 idempotency-key-reused`, `500 internal`.
@@ -280,7 +295,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Request:** JSON `{ toVersion, expectedVersion, author?, message?, meta? }`, optionally with
   `Idempotency-Key`.
 - **Response:** `201 { version, hash, rollbackOf, identicalToHead, changeId, createdAt }`.
-  Rollback always appends a version, even when the target bytes equal the head.
+  Rollback always appends a version, even when the target bytes equal the head. A replay adds
+  `Idempotent-Replayed: true`.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `403 scope`,
   `404 not-found`, `404 version-not-found`, `409 stale`, `413 payload-too-large`,
   `422 idempotency-key-reused`, `422 rollback-target-tombstone`, `500 internal`.
@@ -299,7 +315,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
 - **Request:** Required `from=<version>` and `to=<version|head>`. Optional `context` is 0–10;
   optional `maxUnifiedBytes` truncates only the unified text at a line boundary.
-- **Response:** A `DiffResult` plus `{ from, to }` side metadata. See
+- **Response:** `200` with a `DiffResult` plus `{ from, to }` side metadata. See
   [Diff results](#diff-results).
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `404 not-found`,
   `404 version-not-found`, `500 internal`.
@@ -309,7 +325,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Principal/capability:** `read`; this POST computes a candidate preview in memory and does not
   write. A matching `read` token is sufficient.
 - **Request:** JSON `{ from: <version> | "head", body, context? }`.
-- **Response:** A `DiffResult`. Labels identify the right side as `b/<path>@candidate`; no body,
+- **Response:** `200` with a `DiffResult`. Labels identify the right side as `b/<path>@candidate`; no body,
   blob, or version is persisted.
 - **Errors:** `400 validation`, `400 invalid-path`, `400 body-not-well-formed`,
   `401 unauthorized`, `404 not-found`, `404 version-not-found`, `413 payload-too-large`,
@@ -320,7 +336,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
 - **Request:** Optional `limit` plus either `since=<change-id>` or `before=<change-id>`, never
   both.
-- **Response:** The same `{ changes, nextSince | nextBefore, hasMore }` shape as the admin feed,
+- **Response:** `200` with the same `{ changes, nextSince | nextBefore, hasMore }` shape as the admin feed,
   restricted to `:stash`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a foreign stash.
 

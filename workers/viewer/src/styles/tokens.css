@@ -48,8 +48,10 @@
   --theme-warning-soft: light-dark(var(--palette-amber-0), var(--palette-slate-6));
   --theme-diff-add-bg: light-dark(var(--palette-green-0), var(--palette-slate-6));
   --theme-diff-add-fg: light-dark(var(--palette-green-2), var(--palette-green-3));
+  --theme-diff-add-mark: light-dark(var(--palette-green-1), var(--palette-green-2));
   --theme-diff-remove-bg: light-dark(var(--palette-red-0), var(--palette-slate-6));
   --theme-diff-remove-fg: light-dark(var(--palette-red-2), var(--palette-red-3));
+  --theme-diff-remove-mark: light-dark(var(--palette-red-1), var(--palette-red-2));
   --theme-diff-context-bg: light-dark(var(--palette-slate-0), var(--palette-slate-7));
   --theme-diff-context-fg: light-dark(var(--palette-slate-5), var(--palette-slate-3));
 

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${RELEASE_SHIM_LOG:?RELEASE_SHIM_LOG must be set}"
+: "${RELEASE_SHIM_STATE_DIR:?RELEASE_SHIM_STATE_DIR must be set}"
+printf 'gh' >>"$RELEASE_SHIM_LOG"
+printf ' %q' "$@" >>"$RELEASE_SHIM_LOG"
+printf '\n' >>"$RELEASE_SHIM_LOG"
+
+[[ "${1:-}" == 'run' && "${2:-}" == 'list' && "${3:-}" == '--workflow' &&
+  "${4:-}" == 'ci.yml' && "${5:-}" == '--commit' && -n "${6:-}" &&
+  "${7:-}" == '--json' && "${8:-}" == 'databaseId,status,conclusion' && $# -eq 8 ]] || {
+  printf 'unexpected gh invocation\n' >&2
+  exit 64
+}
+
+state_file="$RELEASE_SHIM_STATE_DIR/gh-attempt"
+attempt=0
+if [[ -f "$state_file" ]]; then
+  attempt=$(<"$state_file")
+fi
+attempt=$((attempt + 1))
+printf '%s\n' "$attempt" >"$state_file"
+
+case "${GH_SCENARIO:-success}" in
+  success)
+    printf '[{"databaseId":101,"status":"completed","conclusion":"success"}]\n'
+    ;;
+  no_run)
+    printf '[]\n'
+    ;;
+  queued_then_success)
+    if ((attempt == 1)); then
+      printf '[{"databaseId":101,"status":"in_progress","conclusion":""}]\n'
+    else
+      printf '[{"databaseId":101,"status":"completed","conclusion":"success"}]\n'
+    fi
+    ;;
+  failure)
+    printf '[{"databaseId":101,"status":"completed","conclusion":"failure"}]\n'
+    ;;
+  deterministic)
+    printf '[{"databaseId":100,"status":"completed","conclusion":"failure"},{"databaseId":102,"status":"completed","conclusion":"success"}]\n'
+    ;;
+  query_error)
+    printf 'HTTP 503 from GitHub\n' >&2
+    exit 1
+    ;;
+  *)
+    printf 'unknown GH_SCENARIO\n' >&2
+    exit 64
+    ;;
+esac

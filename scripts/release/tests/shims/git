@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${RELEASE_SHIM_LOG:?RELEASE_SHIM_LOG must be set}"
+printf 'git' >>"$RELEASE_SHIM_LOG"
+printf ' %q' "$@" >>"$RELEASE_SHIM_LOG"
+printf '\n' >>"$RELEASE_SHIM_LOG"
+
+head_sha=${GIT_HEAD_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+origin_sha=${GIT_ORIGIN_SHA:-$head_sha}
+
+case "${1:-}" in
+  fetch)
+    [[ "${2:-}" == '--tags' && "${3:-}" == 'origin' && $# -eq 3 ]]
+    ;;
+  status)
+    [[ "${2:-}" == '--porcelain=v1' && "${3:-}" == '--untracked-files=all' && $# -eq 3 ]]
+    if [[ "${GIT_DIRTY:-0}" == '1' ]]; then
+      printf ' M package.json\n'
+    fi
+    ;;
+  branch)
+    [[ "${2:-}" == '--show-current' && $# -eq 2 ]]
+    printf '%s\n' "${GIT_BRANCH:-base/sweep-260826-release}"
+    ;;
+  rev-parse)
+    [[ $# -eq 2 ]]
+    case "$2" in
+      HEAD) printf '%s\n' "$head_sha" ;;
+      refs/remotes/origin/*)
+        if [[ "${GIT_ORIGIN_MISSING:-0}" == '1' ]]; then
+          exit 128
+        fi
+        printf '%s\n' "$origin_sha"
+        ;;
+      *) exit 64 ;;
+    esac
+    ;;
+  log)
+    [[ "${2:-}" == '--format=%s' && "${3:-}" == 'HEAD' && $# -eq 3 ]]
+    if [[ "${GIT_BUMP_COMMIT:-1}" == '1' ]]; then
+      printf 'chore(release): bump to v0.0.0\n'
+    else
+      printf 'fix: ordinary commit\n'
+    fi
+    ;;
+  tag)
+    if [[ "${2:-}" == '-l' && $# -eq 3 ]]; then
+      if [[ "${GIT_LOCAL_TAG:-0}" == '1' ]]; then
+        printf '%s\n' "$3"
+      fi
+    else
+      printf 'forbidden tag mutation reached shim\n' >&2
+      exit 97
+    fi
+    ;;
+  ls-remote)
+    [[ "${2:-}" == '--tags' && "${3:-}" == 'origin' && $# -eq 4 ]]
+    if [[ "${GIT_REMOTE_TAG:-0}" == '1' ]]; then
+      printf '%s\trefs/tags/%s\n' "$head_sha" "$4"
+    fi
+    ;;
+  push)
+    printf 'forbidden push reached shim\n' >&2
+    exit 97
+    ;;
+  *)
+    printf 'unexpected git invocation: %q ' "$@" >&2
+    printf '\n' >&2
+    exit 64
+    ;;
+esac
+
+exit 0
