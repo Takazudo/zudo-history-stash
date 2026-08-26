@@ -54,8 +54,32 @@ const rollback = await files.rollback("docs/guide.md", {
 if (!rollback.ok) throw new Error(rollback.error.message);
 ```
 
-For a same-account Worker, bind the stash service and give its `fetch` method to the same client.
-The hostname is only a valid URL base; the binding routes the request internally:
+For a same-account Worker, prefer the named `StashRpc` entrypoint and the same client API:
+
+```toml
+compatibility_date = "2024-04-03"
+
+[[services]]
+binding = "STASH_RPC"
+service = "zudo-history-stash"
+entrypoint = "StashRpc"
+```
+
+```ts
+import { createStashClient, type StashRpcEntrypoint } from "@takazudo/zudo-history-stash";
+
+interface Env {
+  STASH_RPC: StashRpcEntrypoint;
+  STASH_TOKEN: string;
+}
+
+const client = createStashClient({
+  transport: { kind: "rpc", binding: env.STASH_RPC, token: env.STASH_TOKEN },
+});
+```
+
+The existing fetch service binding remains available for HTTP-compatible consumers. The hostname
+is only a valid URL base; the binding routes the request internally:
 
 ```toml
 [[services]]
