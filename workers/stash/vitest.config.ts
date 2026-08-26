@@ -11,6 +11,9 @@ export default defineConfig({
           STASH_ADMIN_TOKEN: "test-admin",
           ALLOWED_ORIGINS: "http://localhost:5173",
         },
+        serviceBindings: {
+          STASH_RPC: { name: "zudo-history-stash", entrypoint: "StashRpc" },
+        },
       },
     }),
   ],
