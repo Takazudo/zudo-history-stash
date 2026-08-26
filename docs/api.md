@@ -195,10 +195,13 @@ cross-stash `404` concealment checks:
 const result = await env.STASH_RPC.getFile(env.STASH_TOKEN, "demo", "docs/guide.md");
 ```
 
-Direct typed methods return serialisable `Result` unions for business and transport failures and do
-not reject. The RPC client transport preserves `Content-Type`, `Idempotency-Key`, and
-`If-None-Match`; its responses retain `ETag` and `Idempotent-Replayed` behavior. A rejected RPC
-binding call through the client instead throws `StashHttpError` with `status === 0`.
+After a typed method reaches `StashRpc`, business failures and internal exceptions become
+serialisable `Result` unions (including an `internal` result). The outer service-binding invocation
+can still reject before dispatch or during platform serialisation, including 32 MiB enforcement, so
+callers should catch that boundary. The RPC client transport preserves `Content-Type`,
+`Idempotency-Key`, and `If-None-Match`; its responses retain `ETag` and `Idempotent-Replayed`
+behavior. A rejected binding call through the client instead throws `StashHttpError` with
+`status === 0`.
 
 Cloudflare RPC serialisation is capped at 32 MiB. This API's own limits remain lower—for example,
 v1 stores text bodies up to 1,000,000 UTF-8 bytes—so those API limits still apply. The existing

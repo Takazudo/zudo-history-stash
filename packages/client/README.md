@@ -40,7 +40,9 @@ const client = createStashClient({
 The RPC transport uses its token per call. Business responses remain the same discriminated result
 unions as fetch (`{ ok: false, error, current? }`); a rejected binding call throws
 `StashHttpError` with `status === 0`. Direct `StashRpcEntrypoint` methods instead accept the token
-as their first argument and return serialisable `Result` unions without rejecting.
+as their first argument. After dispatch, they return serialisable `Result` unions for business
+failures and internal exceptions, but callers should still catch an outer binding rejection before
+dispatch or during platform serialisation.
 
 The existing fetch transport remains compatible. For a same-account Worker service binding, the
 hostname is inert and the binding supplies fetch:
