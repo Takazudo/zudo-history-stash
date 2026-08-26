@@ -277,6 +277,27 @@
   background: var(--theme-diff-context-bg);
 }
 
+.diff-mark {
+  color: inherit;
+  text-decoration-thickness: from-font;
+}
+
+.diff-mark--added {
+  background: var(--theme-diff-add-mark);
+  text-decoration-line: underline;
+  text-underline-offset: 0.15em;
+}
+
+.diff-mark--removed {
+  background: var(--theme-diff-remove-mark);
+  text-decoration-line: line-through;
+}
+
+.diff-table-pane--no-marks .diff-mark {
+  background: transparent;
+  text-decoration: none;
+}
+
 .diff-table__hunk th {
   padding-block: var(--vsp-sm);
   padding-inline: var(--hsp-sm);
