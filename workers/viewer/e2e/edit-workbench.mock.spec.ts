@@ -352,6 +352,8 @@ test("@smoke edit workbench preserves its draft and saves after an explicit stal
   expect(fixture.putRequests).toHaveLength(1);
 
   await dialog.getByRole("button", { name: "Reload & compare" }).click();
+  dialog = page.getByRole("dialog", { name: "Review save against head v3" });
+  await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "Review save against head v3" })).toBeVisible();
   await expect(dialog.getByText("Remote head message", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("textbox", { name: "Message" })).toHaveValue("Typed local message");
