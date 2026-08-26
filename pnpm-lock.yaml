@@ -135,6 +135,22 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@22.20.1)(jsdom@28.1.0)(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))
 
+  workers/example-rpc-consumer:
+    dependencies:
+      '@takazudo/zudo-history-stash':
+        specifier: workspace:*
+        version: link:../../packages/client
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260825.1
+        version: 5.20260825.1
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      wrangler:
+        specifier: ^4.125.0
+        version: 4.125.0(@cloudflare/workers-types@5.20260825.1)
+
   workers/stash:
     dependencies:
       '@hono/zod-validator':
