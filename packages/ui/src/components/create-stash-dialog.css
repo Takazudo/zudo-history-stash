@@ -1,0 +1,76 @@
+@layer zhs-components {
+  .zhs-create-stash-dialog__form {
+    display: grid;
+  }
+
+  .zhs-create-stash-dialog__header,
+  .zhs-create-stash-dialog__body,
+  .zhs-create-stash-dialog__actions {
+    padding-block: var(--vsp-lg);
+    padding-inline: var(--hsp-lg);
+  }
+
+  .zhs-create-stash-dialog__header {
+    display: grid;
+    gap: var(--vsp-xs);
+    border-block-end: var(--border-hairline) solid var(--theme-border);
+  }
+
+  .zhs-create-stash-dialog__title,
+  .zhs-create-stash-dialog__intro,
+  .zhs-create-stash-dialog__hint,
+  .zhs-create-stash-dialog__field-error {
+    margin: 0;
+  }
+
+  .zhs-create-stash-dialog__title {
+    color: var(--theme-ink-strong);
+    font-size: var(--text-lg);
+    line-height: var(--line-tight);
+  }
+
+  .zhs-create-stash-dialog__intro,
+  .zhs-create-stash-dialog__hint,
+  .zhs-create-stash-dialog__optional {
+    color: var(--theme-ink-muted);
+  }
+
+  .zhs-create-stash-dialog__intro {
+    font-size: var(--text-sm);
+    line-height: var(--line-body);
+  }
+
+  .zhs-create-stash-dialog__body {
+    display: grid;
+    gap: var(--vsp-lg);
+  }
+
+  .zhs-create-stash-dialog__field {
+    display: grid;
+    gap: var(--vsp-sm);
+  }
+
+  .zhs-create-stash-dialog__label {
+    color: var(--theme-ink-strong);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .zhs-create-stash-dialog__hint,
+  .zhs-create-stash-dialog__field-error,
+  .zhs-create-stash-dialog__optional {
+    font-size: var(--text-xs);
+    line-height: var(--line-body);
+  }
+
+  .zhs-create-stash-dialog__field-error {
+    color: var(--theme-error);
+  }
+
+  .zhs-create-stash-dialog__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--hsp-sm);
+    border-block-start: var(--border-hairline) solid var(--theme-border);
+  }
+}
