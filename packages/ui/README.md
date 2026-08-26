@@ -19,7 +19,9 @@ import "@takazudo/zudo-history-stash-ui/styles.css";
 ```
 
 Copy `styles/tokens.example.css` from the installed package as a starting point and adapt the
-values in a host-owned stylesheet. The example deliberately matches the standalone Viewer. See
+values in a host-owned stylesheet. It is framework-independent plain CSS: it only defines custom
+properties and the theme activation selectors; it does not import Tailwind or inject a reset. The
+example deliberately matches the standalone Viewer. See
 the complete [design-token contract](https://github.com/Takazudo/zudo-history-stash/blob/main/docs/design-tokens.md)
 for the stable token names, CSS layers, and override rules.
 
