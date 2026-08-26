@@ -48,10 +48,12 @@ version=$(current_version)
 printf 'Current version: %s\n' "$version"
 
 mapfile -t release_tags < <(git tag --list 'v*' --sort=-version:refname)
+conventional_commit_re='^([[:alnum:]-]+)(\([^)]*\))?(!)?:[[:space:]]'
+breaking_commit_re='^([[:alnum:]-]+)(\([^)]*\))?!:[[:space:]]'
 
 commit_prefix() {
   local subject=$1
-  if [[ "$subject" =~ ^([[:alnum:]-]+)(\([^)]*\))?(!)?:[[:space:]] ]]; then
+  if [[ "$subject" =~ $conventional_commit_re ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
   else
     printf 'other\n'
@@ -87,7 +89,7 @@ print_grouped_commits() {
     body=$(git show -s --format=%b "$commit")
     prefix=$(commit_prefix "$subject")
     marker=''
-    if [[ "$subject" =~ ^([[:alnum:]-]+)(\([^)]*\))?!:[[:space:]] ]] || grep -Fq 'BREAKING CHANGE' <<<"$body"; then
+    if [[ "$subject" =~ $breaking_commit_re ]] || grep -Fq 'BREAKING CHANGE' <<<"$body"; then
       marker=' [BREAKING]'
     fi
     if [[ -z "${group_seen[$prefix]+seen}" ]]; then
