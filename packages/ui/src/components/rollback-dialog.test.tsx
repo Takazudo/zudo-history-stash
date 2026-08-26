@@ -11,6 +11,7 @@ import {
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
 import { RollbackDialog, type RollbackSuccess } from "./rollback-dialog.js";
@@ -82,6 +83,54 @@ function renderDialog(
       />
     </StashUiProvider>,
   );
+}
+
+function ControlledRollbackDialog({
+  client,
+  target,
+  onClose,
+  onSuccess,
+}: {
+  client: StashClient;
+  target: VersionRecord;
+  onClose: () => void;
+  onSuccess: (success: RollbackSuccess) => void;
+}) {
+  const [open, setOpen] = useState(true);
+
+  return (
+    <StashUiProvider client={client}>
+      {open ? (
+        <RollbackDialog
+          path={path}
+          stash={stash}
+          target={target}
+          onClose={() => {
+            onClose();
+            setOpen(false);
+          }}
+          onSuccess={(success) => {
+            onSuccess(success);
+            setOpen(false);
+          }}
+        />
+      ) : null}
+    </StashUiProvider>
+  );
+}
+
+function deferred<T>() {
+  let resolvePromise!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
+
+function attemptDialogClose(): void {
+  fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Close rollback dialog" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 }
 
 describe("package RollbackDialog", () => {
@@ -276,11 +325,68 @@ describe("package RollbackDialog", () => {
     },
   );
 
-  it("routes native Escape cancellation only to onClose", async () => {
+  it("blocks every close surface while rollback is pending and reports one success", async () => {
+    const { client, target } = await seededClient();
+    const request = deferred<ClientResult<RollbackResult>>();
+    const files = client.files(stash);
+    const rollback = vi.fn<StashFilesClient["rollback"]>(() => {
+      attemptDialogClose();
+      return request.promise;
+    });
+    vi.spyOn(client, "files").mockImplementation(() => ({ ...files, rollback }));
+    const onClose = vi.fn();
+    const onSuccess = vi.fn();
+    render(
+      <ControlledRollbackDialog
+        client={client}
+        target={target}
+        onClose={onClose}
+        onSuccess={onSuccess}
+      />,
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    const confirm = await screen.findByRole("button", { name: "Confirm rollback" });
+    await waitFor(() => expect(confirm.hasAttribute("disabled")).toBe(false));
+    fireEvent.submit(confirm.closest("form") as HTMLFormElement);
+
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(dialog.hasAttribute("open")).toBe(true);
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Close rollback dialog" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(
+      true,
+    );
+
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBe(dialog);
+
+    await act(async () => request.resolve(successResult()));
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
+    expect(onSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: expect.objectContaining({ version: 3, rollbackOf: 1 }),
+        message: "Rollback to v1",
+      }),
+    );
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("routes native Escape cancellation and header Close only to onClose while idle", async () => {
     const { client, target } = await seededClient();
     const onClose = vi.fn();
     renderDialog(client, target, vi.fn(), onClose);
     fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close rollback dialog" }));
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 });
