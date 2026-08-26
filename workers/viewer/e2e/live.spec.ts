@@ -1,3 +1,4 @@
+import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "./fixtures/console-errors.js";
 
 const ADMIN_TOKEN = process.env.STASH_ADMIN_TOKEN ?? "dev-admin-token";
@@ -19,21 +20,56 @@ interface HistoryResponse {
   versions: Array<{ version: number; kind: string; rollbackOf: number | null }>;
 }
 
+async function waitForDemo(request: APIRequestContext): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const demo = await request.get("/api/v1/stashes/demo", {
+          headers: AUTHORIZATION,
+        });
+        if (demo.status() !== 200) return false;
+
+        const historyResponse = await request.get(
+          "/api/v1/stashes/demo/history/docs/guide.md?limit=200",
+          { headers: AUTHORIZATION },
+        );
+        if (historyResponse.status() !== 200) return false;
+
+        const history = (await historyResponse.json()) as HistoryResponse;
+        const seededVersions = new Set(history.versions.map(({ version }) => version));
+        return (
+          history.headVersion >= 4 && [1, 2, 3, 4].every((version) => seededVersions.has(version))
+        );
+      },
+      { message: "the deterministic demo seed should be complete", timeout: 30_000 },
+    )
+    .toBe(true);
+}
+
+test("@live viewer renders the seeded v2 to v3 CJK and CRLF diff", async ({ page, request }) => {
+  await waitForDemo(request);
+  await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
+    token: ADMIN_TOKEN,
+  });
+
+  await page.goto("/s/demo/diff/docs/guide.md?from=2&to=3&context=3");
+
+  const table = page.getByRole("table", { name: "Unified diff" });
+  const removed = table.locator("del").filter({ hasText: "ガイド" }).first();
+  const added = table.locator("ins").filter({ hasText: "Guide" }).first();
+  await expect(table).toBeVisible();
+  await expect(removed).toBeVisible();
+  await expect(added).toBeVisible();
+  await expect(
+    page.getByText("CRLF line endings on the new side are shown normalized", { exact: true }),
+  ).toBeVisible();
+});
+
 test("@live viewer composes with the stash Worker and replays one rollback", async ({
   page,
   request,
 }) => {
-  await expect
-    .poll(
-      async () =>
-        (
-          await request.get("/api/v1/stashes/demo", {
-            headers: AUTHORIZATION,
-          })
-        ).status(),
-      { message: "the deterministic demo seed should be ready", timeout: 30_000 },
-    )
-    .toBe(200);
+  await waitForDemo(request);
   const initialHistoryResponse = await request.get(
     "/api/v1/stashes/demo/history/docs/guide.md?limit=200",
     { headers: AUTHORIZATION },

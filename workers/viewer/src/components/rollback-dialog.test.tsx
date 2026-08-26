@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import {
   StashHttpError,
   type ClientResult,
+  type DiffHunk,
   type FileGetResult,
   type GetDiffResult,
   type RollbackResult,
@@ -19,6 +20,24 @@ import {
 import { TOKEN_STORAGE_KEY } from "../app/auth/token-store.js";
 import { createFakeViewerClient } from "../test/fake-viewer-client.js";
 import { RollbackDialog, type RollbackSuccess } from "./rollback-dialog.js";
+
+const READY_HUNKS: DiffHunk[] = [
+  {
+    oldStart: 1,
+    oldLines: 4,
+    newStart: 1,
+    newLines: 5,
+    lines: [
+      " context",
+      "-old first",
+      "-old second",
+      "+new first",
+      "+new second",
+      "+new third",
+      " tail",
+    ],
+  },
+];
 
 function targetVersion(overrides: Partial<VersionRecord> = {}): VersionRecord {
   return {
@@ -63,7 +82,7 @@ function readyDiff(from = 4, to = 2): ClientResult<GetDiffResult> {
       state: "ready",
       unified: "",
       truncated: false,
-      hunks: [],
+      hunks: READY_HUNKS,
       stats: { added: 3, removed: 2 },
       from: { version: from, hash: "sha256-head", deleted: false },
       to: { version: to, hash: "sha256-target", deleted: false },
@@ -144,6 +163,18 @@ describe("RollbackDialog", () => {
     const confirm = await screen.findByRole("button", { name: "Confirm rollback" });
     expect(document.activeElement).toBe(confirm);
     expect(screen.getByLabelText("3 lines added, 2 lines removed").textContent).toBe("+3 −2");
+    const preview = screen.getByRole("region", { name: "Rollback diff preview" });
+    expect(preview.classList.contains("rollback-dialog__preview")).toBe(true);
+    expect(preview.style.maxHeight).toBe("40dvh");
+    expect(preview.style.overflow).toBe("auto");
+    expect(preview.style.overscrollBehavior).toBe("contain");
+    const diffTable = within(preview).getByRole("table", { name: "Unified diff" });
+    expect(diffTable.parentElement?.getAttribute("data-wrap")).toBe("on");
+    expect(diffTable.querySelector(".diff-mark--removed")).toBeTruthy();
+    expect(diffTable.querySelector(".diff-mark--added")).toBeTruthy();
+    expect(within(diffTable).getAllByLabelText("Removed line")).toHaveLength(2);
+    expect(within(diffTable).getAllByLabelText("Added line")).toHaveLength(3);
+    expect(preview.querySelector("button, select, input")).toBeNull();
     expect(
       screen.getByText("This creates v5 as a rollback to v2. History is not deleted."),
     ).toBeTruthy();
@@ -226,9 +257,31 @@ describe("RollbackDialog", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByLabelText("0 lines added, 0 lines removed").textContent).toBe("+0 −0");
+    expect(screen.queryByRole("table", { name: "Unified diff" })).toBeNull();
     expect(screen.getByRole("button", { name: "Confirm rollback" }).hasAttribute("disabled")).toBe(
       false,
     );
+  });
+
+  it("keeps summary stats and shows the exact notice when the diff is oversized", async () => {
+    renderDialog({
+      client: viewerClient({
+        diff: async () => ({
+          ok: true,
+          value: {
+            state: "oversized",
+            reason: "bytes",
+            from: { version: 4, hash: "sha256-head", deleted: false },
+            to: { version: 2, hash: "sha256-target", deleted: false },
+          },
+        }),
+      }),
+    });
+
+    expect(await screen.findByText("Preview unavailable: diff too large")).toBeTruthy();
+    expect(screen.getByText("Head v4 → target v2")).toBeTruthy();
+    expect(screen.getByText("Diff preview unavailable (bytes)")).toBeTruthy();
+    expect(screen.queryByRole("table", { name: "Unified diff" })).toBeNull();
   });
 
   it("disables rollback when the target is a tombstone", async () => {

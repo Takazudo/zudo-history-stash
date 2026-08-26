@@ -5,11 +5,13 @@ import type {
   StashFilesClient,
   VersionRecord,
 } from "@takazudo/zudo-history-stash";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { buildDiffModel } from "@takazudo/zudo-history-stash-core";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { ViewerStashClient } from "../app/auth/stash-client-provider.js";
 import { Button } from "../app/shell/button.js";
+import { DiffPane } from "./diff-pane.js";
 import { ErrorBanner } from "./error-banner.js";
 import { useIdempotencyKey } from "./use-idempotency-key.js";
 import "./rollback-dialog.css";
@@ -58,6 +60,12 @@ const focusableSelector = [
   "textarea:not([disabled])",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
+
+const rollbackPreviewStyle = {
+  maxHeight: "40dvh",
+  overflow: "auto",
+  overscrollBehavior: "contain",
+} as const;
 
 function focusableElements(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(focusableSelector)].filter(
@@ -137,6 +145,12 @@ export function RollbackDialog({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<unknown | null>(null);
   const [staleHead, setStaleHead] = useState<Current | null>(null);
+  const readyHunks =
+    preview.state === "ready" && preview.diff.state === "ready" ? preview.diff.hunks : null;
+  const diffModel = useMemo(
+    () => (readyHunks === null ? null : buildDiffModel(readyHunks)),
+    [readyHunks],
+  );
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -313,7 +327,7 @@ export function RollbackDialog({
 
           {preview.state === "ready" ? (
             <form className="rollback-dialog__form" onSubmit={submitRollback}>
-              <section className="rollback-dialog__preview" aria-label="Rollback preview">
+              <section className="rollback-dialog__summary" aria-label="Rollback summary">
                 <div className="rollback-dialog__stats">
                   <span>
                     Head v{preview.head.version} → target v{target.version}
@@ -322,6 +336,29 @@ export function RollbackDialog({
                 </div>
                 {diffUrl ? <Link to={diffUrl}>Open full diff</Link> : null}
               </section>
+
+              {diffModel ? (
+                <section
+                  aria-label="Rollback diff preview"
+                  className="rollback-dialog__preview"
+                  style={rollbackPreviewStyle}
+                >
+                  <DiffPane
+                    fromLabel={`v${preview.head.version}`}
+                    layout="unified"
+                    marks={true}
+                    model={diffModel}
+                    toLabel={`v${target.version}`}
+                    wrap={true}
+                  />
+                </section>
+              ) : null}
+
+              {preview.diff.state === "oversized" ? (
+                <p className="rollback-dialog__preview-notice">
+                  Preview unavailable: diff too large
+                </p>
+              ) : null}
 
               <p className="rollback-dialog__consequence">
                 This creates v{preview.head.version + 1} as a rollback to v{target.version}. History

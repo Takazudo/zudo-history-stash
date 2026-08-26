@@ -92,7 +92,7 @@ test("@smoke diff page renders structured rows and copies the unified fixture", 
   await expect(add.locator('[data-column="new"]')).toHaveText("2");
   await expect(add.locator('[data-column="sign"]')).toHaveText("+");
 
-  await expect(page.getByLabel("Wrap long lines")).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Wrap" })).toBeChecked();
   const columnHeaders = page.getByRole("table", { name: "Unified diff" }).getByRole("columnheader");
   await columnHeaders.first().scrollIntoViewIfNeeded();
   const headerMetrics = await columnHeaders.evaluateAll((headers) =>
