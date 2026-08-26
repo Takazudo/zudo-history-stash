@@ -43,6 +43,7 @@ import type {
 } from "../types.js";
 import { RESPONSE_SCHEMAS } from "./responses.js";
 import { SAMPLES } from "./samples.js";
+import { ROUTE_CONTRACTS } from "./contracts.js";
 
 describe("response schema type locks", () => {
   it("keeps every registry entry aligned with its root response type", () => {
@@ -150,8 +151,11 @@ describe("ERROR_CODES type lock", () => {
   });
 });
 
-// This becomes active once issue #65 adds ROUTE_CONTRACTS. It must assert that every
-// response schema name referenced by a route contract is present in RESPONSE_SCHEMAS.
-it.skip("keeps response registry keys aligned with ROUTE_CONTRACTS", () => {
-  // Intentionally empty until ROUTE_CONTRACTS exists.
+it("keeps response registry keys aligned with ROUTE_CONTRACTS", () => {
+  for (const [routeId, contract] of Object.entries(ROUTE_CONTRACTS)) {
+    for (const [status, response] of Object.entries(contract.responses)) {
+      if (!response?.schema) continue;
+      expect(RESPONSE_SCHEMAS[response.schema], `${routeId} ${status}`).toBeDefined();
+    }
+  }
 });
