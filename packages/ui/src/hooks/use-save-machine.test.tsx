@@ -6,8 +6,8 @@ import {
   type StashFetch,
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
-import { DIFF_MAX_BYTES } from "@takazudo/zudo-history-stash-core";
-import { describe, expect, it } from "vitest";
+import { DIFF_MAX_BYTES, MAX_MESSAGE_BYTES } from "@takazudo/zudo-history-stash-core";
+import { describe, expect, it, vi } from "vitest";
 import { useCandidateDiff } from "./use-candidate-diff.js";
 import { useSaveMachine, type SaveMachineOptions } from "./use-save-machine.js";
 
@@ -15,6 +15,7 @@ const BASE_URL = "https://stash.test";
 const ADMIN_TOKEN = "fixture-admin-token";
 const STASH = "notes";
 const PATH = "docs/readme.txt";
+const OTHER_PATH = "docs/other.txt";
 
 interface RecordedPut {
   idempotencyKey: string | null;
@@ -24,8 +25,11 @@ interface RecordedPut {
 interface Fixture {
   client: StashClient;
   head: FileRecordWithEtag;
+  otherHead: FileRecordWithEtag;
   puts: RecordedPut[];
   failNextPut: () => void;
+  failNextPutBeforeSend: () => void;
+  deferNextPut: () => () => void;
 }
 
 type HookProps = SaveMachineOptions;
@@ -40,6 +44,8 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
 
   const puts: RecordedPut[] = [];
   let rejectedPuts = 0;
+  let rejectedPutsBeforeSend = 0;
+  let putGate: Promise<void> | null = null;
   const fetch: StashFetch = async (input, init) => {
     const isPut = init?.method === "PUT";
     if (init?.method === "PUT") {
@@ -48,6 +54,15 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
         idempotencyKey: new Headers(init.headers).get("Idempotency-Key"),
         body: JSON.parse(init.body) as Record<string, unknown>,
       });
+      if (rejectedPutsBeforeSend > 0) {
+        rejectedPutsBeforeSend -= 1;
+        throw new TypeError("request not sent");
+      }
+      if (putGate !== null) {
+        const gate = putGate;
+        putGate = null;
+        await gate;
+      }
     }
     const response = await fake.fetch(input, init);
     if (isPut && rejectedPuts > 0) {
@@ -73,25 +88,45 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
       { idempotencyKey: "fixture-seed" },
     );
   if (!seeded.ok) throw new Error(seeded.error.message);
+  const otherSeeded = await client
+    .files(STASH)
+    .put(
+      OTHER_PATH,
+      { body: "other\n", expectedVersion: null, author: "fixture", message: "seed other" },
+      { idempotencyKey: "fixture-seed-other" },
+    );
+  if (!otherSeeded.ok) throw new Error(otherSeeded.error.message);
 
   const loaded = await client.files(STASH).get(PATH);
   if (!loaded.ok || "notModified" in loaded) throw new Error("Fixture head did not load");
+  const otherLoaded = await client.files(STASH).get(OTHER_PATH);
+  if (!otherLoaded.ok || "notModified" in otherLoaded) {
+    throw new Error("Alternate fixture head did not load");
+  }
   puts.length = 0;
 
   return {
     client,
     head: loaded.value,
+    otherHead: otherLoaded.value,
     puts,
     failNextPut() {
       rejectedPuts += 1;
     },
+    failNextPutBeforeSend() {
+      rejectedPutsBeforeSend += 1;
+    },
+    deferNextPut() {
+      let release = () => {};
+      putGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
   };
 }
 
-function options(
-  fixture: Fixture,
-  overrides: Partial<Pick<HookProps, "head" | "draft" | "lineEnding">> = {},
-): HookProps {
+function options(fixture: Fixture, overrides: Partial<HookProps> = {}): HookProps {
   return {
     client: fixture.client,
     stash: STASH,
@@ -100,6 +135,32 @@ function options(
     draft: "local edit\n",
     lineEnding: "lf",
     ...overrides,
+  };
+}
+
+function deferSha256(hash: string | null): {
+  resolve: () => void;
+  restore: () => void;
+} {
+  if (hash === null || !hash.startsWith("sha256-")) throw new Error("Expected a SHA-256 hash");
+  const hex = hash.slice("sha256-".length);
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+
+  let resolveDigest = (_value: ArrayBuffer) => {};
+  const pendingDigest = new Promise<ArrayBuffer>((resolve) => {
+    resolveDigest = resolve;
+  });
+  const spy = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(() => pendingDigest);
+  return {
+    resolve() {
+      resolveDigest(bytes.buffer);
+    },
+    restore() {
+      spy.mockRestore();
+    },
   };
 }
 
@@ -119,6 +180,7 @@ describe("useSaveMachine", () => {
       await result.current.save({ author: "alice", message: "first attempt" });
     });
     expect(result.current.state).toBe("error");
+    expect(result.current.canRetry).toBe(true);
     expect(fixture.puts).toHaveLength(1);
 
     rerender(
@@ -128,11 +190,13 @@ describe("useSaveMachine", () => {
         lineEnding: "lf",
       }),
     );
+    expect(result.current.canRetry).toBe(true);
     await act(async () => {
       await result.current.retry();
     });
 
     expect(result.current.state).toBe("saved");
+    expect(result.current.canRetry).toBe(false);
     expect(fixture.puts).toHaveLength(2);
     expect(fixture.puts[1]).toEqual(fixture.puts[0]);
     expect(fixture.puts[0]?.idempotencyKey).toBeTruthy();
@@ -167,6 +231,7 @@ describe("useSaveMachine", () => {
     });
 
     expect(result.current.state).toBe("stale");
+    expect(result.current.canRetry).toBe(false);
     if (result.current.state === "stale") {
       expect(result.current.current.version).toBe(advanced.value.version);
     }
@@ -185,7 +250,6 @@ describe("useSaveMachine", () => {
     expect(reloaded?.version).toBe(advanced.value.version);
     expect(result.current.state).toBe("idle");
 
-    rerender(options(fixture, { head: reloaded }));
     await act(async () => {
       await result.current.save({ author: "alice", message: "after reload" });
     });
@@ -195,6 +259,121 @@ describe("useSaveMachine", () => {
     expect(fixture.puts[0]?.body.expectedVersion).toBe(fixture.head.version);
     expect(fixture.puts[1]?.body.expectedVersion).toBe(advanced.value.version);
     expect(fixture.puts[1]?.idempotencyKey).not.toBe(fixture.puts[0]?.idempotencyKey);
+
+    if (result.current.state !== "saved") throw new Error("Reloaded save did not complete");
+    const internallySavedVersion = result.current.version;
+    rerender(
+      options(fixture, {
+        head: reloaded,
+        draft: "another local edit\n",
+      }),
+    );
+    await act(async () => {
+      await result.current.save({ author: "alice", message: "after delayed head sync" });
+    });
+    expect(result.current.state).toBe("saved");
+    expect(fixture.puts).toHaveLength(3);
+    expect(fixture.puts[2]?.body.expectedVersion).toBe(internallySavedVersion);
+  });
+
+  it("invalidates a failed target's retry when the hook changes targets", async () => {
+    const fixture = await makeFixture();
+    fixture.failNextPutBeforeSend();
+    const { result, rerender } = renderHook((props: HookProps) => useSaveMachine(props), {
+      initialProps: options(fixture),
+    });
+
+    await act(async () => {
+      await result.current.save({ author: "alice", message: "target A" });
+    });
+    expect(result.current.state).toBe("error");
+    expect(result.current.canRetry).toBe(true);
+
+    rerender(
+      options(fixture, {
+        path: OTHER_PATH,
+        head: fixture.otherHead,
+        draft: "target B\n",
+      }),
+    );
+    expect(result.current.state).toBe("idle");
+    expect(result.current.canRetry).toBe(false);
+
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(fixture.puts).toHaveLength(1);
+    const targetA = await fixture.client.files(STASH).get(PATH);
+    if (!targetA.ok || "notModified" in targetA) throw new Error("Target A did not load");
+    expect(targetA.value.version).toBe(fixture.head.version);
+  });
+
+  it("does not expose a transport retry for business or reload errors", async () => {
+    const fixture = await makeFixture();
+    const { result, rerender } = renderHook((props: HookProps) => useSaveMachine(props), {
+      initialProps: options(fixture),
+    });
+
+    await act(async () => {
+      await result.current.save({
+        author: "alice",
+        message: "x".repeat(MAX_MESSAGE_BYTES + 1),
+      });
+    });
+    expect(result.current.state).toBe("error");
+    expect(result.current.canRetry).toBe(false);
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(fixture.puts).toHaveLength(1);
+
+    rerender(options(fixture, { path: "docs/missing.txt" }));
+    expect(result.current.state).toBe("idle");
+    await act(async () => {
+      await expect(result.current.reloadAndCompare()).rejects.toThrow("File not found");
+    });
+    expect(result.current.state).toBe("error");
+    expect(result.current.canRetry).toBe(false);
+  });
+
+  it("lets a new target save while the old target settles and ignores the old completion", async () => {
+    const fixture = await makeFixture();
+    const releaseTargetA = fixture.deferNextPut();
+    const { result, rerender } = renderHook((props: HookProps) => useSaveMachine(props), {
+      initialProps: options(fixture, { draft: "target A edit\n" }),
+    });
+
+    let targetASave!: Promise<void>;
+    act(() => {
+      targetASave = result.current.save({ author: "alice", message: "target A" });
+    });
+    expect(result.current.state).toBe("saving");
+
+    rerender(
+      options(fixture, {
+        path: OTHER_PATH,
+        head: fixture.otherHead,
+        draft: "target B edit\n",
+      }),
+    );
+    expect(result.current.state).toBe("idle");
+    await act(async () => {
+      await result.current.save({ author: "alice", message: "target B" });
+    });
+    expect(result.current.state).toBe("saved");
+    if (result.current.state !== "saved") throw new Error("Target B did not save");
+    const targetBChangeId = result.current.changeId;
+
+    releaseTargetA();
+    await act(async () => {
+      await targetASave;
+    });
+
+    expect(result.current.state).toBe("saved");
+    if (result.current.state === "saved") {
+      expect(result.current.changeId).toBe(targetBChangeId);
+    }
+    expect(fixture.puts).toHaveLength(2);
   });
 
   it("reconciles the hash of CRLF-pinned bytes as unchanged without a PUT", async () => {
@@ -220,6 +399,87 @@ describe("useSaveMachine", () => {
     }
     expect(fixture.puts).toHaveLength(0);
   });
+
+  it.each(["draft", "head", "target"] as const)(
+    "ignores a deferred reconciliation after the %s changes",
+    async (change) => {
+      const fixture = await makeFixture();
+      const { result, rerender } = renderHook((props: HookProps) => useSaveMachine(props), {
+        initialProps: options(fixture, { draft: fixture.head.body ?? "" }),
+      });
+      const digest = deferSha256(fixture.head.hash);
+      let reconciliation!: Promise<boolean>;
+      act(() => {
+        reconciliation = result.current.reconcile();
+      });
+
+      if (change === "draft") {
+        rerender(options(fixture, { draft: "changed draft\n" }));
+      } else if (change === "head") {
+        rerender(
+          options(fixture, {
+            head: { version: fixture.head.version + 1, hash: `sha256-${"0".repeat(64)}` },
+            draft: fixture.head.body ?? "",
+          }),
+        );
+      } else {
+        rerender(
+          options(fixture, {
+            path: OTHER_PATH,
+            head: fixture.otherHead,
+            draft: fixture.otherHead.body ?? "",
+          }),
+        );
+      }
+
+      let reconciled = true;
+      await act(async () => {
+        digest.resolve();
+        reconciled = await reconciliation;
+      });
+      digest.restore();
+
+      expect(reconciled).toBe(false);
+      expect(result.current.state).toBe("idle");
+    },
+  );
+
+  it.each(["save", "reload"] as const)(
+    "ignores a deferred reconciliation when a %s starts",
+    async (operation) => {
+      const fixture = await makeFixture();
+      const { result } = renderHook(() =>
+        useSaveMachine(options(fixture, { draft: fixture.head.body ?? "" })),
+      );
+      const digest = deferSha256(fixture.head.hash);
+      let reconciliation!: Promise<boolean>;
+      act(() => {
+        reconciliation = result.current.reconcile();
+      });
+      digest.restore();
+
+      if (operation === "save") {
+        await act(async () => {
+          await result.current.save({ author: "alice", message: "save wins" });
+        });
+        expect(result.current.state).toBe("saved");
+      } else {
+        await act(async () => {
+          await result.current.reloadAndCompare();
+        });
+        expect(result.current.state).toBe("idle");
+      }
+
+      let reconciled = true;
+      await act(async () => {
+        digest.resolve();
+        reconciled = await reconciliation;
+      });
+
+      expect(reconciled).toBe(false);
+      expect(result.current.state).toBe(operation === "save" ? "saved" : "idle");
+    },
+  );
 
   it("mints a new key after the editor hook is remounted", async () => {
     const fixture = await makeFixture();

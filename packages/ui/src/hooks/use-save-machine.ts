@@ -5,7 +5,7 @@ import type {
   StashClient,
 } from "@takazudo/zudo-history-stash";
 import { sha256Hex } from "@takazudo/zudo-history-stash-core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type LineEnding = "lf" | "crlf";
 
@@ -32,6 +32,7 @@ export type SaveMachineState =
   | { state: "error"; message: string };
 
 export type SaveMachine = SaveMachineState & {
+  canRetry: boolean;
   save: (metadata: SaveMetadata) => Promise<void>;
   retry: () => Promise<void>;
   reloadAndCompare: () => Promise<FileRecordWithEtag>;
@@ -39,9 +40,8 @@ export type SaveMachine = SaveMachineState & {
 };
 
 interface FrozenSaveAttempt {
-  client: StashClient;
-  stash: string;
-  path: string;
+  target: SaveTarget;
+  runtime: TargetRuntime;
   idempotencyKey: string;
   input: {
     body: string;
@@ -50,6 +50,28 @@ interface FrozenSaveAttempt {
     message: string;
   };
 }
+
+interface SaveTarget {
+  client: StashClient;
+  stash: string;
+  path: string;
+}
+
+interface HeadFence {
+  version: number;
+  hash: string | null;
+}
+
+interface TargetRuntime {
+  target: SaveTarget;
+  observedHead: HeadFence;
+  effectiveHead: HeadFence;
+  observedDraft: string;
+  observedLineEnding: LineEnding;
+  generation: number;
+}
+
+const IDLE_STATE: SaveMachineState = { state: "idle" };
 
 /** Reapplies the source file's line-ending policy to a textarea-normalized draft. */
 export function applyLineEnding(text: string, lineEnding: LineEnding): string {
@@ -70,10 +92,44 @@ export function useSaveMachine({
   draft,
   lineEnding,
 }: SaveMachineOptions): SaveMachine {
-  const [machine, setMachine] = useState<SaveMachineState>({ state: "idle" });
+  const target = useMemo<SaveTarget>(() => ({ client, stash, path }), [client, path, stash]);
+  const [, setMachineRevision] = useState(0);
+  const machineStatesRef = useRef(new WeakMap<SaveTarget, SaveMachineState>());
   const mountedRef = useRef(true);
-  const inFlightRef = useRef(false);
+  const inFlightTargetsRef = useRef(new Set<SaveTarget>());
+  const reloadingTargetsRef = useRef(new Set<SaveTarget>());
   const retryAttemptRef = useRef<FrozenSaveAttempt | null>(null);
+  const runtimeRef = useRef<TargetRuntime | null>(null);
+  let runtime = runtimeRef.current;
+  if (runtime === null || runtime.target !== target) {
+    runtime = {
+      target,
+      observedHead: { version: head.version, hash: head.hash },
+      effectiveHead: { version: head.version, hash: head.hash },
+      observedDraft: draft,
+      observedLineEnding: lineEnding,
+      generation: 0,
+    };
+    runtimeRef.current = runtime;
+  } else {
+    const headChanged =
+      runtime.observedHead.version !== head.version || runtime.observedHead.hash !== head.hash;
+    const candidateChanged =
+      runtime.observedDraft !== draft || runtime.observedLineEnding !== lineEnding;
+    if (headChanged) {
+      runtime.observedHead = { version: head.version, hash: head.hash };
+      if (head.version >= runtime.effectiveHead.version) {
+        runtime.effectiveHead = { version: head.version, hash: head.hash };
+      }
+    }
+    if (candidateChanged) {
+      runtime.observedDraft = draft;
+      runtime.observedLineEnding = lineEnding;
+    }
+    if (headChanged || candidateChanged) runtime.generation += 1;
+  }
+  const machine = machineStatesRef.current.get(target) ?? IDLE_STATE;
+  const canRetry = machine.state === "error" && retryAttemptRef.current?.target === target;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -82,29 +138,57 @@ export function useSaveMachine({
     };
   }, []);
 
-  const transition = useCallback((state: SaveMachineState) => {
-    if (mountedRef.current) setMachine(state);
+  useEffect(() => {
+    if (retryAttemptRef.current?.target !== target) retryAttemptRef.current = null;
+  }, [target]);
+
+  const transition = useCallback((transitionTarget: SaveTarget, state: SaveMachineState) => {
+    if (!mountedRef.current) return;
+    machineStatesRef.current.set(transitionTarget, state);
+    setMachineRevision((revision) => revision + 1);
   }, []);
 
   const runAttempt = useCallback(
     async (attempt: FrozenSaveAttempt): Promise<void> => {
-      if (inFlightRef.current) return;
+      if (
+        inFlightTargetsRef.current.has(attempt.target) ||
+        reloadingTargetsRef.current.has(attempt.target)
+      ) {
+        return;
+      }
 
-      inFlightRef.current = true;
+      inFlightTargetsRef.current.add(attempt.target);
+      attempt.runtime.generation += 1;
       retryAttemptRef.current = attempt;
-      transition({ state: "saving" });
+      transition(attempt.target, { state: "saving" });
 
       try {
-        const result = await attempt.client.files(attempt.stash).put(attempt.path, attempt.input, {
-          idempotencyKey: attempt.idempotencyKey,
-        });
+        const result = await attempt.target.client
+          .files(attempt.target.stash)
+          .put(attempt.target.path, attempt.input, {
+            idempotencyKey: attempt.idempotencyKey,
+          });
 
         if (result.ok) {
-          retryAttemptRef.current = null;
+          if (retryAttemptRef.current === attempt) retryAttemptRef.current = null;
           if ("unchanged" in result.value) {
-            transition({ state: "unchanged", version: result.value.version });
+            if (result.value.version >= attempt.runtime.effectiveHead.version) {
+              attempt.runtime.effectiveHead = {
+                version: result.value.version,
+                hash: attempt.runtime.effectiveHead.hash,
+              };
+            }
+            attempt.runtime.generation += 1;
+            transition(attempt.target, { state: "unchanged", version: result.value.version });
           } else {
-            transition({
+            if (result.value.version >= attempt.runtime.effectiveHead.version) {
+              attempt.runtime.effectiveHead = {
+                version: result.value.version,
+                hash: result.value.hash,
+              };
+            }
+            attempt.runtime.generation += 1;
+            transition(attempt.target, {
               state: "saved",
               version: result.value.version,
               changeId: result.value.changeId,
@@ -113,18 +197,18 @@ export function useSaveMachine({
           return;
         }
 
-        retryAttemptRef.current = null;
+        if (retryAttemptRef.current === attempt) retryAttemptRef.current = null;
         if (result.error.code === "stale" && result.current !== undefined) {
-          transition({ state: "stale", current: result.current });
+          transition(attempt.target, { state: "stale", current: result.current });
           return;
         }
 
-        transition({ state: "error", message: result.error.message });
+        transition(attempt.target, { state: "error", message: result.error.message });
       } catch (error) {
         const failure = errorFrom(error);
-        transition({ state: "error", message: failure.message });
+        transition(attempt.target, { state: "error", message: failure.message });
       } finally {
-        inFlightRef.current = false;
+        inFlightTargetsRef.current.delete(attempt.target);
       }
     },
     [transition],
@@ -133,39 +217,55 @@ export function useSaveMachine({
   const save = useCallback(
     async ({ author, message }: SaveMetadata): Promise<void> => {
       const attempt: FrozenSaveAttempt = {
-        client,
-        stash,
-        path,
+        target,
+        runtime,
         idempotencyKey: globalThis.crypto.randomUUID(),
         input: {
           body: applyLineEnding(draft, lineEnding),
-          expectedVersion: head.version,
+          expectedVersion: runtime.effectiveHead.version,
           author,
           message,
         },
       };
       await runAttempt(attempt);
     },
-    [client, draft, head.version, lineEnding, path, runAttempt, stash],
+    [draft, lineEnding, runAttempt, runtime, target],
   );
 
   const retry = useCallback(async (): Promise<void> => {
     const attempt = retryAttemptRef.current;
-    if (attempt !== null) await runAttempt(attempt);
-  }, [runAttempt]);
+    if (attempt?.target === target) {
+      await runAttempt(attempt);
+    } else if (attempt !== null) {
+      retryAttemptRef.current = null;
+    }
+  }, [runAttempt, target]);
 
   const reloadAndCompare = useCallback(async (): Promise<FileRecordWithEtag> => {
-    if (inFlightRef.current) throw new Error("A save is already in progress");
+    if (inFlightTargetsRef.current.has(target) || reloadingTargetsRef.current.has(target)) {
+      throw new Error("A save or reload is already in progress");
+    }
 
-    retryAttemptRef.current = null;
+    if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
+    reloadingTargetsRef.current.add(target);
+    runtime.generation += 1;
     try {
-      let result = await client.files(stash).get(path);
+      let result = await target.client.files(target.stash).get(target.path);
       if (!result.ok && result.error.code === "file-deleted" && result.current !== undefined) {
-        result = await client.files(stash).get(path, { version: result.current.version });
+        result = await target.client
+          .files(target.stash)
+          .get(target.path, { version: result.current.version });
       }
 
       if (result.ok && !("notModified" in result)) {
-        transition({ state: "idle" });
+        if (result.value.version >= runtime.effectiveHead.version) {
+          runtime.effectiveHead = {
+            version: result.value.version,
+            hash: result.value.hash,
+          };
+        }
+        runtime.generation += 1;
+        transition(target, { state: "idle" });
         return result.value;
       }
 
@@ -175,19 +275,35 @@ export function useSaveMachine({
       throw failure;
     } catch (error) {
       const failure = errorFrom(error);
-      transition({ state: "error", message: failure.message });
+      transition(target, { state: "error", message: failure.message });
       throw failure;
+    } finally {
+      reloadingTargetsRef.current.delete(target);
     }
-  }, [client, path, stash, transition]);
+  }, [runtime, target, transition]);
 
   const reconcile = useCallback(async (): Promise<boolean> => {
+    if (inFlightTargetsRef.current.has(target) || reloadingTargetsRef.current.has(target)) {
+      return false;
+    }
+
+    const generation = ++runtime.generation;
+    const expectedHead = { ...runtime.effectiveHead };
     const hash = await sha256Hex(applyLineEnding(draft, lineEnding));
-    if (hash !== head.hash) return false;
+    if (
+      runtimeRef.current !== runtime ||
+      runtime.generation !== generation ||
+      inFlightTargetsRef.current.has(target) ||
+      reloadingTargetsRef.current.has(target) ||
+      hash !== expectedHead.hash
+    ) {
+      return false;
+    }
 
-    retryAttemptRef.current = null;
-    transition({ state: "unchanged", version: head.version });
+    if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
+    transition(target, { state: "unchanged", version: expectedHead.version });
     return true;
-  }, [draft, head.hash, head.version, lineEnding, transition]);
+  }, [draft, lineEnding, runtime, target, transition]);
 
-  return { ...machine, save, retry, reloadAndCompare, reconcile } as SaveMachine;
+  return { ...machine, canRetry, save, retry, reloadAndCompare, reconcile } as SaveMachine;
 }
