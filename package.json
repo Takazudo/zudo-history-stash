@@ -27,7 +27,7 @@
     "release:verify": "bash scripts/release.sh verify",
     "release:test": "bash -c 'set -euo pipefail; for t in scripts/release/tests/*.test.sh; do bash \"$t\"; done'",
     "format:md": "pnpm exec mdx-formatter --write .",
-    "lint:tokens": "pnpm --filter zudo-history-stash-viewer lint:tokens",
+    "lint:tokens": "pnpm --filter zudo-history-stash-viewer --filter @takazudo/zudo-history-stash-ui lint:tokens",
     "check:b4push-ci-parity": "node scripts/check-b4push-ci-parity.mjs",
     "b4push": "bash scripts/run-b4push.sh",
     "// ── Local Workers ────────────────────": "",

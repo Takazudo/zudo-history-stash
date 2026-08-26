@@ -1,0 +1,11 @@
+{
+  "extends": "default",
+  "ignore": ["**/*.test.*", "**/dist/**", "**/node_modules/**"],
+  "patterns": ["src/**/*.{tsx,jsx}"],
+  "css": {
+    "colorLiterals": true,
+    "patterns": ["src/**/*.css"]
+  },
+  "requireIgnoreReason": true,
+  "reportUnusedIgnores": true
+}
