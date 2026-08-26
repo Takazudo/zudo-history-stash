@@ -79,15 +79,15 @@ describe("DiffPane", () => {
     expect(contextRow?.getAttribute("data-line-type")).toBe("context");
     expect(removedRow?.getAttribute("data-line-type")).toBe("remove");
     expect(addedRow?.getAttribute("data-line-type")).toBe("add");
-    expect(contextRow?.className).toContain("diff-table__row--context");
-    expect(removedRow?.className).toContain("diff-table__row--remove");
-    expect(addedRow?.className).toContain("diff-table__row--add");
+    expect(contextRow?.className).toContain("zhs-diff-table__row--context");
+    expect(removedRow?.className).toContain("zhs-diff-table__row--remove");
+    expect(addedRow?.className).toContain("zhs-diff-table__row--add");
     expect(removedRow?.querySelector('[aria-label="Old line 5"]')).toBeTruthy();
     expect(removedRow?.querySelector('[aria-label="No new line"]')).toBeTruthy();
     expect(addedRow?.querySelector('[aria-label="No old line"]')).toBeTruthy();
     expect(addedRow?.querySelector('[aria-label="New line 8"]')).toBeTruthy();
 
-    const hunk = container.querySelector(".diff-table__hunk");
+    const hunk = container.querySelector(".zhs-diff-table__hunk");
     expect(hunk?.getAttribute("data-hunk-index")).toBe("0");
     expect(hunk?.getAttribute("id")).toBe("diff-hunk-0");
     expect(hunk?.querySelector("th")?.getAttribute("colspan")).toBe("4");
@@ -96,17 +96,17 @@ describe("DiffPane", () => {
   it("renders added and removed segments with semantic marks and screen-reader boundaries", () => {
     const { container } = render(pane());
 
-    const removed = container.querySelector("del.diff-mark.diff-mark--removed");
-    const added = container.querySelector("ins.diff-mark.diff-mark--added");
+    const removed = container.querySelector("del.zhs-diff-mark.zhs-diff-mark--removed");
+    const added = container.querySelector("ins.zhs-diff-mark.zhs-diff-mark--added");
     expect(removed).toBeTruthy();
     expect(added).toBeTruthy();
     expect(removed?.textContent).toBe("removed text: old end of change");
     expect(added?.textContent).toBe("added text: new end of change");
     expect(
-      Array.from(removed?.querySelectorAll(".sr-only") ?? []).map((label) => label.textContent),
+      Array.from(removed?.querySelectorAll(".zhs-sr-only") ?? []).map((label) => label.textContent),
     ).toEqual(["removed text: ", " end of change"]);
     expect(
-      Array.from(added?.querySelectorAll(".sr-only") ?? []).map((label) => label.textContent),
+      Array.from(added?.querySelectorAll(".zhs-sr-only") ?? []).map((label) => label.textContent),
     ).toEqual(["added text: ", " end of change"]);
 
     const compatibleLineText = screen.getByText("hello new world");
@@ -116,19 +116,19 @@ describe("DiffPane", () => {
 
   it("turns marks off only through the pane class and preserves the rendered rows and marks", () => {
     const { container, rerender } = render(pane());
-    const paneElement = container.querySelector(".diff-table-pane");
+    const paneElement = container.querySelector(".zhs-diff-table-pane");
     const rowsBefore = Array.from(container.querySelectorAll("tbody tr"));
-    const removedMarkBefore = container.querySelector("del.diff-mark--removed");
+    const removedMarkBefore = container.querySelector("del.zhs-diff-mark--removed");
     const bodyBefore = container.querySelector("tbody")?.innerHTML;
 
-    expect(paneElement?.className).not.toContain("diff-table-pane--no-marks");
+    expect(paneElement?.className).not.toContain("zhs-diff-table-pane--no-marks");
     rerender(pane({ marks: false }));
 
     const rowsAfter = Array.from(container.querySelectorAll("tbody tr"));
-    expect(paneElement?.className).toContain("diff-table-pane--no-marks");
+    expect(paneElement?.className).toContain("zhs-diff-table-pane--no-marks");
     expect(rowsAfter).toHaveLength(rowsBefore.length);
     expect(rowsAfter.every((row, index) => row === rowsBefore[index])).toBe(true);
-    expect(container.querySelector("del.diff-mark--removed")).toBe(removedMarkBefore);
+    expect(container.querySelector("del.zhs-diff-mark--removed")).toBe(removedMarkBefore);
     expect(container.querySelector("tbody")?.innerHTML).toBe(bodyBefore);
   });
 
@@ -155,7 +155,7 @@ describe("DiffPane", () => {
       ],
     };
     const { container } = render(pane({ model }));
-    const markerRows = Array.from(container.querySelectorAll(".diff-table__marker"));
+    const markerRows = Array.from(container.querySelectorAll(".zhs-diff-table__marker"));
 
     expect(markerRows).toHaveLength(3);
     expect(markerRows.map((row) => row.textContent)).toEqual([
@@ -172,11 +172,11 @@ describe("DiffPane", () => {
     const { container } = render(pane({ layout: "split", wrap: false }));
 
     const table = screen.getByRole("table", { name: "Split diff" });
-    const paneElement = container.querySelector<HTMLElement>(".diff-table-pane");
+    const paneElement = container.querySelector<HTMLElement>(".zhs-diff-table-pane");
     expect(table).toBeTruthy();
     expect(screen.queryByRole("table", { name: "Unified diff" })).toBeNull();
     expect(screen.queryByText("split view not available yet")).toBeNull();
-    expect(paneElement?.className).toContain("diff-table-pane--nowrap");
+    expect(paneElement?.className).toContain("zhs-diff-table-pane--nowrap");
   });
 
   it("keeps wrap state on the pane without changing the unified rows", () => {
@@ -185,8 +185,8 @@ describe("DiffPane", () => {
 
     rerender(pane({ wrap: false }));
 
-    const paneElement = container.querySelector(".diff-table-pane");
-    expect(paneElement?.className).toContain("diff-table-pane--nowrap");
+    const paneElement = container.querySelector(".zhs-diff-table-pane");
+    expect(paneElement?.className).toContain("zhs-diff-table-pane--nowrap");
     expect(paneElement?.getAttribute("data-wrap")).toBe("off");
     expect(container.querySelectorAll("tbody tr")).toHaveLength(rowCount);
   });

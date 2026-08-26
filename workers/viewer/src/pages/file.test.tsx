@@ -324,12 +324,14 @@ describe("FilePage", () => {
       "/s/notes/diff/docs/readme.txt?from=3&to=head",
     );
     const rollback = row.getByRole("button", { name: "Rollback to v3" });
-    expect(rollback.hasAttribute("disabled")).toBe(false);
-    expect(rollback.getAttribute("title")).toBeNull();
+    await waitFor(() => {
+      expect(rollback.hasAttribute("disabled")).toBe(false);
+      expect(rollback.getAttribute("title")).toBeNull();
+    });
 
     await userEvent.click(screen.getByRole("radio", { name: "Use v2 as from version" }));
     await userEvent.click(screen.getByRole("radio", { name: "Use v3 as to version" }));
-    await userEvent.click(screen.getByRole("button", { name: "Compare" }));
+    await userEvent.click(screen.getByRole("link", { name: "Compare" }));
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/s/notes/diff/docs/readme.txt"),
     );
