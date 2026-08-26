@@ -10,8 +10,10 @@ import { buildOpenApiDocument } from "./document.js";
 
 const apiReferenceUrl = new URL("../../../../docs/api.md", import.meta.url);
 const openApiUrl = new URL("../../../../docs/openapi.json", import.meta.url);
+const corePackageUrl = new URL("../../package.json", import.meta.url);
 const apiReference = readFileSync(apiReferenceUrl, "utf8");
 const committedOpenApi = JSON.parse(readFileSync(openApiUrl, "utf8")) as OpenApiDocument;
+const corePackage = JSON.parse(readFileSync(corePackageUrl, "utf8")) as { version: string };
 
 type ApiSection = {
   method: string;
@@ -95,7 +97,7 @@ function operations(document: OpenApiDocument): OpenApiOperation[] {
 
 describe("OpenAPI and API reference drift", () => {
   it("keeps the committed OpenAPI document equal to the generated document", async () => {
-    const generated = buildOpenApiDocument();
+    const generated = buildOpenApiDocument({ version: corePackage.version });
 
     expect(committedOpenApi, "docs/openapi.json is out of date; run pnpm openapi:generate").toEqual(
       generated,
