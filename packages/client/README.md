@@ -21,7 +21,29 @@ if (file.ok && "value" in file) {
 }
 ```
 
-For a same-account Worker service binding, the hostname is inert and the binding supplies fetch:
+For a same-account Worker, the recommended transport is a named `StashRpc` entrypoint. Type its
+binding as `StashRpcEntrypoint` and use the discriminated `transport` option:
+
+```ts
+import { createStashClient, type StashRpcEntrypoint } from "@takazudo/zudo-history-stash";
+
+interface Env {
+  STASH_RPC: StashRpcEntrypoint;
+  STASH_TOKEN: string;
+}
+
+const client = createStashClient({
+  transport: { kind: "rpc", binding: env.STASH_RPC, token: env.STASH_TOKEN },
+});
+```
+
+The RPC transport uses its token per call. Business responses remain the same discriminated result
+unions as fetch (`{ ok: false, error, current? }`); a rejected binding call throws
+`StashHttpError` with `status === 0`. Direct `StashRpcEntrypoint` methods instead accept the token
+as their first argument and return serialisable `Result` unions without rejecting.
+
+The existing fetch transport remains compatible. For a same-account Worker service binding, the
+hostname is inert and the binding supplies fetch:
 
 ```ts
 const client = createStashClient({

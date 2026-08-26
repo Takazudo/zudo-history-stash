@@ -148,6 +148,62 @@ export default {
 Cloudflare documents that HTTP service bindings accept a `Request` and return a `Response`; calls
 must be awaited so the downstream Worker is not terminated early.
 
+### Cloudflare Worker RPC binding
+
+For a same-account consumer Worker, a named `StashRpc` entrypoint is the recommended binding. Set
+`compatibility_date` to `2024-04-03` or later:
+
+```toml
+name = "stash-consumer"
+main = "src/index.ts"
+compatibility_date = "2024-04-03"
+
+[[services]]
+binding = "STASH_RPC"
+service = "zudo-history-stash"
+entrypoint = "StashRpc"
+```
+
+Use the RPC transport with `createStashClient` for the usual client API. Type the binding as
+`StashRpcEntrypoint`; the token is configured when the client is created and sent on every RPC
+request, rather than stored on the binding.
+
+```ts
+import { createStashClient, type StashRpcEntrypoint } from "@takazudo/zudo-history-stash";
+
+interface Env {
+  STASH_RPC: StashRpcEntrypoint;
+  STASH_TOKEN: string;
+}
+
+export default {
+  async fetch(_request: Request, env: Env): Promise<Response> {
+    const client = createStashClient({
+      transport: { kind: "rpc", binding: env.STASH_RPC, token: env.STASH_TOKEN },
+    });
+    const result = await client.files("demo").get("docs/guide.md");
+    return Response.json(result);
+  },
+};
+```
+
+The binding also exposes direct typed methods when that shape is more convenient. The token is the
+first argument to every method, and it still receives the normal authentication, scope, and
+cross-stash `404` concealment checks:
+
+```ts
+const result = await env.STASH_RPC.getFile(env.STASH_TOKEN, "demo", "docs/guide.md");
+```
+
+Direct typed methods return serialisable `Result` unions for business and transport failures and do
+not reject. The RPC client transport preserves `Content-Type`, `Idempotency-Key`, and
+`If-None-Match`; its responses retain `ETag` and `Idempotent-Replayed` behavior. A rejected RPC
+binding call through the client instead throws `StashHttpError` with `status === 0`.
+
+Cloudflare RPC serialisation is capped at 32 MiB. This API's own limits remain lower—for example,
+v1 stores text bodies up to 1,000,000 UTF-8 bytes—so those API limits still apply. The existing
+`env.STASH.fetch()` service binding remains supported for HTTP-compatible consumers.
+
 ## Routes
 
 ### `GET /v1/health`
@@ -474,7 +530,5 @@ API accepts `Authorization`, `Content-Type`, `If-None-Match`, and `Idempotency-K
 
 The v1 HTTP contract intentionally defers:
 
-- typed `WorkerEntrypoint` RPC; service-binding `.fetch()` plus the client is the supported Worker
-  interface today;
 - R2 spill-over and binary bodies; v1 stores text up to 1,000,000 UTF-8 bytes in D1;
 - multi-file atomic commits; v1 history and CAS are per path.
