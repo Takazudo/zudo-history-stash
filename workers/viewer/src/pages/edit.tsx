@@ -1,10 +1,10 @@
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   EditWorkbench,
+  ErrorBanner,
+  useStashHref,
   type EditWorkbenchSaved,
-} from "../../../../packages/ui/src/components/edit-workbench.js";
-import { ErrorBanner } from "../../../../packages/ui/src/components/error-banner.js";
-import { useStashHref } from "../../../../packages/ui/src/provider/hooks.js";
+} from "@takazudo/zudo-history-stash-ui";
 import { Page } from "../app/shell/page.js";
 
 function positiveVersion(value: string | null): number | undefined | null {

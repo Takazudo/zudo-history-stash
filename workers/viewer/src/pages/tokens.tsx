@@ -1,6 +1,5 @@
 import { useParams } from "react-router-dom";
-import { ErrorBanner } from "../../../../packages/ui/src/components/error-banner.js";
-import { TokensPanel } from "../../../../packages/ui/src/components/tokens-panel.js";
+import { ErrorBanner, TokensPanel } from "@takazudo/zudo-history-stash-ui";
 import { Page } from "../app/shell/page.js";
 
 export default function TokensPage() {

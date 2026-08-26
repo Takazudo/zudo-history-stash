@@ -7,6 +7,7 @@ import {
 } from "../app/auth/stash-client-provider.js";
 import { RequireToken } from "../app/auth/require-token.js";
 import { TOKEN_STORAGE_KEY } from "../app/auth/token-store.js";
+import { ViewerStashUiProvider } from "../app/viewer-stash-ui-provider.js";
 import HomePage from "../pages/home.js";
 import LoginPage from "../pages/login.js";
 import StashPage from "../pages/stash.js";
@@ -31,7 +32,9 @@ export function renderViewerRoute(
           {
             element: (
               <RequireToken>
-                <Outlet />
+                <ViewerStashUiProvider>
+                  <Outlet />
+                </ViewerStashUiProvider>
               </RequireToken>
             ),
             children: [

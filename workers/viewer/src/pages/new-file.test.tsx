@@ -4,7 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import { StashUiProvider } from "../../../../packages/ui/src/provider/stash-ui-provider.js";
+import { StashUiProvider } from "@takazudo/zudo-history-stash-ui";
 import NewFilePage from "./new-file.js";
 
 const BASE_URL = "https://stash.test";

@@ -180,6 +180,9 @@ importers:
       '@takazudo/zudo-history-stash-core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@takazudo/zudo-history-stash-ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       react:
         specifier: ^19.2.0
         version: 19.2.8

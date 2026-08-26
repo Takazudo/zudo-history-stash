@@ -19,6 +19,7 @@ import {
 } from "../app/auth/stash-client-provider.js";
 import { RequireToken } from "../app/auth/require-token.js";
 import { TOKEN_STORAGE_KEY } from "../app/auth/token-store.js";
+import { ViewerStashUiProvider } from "../app/viewer-stash-ui-provider.js";
 import { createFakeViewerClient } from "../test/fake-viewer-client.js";
 import FilePage from "./file.js";
 
@@ -119,7 +120,9 @@ function renderFileRoute(initialEntry: string, client: ViewerStashClient) {
           {
             element: (
               <RequireToken>
-                <Outlet />
+                <ViewerStashUiProvider>
+                  <Outlet />
+                </ViewerStashUiProvider>
               </RequireToken>
             ),
             children: [
@@ -175,6 +178,10 @@ describe("FilePage", () => {
     expect(body.getAttribute("data-wrap-long-lines")).toBe("false");
     expect(screen.getByText("No versions have been recorded for this file.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Compare" }).hasAttribute("disabled")).toBe(true);
+    expect((await screen.findByRole("link", { name: "Edit" })).getAttribute("href")).toBe(
+      "/s/notes/edit/docs/readme.txt",
+    );
+    expect(screen.getByRole("button", { name: "Delete…" })).toBeTruthy();
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Wrap long lines" }));
     expect(body.getAttribute("data-wrap-long-lines")).toBe("true");
@@ -277,6 +284,7 @@ describe("FilePage", () => {
     expect(
       screen.getByRole("link", { name: "View last live version v3" }).getAttribute("href"),
     ).toBe("/s/notes/f/docs/readme.txt?version=3");
+    expect(await screen.findByRole("button", { name: "Restore v3…" })).toBeTruthy();
     expect(get).toHaveBeenNthCalledWith(1, "docs/readme.txt");
     expect(get).toHaveBeenNthCalledWith(2, "docs/readme.txt", { version: 4 });
   });
@@ -312,6 +320,9 @@ describe("FilePage", () => {
     expect(screen.getByRole("link", { name: "Return to head" }).getAttribute("href")).toBe(
       "/s/notes/f/docs/readme.txt",
     );
+    expect(
+      (await screen.findByRole("link", { name: "Edit from this version" })).getAttribute("href"),
+    ).toBe("/s/notes/edit/docs/readme.txt?from=2");
     expect(screen.getByText("→ v2")).toBeTruthy();
 
     const versionThree = document.querySelector('[data-history-version="3"]');
@@ -322,6 +333,11 @@ describe("FilePage", () => {
     );
     expect(row.getByRole("link", { name: "Diff vs head" }).getAttribute("href")).toBe(
       "/s/notes/diff/docs/readme.txt?from=3&to=head",
+    );
+    await waitFor(() =>
+      expect(row.getByRole("link", { name: "Edit from v3" }).getAttribute("href")).toBe(
+        "/s/notes/edit/docs/readme.txt?from=3",
+      ),
     );
     const rollback = row.getByRole("button", { name: "Rollback to v3" });
     await waitFor(() => {
@@ -399,7 +415,7 @@ describe("FilePage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(document.querySelector('[data-history-version="1"]')).toBeTruthy());
     expect(document.querySelectorAll('[data-history-version="2"]')).toHaveLength(1);
-    expect(history).toHaveBeenNthCalledWith(1, "docs/readme.txt");
+    expect(history).toHaveBeenNthCalledWith(1, "docs/readme.txt", undefined);
     expect(history).toHaveBeenNthCalledWith(2, "docs/readme.txt", { before: 2 });
   });
 

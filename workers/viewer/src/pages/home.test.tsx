@@ -21,7 +21,7 @@ describe("HomePage", () => {
 
   it("shows the empty stash and change states", async () => {
     renderViewerRoute("/", createFakeViewerClient());
-    expect(await screen.findByText("No stashes yet. Create the first one above.")).toBeTruthy();
+    expect(await screen.findByText("No stashes yet. Create the first one.")).toBeTruthy();
     expect(screen.getByText("No changes have been recorded.")).toBeTruthy();
   });
 
@@ -121,8 +121,10 @@ describe("HomePage", () => {
     }));
     const client = createFakeViewerClient({ stashes: { create } });
     renderViewerRoute("/", client);
-    await screen.findByText("No stashes yet. Create the first one above.");
+    await screen.findByText("No stashes yet. Create the first one.");
 
+    await userEvent.click(screen.getByRole("button", { name: "New stash" }));
+    expect(screen.getByRole("dialog", { name: "Create stash" })).toBeTruthy();
     await userEvent.type(screen.getByLabelText("Name"), "notes");
     await userEvent.click(screen.getByRole("button", { name: "Create stash" }));
 

@@ -27,6 +27,20 @@ interface StashClientContextValue {
 }
 
 const StashClientContext = createContext<StashClientContextValue | null>(null);
+const DRAFT_KEY_PREFIX = "zhs.draft.";
+
+function clearWorkbenchDrafts(): void {
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < sessionStorage.length; index += 1) {
+      const key = sessionStorage.key(index);
+      if (key?.startsWith(DRAFT_KEY_PREFIX)) keys.push(key);
+    }
+    for (const key of keys) sessionStorage.removeItem(key);
+  } catch {
+    // Logging out must still clear the credential when storage access is unavailable.
+  }
+}
 
 function messageFromHttpError(error: StashHttpError): string {
   if (error.body && typeof error.body === "object" && "error" in error.body) {
@@ -92,6 +106,7 @@ export function StashClientProvider({
   const [token, setCurrentToken] = useState(getToken);
 
   const logOut = useCallback(() => {
+    clearWorkbenchDrafts();
     clearStoredToken();
     setCurrentToken(null);
   }, []);

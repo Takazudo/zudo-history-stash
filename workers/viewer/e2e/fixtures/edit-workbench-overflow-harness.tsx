@@ -2,14 +2,8 @@ import { createStashClient, type StashFetch } from "@takazudo/zudo-history-stash
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { EditWorkbench } from "../../../../packages/ui/src/components/edit-workbench.js";
-import { StashUiProvider } from "../../../../packages/ui/src/provider/stash-ui-provider.js";
-import "../../../../packages/ui/src/styles/primitives.css";
-import "../../../../packages/ui/src/styles/relocated.css";
-import "../../../../packages/ui/src/styles/stateful.css";
-import "../../../../packages/ui/src/components/edit-workbench.css";
-import "../../../../packages/ui/src/components/history-rail.css";
-import "../../../../packages/ui/src/components/save-review-dialog.css";
+import { EditWorkbench, StashUiProvider } from "@takazudo/zudo-history-stash-ui";
+import "@takazudo/zudo-history-stash-ui/styles.css";
 
 const BASE_URL = "https://edit-overflow.test";
 const ADMIN_TOKEN = "edit-overflow-admin";

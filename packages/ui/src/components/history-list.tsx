@@ -231,6 +231,18 @@ function HistoryRow({
           >
             Diff vs head
           </Anchor>
+          {rollbackReady && rollbackAllowed && version.kind !== "delete" ? (
+            <Anchor
+              href={hrefFor({
+                kind: "edit",
+                stash,
+                path,
+                from: version.version,
+              })}
+            >
+              Edit from v{version.version}
+            </Anchor>
+          ) : null}
           <Button
             aria-label={`Rollback to v${version.version}`}
             disabled={rollbackDisabled}

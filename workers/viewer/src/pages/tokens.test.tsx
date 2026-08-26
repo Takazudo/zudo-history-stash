@@ -3,7 +3,7 @@ import { createStashClient } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { StashUiProvider } from "../../../../packages/ui/src/provider/stash-ui-provider.js";
+import { StashUiProvider } from "@takazudo/zudo-history-stash-ui";
 import TokensPage from "./tokens.js";
 
 const BASE_URL = "https://stash.test";
