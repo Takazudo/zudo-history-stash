@@ -4,16 +4,22 @@ import { useStashClient } from "../auth/stash-client-provider.js";
 import { Button } from "./button.js";
 
 const THEME_STORAGE_KEY = "zhs.theme";
-type Theme = "light" | "dark";
+type Theme = "system" | "light" | "dark";
 
 function initialTheme(): Theme {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored === "light" || stored === "dark") return stored;
+    if (stored === "system" || stored === "light" || stored === "dark") return stored;
   } catch {
-    // A system-derived theme is still available when storage is blocked.
+    // The default dark scheme remains available when storage is blocked.
   }
-  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "dark";
+}
+
+function nextTheme(theme: Theme): Theme {
+  if (theme === "system") return "light";
+  if (theme === "light") return "dark";
+  return "system";
 }
 
 export function Header({ breadcrumb, status }: { breadcrumb?: ReactNode; status?: ReactNode }) {
@@ -39,8 +45,13 @@ export function Header({ breadcrumb, status }: { breadcrumb?: ReactNode; status?
       </div>
       <div className="app-header__actions">
         {status ? <span className="app-header__status">{status}</span> : null}
-        <Button compact onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-          {theme === "dark" ? "Light theme" : "Dark theme"}
+        <Button
+          aria-live="polite"
+          compact
+          onClick={() => setTheme((current) => nextTheme(current))}
+          title={`Theme: ${theme}. Activate to use ${nextTheme(theme)}.`}
+        >
+          Theme: {theme}
         </Button>
         <Button compact onClick={logOut}>
           Log out
