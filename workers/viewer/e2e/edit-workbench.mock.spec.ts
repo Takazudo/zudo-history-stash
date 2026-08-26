@@ -331,9 +331,15 @@ test("@smoke edit workbench preserves its draft and saves after an explicit stal
   await expect(editor).toHaveValue(DRAFT_BODY);
   await expect
     .poll(() =>
-      page.evaluate(() => sessionStorage.getItem("zhs.draft.notes.docs/readme.txt") ?? ""),
+      page.evaluate(() => {
+        const stored = sessionStorage.getItem("zhs.draft.notes.docs/readme.txt");
+        if (stored === null) return null;
+        const record: unknown = JSON.parse(stored);
+        if (typeof record !== "object" || record === null || !("text" in record)) return null;
+        return typeof record.text === "string" ? record.text : null;
+      }),
     )
-    .toContain(DRAFT_BODY.trim());
+    .toBe(DRAFT_BODY);
 
   await page.getByRole("button", { name: "Save…" }).click();
   dialog = page.getByRole("dialog", { name: "Review save against head v2" });
