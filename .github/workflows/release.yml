@@ -148,9 +148,10 @@ jobs:
             exit 1
           }
 
-          echo 'core_already_published=false' >> "$GITHUB_OUTPUT"
-          echo 'client_already_published=false' >> "$GITHUB_OUTPUT"
-          echo 'ui_already_published=false' >> "$GITHUB_OUTPUT"
+          printf '%s\n' \
+            'core_already_published=false' \
+            'client_already_published=false' \
+            'ui_already_published=false' >> "$GITHUB_OUTPUT"
           check_publication '@takazudo/zudo-history-stash-core' core
           check_publication '@takazudo/zudo-history-stash' client
           check_publication '@takazudo/zudo-history-stash-ui' ui
