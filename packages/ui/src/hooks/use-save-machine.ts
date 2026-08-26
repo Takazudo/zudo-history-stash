@@ -5,7 +5,7 @@ import type {
   StashClient,
 } from "@takazudo/zudo-history-stash";
 import { sha256Hex } from "@takazudo/zudo-history-stash-core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export type LineEnding = "lf" | "crlf";
 
@@ -62,16 +62,34 @@ interface HeadFence {
   hash: string | null;
 }
 
+interface RenderSnapshot {
+  target: SaveTarget;
+  head: HeadFence;
+  draft: string;
+  lineEnding: LineEnding;
+}
+
 interface TargetRuntime {
   target: SaveTarget;
-  observedHead: HeadFence;
+  committedSnapshot: RenderSnapshot;
   effectiveHead: HeadFence;
-  observedDraft: string;
-  observedLineEnding: LineEnding;
   generation: number;
 }
 
 const IDLE_STATE: SaveMachineState = { state: "idle" };
+
+function createTargetRuntime(snapshot: RenderSnapshot): TargetRuntime {
+  return {
+    target: snapshot.target,
+    committedSnapshot: snapshot,
+    effectiveHead: { version: snapshot.head.version, hash: snapshot.head.hash },
+    generation: 0,
+  };
+}
+
+function sameTarget(left: SaveTarget, right: SaveTarget): boolean {
+  return left.client === right.client && left.stash === right.stash && left.path === right.path;
+}
 
 /** Reapplies the source file's line-ending policy to a textarea-normalized draft. */
 export function applyLineEnding(text: string, lineEnding: LineEnding): string {
@@ -92,44 +110,67 @@ export function useSaveMachine({
   draft,
   lineEnding,
 }: SaveMachineOptions): SaveMachine {
-  const target = useMemo<SaveTarget>(() => ({ client, stash, path }), [client, path, stash]);
+  const renderedTarget = useMemo<SaveTarget>(
+    () => ({ client, stash, path }),
+    [client, path, stash],
+  );
   const [, setMachineRevision] = useState(0);
   const machineStatesRef = useRef(new WeakMap<SaveTarget, SaveMachineState>());
   const mountedRef = useRef(true);
   const inFlightTargetsRef = useRef(new Set<SaveTarget>());
   const reloadingTargetsRef = useRef(new Set<SaveTarget>());
   const retryAttemptRef = useRef<FrozenSaveAttempt | null>(null);
-  const runtimeRef = useRef<TargetRuntime | null>(null);
-  let runtime = runtimeRef.current;
-  if (runtime === null || runtime.target !== target) {
-    runtime = {
+  const initialSnapshot: RenderSnapshot = {
+    target: renderedTarget,
+    head: { version: head.version, hash: head.hash },
+    draft,
+    lineEnding,
+  };
+  const runtimeRef = useRef<TargetRuntime>(createTargetRuntime(initialSnapshot));
+  const targetIsCommitted = sameTarget(runtimeRef.current.target, renderedTarget);
+  const target = targetIsCommitted ? runtimeRef.current.target : renderedTarget;
+  const renderSnapshot = useMemo<RenderSnapshot>(
+    () => ({
       target,
-      observedHead: { version: head.version, hash: head.hash },
-      effectiveHead: { version: head.version, hash: head.hash },
-      observedDraft: draft,
-      observedLineEnding: lineEnding,
-      generation: 0,
-    };
-    runtimeRef.current = runtime;
-  } else {
+      head: { version: head.version, hash: head.hash },
+      draft,
+      lineEnding,
+    }),
+    [draft, head.hash, head.version, lineEnding, target],
+  );
+  const machine = targetIsCommitted
+    ? (machineStatesRef.current.get(target) ?? IDLE_STATE)
+    : IDLE_STATE;
+  const canRetry =
+    targetIsCommitted && machine.state === "error" && retryAttemptRef.current?.target === target;
+
+  // Concurrent renders only derive snapshots above; shared lifecycle refs change after commit.
+  useLayoutEffect(() => {
+    const runtime = runtimeRef.current;
+    if (runtime.target !== target) {
+      runtimeRef.current = createTargetRuntime(renderSnapshot);
+      if (retryAttemptRef.current?.target !== target) retryAttemptRef.current = null;
+      return;
+    }
+
+    const previousSnapshot = runtime.committedSnapshot;
     const headChanged =
-      runtime.observedHead.version !== head.version || runtime.observedHead.hash !== head.hash;
+      previousSnapshot.head.version !== renderSnapshot.head.version ||
+      previousSnapshot.head.hash !== renderSnapshot.head.hash;
     const candidateChanged =
-      runtime.observedDraft !== draft || runtime.observedLineEnding !== lineEnding;
+      previousSnapshot.draft !== renderSnapshot.draft ||
+      previousSnapshot.lineEnding !== renderSnapshot.lineEnding;
     if (headChanged) {
-      runtime.observedHead = { version: head.version, hash: head.hash };
-      if (head.version >= runtime.effectiveHead.version) {
-        runtime.effectiveHead = { version: head.version, hash: head.hash };
+      if (renderSnapshot.head.version >= runtime.effectiveHead.version) {
+        runtime.effectiveHead = {
+          version: renderSnapshot.head.version,
+          hash: renderSnapshot.head.hash,
+        };
       }
     }
-    if (candidateChanged) {
-      runtime.observedDraft = draft;
-      runtime.observedLineEnding = lineEnding;
-    }
+    runtime.committedSnapshot = renderSnapshot;
     if (headChanged || candidateChanged) runtime.generation += 1;
-  }
-  const machine = machineStatesRef.current.get(target) ?? IDLE_STATE;
-  const canRetry = machine.state === "error" && retryAttemptRef.current?.target === target;
+  }, [renderSnapshot, target]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -137,10 +178,6 @@ export function useSaveMachine({
       mountedRef.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (retryAttemptRef.current?.target !== target) retryAttemptRef.current = null;
-  }, [target]);
 
   const transition = useCallback((transitionTarget: SaveTarget, state: SaveMachineState) => {
     if (!mountedRef.current) return;
@@ -216,12 +253,15 @@ export function useSaveMachine({
 
   const save = useCallback(
     async ({ author, message }: SaveMetadata): Promise<void> => {
+      const runtime = runtimeRef.current;
+      if (runtime.target !== target || runtime.committedSnapshot !== renderSnapshot) return;
+
       const attempt: FrozenSaveAttempt = {
         target,
         runtime,
         idempotencyKey: globalThis.crypto.randomUUID(),
         input: {
-          body: applyLineEnding(draft, lineEnding),
+          body: applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding),
           expectedVersion: runtime.effectiveHead.version,
           author,
           message,
@@ -229,10 +269,12 @@ export function useSaveMachine({
       };
       await runAttempt(attempt);
     },
-    [draft, lineEnding, runAttempt, runtime, target],
+    [renderSnapshot, runAttempt, target],
   );
 
   const retry = useCallback(async (): Promise<void> => {
+    if (runtimeRef.current.target !== target) return;
+
     const attempt = retryAttemptRef.current;
     if (attempt?.target === target) {
       await runAttempt(attempt);
@@ -242,6 +284,9 @@ export function useSaveMachine({
   }, [runAttempt, target]);
 
   const reloadAndCompare = useCallback(async (): Promise<FileRecordWithEtag> => {
+    const runtime = runtimeRef.current;
+    if (runtime.target !== target) throw new Error("The save target is no longer active");
+
     if (inFlightTargetsRef.current.has(target) || reloadingTargetsRef.current.has(target)) {
       throw new Error("A save or reload is already in progress");
     }
@@ -280,18 +325,22 @@ export function useSaveMachine({
     } finally {
       reloadingTargetsRef.current.delete(target);
     }
-  }, [runtime, target, transition]);
+  }, [target, transition]);
 
   const reconcile = useCallback(async (): Promise<boolean> => {
+    const runtime = runtimeRef.current;
+    if (runtime.target !== target || runtime.committedSnapshot !== renderSnapshot) return false;
+
     if (inFlightTargetsRef.current.has(target) || reloadingTargetsRef.current.has(target)) {
       return false;
     }
 
     const generation = ++runtime.generation;
     const expectedHead = { ...runtime.effectiveHead };
-    const hash = await sha256Hex(applyLineEnding(draft, lineEnding));
+    const hash = await sha256Hex(applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding));
     if (
       runtimeRef.current !== runtime ||
+      runtime.committedSnapshot !== renderSnapshot ||
       runtime.generation !== generation ||
       inFlightTargetsRef.current.has(target) ||
       reloadingTargetsRef.current.has(target) ||
@@ -303,7 +352,7 @@ export function useSaveMachine({
     if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
     transition(target, { state: "unchanged", version: expectedHead.version });
     return true;
-  }, [draft, lineEnding, runtime, target, transition]);
+  }, [renderSnapshot, target, transition]);
 
   return { ...machine, canRetry, save, retry, reloadAndCompare, reconcile } as SaveMachine;
 }

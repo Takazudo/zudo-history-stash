@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, render, renderHook } from "@testing-library/react";
 import {
   createStashClient,
   type FileRecordWithEtag,
@@ -7,9 +7,10 @@ import {
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { DIFF_MAX_BYTES, MAX_MESSAGE_BYTES } from "@takazudo/zudo-history-stash-core";
+import { startTransition, Suspense, useLayoutEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { useCandidateDiff } from "./use-candidate-diff.js";
-import { useSaveMachine, type SaveMachineOptions } from "./use-save-machine.js";
+import { useSaveMachine, type SaveMachine, type SaveMachineOptions } from "./use-save-machine.js";
 
 const BASE_URL = "https://stash.test";
 const ADMIN_TOKEN = "fixture-admin-token";
@@ -33,6 +34,23 @@ interface Fixture {
 }
 
 type HookProps = SaveMachineOptions;
+
+const NEVER_SETTLES = new Promise<void>(() => {});
+
+function SaveMachineProbe({
+  machineOptions,
+  suspend,
+  onCommit,
+}: {
+  machineOptions: HookProps;
+  suspend: boolean;
+  onCommit: (machine: SaveMachine) => void;
+}) {
+  const machine = useSaveMachine(machineOptions);
+  useLayoutEffect(() => onCommit(machine), [machine, onCommit]);
+  if (suspend) throw NEVER_SETTLES;
+  return <span>{machine.state}</span>;
+}
 
 async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
   let now = Date.UTC(2026, 0, 1);
@@ -374,6 +392,103 @@ describe("useSaveMachine", () => {
       expect(result.current.changeId).toBe(targetBChangeId);
     }
     expect(fixture.puts).toHaveLength(2);
+  });
+
+  it("does not let a suspended same-target render change the visible save callback", async () => {
+    const fixture = await makeFixture();
+    let committedMachine: SaveMachine | null = null;
+    const onCommit = (machine: SaveMachine) => {
+      committedMachine = machine;
+    };
+    const getCommittedMachine = (): SaveMachine => {
+      if (committedMachine === null) throw new Error("Save machine did not commit");
+      return committedMachine;
+    };
+    const committedOptions = options(fixture, { draft: "committed draft\n" });
+    const view = render(
+      <Suspense fallback={<span>suspended</span>}>
+        <SaveMachineProbe machineOptions={committedOptions} suspend={false} onCommit={onCommit} />
+      </Suspense>,
+    );
+
+    await act(async () => {
+      startTransition(() => {
+        view.rerender(
+          <Suspense fallback={<span>suspended</span>}>
+            <SaveMachineProbe
+              machineOptions={options(fixture, {
+                head: { version: 42, hash: `sha256-${"0".repeat(64)}` },
+                draft: "uncommitted draft\n",
+              })}
+              suspend
+              onCommit={onCommit}
+            />
+          </Suspense>,
+        );
+      });
+      await Promise.resolve();
+    });
+
+    expect(view.container.textContent).toBe("idle");
+    await act(async () => {
+      await getCommittedMachine().save({ author: "alice", message: "visible save" });
+    });
+
+    expect(fixture.puts).toHaveLength(1);
+    expect(fixture.puts[0]?.body).toMatchObject({
+      body: "committed draft\n",
+      expectedVersion: fixture.head.version,
+    });
+  });
+
+  it("does not let a suspended target render invalidate the visible reconciliation", async () => {
+    const fixture = await makeFixture();
+    let committedMachine: SaveMachine | null = null;
+    const onCommit = (machine: SaveMachine) => {
+      committedMachine = machine;
+    };
+    const getCommittedMachine = (): SaveMachine => {
+      if (committedMachine === null) throw new Error("Save machine did not commit");
+      return committedMachine;
+    };
+    const view = render(
+      <Suspense fallback={<span>suspended</span>}>
+        <SaveMachineProbe
+          machineOptions={options(fixture, { draft: fixture.head.body ?? "" })}
+          suspend={false}
+          onCommit={onCommit}
+        />
+      </Suspense>,
+    );
+
+    await act(async () => {
+      startTransition(() => {
+        view.rerender(
+          <Suspense fallback={<span>suspended</span>}>
+            <SaveMachineProbe
+              machineOptions={options(fixture, {
+                path: OTHER_PATH,
+                head: fixture.otherHead,
+                draft: fixture.otherHead.body ?? "",
+              })}
+              suspend
+              onCommit={onCommit}
+            />
+          </Suspense>,
+        );
+      });
+      await Promise.resolve();
+    });
+
+    expect(view.container.textContent).toBe("idle");
+    let reconciled = false;
+    await act(async () => {
+      reconciled = await getCommittedMachine().reconcile();
+    });
+
+    expect(reconciled).toBe(true);
+    expect(view.container.textContent).toBe("unchanged");
+    expect(fixture.puts).toHaveLength(0);
   });
 
   it("reconciles the hash of CRLF-pinned bytes as unchanged without a PUT", async () => {
