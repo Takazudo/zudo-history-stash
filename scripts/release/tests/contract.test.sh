@@ -62,11 +62,8 @@ const packIndex = gate.indexOf('pnpm pack --pack-destination "$destination"');
 const checkIndex = gate.indexOf('pnpm run lint:pkg -- "$tarball"');
 assert.ok(packIndex >= 0, "release gate must pack each artifact");
 assert.ok(checkIndex > packIndex, "release gate must check the artifact it just packed");
-assert.match(
-  gate,
-  /pnpm --store-dir "\$gate_tmp\/pnpm-store" add/u,
-  "release gate smoke install must use its disposable store",
-);
+assert.match(gate, /pnpm add "\$core_tarball" "\$client_tarball" "\$ui_tarball"/u);
+assert.doesNotMatch(gate, /pnpm --store-dir/u, "release gate must use the default pnpm store");
 
 for (const packagePath of packagePaths) {
   const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
@@ -81,6 +78,22 @@ assert.match(packageCheck, /@arethetypeswrong\/cli@0\.18\.5/u);
 assert.match(packageCheck, /"run", tarballPath, "--pack=false"/u);
 assert.match(packageCheck, /tarballPath,\n\s+"--profile",\n\s+"esm-only"/u);
 assert.doesNotMatch(packageCheck, /--pack \./u);
+
+const publishStart = gate.indexOf("publish_package() {");
+assert.ok(publishStart >= 0, "release gate must define a packed-tarball publish helper");
+const publishBlock = gate.slice(publishStart);
+assert.match(publishBlock, /pnpm publish "\$tarball" --dry-run --no-git-checks/u);
+for (const [packageVariable, tarballVariable] of [
+  ["core_package_name", "core_tarball"],
+  ["client_package_name", "client_tarball"],
+  ["ui_package_name", "ui_tarball"],
+]) {
+  assert.match(
+    publishBlock,
+    new RegExp(`publish_package "\\$${packageVariable}" "\\$${tarballVariable}"`, "u"),
+  );
+}
+assert.doesNotMatch(publishBlock, /cd "\$\w+_package_dir"/u);
 NODE
 
 printf 'release contract tests passed\n'

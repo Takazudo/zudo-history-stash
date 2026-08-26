@@ -179,7 +179,7 @@ packageJson.pnpm = {
 };
 fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
 NODE
-  pnpm --store-dir "$gate_tmp/pnpm-store" add "$core_tarball" "$client_tarball" "$ui_tarball"
+  pnpm add "$core_tarball" "$client_tarball" "$ui_tarball"
   EXPECTED_VERSION="$version" node -e '
     (async () => {
       const [{ VERSION: coreVersion }, { VERSION: clientVersion }, { VERSION: uiVersion }] = await Promise.all([
@@ -209,20 +209,16 @@ NODE
 )
 printf 'Install-from-tarball VERSION smoke passed for %s.\n' "$version"
 
-printf 'Running publish dry-run for %s.\n' "$core_package_name"
-(
-  cd "$core_package_dir"
-  pnpm publish --dry-run --no-git-checks
-)
-printf 'Running publish dry-run for %s.\n' "$client_package_name"
-(
-  cd "$client_package_dir"
-  pnpm publish --dry-run --no-git-checks
-)
-printf 'Running publish dry-run for %s.\n' "$ui_package_name"
-(
-  cd "$ui_package_dir"
-  pnpm publish --dry-run --no-git-checks
-)
+publish_package() {
+  local package_name=$1
+  local tarball=$2
+
+  printf 'Running publish dry-run for %s from %s.\n' "$package_name" "$tarball"
+  pnpm publish "$tarball" --dry-run --no-git-checks
+}
+
+publish_package "$core_package_name" "$core_tarball"
+publish_package "$client_package_name" "$client_tarball"
+publish_package "$ui_package_name" "$ui_tarball"
 
 printf 'Release packaging gate passed for %s.\n' "$version"
