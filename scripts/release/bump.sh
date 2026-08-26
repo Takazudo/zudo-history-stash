@@ -131,6 +131,7 @@ version_files=(
   'packages/client/package.json'
   'packages/core/src/index.ts'
   'packages/client/src/index.ts'
+  'docs/openapi.json'
 )
 
 if ((dry_run)); then
@@ -139,7 +140,7 @@ if ((dry_run)); then
   exit 0
 fi
 
-require_clean_tree
+require_bump_tree
 
 for package_file in "$RELEASE_ROOT/packages/core/package.json" "$RELEASE_ROOT/packages/client/package.json"; do
   node -e '
@@ -164,7 +165,10 @@ fs.writeFileSync(sourceFile, source.replace(pattern, `export const VERSION = "${
 ' "$source_file" "$next"
 done
 
-printf 'Bumped package and VERSION files to %s; installing dependencies.\n' "$next"
+printf 'Bumped package and VERSION files to %s; regenerating the OpenAPI document.\n' "$next"
+pnpm openapi:generate
+
+printf 'OpenAPI document regenerated for %s; installing dependencies.\n' "$next"
 pnpm install
 
 if ! git diff --exit-code -- pnpm-lock.yaml; then

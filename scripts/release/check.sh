@@ -17,6 +17,9 @@ USAGE
 branch_override=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --)
+      shift
+      ;;
     --branch)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || release_usage_error "--branch requires a branch name"
       branch_override=$2

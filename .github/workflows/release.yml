@@ -82,6 +82,7 @@ jobs:
           client_package_version="$(node -p "require('./packages/client/package.json').version")"
           core_constant="$(node -p 'require("fs").readFileSync("packages/core/src/index.ts", "utf8").match(/export const VERSION = "([^"]+)"/u)?.[1] ?? ""')"
           client_constant="$(node -p 'require("fs").readFileSync("packages/client/src/index.ts", "utf8").match(/export const VERSION = "([^"]+)"/u)?.[1] ?? ""')"
+          openapi_version="$(node -p 'require("./docs/openapi.json").info?.version ?? ""')"
 
           if [[ "$core_package_version" != "$VERSION" ]]; then
             echo "::error::The release tag version $VERSION does not match packages/core/package.json ($core_package_version)"
@@ -97,6 +98,10 @@ jobs:
           fi
           if [[ "$client_constant" != "$VERSION" ]]; then
             echo "::error::The release tag version $VERSION does not match the client VERSION constant ($client_constant)"
+            exit 1
+          fi
+          if [[ "$openapi_version" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match docs/openapi.json info.version ($openapi_version)"
             exit 1
           fi
 

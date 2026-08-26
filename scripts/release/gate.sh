@@ -56,6 +56,12 @@ assert_version_files \
   "$client_package_dir/package.json" \
   "$client_package_dir/src/index.ts"
 
+openapi_version=$(release_openapi_version)
+if [[ "$openapi_version" != "$version" ]]; then
+  release_error "$RELEASE_ROOT/docs/openapi.json has info.version $openapi_version; expected $version. Run pnpm openapi:generate after bumping."
+  exit 1
+fi
+
 printf 'Building libraries for release gate (%s).\n' "$version"
 pnpm build:libs
 
