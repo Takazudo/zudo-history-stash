@@ -47,6 +47,11 @@ interface ActiveStream {
   stream: StashEventStream;
 }
 
+interface ConsumerCursor {
+  target: LiveTarget;
+  checkpoint: number | null;
+}
+
 function documentIsVisible(): boolean {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
 }
@@ -90,6 +95,7 @@ export function useLiveChanges(
   const refreshRef = useRef(refresh);
   const activeStreamRef = useRef<ActiveStream | null>(null);
   const pollingTargetRef = useRef<LiveTarget | null>(null);
+  const consumerCursorRef = useRef<ConsumerCursor>({ target, checkpoint: null });
   const visibilityRef = useRef(visible);
   const resumedVisibilityRef = useRef(false);
 
@@ -116,6 +122,11 @@ export function useLiveChanges(
   useEffect(() => {
     const existing = currentRef.current;
     let checkpoint = existing.target === target ? existing.checkpoint : null;
+    const existingCursor = consumerCursorRef.current;
+    let consumerCheckpoint = existingCursor.target === target ? existingCursor.checkpoint : null;
+    if (existingCursor.target !== target) {
+      consumerCursorRef.current = { target, checkpoint: null };
+    }
     const commit = (update: Partial<UseLiveChangesResult>) => {
       if (targetRef.current !== target) return;
       setEntry((latest) => {
@@ -133,16 +144,31 @@ export function useLiveChanges(
     const lifecycle = new AbortController();
     const scheduler = createRefreshScheduler<string>();
     const refreshKey = stash;
-    const schedule = (reason: LiveRefreshReason, path?: string, refreshCheckpoint = checkpoint) => {
+    const schedule = (
+      reason: LiveRefreshReason,
+      path?: string,
+      reconciledCheckpoint?: number | null,
+    ) => {
       const request: LiveRefreshRequest = {
         reason,
-        checkpoint: refreshCheckpoint,
+        checkpoint: consumerCheckpoint,
         ...(path === undefined ? {} : { path }),
         signal: lifecycle.signal,
       };
-      scheduler.schedule(refreshKey, () => {
+      scheduler.schedule(refreshKey, async () => {
         if (lifecycle.signal.aborted || targetRef.current !== target) return;
-        return refreshRef.current?.(request);
+        const reconcile = refreshRef.current;
+        if (reconcile === undefined) return;
+        await reconcile(request);
+        if (
+          reconciledCheckpoint === undefined ||
+          lifecycle.signal.aborted ||
+          targetRef.current !== target
+        ) {
+          return;
+        }
+        consumerCheckpoint = reconciledCheckpoint;
+        consumerCursorRef.current = { target, checkpoint: reconciledCheckpoint };
       });
     };
     const handleFocus = () => schedule("focus");
@@ -166,7 +192,7 @@ export function useLiveChanges(
     let stream: StashEventStream;
     try {
       stream = client.files(stash).events({
-        ...(checkpoint === null ? {} : { since: checkpoint }),
+        ...(consumerCheckpoint === null ? {} : { since: consumerCheckpoint }),
         signal: lifecycle.signal,
       });
     } catch {
@@ -190,10 +216,11 @@ export function useLiveChanges(
     const unsubscribeStatus = stream.onStatus((streamStatus) => {
       if (lifecycle.signal.aborted || targetRef.current !== target) return;
       if (stream.failureCount >= 3) {
-        pollingTargetRef.current = target;
         commit({ status: "polling", checkpoint });
-        stream.close();
         return;
+      }
+      if (streamStatus === "live" && pollingTargetRef.current === target) {
+        pollingTargetRef.current = null;
       }
       if (streamStatus === "connecting" || streamStatus === "reconnecting") {
         awaitingReady = true;
@@ -209,11 +236,10 @@ export function useLiveChanges(
       for await (const event of stream) {
         if (lifecycle.signal.aborted || targetRef.current !== target) return;
         if (event.type === "ready") {
-          const refreshCheckpoint = checkpoint;
           checkpoint = event.checkpoint;
           awaitingReady = false;
           commit({ checkpoint });
-          schedule("ready", mixedBufferedPaths ? undefined : bufferedPath, refreshCheckpoint);
+          schedule("ready", mixedBufferedPaths ? undefined : bufferedPath, event.checkpoint);
           bufferedPath = undefined;
           mixedBufferedPaths = false;
           continue;

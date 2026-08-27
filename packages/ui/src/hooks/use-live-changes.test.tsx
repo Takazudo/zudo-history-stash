@@ -155,6 +155,55 @@ describe("useLiveChanges", () => {
     expect(refresh.mock.calls[0]?.[0]).toMatchObject({ reason: "ready", checkpoint: 1 });
   });
 
+  it("retains the reconciled cursor when a newer ready refresh rejects", async () => {
+    const { fake, client } = fixture();
+    const seeded = await client
+      .files("notes")
+      .put(
+        "docs/readme.txt",
+        { body: "one", expectedVersion: null },
+        { idempotencyKey: "seed-rejected-ready" },
+      );
+    expect(seeded.ok).toBe(true);
+    const requests: LiveRefreshRequest[] = [];
+    let rejectNextReady = false;
+    const refresh = (request: LiveRefreshRequest): void | Promise<void> => {
+      requests.push(request);
+      if (rejectNextReady && request.reason === "ready") {
+        rejectNextReady = false;
+        return Promise.reject(new Error("authoritative refresh failed"));
+      }
+    };
+    const rendered = renderHook(() => useLiveChanges("notes", { enabled: true, refresh }), {
+      wrapper: providerFor(client),
+    });
+
+    await waitFor(() => expect(rendered.result.current.status).toBe("live"));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({ reason: "ready", checkpoint: null });
+    await flushMicrotasks();
+
+    requests.length = 0;
+    rejectNextReady = true;
+    act(() => fake.events.emit("notes", { type: "ready", head: 5, checkpoint: 5 }));
+    await waitFor(() => expect(rendered.result.current.checkpoint).toBe(5));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({ reason: "ready", checkpoint: 1 });
+    await flushMicrotasks();
+
+    requests.length = 0;
+    act(() => fake.events.emit(change(6, "peer", "docs/peer.txt")));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({ reason: "change", checkpoint: 1 });
+    await flushMicrotasks();
+
+    requests.length = 0;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({ reason: "focus", checkpoint: 1 });
+    expect(rendered.result.current.checkpoint).toBe(5);
+  });
+
   it("coalesces a live burst to one in-flight and the newest trailing refresh", async () => {
     const { fake, client } = fixture();
     const requests: LiveRefreshRequest[] = [];
@@ -230,7 +279,7 @@ describe("useLiveChanges", () => {
     expect(rendered.result.current.status).not.toBe("polling");
   });
 
-  it("falls back to polling after three consecutive network failures", async () => {
+  it("reports polling after three network failures and recovers through the same stream", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
     try {
@@ -268,6 +317,12 @@ describe("useLiveChanges", () => {
 
       expect(rendered.result.current.status).toBe("polling");
       expect(fake.events.subscriberCount("notes")).toBe(0);
+
+      await act(async () => vi.advanceTimersByTimeAsync(4_000));
+      await flushMicrotasks();
+      expect(rendered.result.current.status).toBe("live");
+      expect(fake.events.subscriberCount("notes")).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
