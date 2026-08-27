@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { MAX_BODY_BYTES } from "./limits.js";
 import {
   ChangesQuery,
   CreateStashBody,
@@ -14,6 +15,10 @@ import {
 } from "./schemas.js";
 
 const importPut = (createdAt: number) => ({ kind: "put" as const, body: "x", createdAt });
+const utf8Body = (bytes: number): string => {
+  const multibyteBytes = bytes >= 3 ? 3 : 0;
+  return `${"x".repeat(bytes - multibyteBytes)}${multibyteBytes === 3 ? "日" : ""}`;
+};
 
 describe("strict request and query schemas", () => {
   it("applies list defaults and parses URL query values", () => {
@@ -35,11 +40,14 @@ describe("strict request and query schemas", () => {
   });
   it("measures bodies by UTF-8 bytes and preserves empty strings", () => {
     expect(
-      PutFileBody.safeParse({ body: "日".repeat(300_000), expectedVersion: null }).success,
+      PutFileBody.safeParse({ body: utf8Body(MAX_BODY_BYTES), expectedVersion: null }).success,
     ).toBe(true);
     expect(
-      PutFileBody.safeParse({ body: "日".repeat(400_000), expectedVersion: null }).success,
+      PutFileBody.safeParse({ body: utf8Body(MAX_BODY_BYTES + 1), expectedVersion: null }).success,
     ).toBe(false);
+    expect(
+      PutFileBody.parse({ body: utf8Body(MAX_BODY_BYTES), expectedVersion: null }).body,
+    ).toContain("日");
     expect(PutFileBody.safeParse({ body: "\uD800", expectedVersion: null }).success).toBe(false);
     expect(PutFileBody.parse({ body: "", expectedVersion: null }).body).toBe("");
   });

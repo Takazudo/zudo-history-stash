@@ -85,6 +85,27 @@ responses are ISO-8601 UTC strings; imported `createdAt` values are epoch millis
 An `already-rotated` error carries the winning successor token ID as
 `error.successorId`; it never carries the one-time successor secret.
 
+## Limits and storage tiers
+
+A text body is limited to **5 MB (5,000,000 UTF-8 bytes)**. The boundary is inclusive and applies
+to a file PUT, each `put` version in an import, and a diff candidate. The whole encoded HTTP
+request is limited to **32 MiB (33,554,432 bytes)**, including JSON structure and escaping. A
+request strictly above that aggregate limit receives `413 payload-too-large` before
+authentication or any D1 or R2 access. Imports still contain at most 20 versions, but the encoded
+request limit can require fewer versions per call.
+
+Text bodies of at most **524,288 bytes** are stored inline in D1. Larger bodies are stored in
+private R2 under content-addressed keys; D1 retains the authoritative metadata, hash, size, file
+head, history, and pointer. Reads verify the R2 object's raw byte size and SHA-256 hash before a
+fatal, BOM-preserving UTF-8 decode. Responses never expose the private object key. Diffing remains
+limited to 524,288 bytes per side, so equal-hash and oversized results use metadata without
+loading R2 bodies.
+
+Compare-and-set eligibility is checked before upload. An eligible large write uploads to R2 before
+the fenced D1 commit; a race or other refusal after upload can therefore leave an unreferenced
+private content-addressed orphan for future garbage collection (future GC). The orphan is not
+reachable through the API.
+
 ## Rate limits
 
 Routes reachable by stash principals use three Cloudflare rate-limit buckets. `RL_READ` permits
@@ -228,9 +249,10 @@ callers should catch that boundary. The RPC client transport preserves `Content-
 behavior. A rejected binding call through the client instead throws `StashHttpError` with
 `status === 0`.
 
-Cloudflare RPC serialisation is capped at 32 MiB. This API's own limits remain lower—for example,
-v1 stores text bodies up to 1,000,000 UTF-8 bytes—so those API limits still apply. The existing
-`env.STASH.fetch()` service binding remains supported for HTTP-compatible consumers.
+Cloudflare RPC serialisation is capped at 32 MiB. Independently, this API limits text bodies to
+5,000,000 UTF-8 bytes and encoded HTTP requests to 32 MiB, so the API limits still apply before an
+RPC method reaches storage. The existing `env.STASH.fetch()` service binding remains supported for
+HTTP-compatible consumers.
 
 ## Routes
 
@@ -573,7 +595,9 @@ const next = await client.stashes.import("demo", {
 ```
 
 `createdAt` must be non-decreasing and cannot be in the future. A rollback entry can target an
-earlier live version from the same call or a prior chained call.
+earlier live version from the same call or a prior chained call. The 20-version count is not a
+promise that 20 large versions fit in one request: chunk imports so each encoded JSON request,
+including escaping, stays at or below 32 MiB.
 
 ## CORS and browser tokens
 
@@ -589,5 +613,6 @@ API accepts `Authorization`, `Content-Type`, `If-None-Match`, and `Idempotency-K
 
 The v1 HTTP contract intentionally defers:
 
-- R2 spill-over and binary bodies; v1 stores text up to 1,000,000 UTF-8 bytes in D1;
+- binary request bodies and additional content types beyond UTF-8 text;
+- byte-range reads and dedicated download endpoints;
 - multi-file atomic commits; v1 history and CAS are per path.

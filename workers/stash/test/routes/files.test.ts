@@ -1,7 +1,9 @@
 import { env } from "cloudflare:workers";
+import { BODY_LIMIT_BYTES, MAX_BODY_BYTES } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { app } from "../../src/app.js";
 import { mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
+import { escapedPutRequest, repeatedAsciiRequest } from "../helpers/large-json.js";
 
 const STASH = "route-files";
 const BASE = `http://stash.test/v1/stashes/${STASH}`;
@@ -417,23 +419,39 @@ describe("file route writes", () => {
       "body-not-well-formed",
     );
 
-    await expectCode(await put("large.txt", "x".repeat(1_000_001), null), 413, "payload-too-large");
+    await expectCode(
+      await put("large.txt", "x".repeat(MAX_BODY_BYTES + 1), null),
+      413,
+      "payload-too-large",
+    );
 
+    const rawTooLarge = repeatedAsciiRequest(BODY_LIMIT_BYTES + 1);
     await expectCode(
       await api("/files/raw-too-large.txt", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: "x".repeat(9 * 1_024 * 1_024),
+        headers: {
+          "Content-Length": String(rawTooLarge.byteLength),
+          "Content-Type": "application/json",
+        },
+        body: rawTooLarge.body,
       }),
       413,
       "payload-too-large",
     );
 
-    const escaped = "\u0001".repeat(1_000_000);
-    const accepted = await put("escaped.txt", escaped, null);
+    const escaped = escapedPutRequest(MAX_BODY_BYTES);
+    expect(escaped.byteLength).toBeLessThan(BODY_LIMIT_BYTES);
+    const accepted = await api("/files/escaped.txt", {
+      method: "PUT",
+      headers: {
+        "Content-Length": String(escaped.byteLength),
+        "Content-Type": "application/json",
+      },
+      body: escaped.body,
+    });
     expect(accepted.status).toBe(201);
-    await expect(accepted.json()).resolves.toMatchObject({ size: 1_000_000 });
-  });
+    await expect(accepted.json()).resolves.toMatchObject({ size: MAX_BODY_BYTES });
+  }, 60_000);
 
   it("enforces authentication, write scope, and foreign-stash concealment", async () => {
     await expectCode(await api("/files", {}, null), 401, "unauthorized");

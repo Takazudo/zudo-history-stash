@@ -36,7 +36,7 @@ it("pins every architecture limit", () => {
     BODY_LIMIT_BYTES,
     MAX_IMPORT_VERSIONS,
   }).toEqual({
-    MAX_BODY_BYTES: 1_000_000,
+    MAX_BODY_BYTES: 5_000_000,
     MAX_PATH_BYTES: 512,
     MAX_META_BYTES: 4_096,
     MAX_AUTHOR_BYTES: 200,
@@ -49,7 +49,7 @@ it("pins every architecture limit", () => {
     DIFF_MAX_EDIT_LENGTH: 50_000,
     IDEMPOTENCY_KEY_MAX_CHARS: 200,
     IDEMPOTENCY_TTL_DAYS: 7,
-    BODY_LIMIT_BYTES: 8_388_608,
+    BODY_LIMIT_BYTES: 33_554_432,
     MAX_IMPORT_VERSIONS: 20,
   });
 });
