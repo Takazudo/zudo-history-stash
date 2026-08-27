@@ -153,6 +153,13 @@ describe("stateless components", () => {
         error: { status: 409, code: "exists", message: "Conflict" },
       }),
     ).toBe("A stash with that name already exists.");
+    expect(
+      stashErrorMessage({
+        ok: false,
+        error: { status: 429, code: "rate-limited", message: "Try later" },
+        retryAfter: Number.NaN,
+      }),
+    ).toBe("Try later");
     await expect(clientValue(Promise.resolve({ ok: true, value: 42 }))).resolves.toBe(42);
     await expect(
       clientValue(
@@ -162,6 +169,25 @@ describe("stateless components", () => {
         }),
       ),
     ).rejects.toMatchObject({ ok: false });
+  });
+
+  it("renders the shared rate-limit copy from a fake-injected ClientResult", async () => {
+    const fake = createFakeStash({
+      rateLimit: () => ({ success: false }),
+    });
+    fake.createStash("notes");
+    const secret = await fake.mintToken("notes", "read");
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: secret,
+      fetch: fake.fetch,
+    });
+    const result = await client.me();
+    if (result.ok) throw new Error("Expected the fake rate limiter to reject the request");
+
+    render(<ErrorBanner error={result} />);
+
+    expect(screen.getByText("Rate limited — try again in 60s")).toBeTruthy();
   });
 
   it("renders and disables the package Button primitive for pagination state", async () => {
