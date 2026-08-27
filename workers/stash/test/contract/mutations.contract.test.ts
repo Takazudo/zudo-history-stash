@@ -266,7 +266,6 @@ describe("local-only HTTP mutation contract", () => {
         version: 3,
         rollbackOf: 1,
         hash: first.hash,
-        size: LARGE_FILE_BYTES,
       });
 
       const restored = await files.get(path);
