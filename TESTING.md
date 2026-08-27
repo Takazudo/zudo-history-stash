@@ -82,6 +82,26 @@ CI runs the local contract command after the live fixture is seeded through the 
 guard used while the harness was being built is gone, so the contract suite is now a required part
 of every `e2e` job.
 
+## SDK conformance trace
+
+The client package exports one data-driven trace from `@takazudo/zudo-history-stash/testing`. Its
+unit lane runs against `createFakeStash`; the checked-in live runner executes the same expiry,
+one-shot rotation, rate-limit, auth, and file/history scenarios against a running Worker. Start
+`pnpm dev:full` in one terminal, then run:
+
+```bash
+pnpm build:libs
+API_BASE_URL=http://localhost:8787/api \
+STASH_ADMIN_TOKEN=dev-admin-token \
+node packages/client/scripts/conformance-live.mjs
+```
+
+The runner creates a unique stash unless `CONFORMANCE_STASH_NAME` is set. To reach the configured
+local `RL_WRITE` boundary without persisting probe data, it charges the write principal with a
+schema-invalid request until Wrangler returns 429, then verifies the trace request receives
+`Retry-After: 60`. Missing environment variables, an unavailable limiter, or any trace mismatch
+prints the failing step and exits nonzero.
+
 ## Smoke tests
 
 The post-deploy script is intentionally narrow and read-only:

@@ -6,10 +6,34 @@ import type {
 } from "@takazudo/zudo-history-stash-core";
 import type { StashFetch } from "../client.js";
 
+export type RateLimitCapability = "read" | "write" | "diff";
+
+export interface FakeRateLimitInput {
+  capability: RateLimitCapability;
+  key: string;
+  routeId: RouteId;
+}
+
+export interface FakeRateLimitResult {
+  success: boolean;
+}
+
+/** A Cloudflare-shaped limiter seam. Rejections deliberately fail open, like the real Worker. */
+export type FakeRateLimiter = (
+  input: FakeRateLimitInput,
+) => FakeRateLimitResult | Promise<FakeRateLimitResult>;
+
 /** Options for the deliberately narrow in-memory History Stash fake. */
 export interface FakeStashOptions {
   adminToken?: string;
   now?: () => number;
+  rateLimit?: FakeRateLimiter;
+}
+
+export interface FakeMintTokenOptions {
+  label?: string;
+  expiresAt?: string;
+  ttlSeconds?: number;
 }
 
 export interface FakeStashRow {
@@ -94,15 +118,27 @@ export interface FakeStash {
   /** Creates a stash directly for fixture setup and returns its public name. */
   createStash(name: string): string;
   /** Mints a fixture token through the same hash-only storage path as the HTTP route. */
-  mintToken(stash: string, scope: TokenScope): Promise<string>;
+  mintToken(stash: string, scope: TokenScope, options?: FakeMintTokenOptions): Promise<string>;
   /** Clears every in-memory table while preserving the state object identity. */
   reset(): void;
+}
+
+export interface ConformanceRateLimitTarget {
+  capability: RateLimitCapability;
+  key: string;
+  routeId: RouteId;
+  stash: string;
+  token: string;
 }
 
 export interface ConformanceOptions {
   adminToken: string;
   /** Optional stable primary stash name for repeatable unit tests. Defaults to a unique name. */
   stashName?: string;
+  /** Advances the target's clock far enough to cross a token-expiry boundary. */
+  advanceTime(milliseconds: number): void | Promise<void>;
+  /** Arranges for the named capability/key to be denied before the trace sends its assertion. */
+  configureRateLimit(target: ConformanceRateLimitTarget): void | Promise<void>;
 }
 
 export interface ConformanceReport {

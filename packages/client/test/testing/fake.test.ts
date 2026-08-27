@@ -37,8 +37,14 @@ const UNSUPPORTED_SAMPLES: Record<
   health: { method: "GET", path: "/v1/health" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
-  rotateToken: { method: "POST", path: "/v1/stashes/demo/tokens/tok_1/rotate" },
 };
+
+const EMPTY_DIFF_ROUTES = [
+  { method: "GET", path: "/v1/stashes/demo/diff", routeId: "getDiff" },
+  { method: "GET", path: "/v1/stashes/demo/diff/", routeId: "getDiff" },
+  { method: "POST", path: "/v1/stashes/demo/diff", routeId: "diffCandidate" },
+  { method: "POST", path: "/v1/stashes/demo/diff/", routeId: "diffCandidate" },
+] as const;
 
 describe("fake route boundary", () => {
   it("pins the implementation and trace to the exact supported route set", () => {
@@ -281,6 +287,259 @@ describe("token administration and capabilities", () => {
     expect(allowed.status).toBe(201);
   });
 
+  it("mints absolute and TTL expiries and conceals expiry at the exact clock boundary", async () => {
+    let now = Date.parse("2026-08-26T02:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+
+    const ttl = await request(fake, "/v1/stashes/demo/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: "TTL", scope: "read", ttlSeconds: 60 }),
+    });
+    expect(ttl.status).toBe(201);
+    const ttlToken = (await ttl.json()) as {
+      id: string;
+      token: string;
+      expiresAt: string | null;
+    };
+    expect(ttlToken.expiresAt).toBe("2026-08-26T02:01:00.000Z");
+    expect(fake.state.tokens.get(ttlToken.id)?.expiresAt).toBe(now + 60_000);
+
+    const explicitAt = now + 120_000;
+    const explicit = await request(fake, "/v1/stashes/demo/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "write", expiresAt: new Date(explicitAt).toISOString() }),
+    });
+    expect(explicit.status).toBe(201);
+    await expect(explicit.json()).resolves.toMatchObject({
+      expiresAt: new Date(explicitAt).toISOString(),
+    });
+
+    const active = await fake.fetch("https://fake.invalid/v1/me", {
+      headers: { Authorization: `Bearer ${ttlToken.token}` },
+    });
+    expect(active.status).toBe(200);
+    await expect(active.json()).resolves.toMatchObject({ expiresAt: ttlToken.expiresAt });
+    const lastUsedAt = fake.state.tokens.get(ttlToken.id)?.lastUsedAt;
+
+    now += 60_000;
+    const expired = await fake.fetch("https://fake.invalid/v1/me", {
+      headers: { Authorization: `Bearer ${ttlToken.token}` },
+    });
+    expect(expired.status).toBe(401);
+    expect(await errorCode(expired)).toBe("unauthorized");
+    expect(fake.state.tokens.get(ttlToken.id)?.lastUsedAt).toBe(lastUsedAt);
+
+    for (const body of [
+      { scope: "read", expiresAt: new Date(now).toISOString() },
+      { scope: "read", expiresAt: new Date(now + 315_360_000_001).toISOString() },
+      { scope: "read", expiresAt: new Date(now + 1_000).toISOString(), ttlSeconds: 1 },
+    ]) {
+      const invalid = await request(fake, "/v1/stashes/demo/tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(invalid.status).toBe(400);
+      expect(await errorCode(invalid)).toBe("validation");
+    }
+
+    const fixtureSecret = await fake.mintToken("demo", "read", { ttlSeconds: 30 });
+    expect(fixtureSecret).toMatch(/^zhs_[A-Za-z0-9_-]{43}$/);
+    expect(
+      [...fake.state.tokens.values()].some(({ expiresAt }) => expiresAt === now + 30_000),
+    ).toBe(true);
+  });
+
+  it("rotates once, inherits the original expiry, truncates grace, and exposes recovery metadata", async () => {
+    let now = Date.parse("2026-08-26T03:00:00.000Z");
+    const originalExpiry = now + 2 * 86_400_000;
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const created = await request(fake, "/v1/stashes/demo/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        label: "Writer",
+        scope: "write",
+        expiresAt: new Date(originalExpiry).toISOString(),
+      }),
+    });
+    const predecessor = (await created.json()) as { id: string; token: string };
+
+    const rotated = await request(fake, `/v1/stashes/demo/tokens/${predecessor.id}/rotate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ graceSeconds: 300 }),
+    });
+    expect(rotated.status).toBe(201);
+    const successor = (await rotated.json()) as {
+      id: string;
+      token: string;
+      expiresAt: string | null;
+      rotatedFrom: string | null;
+      predecessor: { id: string; expiresAt: string | null };
+    };
+    expect(successor).toMatchObject({
+      label: "Writer",
+      scope: "write",
+      expiresAt: new Date(originalExpiry).toISOString(),
+      rotatedFrom: predecessor.id,
+      predecessor: {
+        id: predecessor.id,
+        expiresAt: new Date(now + 300_000).toISOString(),
+      },
+    });
+    expect(fake.state.tokens.get(predecessor.id)).toMatchObject({
+      expiresAt: now + 300_000,
+      rotatedTo: successor.id,
+    });
+    expect(fake.state.tokens.get(successor.id)).toMatchObject({
+      expiresAt: originalExpiry,
+      rotatedFrom: predecessor.id,
+    });
+
+    const retry = await request(fake, `/v1/stashes/demo/tokens/${predecessor.id}/rotate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(retry.status).toBe(409);
+    await expect(retry.json()).resolves.toEqual({
+      error: {
+        code: "already-rotated",
+        message: "Token was already rotated.",
+        successorId: successor.id,
+      },
+    });
+
+    now += 299_999;
+    expect(
+      (
+        await fake.fetch("https://fake.invalid/v1/me", {
+          headers: { Authorization: `Bearer ${predecessor.token}` },
+        })
+      ).status,
+    ).toBe(200);
+    now += 1;
+    expect(
+      (
+        await fake.fetch("https://fake.invalid/v1/me", {
+          headers: { Authorization: `Bearer ${predecessor.token}` },
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await fake.fetch("https://fake.invalid/v1/me", {
+          headers: { Authorization: `Bearer ${successor.token}` },
+        })
+      ).status,
+    ).toBe(200);
+
+    await fake.mintToken("demo", "read");
+    const neverPredecessor = [...fake.state.tokens.values()].at(-1);
+    if (neverPredecessor === undefined) throw new Error("missing never-expiring predecessor");
+    const inheritedNull = await request(
+      fake,
+      `/v1/stashes/demo/tokens/${neverPredecessor.id}/rotate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graceSeconds: 0 }),
+      },
+    );
+    expect(inheritedNull.status).toBe(201);
+    await expect(inheritedNull.json()).resolves.toMatchObject({
+      expiresAt: null,
+      rotatedFrom: neverPredecessor.id,
+      predecessor: { id: neverPredecessor.id, expiresAt: new Date(now).toISOString() },
+    });
+  });
+
+  it("allows exactly one concurrent rotation and refuses missing, revoked, and expired tokens", async () => {
+    let now = Date.parse("2026-08-26T04:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const predecessorSecret = await fake.mintToken("demo", "read");
+    const predecessor = [...fake.state.tokens.values()][0];
+    if (predecessor === undefined) throw new Error("missing predecessor fixture");
+    expect(predecessorSecret).toMatch(/^zhs_/);
+
+    const rotate = () =>
+      request(fake, `/v1/stashes/demo/tokens/${predecessor.id}/rotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graceSeconds: 0, ttlSeconds: 60 }),
+      });
+    const responses = await Promise.all([rotate(), rotate()]);
+    expect(responses.map(({ status }) => status).sort()).toEqual([201, 409]);
+    const winnerResponse = responses.find(({ status }) => status === 201);
+    const loserResponse = responses.find(({ status }) => status === 409);
+    if (winnerResponse === undefined || loserResponse === undefined) {
+      throw new Error("rotation did not produce one winner and one loser");
+    }
+    const winner = (await winnerResponse.json()) as { id: string; expiresAt: string | null };
+    await expect(loserResponse.json()).resolves.toMatchObject({
+      error: { code: "already-rotated", successorId: winner.id },
+    });
+    expect(winner.expiresAt).toBe(new Date(now + 60_000).toISOString());
+    expect(
+      [...fake.state.tokens.values()].filter(({ rotatedFrom }) => rotatedFrom === predecessor.id),
+    ).toHaveLength(1);
+
+    const revokedSecret = await fake.mintToken("demo", "read");
+    const revoked = [...fake.state.tokens.values()].at(-1);
+    if (revoked === undefined) throw new Error("missing revoked fixture");
+    await request(fake, `/v1/stashes/demo/tokens/${revoked.id}`, { method: "DELETE" });
+    expect(revokedSecret).toMatch(/^zhs_/);
+
+    const expiredSecret = await fake.mintToken("demo", "read", { ttlSeconds: 1 });
+    const expired = [...fake.state.tokens.values()].at(-1);
+    if (expired === undefined) throw new Error("missing expired fixture");
+    expect(expiredSecret).toMatch(/^zhs_/);
+    now += 1_000;
+
+    const refused = await Promise.all([
+      request(fake, "/v1/stashes/demo/tokens/tok_missing/rotate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+      request(fake, `/v1/stashes/demo/tokens/${revoked.id}/rotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+      request(fake, `/v1/stashes/demo/tokens/${expired.id}/rotate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    ]);
+    expect(refused.map(({ status }) => status)).toEqual([404, 404, 409]);
+    const missingRefusal = refused[0];
+    const revokedRefusal = refused[1];
+    const expiredRefusal = refused[2];
+    if (
+      missingRefusal === undefined ||
+      revokedRefusal === undefined ||
+      expiredRefusal === undefined
+    ) {
+      throw new Error("missing rotation refusal response");
+    }
+    expect(await errorCode(missingRefusal)).toBe("not-found");
+    expect(await errorCode(revokedRefusal)).toBe("not-found");
+    expect(await errorCode(expiredRefusal)).toBe("token-expired");
+    expect(
+      [...fake.state.tokens.values()].filter(
+        ({ rotatedFrom }) => rotatedFrom === revoked.id || rotatedFrom === expired.id,
+      ),
+    ).toHaveLength(0);
+  });
+
   it("revokes immediately and handles missing, foreign, and invalid token operations", async () => {
     const timestamp = Date.parse("2026-08-26T01:00:00.000Z");
     const fake = createFakeStash({ adminToken: ADMIN, now: () => timestamp });
@@ -332,6 +591,161 @@ describe("token administration and capabilities", () => {
       expect(invalid.status).toBe(400);
       expect(await errorCode(invalid)).toBe("validation");
     }
+  });
+});
+
+describe("rate-limit injection", () => {
+  it("uses capability/principal/stash keys, short-circuits denials, and keeps admin exempt", async () => {
+    const calls: Array<{ capability: string; key: string; routeId: RouteId }> = [];
+    const denied = new Set<string>();
+    let unavailable = false;
+    const fake = createFakeStash({
+      adminToken: ADMIN,
+      rateLimit(input) {
+        calls.push(input);
+        if (unavailable) throw new Error("binding unavailable");
+        return { success: !denied.has(`${input.capability}:${input.key}`) };
+      },
+    });
+    fake.createStash("demo");
+    const readerSecret = await fake.mintToken("demo", "read");
+    const writerSecret = await fake.mintToken("demo", "write");
+    const [reader, writer] = [...fake.state.tokens.values()];
+    if (reader === undefined || writer === undefined) throw new Error("missing limiter fixtures");
+
+    denied.add(`read:p:${reader.id}`);
+    const principalLimited = await fake.fetch("https://fake.invalid/v1/me", {
+      headers: { Authorization: `Bearer ${readerSecret}` },
+    });
+    expect(principalLimited.status).toBe(429);
+    expect(principalLimited.headers.get("Retry-After")).toBe("60");
+    await expect(principalLimited.json()).resolves.toEqual({
+      error: { code: "rate-limited", message: "The request was rate limited." },
+    });
+    expect(calls).toEqual([{ capability: "read", key: `p:${reader.id}`, routeId: "me" }]);
+
+    calls.length = 0;
+    denied.clear();
+    denied.add("read:s:demo");
+    const stashLimited = await fake.fetch("https://fake.invalid/v1/me", {
+      headers: { Authorization: `Bearer ${readerSecret}` },
+    });
+    expect(stashLimited.status).toBe(429);
+    expect(calls).toEqual([
+      { capability: "read", key: `p:${reader.id}`, routeId: "me" },
+      { capability: "read", key: "s:demo", routeId: "me" },
+    ]);
+
+    calls.length = 0;
+    const admin = await request(fake, "/v1/me");
+    expect(admin.status).toBe(200);
+    expect(calls).toEqual([]);
+
+    denied.clear();
+    unavailable = true;
+    const failOpen = await fake.fetch("https://fake.invalid/v1/me", {
+      headers: { Authorization: `Bearer ${readerSecret}` },
+    });
+    expect(failOpen.status).toBe(200);
+    expect(calls).toEqual([{ capability: "read", key: `p:${reader.id}`, routeId: "me" }]);
+
+    unavailable = false;
+    calls.length = 0;
+    denied.add(`write:p:${writer.id}`);
+    const writeLimited = await fake.fetch(
+      "https://fake.invalid/v1/stashes/demo/files/rate-limited.txt",
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${writerSecret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ body: "must not persist", expectedVersion: null }),
+      },
+    );
+    expect(writeLimited.status).toBe(429);
+    expect(calls).toEqual([{ capability: "write", key: `p:${writer.id}`, routeId: "putFile" }]);
+    expect(fake.state.files.size).toBe(0);
+    expect(fake.state.versions).toHaveLength(0);
+    expect(fake.state.blobs.size).toBe(0);
+    expect(fake.state.idempotency.size).toBe(0);
+
+    calls.length = 0;
+    denied.clear();
+    denied.add(`diff:p:${reader.id}`);
+    const diffLimited = await fake.fetch(
+      "https://fake.invalid/v1/stashes/demo/diff/rate-limited.txt?from=1&to=head",
+      { headers: { Authorization: `Bearer ${readerSecret}` } },
+    );
+    expect(diffLimited.status).toBe(429);
+    expect(calls).toEqual([{ capability: "diff", key: `p:${reader.id}`, routeId: "getDiff" }]);
+  });
+
+  it.each(EMPTY_DIFF_ROUTES)(
+    "runs $method $path through the diff limiter before empty-path validation",
+    async ({ method, path, routeId }) => {
+      const calls: Array<{ capability: string; key: string; routeId: RouteId }> = [];
+      let denied = true;
+      const fake = createFakeStash({
+        adminToken: ADMIN,
+        rateLimit(input) {
+          calls.push(input);
+          return { success: !denied };
+        },
+      });
+      fake.createStash("demo");
+      const secret = await fake.mintToken("demo", "read");
+      const token = [...fake.state.tokens.values()][0];
+      if (token === undefined) throw new Error("missing empty-diff fixture");
+
+      const send = () =>
+        fake.fetch(`https://fake.invalid${path}`, {
+          method,
+          headers: { Authorization: `Bearer ${secret}` },
+        });
+
+      const limited = await send();
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("Retry-After")).toBe("60");
+      expect(await errorCode(limited)).toBe("rate-limited");
+      expect(calls).toEqual([{ capability: "diff", key: `p:${token.id}`, routeId }]);
+
+      denied = false;
+      calls.length = 0;
+      const invalidPath = await send();
+      expect(invalidPath.status).toBe(400);
+      expect(await errorCode(invalidPath)).toBe("invalid-path");
+      expect(calls).toEqual([
+        { capability: "diff", key: `p:${token.id}`, routeId },
+        { capability: "diff", key: "s:demo", routeId },
+      ]);
+    },
+  );
+
+  it("preserves nonempty stored-diff routing after accepting empty wildcard paths", async () => {
+    const calls: Array<{ capability: string; key: string; routeId: RouteId }> = [];
+    const fake = createFakeStash({
+      adminToken: ADMIN,
+      rateLimit(input) {
+        calls.push(input);
+        return { success: true };
+      },
+    });
+    fake.createStash("demo");
+    const secret = await fake.mintToken("demo", "read");
+    const token = [...fake.state.tokens.values()][0];
+    if (token === undefined) throw new Error("missing nonempty-diff fixture");
+
+    const response = await fake.fetch(
+      "https://fake.invalid/v1/stashes/demo/diff/missing.txt?from=1&to=head",
+      { headers: { Authorization: `Bearer ${secret}` } },
+    );
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("not-found");
+    expect(calls).toEqual([
+      { capability: "diff", key: `p:${token.id}`, routeId: "getDiff" },
+      { capability: "diff", key: "s:demo", routeId: "getDiff" },
+    ]);
   });
 });
 

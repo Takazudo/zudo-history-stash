@@ -8,14 +8,25 @@ import { createFakeStash } from "../../src/testing/index.js";
 
 describe("shared conformance trace", () => {
   it("passes the complete data-driven sequence against the fake", async () => {
+    let now = Date.parse("2026-08-25T00:00:00.000Z");
+    const denied = new Set<string>();
     const fake = createFakeStash({
       adminToken: "conformance-admin",
-      now: () => Date.parse("2026-08-25T00:00:00.000Z"),
+      now: () => now,
+      rateLimit: ({ capability, key }) => ({
+        success: !denied.has(`${capability}:${key}`),
+      }),
     });
 
     const report = await runConformance(fake.fetch, "https://fake.invalid", {
       adminToken: "conformance-admin",
       stashName: "conformance-test",
+      advanceTime(milliseconds) {
+        now += milliseconds;
+      },
+      configureRateLimit({ capability, key }) {
+        denied.add(`${capability}:${key}`);
+      },
     });
 
     expect(report.steps).toBe(CONFORMANCE_TRACE.length);
@@ -29,6 +40,11 @@ describe("shared conformance trace", () => {
         "get stash returns its aggregate",
         "create read token returns its secret once",
         "token list is newest first and omits secrets",
+        "expiring token is usable before its boundary",
+        "expired token is concealed as unauthorized",
+        "rotation creates one successor and truncates predecessor grace",
+        "rotation retry names the one successor",
+        "rotation successor authenticates with inherited expiry",
         "stash token may get its own stash",
         "read scope cannot write",
         "foreign stash is concealed",
@@ -54,6 +70,7 @@ describe("shared conformance trace", () => {
         "stored diff truncates unified output at line boundaries",
         "candidate diff reports oversized bytes",
         "file list rejects an excessive limit",
+        "configured write-principal limit returns retry metadata",
         "token revocation returns an empty 204",
         "revoked token fails authentication",
         "token list reports revocation without exposing secrets",
