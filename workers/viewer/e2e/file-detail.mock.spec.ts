@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures/console-errors.js";
+import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 const tokenScript = () => sessionStorage.setItem("zhs.token", "zhs_test");
 
@@ -21,6 +22,8 @@ test("@smoke file detail renders history and lazily requests visible stats", asy
   });
 
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillEmptyOpenProposalCount(route, [{ stash: "notes", path: "docs/readme.txt" }]))
+      return;
     const url = new URL(route.request().url());
     let value: object;
     if (url.pathname === "/api/v1/me") {

@@ -744,6 +744,188 @@ describe("named-entrypoint RPC boundary", () => {
   });
 });
 
+interface ProposalLifecycleProjection {
+  created: {
+    id: string;
+    status: string;
+    hash: string;
+    meta: Record<string, unknown>;
+  };
+  approved: {
+    status: string;
+    appliedVersion: number;
+    appliedChangeId: number;
+    hash: string;
+  };
+  history: {
+    headVersion: number;
+    total: number;
+    applied: {
+      version: number;
+      kind: string;
+      rollbackOf: number | null;
+      hash: string | null;
+      author: string;
+      message: string;
+      meta: Record<string, unknown>;
+    };
+  };
+  rpcRequests: RpcRequest[];
+}
+
+async function proposalLifecycleThroughClient(
+  transport: "fetch" | "rpc",
+): Promise<ProposalLifecycleProjection> {
+  await resetDatabase();
+  await seedRpcFixture();
+  await putFixture("generic proposal base\n", null);
+  const bindings = createTestEnv().env;
+  const rpc = new StashRpc(createExecutionContext(), bindings);
+  const requestSpy = vi.spyOn(rpc, "request");
+  const client =
+    transport === "rpc"
+      ? createStashClient({
+          transport: { kind: "rpc", binding: rpc, token: RPC_WRITE_TOKEN },
+        })
+      : createStashClient({
+          baseUrl: "https://stash.internal",
+          token: RPC_WRITE_TOKEN,
+          fetch: async (input, init) => {
+            const ctx = createExecutionContext();
+            const response = await app.fetch(new Request(input, init), bindings, ctx);
+            await waitOnExecutionContext(ctx);
+            return response;
+          },
+        });
+  const proposals = client.proposals(RPC_STASH);
+  const created = await proposals.create(
+    {
+      path: "docs/rpc.txt",
+      body: "generic proposal candidate\n",
+      baseVersion: 1,
+      author: "rpc-client-bot",
+      message: "Review generic RPC proposal",
+      meta: { lane: "generic-client-parity" },
+    },
+    { idempotencyKey: "generic-rpc-proposal-create" },
+  );
+  if (!created.ok) {
+    throw new Error(
+      `proposal create failed over ${transport} (${created.error.status} ${created.error.code}): ${created.error.message}`,
+    );
+  }
+  const approved = await proposals.approve(created.value.id, {
+    author: "rpc-client-approver",
+    message: "Approve generic RPC proposal",
+  });
+  if (!approved.ok) {
+    throw new Error(
+      `proposal approval failed over ${transport} (${approved.error.status} ${approved.error.code}): ${approved.error.message}`,
+    );
+  }
+  const history = await client.files(RPC_STASH).history("docs/rpc.txt", { limit: 200 });
+  if (!history.ok) {
+    throw new Error(
+      `proposal history failed over ${transport} (${history.error.status} ${history.error.code}): ${history.error.message}`,
+    );
+  }
+  const applied = history.value.versions.find(({ version }) => version === 2);
+  if (applied === undefined) throw new Error(`applied proposal version missing over ${transport}`);
+
+  return {
+    created: {
+      id: created.value.id,
+      status: created.value.status,
+      hash: created.value.hash,
+      meta: created.value.meta,
+    },
+    approved: {
+      status: approved.value.status,
+      appliedVersion: approved.value.appliedVersion,
+      appliedChangeId: approved.value.appliedChangeId,
+      hash: approved.value.hash,
+    },
+    history: {
+      headVersion: history.value.headVersion,
+      total: history.value.total,
+      applied: {
+        version: applied.version,
+        kind: applied.kind,
+        rollbackOf: applied.rollbackOf,
+        hash: applied.hash,
+        author: applied.author,
+        message: applied.message,
+        meta: applied.meta,
+      },
+    },
+    rpcRequests: requestSpy.mock.calls.map(([init]) => init),
+  };
+}
+
+describe.sequential("generic RPC proposal client parity", () => {
+  it("matches fetch for create, approve, and stamped ordinary history", async () => {
+    const fetched = await proposalLifecycleThroughClient("fetch");
+    const rpc = await proposalLifecycleThroughClient("rpc");
+
+    expect(rpc).toMatchObject({
+      created: {
+        id: expect.stringMatching(/^prp_\d{13}[0-9a-f]{8}$/u),
+        status: "open",
+        hash: expect.stringMatching(/^sha256-[0-9a-f]{64}$/u),
+        meta: {
+          lane: "generic-client-parity",
+          proposalId: rpc.created.id,
+        },
+      },
+      approved: {
+        status: "applied",
+        appliedVersion: 2,
+        appliedChangeId: expect.any(Number),
+        hash: rpc.created.hash,
+      },
+      history: {
+        headVersion: 2,
+        total: 2,
+        applied: {
+          version: 2,
+          kind: "put",
+          rollbackOf: null,
+          hash: rpc.created.hash,
+          author: "rpc-client-approver",
+          message: "Approve generic RPC proposal",
+          meta: {
+            lane: "generic-client-parity",
+            proposalId: rpc.created.id,
+          },
+        },
+      },
+    });
+    expect({ ...rpc, rpcRequests: [] }).toEqual(fetched);
+    expect(rpc.rpcRequests).toEqual([
+      expect.objectContaining({
+        method: "POST",
+        path: `/v1/stashes/${RPC_STASH}/proposals`,
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "generic-rpc-proposal-create",
+        },
+        token: RPC_WRITE_TOKEN,
+      }),
+      expect.objectContaining({
+        method: "POST",
+        path: `/v1/stashes/${RPC_STASH}/proposals/${rpc.created.id}/approve`,
+        token: RPC_WRITE_TOKEN,
+      }),
+      expect.objectContaining({
+        method: "GET",
+        path: `/v1/stashes/${RPC_STASH}/history/docs/rpc.txt`,
+        query: { limit: "200" },
+        token: RPC_WRITE_TOKEN,
+      }),
+    ]);
+  });
+});
+
 async function typedParity<T>(
   seed: (() => Promise<unknown>) | undefined,
   direct: (rpc: StashRpc) => Promise<T>,
