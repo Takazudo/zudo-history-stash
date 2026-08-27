@@ -1,4 +1,6 @@
 import type {
+  GcKind,
+  GcRunResult,
   JsonValue,
   RouteId,
   TokenScope,
@@ -28,6 +30,10 @@ export interface FakeStashOptions {
   adminToken?: string;
   now?: () => number;
   rateLimit?: FakeRateLimiter;
+  /** Number of days in which a soft-deleted stash can be restored. Defaults to the Worker value. */
+  deleteGraceDays?: number;
+  /** Minimum age used by the fake orphan collector. Defaults to fifteen minutes. */
+  gcOrphanMinAgeMs?: number;
 }
 
 export interface FakeMintTokenOptions {
@@ -41,6 +47,7 @@ export interface FakeStashRow {
   description: string;
   meta: Record<string, JsonValue>;
   createdAt: number;
+  deletedAt: number | null;
 }
 
 export interface FakeTokenRow {
@@ -62,6 +69,17 @@ export interface FakeBlobRow {
   stash: string;
   hash: string;
   body: string;
+  /** Exact immutable R2 generation referenced by the logical blob row, or null for inline data. */
+  r2Key: string | null;
+  size: number;
+  createdAt: number;
+}
+
+/** Private R2 inventory rows used to exercise orphan collection without deleting D1 blobs. */
+export interface FakeR2ObjectRow {
+  key: string;
+  stash: string;
+  hash: string;
   size: number;
   createdAt: number;
 }
@@ -92,6 +110,15 @@ export interface FakeVersionRow {
   createdAt: number;
 }
 
+export interface FakeGcJobRow {
+  kind: GcKind;
+  nextCursor: string | null;
+  leaseOwner: string | null;
+  leaseGeneration: number;
+  leaseUntil: number | null;
+  updatedAt: number;
+}
+
 export interface FakeIdempotencyRow {
   stash: string;
   key: string;
@@ -107,9 +134,12 @@ export interface FakeStashState {
   stashes: Map<string, FakeStashRow>;
   tokens: Map<string, FakeTokenRow>;
   blobs: Map<string, Map<string, FakeBlobRow>>;
+  r2Objects: Map<string, FakeR2ObjectRow>;
   files: Map<string, Map<string, FakeFileRow>>;
   versions: FakeVersionRow[];
   idempotency: Map<string, Map<string, FakeIdempotencyRow>>;
+  gcJobs: Map<GcKind, FakeGcJobRow>;
+  gcRuns: GcRunResult[];
 }
 
 export interface FakeStash {

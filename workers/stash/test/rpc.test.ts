@@ -821,6 +821,110 @@ describe("typed StashRpc methods", () => {
     expect(direct).toEqual(client);
   });
 
+  it("delegates lifecycle and GC methods through the typed client boundary", async () => {
+    const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
+    const requests: RpcRequest[] = [];
+    vi.spyOn(rpc, "request").mockImplementation(async (init) => {
+      requests.push(init);
+      const body =
+        init.path === "/v1/stashes/rpc-fixture"
+          ? {
+              name: RPC_STASH,
+              deletedAt: "2026-08-26T00:00:00.000Z",
+              revokedTokens: 1,
+              restoreUntil: "2026-09-25T00:00:00.000Z",
+            }
+          : init.path === "/v1/stashes/rpc-fixture/restore"
+            ? {
+                name: RPC_STASH,
+                description: "",
+                meta: {},
+                fileCount: 0,
+                deletedFileCount: 0,
+                lastChangeId: null,
+                lastChangeAt: null,
+                createdAt: "2026-08-26T00:00:00.000Z",
+                deletedAt: null,
+                restoreUntil: null,
+                restorable: false,
+              }
+            : init.path === "/v1/stashes"
+              ? { stashes: [], nextAfter: null }
+              : init.path === "/v1/admin/gc"
+                ? {
+                    runId: "00000000-0000-4000-8000-000000000001",
+                    jobId: "r2-orphans",
+                    kind: "r2-orphans",
+                    dryRun: true,
+                    scanned: 0,
+                    eligible: 0,
+                    deleted: 0,
+                    cursor: null,
+                    startedAt: "2026-08-26T00:00:00.000Z",
+                    finishedAt: "2026-08-26T00:00:00.000Z",
+                    error: null,
+                  }
+                : { runs: [] };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await expect(
+      rpc.listStashes("test-admin", { limit: 2, after: "alpha", includeDeleted: true }),
+    ).resolves.toEqual({ ok: true, value: { stashes: [], nextAfter: null } });
+    await expect(rpc.deleteStash("test-admin", RPC_STASH)).resolves.toMatchObject({
+      ok: true,
+      value: { name: RPC_STASH },
+    });
+    await expect(rpc.restoreStash("test-admin", RPC_STASH)).resolves.toMatchObject({
+      ok: true,
+      value: { name: RPC_STASH, deletedAt: null },
+    });
+    await expect(
+      rpc.runGc("test-admin", {
+        kind: "r2-orphans",
+        dryRun: true,
+        maxObjects: 1,
+        cursor: "opaque",
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { jobId: "r2-orphans" } });
+    await expect(rpc.listGcRuns("test-admin", { kind: "ledger", limit: 3 })).resolves.toEqual({
+      ok: true,
+      value: { runs: [] },
+    });
+
+    expect(requests).toEqual([
+      {
+        method: "GET",
+        path: "/v1/stashes",
+        query: { limit: "2", after: "alpha", includeDeleted: "true" },
+        token: "test-admin",
+      },
+      { method: "DELETE", path: `/v1/stashes/${RPC_STASH}`, token: "test-admin" },
+      { method: "POST", path: `/v1/stashes/${RPC_STASH}/restore`, token: "test-admin" },
+      {
+        method: "POST",
+        path: "/v1/admin/gc",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "r2-orphans",
+          dryRun: true,
+          maxObjects: 1,
+          cursor: "opaque",
+        }),
+        token: "test-admin",
+      },
+      {
+        method: "GET",
+        path: "/v1/admin/gc/runs",
+        query: { kind: "ledger", limit: "3" },
+        token: "test-admin",
+      },
+    ]);
+  });
+
   it("returns an internal Result when request rejects", async () => {
     const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
     vi.spyOn(rpc, "request").mockRejectedValueOnce(new Error("typed request failed"));

@@ -86,16 +86,7 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     token: string,
     options: ListStashesRpcOptions = {},
   ): Promise<ClientResult<ListStashesResult>> {
-    const query: Record<string, string> = {};
-    if (options.limit !== undefined) query.limit = String(options.limit);
-    if (options.after !== undefined) query.after = options.after;
-    if (options.includeDeleted !== undefined) query.includeDeleted = String(options.includeDeleted);
-    return rpcRequest(this, "listStashes", {
-      method: "GET",
-      path: "/v1/stashes",
-      ...(Object.keys(query).length === 0 ? {} : { query }),
-      token,
-    });
+    return noThrow(() => rpcClient(this, token).stashes.list(options));
   }
 
   async createStash(
@@ -110,19 +101,11 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
   }
 
   async deleteStash(token: string, stash: string): Promise<ClientResult<DeleteStashResult>> {
-    return rpcRequest(this, "deleteStash", {
-      method: "DELETE",
-      path: `/v1/stashes/${stash}`,
-      token,
-    });
+    return noThrow(() => rpcClient(this, token).stashes.delete(stash));
   }
 
   async restoreStash(token: string, stash: string): Promise<ClientResult<RestoreStashResult>> {
-    return rpcRequest(this, "restoreStash", {
-      method: "POST",
-      path: `/v1/stashes/${stash}/restore`,
-      token,
-    });
+    return noThrow(() => rpcClient(this, token).stashes.restore(stash));
   }
 
   async createToken(
@@ -175,28 +158,14 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
   }
 
   async runGc(token: string, input: RunGcBody): Promise<ClientResult<GcRunResult>> {
-    return rpcRequest(this, "runGc", {
-      method: "POST",
-      path: "/v1/admin/gc",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-      token,
-    });
+    return noThrow(() => rpcClient(this, token).admin.gc.run(input));
   }
 
   async listGcRuns(
     token: string,
     options: ListGcRunsOptions = {},
   ): Promise<ClientResult<GcRunsResponse>> {
-    const query: Record<string, string> = {};
-    if (options.kind !== undefined) query.kind = options.kind;
-    if (options.limit !== undefined) query.limit = String(options.limit);
-    return rpcRequest(this, "listGcRuns", {
-      method: "GET",
-      path: "/v1/admin/gc/runs",
-      ...(Object.keys(query).length === 0 ? {} : { query }),
-      token,
-    });
+    return noThrow(() => rpcClient(this, token).admin.gc.runs(options));
   }
 
   async listFiles(
@@ -311,16 +280,6 @@ async function noThrowFile(run: () => Promise<FileGetResult>): Promise<FileGetRe
   } catch (error) {
     return internalFailure(error);
   }
-}
-
-async function rpcRequest<T>(
-  binding: StashRpc,
-  routeId: RouteId,
-  init: RpcRequest,
-): Promise<ClientResult<T>> {
-  return noThrow(async () => {
-    return (await parseClientResponse<T>(await binding.request(init), routeId)) as ClientResult<T>;
-  });
 }
 
 const rpcMethodsByRoute = {
