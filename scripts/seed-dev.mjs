@@ -98,6 +98,7 @@ function loadLocalAdminToken() {
 }
 
 function freshResetName() {
+  // Soft deletion never releases a stash name, so every reset needs both time and random suffixes.
   const timestamp = new Date().toISOString().replace(/\D/gu, "").slice(0, 14);
   const random = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 8);
   return `${DEFAULT_STASH_NAME}-reset-${timestamp}-${random}`;

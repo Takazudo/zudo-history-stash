@@ -68,7 +68,8 @@ unchanged at every tier. Every persisting case is declared directly with
 `it.runIf(MUTATION_ALLOWED)`, where `MUTATION_ALLOWED` is true only for `TEST_TIER=local`.
 Preview and production therefore share the same read assertions while discovering mutation cases
 as skipped. A `POST` candidate diff remains in the read lane because the route has read capability
-and never persists its body.
+and never persists its body. The local mutation lane is additionally fenced to a loopback
+`API_BASE_URL`; setting `TEST_TIER=local` for a remote origin leaves every persisting case skipped.
 
 The local-only mutation lane also mints a token with `ttlSeconds: 1` and proves it becomes the
 public `401 unauthorized`, then rotates a separate token and proves both credentials during the
@@ -81,6 +82,9 @@ The same local-only lane creates a unique 1.5 MB ASCII file and drives the full 
 lifecycle: PUT, a small successor, metadata-only history, byte-oversized diff, rollback to the
 original hash, exact GET body, and conditional `304`. Because the stash name is unique, rerunning
 the contract against persisted local D1/R2 state does not depend on or overwrite an earlier run.
+It also creates a separate unique stash and write token, spills a 1.5 MB body, soft-deletes the
+stash, proves the former token is `401`, finds the record only with `includeDeleted`, restores it,
+reads the exact body as admin, proves the old token remains revoked, and authenticates a new token.
 
 The injected-clock Worker/RPC tests and fake conformance trace run inside the ordinary workspace
 test lane. The server-backed HTTP contract, checked-in live conformance runner, and Playwright live
@@ -103,16 +107,21 @@ API_BASE_URL=http://localhost:8787/api \
 pnpm --filter zudo-history-stash test:contract
 ```
 
-To audit the production mutation fence, run the same seeded read suite with the JSON reporter and
-inspect its skipped-test count; no test in `local-only HTTP mutation contract` may pass or fail:
+To audit the production mutation fence without contacting production, point the production tier at
+the seeded local `dev:full` origin with the JSON reporter and inspect its skipped-test count; no test
+in `local-only HTTP mutation contract` may pass or fail:
 
 ```bash
 TEST_TIER=production \
-API_BASE_URL=https://stash.example.com \
-STASH_ADMIN_TOKEN="$STASH_ADMIN_TOKEN" \
+API_BASE_URL=http://localhost:8787/api \
+STASH_ADMIN_TOKEN=dev-admin-token \
 pnpm --filter zudo-history-stash test:contract --reporter=json \
-  --outputFile=contract-production.json
+  --outputFile=/tmp/zhs-contract-production.json
 ```
+
+This command performs only the cross-tier read contract. A real production smoke remains the
+read-only health/auth check described below; never use the local mutation or live conformance lane
+against a deployed production origin.
 
 CI runs the local contract command after the live fixture is seeded through the viewer proxy. The
 guard used while the harness was being built is gone, so the contract suite is now a required part
@@ -136,7 +145,51 @@ The runner creates a unique stash unless `CONFORMANCE_STASH_NAME` is set. To rea
 local `RL_WRITE` boundary without persisting probe data, it charges the write principal with a
 schema-invalid request until Wrangler returns 429, then verifies the trace request receives
 `Retry-After: 60`. Missing environment variables, an unavailable limiter, or any trace mismatch
-prints the failing step and exits nonzero.
+prints the failing step and exits nonzero. This is deliberately a mutating, loopback-only runner:
+it rejects non-local tiers and non-loopback origins. Both GC operations in its shared trace are
+hard-coded dry runs.
+
+## Lifecycle and GC confirmation matrix
+
+The aggregate confirmation keeps destructive storage proof inside isolated Cloudflare test
+bindings and live product proof on `dev:full`:
+
+```bash
+pnpm --filter zudo-history-stash exec vitest run \
+  --config vitest.config.ts test/final-evidence.test.ts
+pnpm b4push
+```
+
+The focused Worker proof uses real isolated D1/R2 bindings. It derives the injected GC clock from
+the R2 objects' own upload timestamps, then proves referenced, orphan v2, and legacy-key handling;
+ledger ties and continuation; cursor persistence; public `409 gc-busy`; stable job IDs; distinct
+UUID run IDs; newest-first history; and restart after a null cursor. It does not edit local Wrangler
+state or wait out the 15-minute age gate.
+
+With `dev:full` running and `demo` seeded, record these as separate stash lanes:
+
+```bash
+TEST_TIER=local \
+API_BASE_URL=http://localhost:8787/api \
+STASH_ADMIN_TOKEN=dev-admin-token \
+pnpm --filter zudo-history-stash test:contract
+
+API_BASE_URL=http://localhost:8787/api \
+STASH_ADMIN_TOKEN=dev-admin-token \
+node packages/client/scripts/conformance-live.mjs
+```
+
+Stop that manually managed server before the one-command viewer lane. Automation environments
+should serialize this browser lane with their normal Playwright guard:
+
+```bash
+pnpm --filter zudo-history-stash-viewer e2e:live
+```
+
+The live browser cases soft-delete and restore a unique stash, and submit an R2 GC page with
+`dryRun: true`. They never delete `demo`, never submit live GC, never print token secrets or R2
+object keys, and do not capture or upload screenshots. Both Playwright configuration and the live
+spec reject a non-loopback `PW_BASE_URL` before the suite can send a request.
 
 ## Smoke tests
 
