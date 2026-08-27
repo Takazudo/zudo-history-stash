@@ -226,7 +226,7 @@ function ttlDays(env: Env): number {
   return days;
 }
 
-function validateCreateInput(input: CreateProposalInput, now: number): number | null {
+function validateCreateInput(input: CreateProposalInput): number | null {
   if (input === null || typeof input !== "object") return validation("Invalid proposal input");
   if (typeof input.body !== "string") return validation("Invalid proposal input");
   if (!isWellFormedString(input.body)) {
@@ -244,9 +244,7 @@ function validateCreateInput(input: CreateProposalInput, now: number): number | 
     return validation("expiresAt must be an ISO timestamp");
   }
   const expiresAt = Date.parse(input.expiresAt);
-  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) {
-    return validation("expiresAt must be in the future");
-  }
+  if (!Number.isSafeInteger(expiresAt)) return validation("expiresAt must be an ISO timestamp");
   return expiresAt;
 }
 
@@ -378,15 +376,7 @@ export function createProposals(env: Env, deps: ProposalDependencies): ProposalS
       const stashName = validateStash(stash);
       const key = validateIdempotencyKey(options.idempotencyKey);
       const now = deps.now();
-      const explicitExpiry = validateCreateInput(input, now);
-      const expiresAt = explicitExpiry ?? now + ttlDays(env) * DAY_MS;
-      if (!Number.isSafeInteger(expiresAt)) return internal();
-      const id = proposalId(now, deps.createId());
-      const meta = { ...(input.meta ?? {}), proposalId: id };
-      const metaJson = canonicalJson(meta);
-      if (utf8ByteLength(metaJson) > MAX_META_BYTES) {
-        return validation("Stamped proposal meta is too large");
-      }
+      const explicitExpiry = validateCreateInput(input);
       const size = utf8ByteLength(input.body);
       const [hash, requestHash] = await Promise.all([
         sha256Hex(input.body),
@@ -397,6 +387,18 @@ export function createProposals(env: Env, deps: ProposalDependencies): ProposalS
       if (key !== undefined) {
         const prior = await selectProposalByKey(db, stashName, key);
         if (prior !== null) return replay(prior, requestHash, now);
+      }
+
+      if (explicitExpiry !== null && explicitExpiry <= now) {
+        return validation("expiresAt must be in the future");
+      }
+      const expiresAt = explicitExpiry ?? now + ttlDays(env) * DAY_MS;
+      if (!Number.isSafeInteger(expiresAt)) return internal();
+      const id = proposalId(now, deps.createId());
+      const meta = { ...(input.meta ?? {}), proposalId: id };
+      const metaJson = canonicalJson(meta);
+      if (utf8ByteLength(metaJson) > MAX_META_BYTES) {
+        return validation("Stamped proposal meta is too large");
       }
 
       const prepared = await prepareBlob(

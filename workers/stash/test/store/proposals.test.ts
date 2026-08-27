@@ -9,6 +9,7 @@ import {
   utf8ByteLength,
 } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
+import { blobKey } from "../../src/d1/blobs.js";
 import { createProposals, type ProposalDependencies } from "../../src/d1/proposals.js";
 import { createStashStore } from "../../src/d1/store.js";
 import { createWrites } from "../../src/d1/writes.js";
@@ -252,6 +253,47 @@ describe("proposal store", () => {
     expect(await rowCount("blobs")).toBe(1);
   });
 
+  it("replays the same key at exact expiry without another R2 write", async () => {
+    await seedStash(STASH);
+    let clock = NOW;
+    let idCalls = 0;
+    const calls: BlobCallCounts = { get: 0, put: 0 };
+    const bindings = wrapBlobs(env as Env, { count: calls });
+    const proposals = createProposals(bindings, {
+      ...deps(),
+      now: () => clock,
+      createId: () => {
+        idCalls += 1;
+        return idCalls.toString(16).padStart(8, "0");
+      },
+    });
+    const input = {
+      path: "expired-replay.md",
+      body: "e".repeat(R2_SPILL_BYTES + 1),
+      baseVersion: null,
+    } as const;
+    const first = await proposals.createProposal(STASH, input, {
+      idempotencyKey: "expired-replay-key",
+    });
+    expect(first.value.status).toBe("open");
+    expect(calls.put).toBe(1);
+    expect(idCalls).toBe(1);
+
+    clock = Date.parse(first.value.expiresAt);
+    bindings.PROPOSAL_TTL_DAYS = "invalid-after-create";
+    const replay = await proposals.createProposal(STASH, input, {
+      idempotencyKey: "expired-replay-key",
+    });
+    expect(replay).toMatchObject({
+      replayed: true,
+      value: { id: first.value.id, status: "expired", expiresAt: first.value.expiresAt },
+    });
+    expect(calls.put).toBe(1);
+    expect(idCalls).toBe(1);
+    expect(await rowCount("proposals")).toBe(1);
+    expect(await rowCount("blobs")).toBe(1);
+  });
+
   it("lets one concurrent same-key batch win and reconstructs one replay", async () => {
     const barrier = twoPartyBarrier();
     const { bindings, proposalDeps } = await setup({ onBeforeCommit: barrier });
@@ -266,6 +308,86 @@ describe("proposal store", () => {
     expect(results[0]?.value).toEqual(results[1]?.value);
     expect(await rowCount("proposals")).toBe(1);
     expect(await rowCount("blobs")).toBe(1);
+  });
+
+  it("returns one winner and one key-reused loser for concurrent different bodies", async () => {
+    const barrier = twoPartyBarrier();
+    const { bindings, proposalDeps } = await setup({ onBeforeCommit: barrier });
+    const proposals = createProposals(bindings, proposalDeps);
+    const results = await Promise.allSettled([
+      proposals.createProposal(
+        STASH,
+        { path: "parallel-different.md", body: "candidate-a", baseVersion: null },
+        { idempotencyKey: "parallel-different-key" },
+      ),
+      proposals.createProposal(
+        STASH,
+        { path: "parallel-different.md", body: "candidate-b", baseVersion: null },
+        { idempotencyKey: "parallel-different-key" },
+      ),
+    ]);
+    const fulfilled = results.filter(
+      (
+        result,
+      ): result is PromiseFulfilledResult<Awaited<ReturnType<typeof proposals.createProposal>>> =>
+        result.status === "fulfilled",
+    );
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expectCode(rejected[0]?.reason, "idempotency-key-reused");
+    expect(await rowCount("proposals")).toBe(1);
+    expect(await rowCount("blobs")).toBe(1);
+    const winner = fulfilled[0]?.value.value;
+    if (winner === undefined) throw new Error("Expected one concurrent proposal winner");
+    await expect(proposals.getProposal(STASH, winner.id)).resolves.toMatchObject({
+      body: expect.stringMatching(/^candidate-[ab]$/),
+    });
+  });
+
+  it("converges spilled same-body races while retaining only the winning generation reference", async () => {
+    await seedStash(STASH);
+    const generations = [generation(201), generation(202)] as const;
+    const calls: BlobCallCounts = { get: 0, put: 0 };
+    const bindings = wrapBlobs(env as Env, { count: calls });
+    const proposals = createProposals(bindings, {
+      now: () => NOW,
+      createId: idFactory(),
+      createBlobGeneration: generationFactory(...generations),
+      onBeforeCommit: twoPartyBarrier(),
+    });
+    const body = "s".repeat(R2_SPILL_BYTES + 1);
+    const input = { path: "parallel-spilled.md", body, baseVersion: null } as const;
+    const results = await Promise.all([
+      proposals.createProposal(STASH, input, { idempotencyKey: "parallel-spilled-key" }),
+      proposals.createProposal(STASH, input, { idempotencyKey: "parallel-spilled-key" }),
+    ]);
+
+    expect(results.filter((result) => result.replayed === true)).toHaveLength(1);
+    expect(results[0]?.value).toEqual(results[1]?.value);
+    expect(calls.put).toBe(2);
+    expect(await rowCount("proposals")).toBe(1);
+    expect(await rowCount("blobs")).toBe(1);
+
+    const winner = results[0]?.value;
+    if (winner === undefined) throw new Error("Expected converged proposal results");
+    const stored = await env.DB.prepare(
+      "SELECT r2_key FROM blobs WHERE stash_name = ? AND hash = ?",
+    )
+      .bind(STASH, winner.hash)
+      .first<{ r2_key: string }>();
+    const generationKeys = generations.map((value) => blobKey(STASH, winner.hash, value));
+    expect(generationKeys).toContain(stored?.r2_key);
+    const committed = await env.BLOBS.get(stored?.r2_key ?? "");
+    if (committed === null) throw new Error("Expected the winning R2 generation");
+    await expect(committed.text()).resolves.toBe(body);
+
+    const listed = await env.BLOBS.list({ prefix: `v2/${STASH}/${winner.hash}/` });
+    expect(listed.objects.map(({ key }) => key).sort()).toEqual([...generationKeys].sort());
+    expect(listed.objects.filter(({ key }) => key !== stored?.r2_key)).toHaveLength(1);
   });
 
   it("keeps both create statements fenced when the stash is deleted before commit", async () => {
