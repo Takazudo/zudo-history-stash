@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CLIENT_ROUTES, StashHttpError, createStashClient, validatePath } from "./index.js";
+import {
+  CLIENT_ROUTES,
+  StashHttpError,
+  createStashClient,
+  isProposalClosedResult,
+  isProposalExpiredResult,
+  isProposalStaleResult,
+  validatePath,
+} from "./index.js";
 import { createRpcSend } from "./transport.js";
 import type { StashFetch, StashRpcBinding } from "./index.js";
 import {
@@ -147,6 +155,12 @@ describe("transport options", () => {
       ok: false,
       error: { code: "invalid-path" },
     });
+    await expect(
+      c.proposals("demo").create({ path: "bad path", body: "x", baseVersion: null }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid-path" },
+    });
     await expect(c.changes({ since: 1, before: 2 })).resolves.toMatchObject({
       ok: false,
       error: { code: "validation" },
@@ -217,8 +231,31 @@ describe("golden requests", () => {
       graceSeconds: 60,
       expiresAt: "2026-08-26T00:00:00.000Z",
     });
+    const proposals = c.proposals("demo");
+    const proposalId = "prp_1787702400000deadbeef";
+    await proposals.create(
+      {
+        path: "docs/readme.md",
+        body: "candidate",
+        baseVersion: 2,
+        author: "bot",
+        message: "proposal",
+        meta: { source: "test" },
+      },
+      { idempotencyKey: "proposal-key" },
+    );
+    await proposals.list({
+      status: "open",
+      path: "docs/readme.md",
+      limit: 2,
+      after: "opaque",
+    });
+    await proposals.get(proposalId);
+    await proposals.diff(proposalId, { context: 1 });
+    await proposals.approve(proposalId, { author: "approver", message: "ship" });
+    await proposals.reject(proposalId, { reason: "superseded" });
 
-    expect(mock).toHaveBeenCalledTimes(20);
+    expect(mock).toHaveBeenCalledTimes(26);
     expect(requestAt(0)).toMatchObject({
       url: "https://stash.example/v1/health",
       init: { method: "GET", headers: { Authorization: "Bearer admin-token" } },
@@ -310,6 +347,43 @@ describe("golden requests", () => {
         body: JSON.stringify({ graceSeconds: 60, expiresAt: "2026-08-26T00:00:00.000Z" }),
       },
     });
+    expect(requestAt(20)).toMatchObject({
+      url: "https://stash.example/v1/stashes/demo/proposals",
+      init: {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer admin-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "proposal-key",
+        },
+        body: JSON.stringify({
+          path: "docs/readme.md",
+          body: "candidate",
+          baseVersion: 2,
+          author: "bot",
+          message: "proposal",
+          meta: { source: "test" },
+        }),
+      },
+    });
+    expect(requestAt(21).url).toBe(
+      "https://stash.example/v1/stashes/demo/proposals?status=open&path=docs%2Freadme.md&limit=2&after=opaque",
+    );
+    expect(requestAt(22).url).toBe(`https://stash.example/v1/stashes/demo/proposals/${proposalId}`);
+    expect(requestAt(23).url).toBe(
+      `https://stash.example/v1/stashes/demo/proposals/${proposalId}/diff?context=1`,
+    );
+    expect(requestAt(24)).toMatchObject({
+      url: `https://stash.example/v1/stashes/demo/proposals/${proposalId}/approve`,
+      init: {
+        method: "POST",
+        body: JSON.stringify({ author: "approver", message: "ship" }),
+      },
+    });
+    expect(requestAt(25)).toMatchObject({
+      url: `https://stash.example/v1/stashes/demo/proposals/${proposalId}/reject`,
+      init: { method: "POST", body: JSON.stringify({ reason: "superseded" }) },
+    });
   });
 });
 
@@ -371,6 +445,25 @@ describe("response mapping and safety", () => {
       error: { code: "stale", message: "head moved", status: 409 },
       current,
     });
+
+    mock.mockResolvedValueOnce(
+      jsonResponse({ error: { code: "stale", message: "head moved" }, current }, 409),
+    );
+    const proposalStale = await c.proposals("demo").approve("prp_1787702400000deadbeef");
+    expect(isProposalStaleResult(proposalStale)).toBe(true);
+    if (isProposalStaleResult(proposalStale)) expect(proposalStale.current).toEqual(current);
+    expect(
+      isProposalExpiredResult({
+        ok: false,
+        error: { code: "proposal-expired", message: "expired", status: 409 },
+      }),
+    ).toBe(true);
+    expect(
+      isProposalClosedResult({
+        ok: false,
+        error: { code: "proposal-closed", message: "closed", status: 409 },
+      }),
+    ).toBe(true);
   });
 
   it("maps 304 to a distinct notModified result and sends the supplied ETag", async () => {

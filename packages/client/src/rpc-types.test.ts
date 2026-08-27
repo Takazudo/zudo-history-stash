@@ -1,6 +1,17 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { RouteId } from "@takazudo/zudo-history-stash-core";
-import type { ListGcRunsOptions, ListStashesOptions } from "./client.js";
+import type { Current, RouteId } from "@takazudo/zudo-history-stash-core";
+import {
+  isProposalClosedResult,
+  isProposalExpiredResult,
+  isProposalStaleResult,
+} from "./client.js";
+import type {
+  ApproveProposalClientResult,
+  ListGcRunsOptions,
+  ListStashesOptions,
+  RejectProposalClientResult,
+  StashClient,
+} from "./client.js";
 import type { StashRpcMethods } from "./rpc-types.js";
 
 const rpcMethodsByRoute = {
@@ -72,5 +83,34 @@ describe("StashRpcMethods route pin", () => {
     expectTypeOf<ListStashesOptions["after"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<ListGcRunsOptions["kind"]>().toEqualTypeOf<"r2-orphans" | "ledger" | undefined>();
     expectTypeOf<ListGcRunsOptions["limit"]>().toEqualTypeOf<number | undefined>();
+  });
+
+  it("types high-level proposal decisions while retaining the staged raw RPC bridge", () => {
+    type ProposalsClient = ReturnType<StashClient["proposals"]>;
+    expectTypeOf<ReturnType<ProposalsClient["approve"]>>().toEqualTypeOf<
+      Promise<ApproveProposalClientResult>
+    >();
+    expectTypeOf<ReturnType<ProposalsClient["reject"]>>().toEqualTypeOf<
+      Promise<RejectProposalClientResult>
+    >();
+    expectTypeOf<ReturnType<StashRpcMethods["createProposal"]>>().toEqualTypeOf<
+      Promise<Response>
+    >();
+    expectTypeOf<ReturnType<StashRpcMethods["approveProposal"]>>().toEqualTypeOf<
+      Promise<Response>
+    >();
+
+    const verifyApprovalNarrowing = (result: ApproveProposalClientResult) => {
+      if (isProposalStaleResult(result)) {
+        expectTypeOf(result.current).toEqualTypeOf<Current>();
+      }
+      if (isProposalExpiredResult(result)) {
+        expectTypeOf(result.error.code).toEqualTypeOf<"proposal-expired">();
+      }
+      if (isProposalClosedResult(result)) {
+        expectTypeOf(result.error.code).toEqualTypeOf<"proposal-closed">();
+      }
+    };
+    expectTypeOf(verifyApprovalNarrowing).toBeFunction();
   });
 });

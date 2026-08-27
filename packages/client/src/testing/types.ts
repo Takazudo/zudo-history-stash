@@ -2,6 +2,7 @@ import type {
   GcKind,
   GcRunResult,
   JsonValue,
+  ProposalStatus,
   RouteId,
   TokenScope,
   VersionKind,
@@ -34,6 +35,8 @@ export interface FakeStashOptions {
   deleteGraceDays?: number;
   /** Minimum age used by the fake orphan collector. Defaults to fifteen minutes. */
   gcOrphanMinAgeMs?: number;
+  /** Number of days before a proposal expires. Defaults to the Worker value of fourteen. */
+  proposalTtlDays?: number;
 }
 
 export interface FakeMintTokenOptions {
@@ -110,6 +113,29 @@ export interface FakeVersionRow {
   createdAt: number;
 }
 
+/** Stored proposal state. Expiry is projected at read time and is never persisted as a status. */
+export interface FakeProposalRow {
+  id: string;
+  stash: string;
+  path: string;
+  baseVersion: number | null;
+  blobHash: string;
+  size: number;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  status: Exclude<ProposalStatus, "expired">;
+  expiresAt: number;
+  createdAt: number;
+  idempotencyKey: string | null;
+  requestHash: string | null;
+  decidedAt: number | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  appliedVersion: number | null;
+  appliedChangeId: number | null;
+}
+
 export interface FakeGcJobRow {
   kind: GcKind;
   nextCursor: string | null;
@@ -137,6 +163,7 @@ export interface FakeStashState {
   r2Objects: Map<string, FakeR2ObjectRow>;
   files: Map<string, Map<string, FakeFileRow>>;
   versions: FakeVersionRow[];
+  proposals: Map<string, Map<string, FakeProposalRow>>;
   idempotency: Map<string, Map<string, FakeIdempotencyRow>>;
   gcJobs: Map<GcKind, FakeGcJobRow>;
   gcRuns: GcRunResult[];
