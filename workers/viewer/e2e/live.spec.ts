@@ -22,6 +22,8 @@ interface MintedToken {
   label: string;
   scope: "write";
   createdAt: string;
+  expiresAt: string | null;
+  rotatedFrom: string | null;
 }
 
 interface MutationResult {
@@ -324,6 +326,8 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
       label,
       scope: "write",
       createdAt: expect.any(String),
+      expiresAt: null,
+      rotatedFrom: null,
     });
 
     const seeded = await request.put(liveFileUrl(path), {
