@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { blobKey, legacyBlobKey } from "../src/d1/blobs.js";
 import { StorageOperationBudget } from "../src/d1/gc-store.js";
 import {
-  GcBudgetExhaustedError,
   GcCursorValidationError,
   createGcEngine,
   decodeGcCursor,
@@ -82,7 +81,7 @@ function withR2Counts(
   return { ...bindings, BLOBS: bucket };
 }
 
-function withD1Count(bindings: Env, calls: { d1: number }): Env {
+function withD1Count(bindings: Env, calls: { d1: number; d1BatchSizes?: number[] }): Env {
   function statement(source: D1PreparedStatement): D1PreparedStatement {
     return new Proxy(source, {
       get(target, property) {
@@ -112,6 +111,7 @@ function withD1Count(bindings: Env, calls: { d1: number }): Env {
         if (property === "batch") {
           return (...args: Parameters<D1DatabaseSession["batch"]>) => {
             calls.d1 += 1;
+            calls.d1BatchSizes?.push(args[0].length);
             return target.batch(...args);
           };
         }
@@ -130,6 +130,7 @@ function withD1Count(bindings: Env, calls: { d1: number }): Env {
       if (property === "batch") {
         return (...args: Parameters<D1Database["batch"]>) => {
           calls.d1 += 1;
+          calls.d1BatchSizes?.push(args[0].length);
           return target.batch(...args);
         };
       }
@@ -353,6 +354,40 @@ async function ledgerKeys(): Promise<string[]> {
 }
 
 describe("ledger collection", () => {
+  it.each([
+    { label: "default", count: 100, maxObjects: undefined, deleteStatements: 2 },
+    { label: "maximum", count: 500, maxObjects: 500, deleteStatements: 6 },
+  ])(
+    "deletes a $label $count-row page with at most 100 parameters per statement",
+    async ({ count, maxObjects, deleteStatements }) => {
+      const now = TTL_MS + 1_000;
+      await seedLedger(
+        Array.from({ length: count }, (_, index) => ({
+          key: `large-${index}`,
+          createdAt: index,
+        })),
+      );
+      const calls = { d1: 0, d1BatchSizes: [] as number[] };
+      const budget = new StorageOperationBudget(45);
+      const engine = createGcEngine(withD1Count(env, calls), { now: () => now, budget });
+      const result = await engine.run(
+        input({ kind: "ledger", ...(maxObjects === undefined ? {} : { maxObjects }) }),
+      );
+
+      expect(result).toMatchObject({
+        scanned: count,
+        eligible: count,
+        deleted: count,
+        cursor: null,
+        error: null,
+      });
+      expect(await ledgerKeys()).toEqual([]);
+      expect(calls.d1BatchSizes).toEqual([deleteStatements, 4]);
+      expect(calls.d1).toBe(budget.used);
+      expect(budget.used).toBe(6);
+    },
+  );
+
   it("keyset-pages TTL ties, preserves the exact cutoff, and includes arrivals after the boundary", async () => {
     const now = TTL_MS + 1_000;
     await seedLedger([
@@ -425,21 +460,48 @@ describe("ledger collection", () => {
     expect(await ledgerKeys()).toEqual(["a", "c"]);
   });
 
-  it("shares an injectable budget across sequential scheduled-style pages", async () => {
+  it("counts the worst-case scheduled R2 and chunked-ledger sequence against one budget", async () => {
     const now = TTL_MS + 100;
     await seedLedger(
-      Array.from({ length: 10 }, (_, index) => ({ key: `k-${index}`, createdAt: index })),
+      Array.from({ length: 500 }, (_, index) => ({ key: `k-${index}`, createdAt: index })),
     );
-    const object = await putObject(blobKey(STASH, HASH_A, GENERATION));
-    const budget = new StorageOperationBudget(45);
-    const engine = createGcEngine(env, { now: () => Math.max(now, futureNow(object)), budget });
-    await engine.run(input({ kind: "r2-orphans", maxObjects: 80 }));
-    for (let page = 0; page < 6; page += 1) {
-      await engine.run(input({ kind: "ledger", maxObjects: 1 }));
+    const objects: R2Object[] = [];
+    for (let index = 0; index < 24; index += 1) {
+      objects.push(
+        await putObject(
+          blobKey(STASH, HASH_A, `55555555-5555-4555-8555-${String(index).padStart(12, "0")}`),
+        ),
+      );
     }
+    const calls = {
+      d1: 0,
+      d1BatchSizes: [] as number[],
+      list: 0,
+      head: 0,
+      delete: 0,
+      arrays: [] as number[],
+    };
+    const countedEnv = withD1Count(withR2Counts(env, calls), calls);
+    const budget = new StorageOperationBudget(45);
+    const engine = createGcEngine(countedEnv, {
+      now: () => Math.max(now, ...objects.map((object) => futureNow(object))),
+      budget,
+    });
+    const orphanRun = await engine.run(input({ kind: "r2-orphans", maxObjects: 80 }));
+    const ledgerRun = await engine.run(input({ kind: "ledger", maxObjects: 500 }));
+
+    expect(orphanRun).toMatchObject({ scanned: 24, eligible: 24, deleted: 24 });
+    expect(ledgerRun).toMatchObject({ scanned: 500, eligible: 500, deleted: 500 });
+    expect(calls).toEqual({
+      d1: 11,
+      d1BatchSizes: [4, 6, 4],
+      list: 1,
+      head: 24,
+      delete: 1,
+      arrays: [24],
+    });
+    const actualCalls = calls.d1 + calls.list + calls.head + calls.delete;
+    expect(actualCalls).toBe(budget.used);
     expect(budget.used).toBeLessThanOrEqual(45);
-    await expect(engine.run(input({ kind: "ledger", maxObjects: 1 }))).rejects.toBeInstanceOf(
-      GcBudgetExhaustedError,
-    );
   });
 });

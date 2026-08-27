@@ -247,8 +247,8 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
       if (rows.length === 0) return 0;
       budget.charge();
       const session = env.DB.withSession("first-primary");
-      const result = await deleteLedgerRows(session, rows, cutoff).run();
-      return changed(result);
+      const results = await session.batch(deleteLedgerRows(session, rows, cutoff));
+      return results.reduce((total, result) => total + changed(result), 0);
     },
 
     async listRuns(kind: GcJobKind | undefined, limit: number): Promise<GcRunResult[]> {

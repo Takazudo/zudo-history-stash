@@ -129,16 +129,26 @@ export const selectLedgerPage = `
   LIMIT ?
 `;
 
+export const D1_MAX_BOUND_PARAMS = 100;
+export const LEDGER_DELETE_ROW_CHUNK_SIZE = D1_MAX_BOUND_PARAMS - 1;
+
 export function deleteLedgerRows(
   db: Preparer,
   rows: readonly { rowid: number; created_at: number }[],
   cutoff: number,
-): D1PreparedStatement {
+): D1PreparedStatement[] {
   if (rows.length === 0) throw new Error("deleteLedgerRows requires at least one row");
-  return db
-    .prepare(
-      `DELETE FROM idempotency
-       WHERE created_at < ? AND rowid IN (${rows.map(() => "?").join(", ")})`,
-    )
-    .bind(cutoff, ...rows.map(({ rowid }) => rowid));
+  const statements: D1PreparedStatement[] = [];
+  for (let offset = 0; offset < rows.length; offset += LEDGER_DELETE_ROW_CHUNK_SIZE) {
+    const chunk = rows.slice(offset, offset + LEDGER_DELETE_ROW_CHUNK_SIZE);
+    statements.push(
+      db
+        .prepare(
+          `DELETE FROM idempotency
+           WHERE created_at < ? AND rowid IN (${chunk.map(() => "?").join(", ")})`,
+        )
+        .bind(cutoff, ...chunk.map(({ rowid }) => rowid)),
+    );
+  }
+  return statements;
 }
