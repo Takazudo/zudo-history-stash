@@ -3,6 +3,7 @@ import { runScheduledGc } from "./gc-scheduler.js";
 import type { Env } from "./env.js";
 
 export { StashRpc } from "./rpc.js";
+export { StashEvents } from "./events/stash-events.js";
 
 export default {
   fetch: (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> =>
