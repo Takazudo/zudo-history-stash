@@ -99,10 +99,9 @@ describe("shared conformance trace", () => {
     expect(terminalPage.nextAfter).toBeNull();
   });
 
-  it("passes with persisted stashes interleaved and lexically after its fixtures", async () => {
-    const stashName = "conformance-persisted";
+  it("passes when its known later row has a persisted continuation", async () => {
+    const stashName = "conformance-later-only";
     const { fake, options } = createConformanceHarness(stashName);
-    fake.createStash("conformance-persisted-between");
     fake.createStash("zzzz-existing");
 
     const report = await runConformance(fake.fetch, "https://fake.invalid", options);
@@ -111,5 +110,18 @@ describe("shared conformance trace", () => {
     const persistedPage = await stashPage(fake, `${stashName}-foreign`);
     expect(persistedPage.stashes.map(({ name }) => name)).toEqual([`${stashName}-later`]);
     expect(persistedPage.nextAfter).toBe(`${stashName}-later`);
+  });
+
+  it("passes with a persisted stash interleaved between its fixtures", async () => {
+    const stashName = "conformance-interleaved";
+    const { fake, options } = createConformanceHarness(stashName);
+    fake.createStash(`${stashName}-between`);
+
+    const report = await runConformance(fake.fetch, "https://fake.invalid", options);
+
+    expect(report.steps).toBe(CONFORMANCE_TRACE.length);
+    const terminalPage = await stashPage(fake, `${stashName}-foreign`);
+    expect(terminalPage.stashes.map(({ name }) => name)).toEqual([`${stashName}-later`]);
+    expect(terminalPage.nextAfter).toBeNull();
   });
 });
