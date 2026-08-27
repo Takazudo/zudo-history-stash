@@ -396,6 +396,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("stale", true),
       error("proposal-expired"),
       error("proposal-closed"),
+      error("payload-too-large"),
       rateLimited(),
       error("internal"),
     ],
@@ -408,7 +409,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     principalNote: "write; administrator or a matching write stash token.",
     body: RejectProposalBody,
     responses: {
-      200: response("The rejected proposal record.", "ProposalRecord", "ProposalRecord"),
+      200: response("The rejected proposal record.", "ProposalRecord", "RejectedProposalRecord"),
     },
     errors: [
       error("validation"),
@@ -416,6 +417,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       error("scope"),
       error("not-found"),
       error("proposal-closed"),
+      error("payload-too-large"),
       rateLimited(),
     ],
     wildcardPath: false,

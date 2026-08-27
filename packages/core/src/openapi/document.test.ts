@@ -159,5 +159,20 @@ describe("buildOpenApiDocument", () => {
     expect(approveResponses["409"]?.description).toContain("`stale` (includes current)");
     expect(approveResponses["409"]?.description).toContain("`proposal-expired`");
     expect(approveResponses["409"]?.description).toContain("`proposal-closed`");
+    expect(approveResponses["413"]?.description).toContain("`payload-too-large`");
+
+    const reject = document.paths["/v1/stashes/{stash}/proposals/{id}/reject"]?.post;
+    const rejectResponses = reject?.responses as Record<string, ObjectValue>;
+    expect(rejectResponses["413"]?.description).toContain("`payload-too-large`");
+    const rejectExample = (
+      (rejectResponses["200"]?.content as ObjectValue)["application/json"] as ObjectValue
+    ).example;
+    expect(rejectExample).toEqual(SAMPLES.RejectedProposalRecord);
+    expect(rejectExample).toMatchObject({
+      status: "rejected",
+      decidedAt: "2026-08-26T01:00:00.000Z",
+      decidedBy: "admin",
+      decisionReason: "Superseded by a newer proposal",
+    });
   });
 });

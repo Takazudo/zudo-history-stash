@@ -104,6 +104,27 @@ describe("route contract coverage", () => {
     ).toMatchObject({ current: true });
   });
 
+  it("pins decision payload limits and the rejected route sample", () => {
+    for (const routeId of ["approveProposal", "rejectProposal"] as const) {
+      expect(
+        ROUTE_CONTRACTS[routeId].errors.map(({ code }) => code),
+        routeId,
+      ).toContain("payload-too-large");
+    }
+    expect(ROUTE_CONTRACTS.rejectProposal.responses[200]).toMatchObject({
+      schema: "ProposalRecord",
+      example: "RejectedProposalRecord",
+    });
+    expect(ROUTE_CONTRACTS.createProposal.responses[201]?.example).toBe("ProposalRecord");
+    expect(SAMPLES.ProposalRecord.status).toBe("open");
+    expect(SAMPLES.RejectedProposalRecord).toMatchObject({
+      status: "rejected",
+      decidedAt: "2026-08-26T01:00:00.000Z",
+      decidedBy: "admin",
+      decisionReason: "Superseded by a newer proposal",
+    });
+  });
+
   it("documents conditional file reads with both representation headers", () => {
     const contract = ROUTE_CONTRACTS.getFile;
     expect(contract.requestHeaders).toEqual(["If-None-Match"]);

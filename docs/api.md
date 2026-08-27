@@ -511,8 +511,8 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
   Re-approval of an already-applied proposal reconstructs and returns the same stored result,
   including after the proposal's expiry time.
 - **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 stale`
-  with root-level `current`, `409 proposal-expired`, `409 proposal-closed`, `429 rate-limited` with
-  `Retry-After: 60`, `500 internal`.
+  with root-level `current`, `409 proposal-expired`, `409 proposal-closed`,
+  `413 payload-too-large`, `429 rate-limited` with `Retry-After: 60`, `500 internal`.
 
 ### `POST /v1/stashes/:stash/proposals/:id/reject`
 
@@ -522,7 +522,8 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
 - **Response:** `200 ProposalRecord`. Re-rejecting an already-rejected proposal is idempotent.
   An open proposal may be rejected even when its expiry time has passed.
 - **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`,
-  `409 proposal-closed` for an applied proposal, `429 rate-limited` with `Retry-After: 60`.
+  `409 proposal-closed` for an applied proposal, `413 payload-too-large`, `429 rate-limited` with
+  `Retry-After: 60`.
 
 ### `GET /v1/stashes/:stash/files`
 

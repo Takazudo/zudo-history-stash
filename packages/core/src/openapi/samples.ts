@@ -163,6 +163,13 @@ const proposalRecord = {
   appliedVersion: null,
   appliedChangeId: null,
 } as const;
+const rejectedProposalRecord = {
+  ...proposalRecord,
+  status: "rejected",
+  decidedAt: UPDATED_AT,
+  decidedBy: "admin",
+  decisionReason: "Superseded by a newer proposal",
+} as const;
 const oneProposal = [proposalRecord];
 
 const readyDiff = {
@@ -210,6 +217,7 @@ const responseSamples = {
   GcRunResult: gcRun,
   GcRunsResponse: { runs: [gcRun] },
   ProposalRecord: proposalRecord,
+  RejectedProposalRecord: rejectedProposalRecord,
   ProposalWithBody: { ...proposalRecord, body: "Hello, proposed docs!\n" },
   ProposalListResponse: { proposals: oneProposal, nextAfter: null, total: 1 },
   ApproveProposalResult: {
@@ -293,6 +301,8 @@ const responseSamples = {
 
 export const SAMPLES = responseSamples satisfies {
   [K in ResponseSchemaName]: z.input<(typeof RESPONSE_SCHEMAS)[K]>;
+} & {
+  RejectedProposalRecord: z.input<(typeof RESPONSE_SCHEMAS)["ProposalRecord"]>;
 };
 
 export const RESPONSE_SAMPLES = SAMPLES;

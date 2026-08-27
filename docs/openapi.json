@@ -5718,6 +5718,16 @@
             },
             "description": "Errors: `stale` (includes current), `proposal-expired`, `proposal-closed`."
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
           "429": {
             "content": {
               "application/json": {
@@ -5951,9 +5961,9 @@
                   "author": "review-bot",
                   "baseVersion": 2,
                   "createdAt": "2026-08-26T00:00:00.000Z",
-                  "decidedAt": null,
-                  "decidedBy": null,
-                  "decisionReason": null,
+                  "decidedAt": "2026-08-26T01:00:00.000Z",
+                  "decidedBy": "admin",
+                  "decisionReason": "Superseded by a newer proposal",
                   "expiresAt": "2026-09-25T00:00:00.000Z",
                   "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "id": "prp_1787702400000deadbeef",
@@ -5964,7 +5974,7 @@
                   "path": "docs/proposed.md",
                   "size": 22,
                   "stash": "demo",
-                  "status": "open"
+                  "status": "rejected"
                 },
                 "schema": {
                   "$ref": "#/components/schemas/ProposalRecord"
@@ -6022,6 +6032,16 @@
               }
             },
             "description": "Errors: `proposal-closed`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
           },
           "429": {
             "content": {
