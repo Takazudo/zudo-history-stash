@@ -58,7 +58,7 @@ type Preparer = Pick<D1DatabaseSession, "prepare">;
 export const fence = {
   create(stash: string, path: string): SqlFragment {
     return {
-      sql: `EXISTS (SELECT 1 FROM stashes WHERE name = ?)
+      sql: `EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM files WHERE stash_name = ? AND path = ?)`,
       params: [stash, stash, path],
     };
@@ -66,15 +66,17 @@ export const fence = {
   put(stash: string, path: string, expectedVersion: number): SqlFragment {
     return {
       sql: `EXISTS (SELECT 1 FROM files
-        WHERE stash_name = ? AND path = ? AND head_version = ?)`,
-      params: [stash, path, expectedVersion],
+        WHERE stash_name = ? AND path = ? AND head_version = ?)
+        AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
+      params: [stash, path, expectedVersion, stash],
     };
   },
   delete(stash: string, path: string, expectedVersion: number): SqlFragment {
     return {
       sql: `EXISTS (SELECT 1 FROM files
-        WHERE stash_name = ? AND path = ? AND head_version = ? AND deleted = 0)`,
-      params: [stash, path, expectedVersion],
+        WHERE stash_name = ? AND path = ? AND head_version = ? AND deleted = 0)
+        AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
+      params: [stash, path, expectedVersion, stash],
     };
   },
   rollback(stash: string, path: string, expectedVersion: number, toVersion: number): SqlFragment {
@@ -82,8 +84,9 @@ export const fence = {
       sql: `EXISTS (SELECT 1 FROM files
         WHERE stash_name = ? AND path = ? AND head_version = ?)
         AND EXISTS (SELECT 1 FROM versions
-          WHERE stash_name = ? AND path = ? AND version = ? AND blob_hash IS NOT NULL)`,
-      params: [stash, path, expectedVersion, stash, path, toVersion],
+          WHERE stash_name = ? AND path = ? AND version = ? AND blob_hash IS NOT NULL)
+        AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
+      params: [stash, path, expectedVersion, stash, path, toVersion, stash],
     };
   },
 };

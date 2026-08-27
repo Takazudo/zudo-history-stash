@@ -8,6 +8,7 @@ import diff from "./diff.js";
 import files from "./files.js";
 import history from "./history.js";
 import importRoutes from "./import.js";
+import lifecycle from "./lifecycle.js";
 import meta from "./meta.js";
 
 function middlewarePath(route: (typeof ROUTES)[number]): string {
@@ -28,6 +29,7 @@ routes.route("/", files);
 routes.route("/", history);
 routes.route("/", diff);
 routes.route("/", importRoutes);
+routes.route("/", lifecycle);
 routes.all("/v1/*", (c) =>
   c.json(
     { error: { code: "not-implemented", message: "This route is not implemented yet." } },

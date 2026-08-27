@@ -122,8 +122,13 @@ async function readExistingTargets(
   return new Map(rows.results.map((row) => [row.version, row]));
 }
 
-async function stashExists(db: D1DatabaseSession, stash: string): Promise<boolean> {
-  return (await db.prepare("SELECT 1 FROM stashes WHERE name = ?").bind(stash).first()) !== null;
+async function stashIsLive(db: D1DatabaseSession, stash: string): Promise<boolean> {
+  return (
+    (await db
+      .prepare("SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL")
+      .bind(stash)
+      .first()) !== null
+  );
 }
 
 function refusal(expectedVersion: number | null, head: HeadForImportRow | null): StoreImportResult {
@@ -165,12 +170,10 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
     }
 
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const head = await readHead(db, stash, value.path);
     if (value.expectedVersion === null) {
       if (head) return failure("exists", 409, "File already exists", currentFromHead(head));
-      if (!(await stashExists(db, stash))) {
-        return failure("internal", 500, "Import batch failed without a competing write");
-      }
     } else if (!head) {
       return failure("not-found", 404, "File not found");
     } else if (head.head_version !== value.expectedVersion) {
@@ -292,6 +295,7 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
     } catch {
       // A competing fenced writer can win after the preflight read.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     return refusal(value.expectedVersion, await readHead(db, stash, value.path));
   }
 

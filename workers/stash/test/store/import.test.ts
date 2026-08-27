@@ -569,7 +569,7 @@ describe("history import store", () => {
     });
     expect(missingStash).toMatchObject({
       ok: false,
-      error: { code: "internal", status: 500 },
+      error: { code: "not-found", status: 404 },
     });
     expect(calls).toEqual({ get: 0, put: 0 });
     expect(await counts("missing-import-stash")).toEqual({

@@ -148,6 +148,15 @@ async function readLedger(
   return db.prepare(selectLedger).bind(stash, key).first<IdempotencyRow>();
 }
 
+async function stashIsLive(db: D1DatabaseSession, stash: string): Promise<boolean> {
+  return (
+    (await db
+      .prepare("SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL")
+      .bind(stash)
+      .first()) !== null
+  );
+}
+
 function created<T>(value: T, statusCode: number): StoreWriteResult<T> {
   return { ok: true, value, statusCode };
 }
@@ -250,6 +259,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       ),
     );
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const priorReplay = await existingReplay<PutResult>(
       db,
       stash,
@@ -313,6 +323,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // A concurrent, independently fenced batch may win the unique ledger key.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const wonByOther = await existingReplay<PutResult>(
       db,
       stash,
@@ -352,6 +363,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       ),
     );
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const priorReplay = await existingReplay<DeleteResult>(
       db,
       stash,
@@ -400,6 +412,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // See put: only a concurrent ledger claim is recoverable as a replay.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const wonByOther = await existingReplay<DeleteResult>(
       db,
       stash,
@@ -444,6 +457,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       ),
     );
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const priorReplay = await existingReplay<RollbackResult>(
       db,
       stash,
@@ -505,6 +519,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // See put: only a concurrent ledger claim is recoverable as a replay.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const wonByOther = await existingReplay<RollbackResult>(
       db,
       stash,

@@ -10,9 +10,11 @@ import {
   type ChangeItem,
   type ChangesPage,
   type CreatedToken,
+  type DeleteStashResult,
   type JsonValue,
   type ParsedListStashesQuery,
   type RotateTokenResult,
+  type RestoreStashResult,
   type StashListResponse,
   type StashRecord,
   type StashSummary,
@@ -65,6 +67,10 @@ const GET_STASH = `${STASH_COLUMNS}${STASH_AGGREGATES}
   WHERE s.name = ?
 `;
 
+const GET_STASH_FOR_LIFECYCLE = `${STASH_COLUMNS}, s.deleted_at${STASH_AGGREGATES}
+  WHERE s.name = ?
+`;
+
 const LIST_TOKENS = `
   SELECT
     s.name AS stash_name,
@@ -113,6 +119,10 @@ const INSERT_ROTATION_SUCCESSOR = `
       AND predecessor.revoked_at IS NULL
       AND predecessor.rotated_to IS NULL
       AND (predecessor.expires_at IS NULL OR predecessor.expires_at > ?)
+      AND EXISTS (
+        SELECT 1 FROM stashes
+        WHERE name = predecessor.stash_name AND deleted_at IS NULL
+      )
   )
 `;
 
@@ -126,6 +136,10 @@ const UPDATE_ROTATION_PREDECESSOR = `
     AND predecessor.revoked_at IS NULL
     AND predecessor.rotated_to IS NULL
     AND (predecessor.expires_at IS NULL OR predecessor.expires_at > ?)
+    AND EXISTS (
+      SELECT 1 FROM stashes
+      WHERE name = predecessor.stash_name AND deleted_at IS NULL
+    )
     AND EXISTS (
       SELECT 1
       FROM tokens AS successor
@@ -196,6 +210,10 @@ interface StashAggregateRow {
   created_at: number;
 }
 
+interface LifecycleStashAggregateRow extends StashAggregateRow {
+  deleted_at: number | null;
+}
+
 interface TokenListRow {
   stash_name: string;
   id: string | null;
@@ -224,6 +242,7 @@ interface ChangeRow {
 export interface AdminStoreDependencies {
   now: () => number;
   mintToken: () => { id: string; token: string };
+  onBeforeCreateTokenCommit?: () => void | Promise<void>;
   onBeforeRotateCommit?: () => void | Promise<void>;
 }
 
@@ -231,6 +250,8 @@ export interface AdminStore {
   listStashes(query: ParsedListStashesQuery): Promise<StashListResponse>;
   createStash(input: CreateStashBody): Promise<StashRecord>;
   getStash(stash: string): Promise<StashRecord | null>;
+  deleteStash(stash: string): Promise<DeleteStashResult>;
+  restoreStash(stash: string): Promise<RestoreStashResult>;
   createToken(stash: string, input: CreateTokenBody): Promise<CreatedToken>;
   listTokens(stash: string): Promise<TokenListResponse>;
   rotateToken(stash: string, id: string, input: RotateTokenBody): Promise<RotateTokenResult>;
@@ -348,6 +369,15 @@ function mapStash(row: StashAggregateRow): StashRecord {
   return { ...mapStashSummary(row), meta: parseMeta(row.meta_json) };
 }
 
+function graceMs(env: Env): number {
+  const days = Number(env.STASH_DELETE_GRACE_DAYS);
+  const value = days * 86_400_000;
+  if (!Number.isFinite(value) || value < 0 || !Number.isSafeInteger(value)) {
+    throw new StashError("internal", "Stash deletion grace period is invalid.");
+  }
+  return value;
+}
+
 function mapToken(row: TokenListRow): TokenRecord | null {
   if (row.id === null) return null;
   if (
@@ -453,6 +483,62 @@ export function createAdminStore(
       return row === null ? null : mapStash(row);
     },
 
+    async deleteStash(stash) {
+      const name = validateStash(stash);
+      const deletedAt = deps.now();
+      const restoreUntil = deletedAt + graceMs(env);
+      const db = env.DB.withSession("first-primary");
+      const results = await db.batch([
+        db
+          .prepare(
+            `UPDATE tokens SET revoked_at = ?
+             WHERE stash_name = ? AND revoked_at IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL
+               )`,
+          )
+          .bind(deletedAt, name, name),
+        db
+          .prepare("UPDATE stashes SET deleted_at = ? WHERE name = ? AND deleted_at IS NULL")
+          .bind(deletedAt, name),
+      ]);
+      if (results.at(-1)?.meta.changes !== 1) {
+        const row = await db
+          .prepare("SELECT deleted_at FROM stashes WHERE name = ?")
+          .bind(name)
+          .first<{ deleted_at: number | null }>();
+        if (row === null) notFound();
+        throw new StashError("already-deleted", "Stash is already deleted.");
+      }
+      return {
+        name,
+        deletedAt: toIso(deletedAt),
+        revokedTokens: results[0]?.meta.changes ?? 0,
+        restoreUntil: toIso(restoreUntil),
+      };
+    },
+
+    async restoreStash(stash) {
+      const name = validateStash(stash);
+      const now = deps.now();
+      const db = env.DB.withSession("first-primary");
+      const results = await db.batch([
+        db
+          .prepare(
+            `UPDATE stashes SET deleted_at = NULL
+             WHERE name = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
+          )
+          .bind(name, now - graceMs(env)),
+      ]);
+      if (results.at(-1)?.meta.changes !== 1) notFound();
+      const row = await db
+        .prepare(GET_STASH_FOR_LIFECYCLE)
+        .bind(name)
+        .first<LifecycleStashAggregateRow>();
+      if (row === null) notFound();
+      return mapStash(row);
+    },
+
     async createToken(stash, input) {
       const name = validateStash(stash);
       const parsed = CreateTokenBody.safeParse(input);
@@ -461,13 +547,14 @@ export function createAdminStore(
       const expiresAt = resolveTokenExpiry(parsed.data, createdAt);
       const created = deps.mintToken();
       const tokenHash = await sha256Hex(created.token);
+      await deps.onBeforeCreateTokenCommit?.();
       const result = await env.DB.withSession("first-primary")
         .prepare(
           `INSERT INTO tokens
              (id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at,
               expires_at, rotated_from, rotated_to)
            SELECT ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL
-           WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ?)`,
+           WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
         )
         .bind(
           created.id,
