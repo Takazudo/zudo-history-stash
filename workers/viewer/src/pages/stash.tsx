@@ -14,9 +14,11 @@ import {
 import { useState, type ChangeEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
+import { proposalListHref } from "../app/proposal-routes.js";
 import { Page } from "../app/shell/page.js";
 import { Table } from "../app/shell/table.js";
 import { ErrorBanner, clientValue } from "../components/error-banner.js";
+import { useOpenProposalCount } from "../hooks/use-open-proposal-count.js";
 import { usePagedData } from "./use-paged-data.js";
 
 const fileKey = (file: FileSummary) => file.path;
@@ -75,6 +77,7 @@ export default function StashPage() {
   const hrefFor = useStashHref();
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const openProposals = useOpenProposalCount(client, stash);
   const files = usePagedData<FileSummary, string>(
     async (signal, after) => {
       if (!client || !stash) return { items: [], nextCursor: null };
@@ -118,8 +121,13 @@ export default function StashPage() {
       title={stash ?? "Stash"}
       description="Files and recent changes in this stash."
       actions={
-        stash && ((write.ready && write.canWrite) || (admin.ready && admin.isAdmin)) ? (
+        stash ? (
           <div className="page-actions">
+            <Link className="zhs-button zhs-button--secondary" to={proposalListHref(stash)}>
+              {openProposals.state === "ready" && openProposals.value !== null
+                ? `Proposals (${openProposals.value} open)`
+                : "Proposals"}
+            </Link>
             {write.ready && write.canWrite ? (
               <Link
                 className="zhs-button zhs-button--primary"

@@ -20,6 +20,7 @@ declare global {
       STASH_DELETE_GRACE_DAYS: string;
       GC_ORPHAN_MIN_AGE_MS: string;
       GC_LEASE_TTL_MS: string;
+      PROPOSAL_TTL_DAYS: string;
       TEST_MIGRATIONS: D1Migration[];
       STASH_RPC: TestStashRpcBinding;
     }

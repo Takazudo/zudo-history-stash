@@ -29,9 +29,10 @@ const DOCUMENT_DESCRIPTION = [
   "Credentials for one stash cannot reveal another stash: foreign stashes are concealed as 404 responses.",
   "Lists and change feeds use keyset cursors (after, before, or since); limit defaults to 50 and has a maximum of 200.",
   "File reads use ETags, If-None-Match, and 304 responses for conditional requests.",
-  "Mutation idempotency keys are retained in a 7-day ledger; reusing a key for a different request returns 422 idempotency-key-reused.",
+  "File-mutation idempotency keys are retained in a 7-day ledger. Proposal-creation keys are stored on the proposal row instead; either kind returns 422 idempotency-key-reused when reused for a different canonical request.",
   "Stash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.",
   "GC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.",
+  "Proposals are expiring candidate writes against an immutable base. Approval never rebases: a moved head returns 409 stale with current, while repeated creation and approval have explicit replay semantics.",
 ].join("\n\n");
 
 const WILDCARD_WARNING =
@@ -98,7 +99,7 @@ function responseHeader(name: ResponseHeader): OpenApiObject {
         : name === "X-Stash-Version"
           ? "Numeric stash file version."
           : name === "Idempotent-Replayed"
-            ? "Whether the idempotency ledger replayed the response."
+            ? "Whether the server replayed an idempotent response."
             : "Seconds to wait before retrying a rate-limited request.",
     schema: {
       type:

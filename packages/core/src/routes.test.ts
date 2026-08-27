@@ -17,6 +17,12 @@ const expected = [
   ["GET", "/v1/changes", "admin"],
   ["POST", "/v1/admin/gc", "admin"],
   ["GET", "/v1/admin/gc/runs", "admin"],
+  ["POST", "/v1/stashes/:stash/proposals", "write"],
+  ["GET", "/v1/stashes/:stash/proposals", "read"],
+  ["GET", "/v1/stashes/:stash/proposals/:id", "read"],
+  ["GET", "/v1/stashes/:stash/proposals/:id/diff", "read"],
+  ["POST", "/v1/stashes/:stash/proposals/:id/approve", "write"],
+  ["POST", "/v1/stashes/:stash/proposals/:id/reject", "write"],
   ["GET", "/v1/stashes/:stash/files", "read"],
   ["GET", "/v1/stashes/:stash/files/*path", "read"],
   ["PUT", "/v1/stashes/:stash/files/*path", "write"],
@@ -29,7 +35,7 @@ const expected = [
 ];
 
 it("pins every API endpoint, template, method, and capability", () => {
-  expect(ROUTES).toHaveLength(24);
+  expect(ROUTES).toHaveLength(30);
   expect(ROUTES.map(({ method, template, principal }) => [method, template, principal])).toEqual(
     expected,
   );

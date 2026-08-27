@@ -2,6 +2,8 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { MAX_BODY_BYTES } from "./limits.js";
 import {
   ChangesQuery,
+  ApproveProposalBody,
+  CreateProposalBody,
   CreateStashBody,
   CreateTokenBody,
   DiffCandidateBody,
@@ -10,9 +12,12 @@ import {
   ImportBody,
   ListFilesQuery,
   ListGcRunsQuery,
+  ListProposalsQuery,
   ListQuery,
   ListStashesQuery,
   PutFileBody,
+  ProposalDiffQuery,
+  RejectProposalBody,
   RunGcBody,
   RotateTokenBody,
 } from "./schemas.js";
@@ -70,6 +75,61 @@ describe("strict request and query schemas", () => {
     }
     expect(RunGcBody.safeParse({ kind: "ledger", unknown: true }).success).toBe(false);
     expect(RunGcBody.safeParse({ kind: "unknown" }).success).toBe(false);
+  });
+  it("validates strict proposal creation inputs and platform-owned metadata", () => {
+    const valid = {
+      path: "docs/proposal.md",
+      body: "candidate",
+      baseVersion: null,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    expect(CreateProposalBody.parse(valid)).toEqual(valid);
+    expect(CreateProposalBody.safeParse({ ...valid, baseVersion: 1 }).success).toBe(true);
+    expect(CreateProposalBody.safeParse({ ...valid, baseVersion: 0 }).success).toBe(false);
+    expect(CreateProposalBody.safeParse({ ...valid, path: "../bad" }).success).toBe(false);
+    expect(CreateProposalBody.safeParse({ ...valid, body: "\uD800" }).success).toBe(false);
+    expect(
+      CreateProposalBody.safeParse({ ...valid, expiresAt: "2000-01-01T00:00:00.000Z" }).success,
+    ).toBe(false);
+    expect(
+      CreateProposalBody.safeParse({ ...valid, meta: { proposalId: "caller-owned" } }).success,
+    ).toBe(false);
+    expect(CreateProposalBody.safeParse({ ...valid, unknown: true }).success).toBe(false);
+  });
+  it("parses proposal list and diff queries with exact defaults and enums", () => {
+    expect(ListProposalsQuery.parse({})).toEqual({ status: "open", limit: 50 });
+    expect(
+      ListProposalsQuery.parse({
+        status: "all",
+        path: "docs/proposal.md",
+        limit: "200",
+        after: "opaque",
+      }),
+    ).toEqual({
+      status: "all",
+      path: "docs/proposal.md",
+      limit: 200,
+      after: "opaque",
+    });
+    for (const input of [
+      { status: "unknown" },
+      { path: "../bad" },
+      { limit: "201" },
+      { unknown: true },
+    ]) {
+      expect(ListProposalsQuery.safeParse(input).success).toBe(false);
+    }
+    expect(ProposalDiffQuery.parse({ context: "0" })).toEqual({ context: 0 });
+    expect(ProposalDiffQuery.safeParse({ context: "-1" }).success).toBe(false);
+  });
+  it("bounds strict proposal decision bodies", () => {
+    expect(ApproveProposalBody.parse({})).toEqual({});
+    expect(ApproveProposalBody.safeParse({ author: "bot", message: "ship" }).success).toBe(true);
+    expect(ApproveProposalBody.safeParse({ decidedBy: "caller" }).success).toBe(false);
+    expect(RejectProposalBody.parse({})).toEqual({});
+    expect(RejectProposalBody.safeParse({ reason: "superseded" }).success).toBe(true);
+    expect(RejectProposalBody.safeParse({ reason: "x".repeat(2_001) }).success).toBe(false);
+    expect(RejectProposalBody.safeParse({ reason: "\uD800" }).success).toBe(false);
   });
   it("rejects unknown keys in bodies and queries", () => {
     expect(PutFileBody.safeParse({ body: "", expectedVersion: null, extra: true }).success).toBe(

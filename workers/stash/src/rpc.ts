@@ -15,8 +15,10 @@ import {
 } from "@takazudo/zudo-history-stash";
 import type {
   CandidateDiffResult,
+  ApproveProposalBody,
   ChangesPage,
   CreateStashBody,
+  CreateProposalBody,
   CreateStashResult,
   CreateTokenBody,
   CreateTokenResult,
@@ -33,14 +35,17 @@ import type {
   GcRunResult,
   GcRunsResponse,
   ListChangesResult,
+  ParsedListProposalsQuery,
   ListStashesResult,
   ListTokensResult,
   MeResponse,
+  ProposalDiffQuery,
   PutFileBody,
   PutResult,
   RollbackBody,
   RollbackResult,
   RestoreStashResult,
+  RejectProposalBody,
   RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
@@ -59,6 +64,17 @@ function acceptsBody(method: string): boolean {
 function requestUrl(init: RpcRequest): string {
   const query = new URLSearchParams(init.query).toString();
   return `https://stash.internal${init.path}${query === "" ? "" : `?${query}`}`;
+}
+
+function optionalQuery(
+  values: Record<string, string | number | undefined>,
+): Record<string, string> | undefined {
+  const query = Object.fromEntries(
+    Object.entries(values)
+      .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
+      .map(([key, value]) => [key, String(value)]),
+  );
+  return Object.keys(query).length === 0 ? undefined : query;
 }
 
 export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
@@ -166,6 +182,89 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     options: ListGcRunsOptions = {},
   ): Promise<ClientResult<GcRunsResponse>> {
     return noThrow(() => rpcClient(this, token).admin.gc.runs(options));
+  }
+
+  async createProposal(
+    token: string,
+    stash: string,
+    input: CreateProposalBody,
+    idempotencyKey?: string,
+  ): Promise<Response> {
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/proposals`,
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
+      },
+      body: JSON.stringify(input),
+      token,
+    });
+  }
+
+  async listProposals(
+    token: string,
+    stash: string,
+    query: Partial<ParsedListProposalsQuery> = {},
+  ): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/proposals`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+
+  async getProposal(token: string, stash: string, id: string): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/proposals/${id}`,
+      token,
+    });
+  }
+
+  async getProposalDiff(
+    token: string,
+    stash: string,
+    id: string,
+    query: ProposalDiffQuery = {},
+  ): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/proposals/${id}/diff`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+
+  async approveProposal(
+    token: string,
+    stash: string,
+    id: string,
+    input: ApproveProposalBody,
+  ): Promise<Response> {
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/proposals/${id}/approve`,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      token,
+    });
+  }
+
+  async rejectProposal(
+    token: string,
+    stash: string,
+    id: string,
+    input: RejectProposalBody,
+  ): Promise<Response> {
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/proposals/${id}/reject`,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      token,
+    });
   }
 
   async listFiles(
@@ -298,6 +397,12 @@ const rpcMethodsByRoute = {
   listChanges: "listChanges",
   runGc: "runGc",
   listGcRuns: "listGcRuns",
+  createProposal: "createProposal",
+  listProposals: "listProposals",
+  getProposal: "getProposal",
+  getProposalDiff: "getProposalDiff",
+  approveProposal: "approveProposal",
+  rejectProposal: "rejectProposal",
   listFiles: "listFiles",
   getFile: "getFile",
   putFile: "putFile",

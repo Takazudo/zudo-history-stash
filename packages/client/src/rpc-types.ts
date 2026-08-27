@@ -1,7 +1,9 @@
 import type {
   CandidateDiffResult,
+  ApproveProposalBody,
   ChangesPage,
   CreateStashBody,
+  CreateProposalBody,
   CreateStashResult,
   CreateTokenBody,
   CreateTokenResult,
@@ -21,11 +23,14 @@ import type {
   ListStashesResult,
   ListTokensResult,
   MeResponse,
+  ParsedListProposalsQuery,
+  ProposalDiffQuery,
   PutFileBody,
   PutResult,
   RollbackBody,
   RollbackResult,
   RestoreStashResult,
+  RejectProposalBody,
   RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
@@ -56,7 +61,10 @@ export interface StashRpcBinding {
   request(init: RpcRequest): Promise<Response>;
 }
 
-/** One explicit RPC method per core route, using the same inputs and results as {@link StashClient}. */
+/**
+ * One explicit RPC method per core route. Proposal methods temporarily return their registered
+ * HTTP skeleton response until the proposal client lifecycle is implemented.
+ */
 export interface StashRpcMethods {
   health(token: string): Promise<ClientResult<HealthResponse>>;
   me(token: string): Promise<ClientResult<MeResponse>>;
@@ -89,6 +97,36 @@ export interface StashRpcMethods {
   listChanges(token: string, options?: ChangesOptions): Promise<ClientResult<ChangesPage>>;
   runGc(token: string, input: RunGcBody): Promise<ClientResult<GcRunResult>>;
   listGcRuns(token: string, options?: ListGcRunsOptions): Promise<ClientResult<GcRunsResponse>>;
+  createProposal(
+    token: string,
+    stash: string,
+    input: CreateProposalBody,
+    idempotencyKey?: string,
+  ): Promise<Response>;
+  listProposals(
+    token: string,
+    stash: string,
+    query?: Partial<ParsedListProposalsQuery>,
+  ): Promise<Response>;
+  getProposal(token: string, stash: string, id: string): Promise<Response>;
+  getProposalDiff(
+    token: string,
+    stash: string,
+    id: string,
+    query?: ProposalDiffQuery,
+  ): Promise<Response>;
+  approveProposal(
+    token: string,
+    stash: string,
+    id: string,
+    input: ApproveProposalBody,
+  ): Promise<Response>;
+  rejectProposal(
+    token: string,
+    stash: string,
+    id: string,
+    input: RejectProposalBody,
+  ): Promise<Response>;
   listFiles(
     token: string,
     stash: string,

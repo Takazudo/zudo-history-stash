@@ -1,11 +1,41 @@
 import { ROUTES } from "@takazudo/zudo-history-stash-core";
-import { describe, expect, it } from "vitest";
+import { createExecutionContext } from "cloudflare:test";
+import { beforeEach, describe, expect, it } from "vitest";
 import { CLIENT_ROUTES, parseClientResponse, StashHttpError } from "@takazudo/zudo-history-stash";
 import apiReference from "../../../docs/api.md?raw";
 import app from "../src/app.js";
 import { StashRpc } from "../src/rpc.js";
+import { bearer, request, resetDatabase, seedStash } from "./helpers/app.js";
+import { createTestEnv } from "./helpers/env.js";
 
 type RouteTuple = readonly [string, string];
+
+const proposalRouteProbes = [
+  { id: "createProposal", method: "POST", path: "/v1/stashes/route-pin/proposals" },
+  { id: "listProposals", method: "GET", path: "/v1/stashes/route-pin/proposals" },
+  {
+    id: "getProposal",
+    method: "GET",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef",
+  },
+  {
+    id: "getProposalDiff",
+    method: "GET",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/diff",
+  },
+  {
+    id: "approveProposal",
+    method: "POST",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/approve",
+  },
+  {
+    id: "rejectProposal",
+    method: "POST",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/reject",
+  },
+] as const;
+
+beforeEach(resetDatabase);
 
 function sorted(routes: readonly RouteTuple[]): RouteTuple[] {
   return [...routes].sort(([methodA, pathA], [methodB, pathB]) => {
@@ -57,6 +87,47 @@ describe("route contract pin", () => {
         "function",
       );
     }
+  });
+
+  it.each(proposalRouteProbes)("mounts the dedicated real handler for $id", async (route) => {
+    await seedStash("route-pin");
+    const hasBody = route.method === "POST";
+    const response = await request(app, `http://stash.test${route.path}`, {
+      method: route.method,
+      headers: {
+        ...bearer("test-admin"),
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(hasBody ? { body: "{}" } : {}),
+    });
+
+    expect(response.status).not.toBe(501);
+    expect(response.status).toBe(
+      route.id === "listProposals" ? 200 : route.id === "createProposal" ? 400 : 404,
+    );
+  });
+
+  it("keeps all six raw proposal RPC methods on generic request transport", async () => {
+    await seedStash("route-pin");
+    const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
+    const createdResponse = await rpc.createProposal(
+      "test-admin",
+      "route-pin",
+      { path: "docs/proposal.md", body: "candidate", baseVersion: null },
+      "route-pin-create",
+    );
+    expect(createdResponse.status).toBe(201);
+    const proposalId = (await createdResponse.json<{ id: string }>()).id;
+
+    expect(
+      (await rpc.listProposals("test-admin", "route-pin", { status: "all", limit: 1 })).status,
+    ).toBe(200);
+    expect((await rpc.getProposal("test-admin", "route-pin", proposalId)).status).toBe(200);
+    expect(
+      (await rpc.getProposalDiff("test-admin", "route-pin", proposalId, { context: 1 })).status,
+    ).toBe(200);
+    expect((await rpc.approveProposal("test-admin", "route-pin", proposalId, {})).status).toBe(200);
+    expect((await rpc.rejectProposal("test-admin", "route-pin", proposalId, {})).status).toBe(409);
   });
 
   it("exports one parser and transport-error identity from the client package root", async () => {

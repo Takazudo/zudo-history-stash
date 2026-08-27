@@ -22,7 +22,9 @@ interface HistoryResponse {
     version: number;
     kind: string;
     rollbackOf: number | null;
+    author?: string;
     message?: string;
+    meta?: Record<string, unknown>;
   }>;
 }
 
@@ -572,6 +574,161 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
     throw new AggregateError(
       [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
       "isolated live viewer flow or its verified cleanup failed",
+    );
+  }
+});
+
+test("@live workbench proposes, approves, and exposes the stamped history link", async ({
+  page,
+  request,
+}) => {
+  // 30s seeded-fixture readiness + 20s browser lifecycle + 10s verified cleanup.
+  test.setTimeout(60_000);
+  const pageErrors = capturePageErrors(page);
+  await waitForDemo(request);
+  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const path = `e2e/proposal-${runId}.md`;
+  const label = `viewer-live-proposal-${runId}`;
+  const initialBody = `# Proposal ${runId}\n\nSeeded v1.\n`;
+  const candidateBody = `# Proposal ${runId}\n\nApproved candidate v2.\n`;
+  const proposalAuthor = "viewer-live-proposer";
+  const proposalMessage = "Approve isolated browser proposal";
+  const resources: LiveResources = {
+    path,
+    tokenLabel: label,
+    tokenId: null,
+    tokenSecret: null,
+  };
+  const browserMutations: string[] = [];
+  page.on("request", (browserRequest) => {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(browserRequest.method())) return;
+    browserMutations.push(`${browserRequest.method()} ${new URL(browserRequest.url()).pathname}`);
+  });
+
+  let primaryFailure: unknown = null;
+  let cleanupFailures: Error[] = [];
+  try {
+    const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
+      headers: ADMIN_AUTHORIZATION,
+      data: { label, scope: "write" },
+    });
+    await requireStatus(mintResponse, 201, "mint proposal write token");
+    const minted = (await mintResponse.json()) as MintedToken;
+    if (typeof minted.id === "string") resources.tokenId = minted.id;
+    if (typeof minted.token === "string") resources.tokenSecret = minted.token;
+    expect(minted).toEqual({
+      id: expect.stringMatching(/^tok_/u),
+      token: expect.stringMatching(/^zhs_/u),
+      label,
+      scope: "write",
+      createdAt: expect.any(String),
+      expiresAt: null,
+      rotatedFrom: null,
+    });
+
+    const seeded = await request.put(liveFileUrl(path), {
+      headers: {
+        ...authorization(minted.token),
+        "Idempotency-Key": idempotencyKey("proposal-seed"),
+      },
+      data: {
+        body: initialBody,
+        expectedVersion: null,
+        author: "viewer-live-proposal-seed",
+        message: "Create isolated proposal fixture",
+      },
+    });
+    await requireStatus(seeded, 201, `create ${path} with proposal credential`);
+    expect(await seeded.json()).toMatchObject({
+      version: 1,
+      hash: expect.stringMatching(/^sha256-[0-9a-f]{64}$/u),
+      size: new TextEncoder().encode(initialBody).byteLength,
+      changeId: expect.any(Number),
+      createdAt: expect.any(String),
+    });
+
+    await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
+      token: minted.token,
+    });
+    await page.goto(`/s/demo/edit/${path}`);
+    const editor = page.getByRole("textbox", { name: "Draft body" });
+    await expect(editor).toHaveValue(initialBody);
+    await editor.fill(candidateBody);
+    await page.getByRole("button", { name: "Save…" }).click();
+
+    const saveDialog = page.getByRole("dialog", { name: "Review save against head v1" });
+    await saveDialog.getByRole("textbox", { name: "Author" }).fill(proposalAuthor);
+    await saveDialog.getByRole("textbox", { name: "Message" }).fill(proposalMessage);
+    await saveDialog.getByRole("button", { name: "Save as proposal" }).click();
+
+    const proposalUrl = /^\/s\/demo\/proposals\/(prp_\d{13}[0-9a-f]{8})$/u;
+    await expect(page).toHaveURL((url) => proposalUrl.test(url.pathname));
+    const match = proposalUrl.exec(new URL(page.url()).pathname);
+    if (match?.[1] === undefined) throw new Error("proposal navigation did not expose its id");
+    const proposalId = match[1];
+    await expect(
+      page.getByRole("status", { name: "Proposal creation confirmation" }),
+    ).toContainText("Proposal saved and ready for review.");
+    await expect(page.getByRole("heading", { level: 1, name: path })).toBeVisible();
+    const immutableDiff = page.getByRole("table", { name: "Unified diff" });
+    await expect(immutableDiff).toBeVisible();
+    await expect(immutableDiff).toContainText("Seeded v1.");
+    await expect(immutableDiff).toContainText("Approved candidate v2.");
+
+    await page.getByRole("button", { name: "Approve…" }).click();
+    const approveDialog = page.getByRole("dialog", { name: `Approve ${path}` });
+    await approveDialog.getByRole("button", { name: "Approve proposal", exact: true }).click();
+
+    await expect(page.getByLabel("Proposal status: applied")).toHaveCount(2);
+    const decision = page.getByRole("region", { name: "Decision record" });
+    await expect(decision).toBeVisible();
+    await expect(decision.getByText(minted.id, { exact: true })).toBeVisible();
+    const appliedVersion = decision.getByRole("link", { name: "v2" });
+    await expect(appliedVersion).toHaveAttribute("href", `/s/demo/f/${path}?version=2`);
+    await appliedVersion.click();
+
+    await expect(page).toHaveURL(
+      (url) => url.pathname === `/s/demo/f/${path}` && url.searchParams.get("version") === "2",
+    );
+    await expect(page.locator(".file-body-pane")).toHaveText(candidateBody.trim());
+    const appliedRow = page
+      .getByRole("region", { name: "History" })
+      .locator('[data-history-version="2"]');
+    await expect(appliedRow).toContainText(proposalAuthor);
+    await expect(appliedRow).toContainText(proposalMessage);
+
+    const persistedResponse = await request.get(`${liveHistoryUrl(path)}?limit=200`, {
+      headers: authorization(minted.token),
+    });
+    await requireStatus(persistedResponse, 200, `read proposal history for ${path}`);
+    const persisted = (await persistedResponse.json()) as HistoryResponse;
+    expect(persisted).toMatchObject({ headVersion: 2, total: 2 });
+    expect(persisted.versions.map(({ version }) => version)).toEqual([2, 1]);
+    expect(persisted.versions.filter(({ version }) => version === 2)).toHaveLength(1);
+    expect(persisted.versions[0]).toMatchObject({
+      version: 2,
+      kind: "put",
+      rollbackOf: null,
+      author: proposalAuthor,
+      message: proposalMessage,
+      meta: { proposalId },
+    });
+    expect(browserMutations).toEqual([
+      "POST /api/v1/stashes/demo/proposals",
+      `POST /api/v1/stashes/demo/proposals/${proposalId}/approve`,
+    ]);
+    expect(browserMutations.some((requestPath) => requestPath.includes(GUIDE_PATH))).toBe(false);
+    expect(pageErrors).toEqual([]);
+  } catch (error: unknown) {
+    primaryFailure = error;
+  } finally {
+    cleanupFailures = await cleanupUniqueResources(request, resources);
+  }
+
+  if (primaryFailure !== null || cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
+      "proposal live viewer flow or its verified logical cleanup failed",
     );
   }
 });

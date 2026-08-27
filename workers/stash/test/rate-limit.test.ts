@@ -42,7 +42,7 @@ function middlewareApp(principal: Principal, onRequest: () => void): Hono<AppEnv
   return middleware;
 }
 
-const MUTATION_TABLES = ["files", "versions", "blobs", "idempotency"] as const;
+const MUTATION_TABLES = ["files", "versions", "blobs", "idempotency", "proposals"] as const;
 type MutationTable = (typeof MUTATION_TABLES)[number];
 
 async function mutationCounts(): Promise<Record<MutationTable, number>> {
@@ -80,6 +80,12 @@ describe("rate-limit route buckets", () => {
       listChanges: null,
       runGc: "RL_WRITE",
       listGcRuns: "RL_READ",
+      createProposal: "RL_WRITE",
+      listProposals: "RL_READ",
+      getProposal: "RL_READ",
+      getProposalDiff: "RL_DIFF",
+      approveProposal: "RL_WRITE",
+      rejectProposal: "RL_WRITE",
       listFiles: "RL_READ",
       getFile: "RL_READ",
       putFile: "RL_WRITE",
@@ -110,6 +116,69 @@ describe("rate-limit route buckets", () => {
     expect(read.limit).not.toHaveBeenCalled();
     expect(diff.limit).toHaveBeenCalledOnce();
     expect(diff.limit).toHaveBeenCalledWith({ key: `p:${token.id}` });
+  });
+
+  it.each([
+    { method: "POST", path: "/proposals", binding: "RL_WRITE", body: {} },
+    { method: "GET", path: "/proposals", binding: "RL_READ", body: undefined },
+    {
+      method: "GET",
+      path: "/proposals/prp_0000000000000deadbeef",
+      binding: "RL_READ",
+      body: undefined,
+    },
+    {
+      method: "GET",
+      path: "/proposals/prp_0000000000000deadbeef/diff",
+      binding: "RL_DIFF",
+      body: undefined,
+    },
+    {
+      method: "POST",
+      path: "/proposals/prp_0000000000000deadbeef/approve",
+      binding: "RL_WRITE",
+      body: {},
+    },
+    {
+      method: "POST",
+      path: "/proposals/prp_0000000000000deadbeef/reject",
+      binding: "RL_WRITE",
+      body: {},
+    },
+  ] as const)("classifies $method $path as $binding", async ({ method, path, binding, body }) => {
+    await seedStash("alpha");
+    const token = await mintToken("alpha", "write");
+    const limiters = {
+      RL_READ: createLimiter(() => Promise.reject(new Error("wrong read bucket"))),
+      RL_WRITE: createLimiter(() => Promise.reject(new Error("wrong write bucket"))),
+      RL_DIFF: createLimiter(() => Promise.reject(new Error("wrong diff bucket"))),
+    };
+    limiters[binding] = createLimiter(() => Promise.resolve({ success: false }));
+    const bindings = createTestEnv({ env: limiters }).env;
+    const headers = new Headers(bearer(token.token));
+    if (body !== undefined) headers.set("Content-Type", "application/json");
+
+    const response = await request(
+      app,
+      `http://stash.test/v1/stashes/alpha${path}`,
+      {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+      bindings,
+    );
+
+    await expectRateLimited(response);
+    expect(limiters[binding].limit).toHaveBeenCalledOnce();
+    expect(limiters[binding].limit).toHaveBeenCalledWith({ key: `p:${token.id}` });
+    if (method === "POST" && path === "/proposals") {
+      await expect(
+        bindings.DB.prepare(
+          "SELECT (SELECT COUNT(*) FROM proposals) AS proposals, (SELECT COUNT(*) FROM blobs) AS blobs",
+        ).first(),
+      ).resolves.toMatchObject({ proposals: 0, blobs: 0 });
+    }
   });
 
   it.each([
@@ -403,7 +472,7 @@ describe("rate-limit control flow", () => {
     expect(String(warning)).not.toContain(token.token);
   });
 
-  it("leaves all four application mutation tables unchanged on 429", async () => {
+  it("leaves all application mutation tables unchanged on 429", async () => {
     await seedStash("alpha");
     const token = await mintToken("alpha", "write");
     const write = createLimiter(() => Promise.resolve({ success: false }));
@@ -425,7 +494,7 @@ describe("rate-limit control flow", () => {
     );
 
     await expectRateLimited(response);
-    expect(before).toEqual({ files: 0, versions: 0, blobs: 0, idempotency: 0 });
+    expect(before).toEqual({ files: 0, versions: 0, blobs: 0, idempotency: 0, proposals: 0 });
     expect(await mutationCounts()).toEqual(before);
   });
 

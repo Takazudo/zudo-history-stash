@@ -32,6 +32,11 @@ import type {
   ListStashesResult,
   ListTokensResult,
   MeResponse,
+  ProposalDiffResult,
+  ProposalListResponse,
+  ProposalRecord,
+  ProposalWithBody,
+  ApproveProposalResult,
   PutCreatedResult,
   PutUnchangedResult,
   RotateTokenResult,
@@ -49,6 +54,7 @@ const TimestampSchema = z.iso.datetime();
 const HashSchema = z.string().regex(/^sha256-[0-9a-f]{64}$/);
 const VersionKindSchema = z.enum(["put", "delete", "rollback"]);
 const GcKindSchema = z.enum(["r2-orphans", "ledger"]);
+const ProposalStatusSchema = z.enum(["open", "applied", "rejected", "expired"]);
 const TokenScopeSchema = z.enum(["read", "write"]);
 const MetaSchema = z.record(z.string(), z.json());
 const IntegerSchema = z.number().int();
@@ -277,6 +283,44 @@ export const GcRunsResponseSchema: z.ZodType<GcRunsResponse> = z.strictObject({
   runs: z.array(GcRunResultSchema),
 });
 
+export const ProposalRecordSchema = z.strictObject({
+  id: z.string().regex(/^prp_\d{13}[0-9a-f]{8}$/),
+  stash: z.string(),
+  path: z.string(),
+  baseVersion: z.number().int().positive().nullable(),
+  author: z.string(),
+  message: z.string(),
+  meta: MetaSchema,
+  size: NonNegativeIntegerSchema,
+  hash: HashSchema,
+  createdAt: TimestampSchema,
+  expiresAt: TimestampSchema,
+  status: ProposalStatusSchema,
+  decidedAt: TimestampSchema.nullable(),
+  decidedBy: z.string().nullable(),
+  decisionReason: z.string().nullable(),
+  appliedVersion: z.number().int().positive().nullable(),
+  appliedChangeId: z.number().int().positive().nullable(),
+});
+
+export const ProposalWithBodySchema: z.ZodType<ProposalWithBody> = ProposalRecordSchema.extend({
+  body: z.string(),
+});
+
+export const ProposalListResponseSchema = z.strictObject({
+  proposals: z.array(ProposalRecordSchema),
+  nextAfter: z.string().nullable(),
+  total: NonNegativeIntegerSchema,
+});
+
+export const ApproveProposalResultSchema = z.strictObject({
+  status: z.literal("applied"),
+  appliedVersion: z.number().int().positive(),
+  appliedChangeId: z.number().int().positive(),
+  hash: HashSchema,
+  createdAt: TimestampSchema,
+});
+
 export const DiffSideSchema = z.strictObject({
   version: NonNegativeIntegerSchema,
   hash: NullableHashSchema,
@@ -340,6 +384,34 @@ export const CurrentSchema = z.strictObject({
   createdAt: TimestampSchema,
 });
 
+const ProposalDiffFields = {
+  base: z.strictObject({
+    version: z.number().int().positive().nullable(),
+    hash: NullableHashSchema,
+    deleted: z.boolean(),
+  }),
+  candidate: z.strictObject({ hash: HashSchema, size: NonNegativeIntegerSchema }),
+  current: CurrentSchema.nullable(),
+  stale: z.boolean(),
+};
+
+export const ProposalDiffResultSchema: z.ZodType<ProposalDiffResult> = z.union([
+  z.strictObject({ state: z.literal("same"), ...ProposalDiffFields }),
+  z.strictObject({
+    state: z.literal("oversized"),
+    reason: z.enum(["bytes", "complexity"]),
+    ...ProposalDiffFields,
+  }),
+  z.strictObject({
+    state: z.literal("ready"),
+    unified: z.string(),
+    truncated: z.boolean(),
+    hunks: z.array(DiffHunkSchema),
+    stats: DiffStatsSchema,
+    ...ProposalDiffFields,
+  }),
+]);
+
 export const ErrorCodeSchema = z.enum(ERROR_CODES);
 
 export const ErrorDetailSchema = z.strictObject({
@@ -365,6 +437,11 @@ interface ResponseTypeMap {
   RestoreStashResult: RestoreStashResult;
   GcRunResult: GcRunResult;
   GcRunsResponse: GcRunsResponse;
+  ProposalRecord: ProposalRecord;
+  ProposalWithBody: ProposalWithBody;
+  ProposalListResponse: ProposalListResponse;
+  ApproveProposalResult: ApproveProposalResult;
+  ProposalDiffResult: ProposalDiffResult;
   TokenRecord: TokenRecord;
   CreatedToken: CreatedToken;
   TokenListResponse: TokenListResponse;
@@ -412,6 +489,11 @@ export const RESPONSE_SCHEMAS = {
   RestoreStashResult: StashRecordSchema,
   GcRunResult: GcRunResultSchema,
   GcRunsResponse: GcRunsResponseSchema,
+  ProposalRecord: ProposalRecordSchema,
+  ProposalWithBody: ProposalWithBodySchema,
+  ProposalListResponse: ProposalListResponseSchema,
+  ApproveProposalResult: ApproveProposalResultSchema,
+  ProposalDiffResult: ProposalDiffResultSchema,
   TokenRecord: TokenRecordSchema,
   CreatedToken: CreatedTokenSchema,
   TokenListResponse: TokenListResponseSchema,

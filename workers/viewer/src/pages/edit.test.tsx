@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, Outlet, RouterProvider, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "@takazudo/zudo-history-stash-ui";
+import { hasProposalCreatedFlash, PROPOSAL_CREATED_FLASH } from "../app/proposal-routes.js";
 import EditPage from "./edit.js";
 
 const BASE_URL = "https://stash.test";
@@ -72,6 +73,19 @@ function FileDestination() {
   );
 }
 
+function ProposalDestination() {
+  const location = useLocation();
+  return (
+    <div>
+      <p>Proposal destination</p>
+      <output aria-label="proposal destination path">{location.pathname}</output>
+      <output aria-label="proposal destination flash">
+        {hasProposalCreatedFlash(location.state) ? PROPOSAL_CREATED_FLASH : ""}
+      </output>
+    </div>
+  );
+}
+
 function renderEditRoute(initialEntry: string, fixture: Fixture) {
   const router = createMemoryRouter(
     [
@@ -84,6 +98,7 @@ function renderEditRoute(initialEntry: string, fixture: Fixture) {
         children: [
           { path: "/s/:stash/edit/*", element: <EditPage /> },
           { path: "/s/:stash/f/*", element: <FileDestination /> },
+          { path: "/s/:stash/proposals/:id", element: <ProposalDestination /> },
         ],
       },
     ],
@@ -225,5 +240,38 @@ describe("EditPage", () => {
       "/s/notes/f/docs/readme.txt",
     );
     expect(screen.getByLabelText("destination flash").textContent).toBe("Saved v3.");
+  });
+
+  it("navigates to the proposal href with a typed flash without moving the file head", async () => {
+    const fixture = await createFixture();
+    const { router } = renderEditRoute("/s/notes/edit/docs/readme.txt", fixture);
+    const editor = (await screen.findByRole("textbox", {
+      name: "Draft body",
+    })) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "proposed from viewer\n" } });
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Save…" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save…" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "Author" }), "Ada");
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "Message" }), "Please review");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save as proposal" }));
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toMatch(/^\/s\/notes\/proposals\/prp_/u),
+    );
+    expect(await screen.findByText("Proposal destination")).toBeTruthy();
+    expect(screen.getByLabelText("proposal destination path").textContent).toBe(
+      router.state.location.pathname,
+    );
+    expect(screen.getByLabelText("proposal destination flash").textContent).toBe(
+      PROPOSAL_CREATED_FLASH,
+    );
+    const head = await fixture.client.files(STASH).get(PATH);
+    expect(head.ok && !("notModified" in head) && head.value.version).toBe(2);
+    expect(head.ok && !("notModified" in head) && head.value.body).toBe("head body\n");
   });
 });
