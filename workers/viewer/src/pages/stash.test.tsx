@@ -134,9 +134,19 @@ describe("StashPage", () => {
     expect(screen.getByRole("link", { name: "Tokens" }).getAttribute("href")).toBe(
       "/s/notes/tokens",
     );
+    expect(screen.getByRole("button", { name: "Delete stash" })).toBeTruthy();
   });
 
   it("shows only New file to a matching write principal", async () => {
+    const remove = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        name: "notes",
+        deletedAt: "2026-08-27T00:00:00.000Z",
+        revokedTokens: 1,
+        restoreUntil: "2026-09-26T00:00:00.000Z",
+      },
+    }));
     const client = createFakeViewerClient({
       me: async () => ({
         ok: true,
@@ -148,6 +158,7 @@ describe("StashPage", () => {
           expiresAt: null,
         },
       }),
+      stashes: { delete: remove },
     });
     renderViewerRoute("/s/notes", client);
 
@@ -155,5 +166,35 @@ describe("StashPage", () => {
       "/s/notes/new",
     );
     expect(screen.queryByRole("link", { name: "Tokens" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete stash" })).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("keeps the server restore deadline visible until deletion is acknowledged", async () => {
+    const remove = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        name: "notes",
+        deletedAt: "2026-08-27T00:00:00.000Z",
+        revokedTokens: 2,
+        restoreUntil: "2026-09-26T00:00:00.000Z",
+      },
+    }));
+    const { router } = renderViewerRoute(
+      "/s/notes",
+      createFakeViewerClient({ stashes: { delete: remove } }),
+    );
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Delete stash" }));
+    const dialog = screen.getByRole("dialog", { name: /Delete/ });
+    await user.click(within(dialog).getByRole("button", { name: "Delete stash" }));
+
+    await waitFor(() => expect(dialog.textContent).toContain("2026-09-26T00:00:00.000Z"));
+    expect(router.state.location.pathname).toBe("/s/notes");
+    expect(dialog.textContent).toContain("cannot be reused after restore");
+    await user.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(remove).toHaveBeenCalledWith("notes");
   });
 });
