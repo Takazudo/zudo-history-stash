@@ -212,15 +212,22 @@ export function createStashEventStream(
     }
   };
 
-  const stop = () => {
+  const finalize = (status: StashLiveStatus) => {
     if (stopped) return;
     stopped = true;
     options.signal?.removeEventListener("abort", stop);
-    currentConnection?.abort();
+    const connection = currentConnection;
+    currentConnection = undefined;
+    connection?.abort();
     lifecycle.abort();
-    notify("closed");
+    notify(status);
+    listeners.clear();
     queue.end();
   };
+
+  const stop = () => finalize("closed");
+
+  const fail = (error: StashHttpError) => finalize({ failed: error });
 
   const rememberChange = (id: string): boolean => {
     if (seenIds.has(id)) return false;
@@ -270,9 +277,7 @@ export function createStashEventStream(
       if (terminalStatus(response.status)) {
         const body = await boundedErrorBody(response);
         if (stopped) return;
-        notify({ failed: new StashHttpError(response.status, errorCode(body), body) });
-        queue.end();
-        currentConnection = undefined;
+        fail(new StashHttpError(response.status, errorCode(body), body));
         return;
       }
 
@@ -328,13 +333,13 @@ export function createStashEventStream(
       return consecutiveFailures;
     },
     onStatus(callback) {
-      listeners.add(callback);
+      let subscribed = !stopped;
+      if (subscribed) listeners.add(callback);
       try {
         callback(currentStatus);
       } catch {
         // Match later notifications: a listener owns its own failures.
       }
-      let subscribed = true;
       return () => {
         if (!subscribed) return;
         subscribed = false;
@@ -358,8 +363,7 @@ export function createStashEventStream(
     options.signal?.addEventListener("abort", stop, { once: true });
     void run().catch((cause: unknown) => {
       if (stopped) return;
-      notify({ failed: new StashHttpError(0, undefined, undefined, cause) });
-      queue.end();
+      fail(new StashHttpError(0, undefined, undefined, cause));
     });
   }
 

@@ -330,43 +330,62 @@ describe("createStashEventStream", () => {
     stream.close();
   });
 
-  it("turns a 401 on reconnect into a terminal StashHttpError", async () => {
+  it("naturally finalizes a terminal 401 without retaining lifecycle or caller signals", async () => {
+    const NativeAbortController = globalThis.AbortController;
+    const controllers: AbortController[] = [];
+    class TrackedAbortController extends NativeAbortController {
+      constructor() {
+        super();
+        controllers.push(this);
+      }
+    }
+    vi.stubGlobal("AbortController", TrackedAbortController);
+    const external = new NativeAbortController();
+    const removeExternalListener = vi.spyOn(external.signal, "removeEventListener");
     const connector = testConnector();
     const timing = testTiming();
-    const stream = createStashEventStream(connector, {}, timing);
-    const iterator = stream[Symbol.asyncIterator]();
-    const first = await connector.next();
-    first.respond(
-      closedEventResponse(
-        { type: "ready", head: 2, checkpoint: 2 },
-        { type: "reconnect", reason: "lifetime" },
-      ),
-    );
-    await iterator.next();
-    await iterator.next();
-    const rotation = await timing.next();
-    rotation.release();
+    try {
+      const stream = createStashEventStream(connector, { signal: external.signal }, timing);
+      const iterator = stream[Symbol.asyncIterator]();
+      const first = await connector.next();
+      first.respond(
+        closedEventResponse(
+          { type: "ready", head: 2, checkpoint: 2 },
+          { type: "reconnect", reason: "lifetime" },
+        ),
+      );
+      await iterator.next();
+      await iterator.next();
+      const rotation = await timing.next();
+      rotation.release();
 
-    const reconnect = await connector.next();
-    reconnect.respond(
-      Response.json(
-        { error: { code: "unauthorized", message: "Token is no longer valid" } },
-        { status: 401 },
-      ),
-    );
-    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
-    expect(stream.status).toEqual({
-      failed: expect.objectContaining({
-        name: "StashHttpError",
-        status: 401,
-        code: "unauthorized",
-      }),
-    });
-    if (typeof stream.status !== "string") {
-      expect(stream.status.failed).toBeInstanceOf(StashHttpError);
+      const reconnect = await connector.next();
+      reconnect.respond(
+        Response.json(
+          { error: { code: "unauthorized", message: "Token is no longer valid" } },
+          { status: 401 },
+        ),
+      );
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+      expect(stream.status).toEqual({
+        failed: expect.objectContaining({
+          name: "StashHttpError",
+          status: 401,
+          code: "unauthorized",
+        }),
+      });
+      if (typeof stream.status !== "string") {
+        expect(stream.status.failed).toBeInstanceOf(StashHttpError);
+      }
+      const failedStatus = stream.status;
+      expect(controllers[0]?.signal.aborted).toBe(true);
+      expect(reconnect.signal.aborted).toBe(true);
+      expect(removeExternalListener).toHaveBeenCalledWith("abort", expect.any(Function));
+      external.abort();
+      expect(stream.status).toBe(failedStatus);
+    } finally {
+      vi.unstubAllGlobals();
     }
-    stream.close();
-    expect(stream.status).toBe("closed");
   });
 
   it("closes pending iteration and cancels an active response on close or abort", async () => {
