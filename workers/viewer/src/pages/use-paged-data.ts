@@ -25,7 +25,6 @@ interface PagedSnapshot<Item, Cursor> {
 
 interface PagedTarget<Item, Cursor> {
   active: boolean;
-  intent: number;
   lifecycle: AbortController;
   load: (signal: AbortSignal, cursor: Cursor | null) => Promise<PageChunk<Item, Cursor>>;
   getKey: (item: Item) => string | number;
@@ -64,7 +63,6 @@ export function usePagedData<Item, Cursor>(
   const target = useMemo<PagedTarget<Item, Cursor>>(
     () => ({
       active: false,
-      intent: 0,
       lifecycle: new AbortController(),
       load,
       getKey,
@@ -81,7 +79,6 @@ export function usePagedData<Item, Cursor>(
 
   const requestPage = useCallback(
     (cursor: Cursor | null, replace: boolean, externalSignal?: AbortSignal): Promise<void> => {
-      const intent = ++target.intent;
       const lifecycleSignal = target.lifecycle.signal;
       setEntry((current) => ({
         target,
@@ -105,7 +102,6 @@ export function usePagedData<Item, Cursor>(
           if (!target.active) {
             throw new DOMException("The page target is inactive.", "AbortError");
           }
-          if (target.intent !== intent) return;
           setEntry((current) => {
             const base =
               current.target === target ? current.snapshot : initialSnapshot<Item, Cursor>();
@@ -121,7 +117,7 @@ export function usePagedData<Item, Cursor>(
             };
           });
         } catch (error: unknown) {
-          if (!signal.aborted && target.active && target.intent === intent) {
+          if (!signal.aborted && target.active) {
             setEntry((current) => ({
               target,
               snapshot: {

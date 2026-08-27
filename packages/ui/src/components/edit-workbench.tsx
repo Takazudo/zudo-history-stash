@@ -205,6 +205,20 @@ function bannerFor({
     };
   }
 
+  if (machine.state === "error" && machine.verification === true) {
+    return {
+      variant: "error",
+      content: (
+        <>
+          <strong>Could not verify the current file head.</strong>
+          <span>{machine.message}</span>
+          <span>Your draft remains unchanged and fenced to head v{headVersion}.</span>
+          {supplement}
+        </>
+      ),
+    };
+  }
+
   if (completionError !== null) {
     return {
       variant: "error",

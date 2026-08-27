@@ -9,7 +9,7 @@ import {
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash, type FakeStash } from "@takazudo/zudo-history-stash/testing";
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { StrictMode } from "react";
+import { StrictMode, useState } from "react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -52,12 +52,17 @@ function viewerClient(
   };
 }
 
-function LiveProbe({ onRefresh }: { onRefresh: ViewerLiveRefreshHandler }) {
-  const live = useViewerLiveStatus();
+function LiveListener({ onRefresh }: { onRefresh: ViewerLiveRefreshHandler }) {
   useViewerLiveRefresh(onRefresh);
+  return null;
+}
+
+function LiveProbe({ onRefresh }: { onRefresh: ViewerLiveRefreshHandler | null }) {
+  const live = useViewerLiveStatus();
   return (
     <>
       <output aria-label="Live status">{live.status}</output>
+      {onRefresh === null ? null : <LiveListener onRefresh={onRefresh} />}
       <Outlet />
     </>
   );
@@ -65,10 +70,18 @@ function LiveProbe({ onRefresh }: { onRefresh: ViewerLiveRefreshHandler }) {
 
 function renderLiveRoute(
   clientFactory: ViewerStashClientFactory,
-  onRefresh: ViewerLiveRefreshHandler,
+  onRefresh: ViewerLiveRefreshHandler | null,
   { strict = false }: { strict?: boolean } = {},
 ) {
   sessionStorage.setItem(TOKEN_STORAGE_KEY, ADMIN_TOKEN);
+  let updateRefresh: ((next: ViewerLiveRefreshHandler | null) => void) | undefined;
+  function RouteProbe() {
+    const [currentRefresh, setCurrentRefresh] = useState<ViewerLiveRefreshHandler | null>(
+      () => onRefresh,
+    );
+    updateRefresh = (next) => setCurrentRefresh(() => next);
+    return <LiveProbe onRefresh={currentRefresh} />;
+  }
   const router = createMemoryRouter(
     [
       {
@@ -77,7 +90,7 @@ function renderLiveRoute(
           <StashClientProvider clientFactory={clientFactory}>
             <ViewerStashUiProvider>
               <ViewerLiveUpdatesProvider>
-                <LiveProbe onRefresh={onRefresh} />
+                <RouteProbe />
               </ViewerLiveUpdatesProvider>
             </ViewerStashUiProvider>
           </StashClientProvider>
@@ -88,7 +101,14 @@ function renderLiveRoute(
     { initialEntries: ["/s/notes/one"] },
   );
   const provider = <RouterProvider router={router} />;
-  return { router, ...render(strict ? <StrictMode>{provider}</StrictMode> : provider) };
+  return {
+    router,
+    setRefresh(next: ViewerLiveRefreshHandler | null) {
+      if (updateRefresh === undefined) throw new Error("The live route probe is not mounted");
+      act(() => updateRefresh?.(next));
+    },
+    ...render(strict ? <StrictMode>{provider}</StrictMode> : provider),
+  };
 }
 
 async function flushMicrotasks(rounds = 8): Promise<void> {
@@ -161,6 +181,88 @@ function manualStream(): ManualStream {
 }
 
 describe("ViewerLiveUpdatesProvider", () => {
+  it("retains a ready reconciliation until the page listener registers", async () => {
+    const source = manualStream();
+    const changes = vi.fn(async (): Promise<ClientResult<ListChangesResult>> => ({
+      ok: true,
+      value: {
+        changes: [change({ changeId: 4, path: "docs/readme.txt", version: 3 })],
+        hasMore: false,
+        nextSince: null,
+      },
+    }));
+    const base = createFakeViewerClient();
+    const client = createFakeViewerClient({
+      files: (stash) => ({
+        ...base.files(stash),
+        changes,
+        events: () => source.stream,
+      }),
+    });
+    client.withSignal = () => client;
+    const rendered = renderLiveRoute(() => client, null);
+
+    source.emit({ type: "ready", head: 4, checkpoint: 4 });
+    source.setStatus("live");
+    await flushMicrotasks(16);
+    expect(changes).not.toHaveBeenCalled();
+
+    const onRefresh = vi.fn<ViewerLiveRefreshHandler>();
+    rendered.setRefresh(onRefresh);
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    expect(changes).toHaveBeenCalledWith({ since: 0, limit: 200 });
+    expect(onRefresh).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "ready",
+        full: true,
+        changes: [expect.objectContaining({ path: "docs/readme.txt", version: 3 })],
+      }),
+    );
+    rendered.unmount();
+  });
+
+  it("aborts a blocked same-stash listener and reconciles its replacement immediately", async () => {
+    const source = manualStream();
+    const changes = vi.fn(async (): Promise<ClientResult<ListChangesResult>> => ({
+      ok: true,
+      value: {
+        changes: [change({ changeId: 1, path: "docs/readme.txt" })],
+        hasMore: false,
+        nextSince: null,
+      },
+    }));
+    const base = createFakeViewerClient();
+    const client = createFakeViewerClient({
+      files: (stash) => ({
+        ...base.files(stash),
+        changes,
+        events: () => source.stream,
+      }),
+    });
+    client.withSignal = () => client;
+    let blockedSignal: AbortSignal | null = null;
+    const never = new Promise<void>(() => undefined);
+    const first = vi.fn<ViewerLiveRefreshHandler>((batch) => {
+      blockedSignal = batch.signal;
+      return never;
+    });
+    const rendered = renderLiveRoute(() => client, first);
+
+    source.emit({ type: "ready", head: 1, checkpoint: 1 });
+    source.setStatus("live");
+    await waitFor(() => expect(blockedSignal).not.toBeNull());
+
+    const replacement = vi.fn<ViewerLiveRefreshHandler>();
+    rendered.setRefresh(replacement);
+    expect((blockedSignal as AbortSignal | null)?.aborted).toBe(true);
+    await waitFor(() => expect(replacement).toHaveBeenCalledTimes(1));
+    expect(replacement).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "listener", full: true }),
+    );
+    expect(changes).toHaveBeenCalledTimes(2);
+    rendered.unmount();
+  });
+
   it("owns one subscription across page navigation and fans ready/change/proposal refreshes", async () => {
     const fake = createFakeStash({ adminToken: ADMIN_TOKEN });
     fake.createStash("notes");

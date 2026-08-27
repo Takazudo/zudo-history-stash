@@ -45,6 +45,38 @@ describe("usePagedData", () => {
     await expect(rejection).resolves.toBe(failure);
     expect(maxActive).toBe(1);
     expect(result.current.error).toBe(failure);
-    expect(result.current.items).toEqual([]);
+    expect(result.current.items).toEqual(["old"]);
+  });
+
+  it("commits a blocked live reset before a queued same-target retry can fail", async () => {
+    const livePage = deferred<PageChunk<string, string>>();
+    const retryPage = deferred<PageChunk<string, string>>();
+    const load = vi
+      .fn<() => Promise<PageChunk<string, string>>>()
+      .mockResolvedValueOnce({ items: ["initial"], nextCursor: null })
+      .mockImplementationOnce(() => livePage.promise)
+      .mockImplementationOnce(() => retryPage.promise);
+    const { result } = renderHook(() => usePagedData(load, [], (item) => item));
+    await waitFor(() => expect(result.current.items).toEqual(["initial"]));
+
+    let liveReset!: Promise<void>;
+    let queuedRetry!: Promise<void>;
+    act(() => {
+      liveReset = result.current.reset();
+      queuedRetry = result.current.retry();
+    });
+    const retryFailure = queuedRetry.catch((error: unknown) => error);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+
+    await act(async () => livePage.resolve({ items: ["live authoritative"], nextCursor: null }));
+    await liveReset;
+    expect(result.current.items).toEqual(["live authoritative"]);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+
+    const failure = new Error("queued retry failed");
+    await act(async () => retryPage.reject(failure));
+    await expect(retryFailure).resolves.toBe(failure);
+    expect(result.current.items).toEqual(["live authoritative"]);
+    expect(result.current.error).toBe(failure);
   });
 });

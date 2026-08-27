@@ -294,6 +294,75 @@ describe("EditWorkbench", () => {
     expect(await screen.findByText("history refresh failed")).toBeTruthy();
   });
 
+  it("shows a passive head verification failure while closed and clears it after recovery", async () => {
+    const fixture = await createFixture();
+    let failNextHeadVerification = false;
+    const verificationFetch: StashFetch = async (input, init) => {
+      const request = new Request(input, init);
+      fixture.requests.push(request);
+      const url = new URL(request.url);
+      if (
+        failNextHeadVerification &&
+        request.method === "GET" &&
+        url.pathname === `/v1/stashes/${STASH}/files/${PATH}` &&
+        !url.searchParams.has("version")
+      ) {
+        failNextHeadVerification = false;
+        return Response.json(
+          { error: { code: "internal", message: "passive head lookup failed" } },
+          { status: 503 },
+        );
+      }
+      return fixture.fake.fetch(input, init);
+    };
+    fixture.clientForSignal = (signal) =>
+      createStashClient({
+        baseUrl: BASE_URL,
+        token: ADMIN_TOKEN,
+        fetch: signalFetch(verificationFetch, signal),
+      });
+    const liveRefreshRef: { current: EditWorkbenchLiveRefresh | null } = { current: null };
+    renderWorkbench(fixture, {
+      registerLiveRefresh(refresh) {
+        liveRefreshRef.current = refresh;
+        return () => {
+          if (liveRefreshRef.current === refresh) liveRefreshRef.current = null;
+        };
+      },
+    });
+    const editor = await readyEditor();
+    fireEvent.change(editor, { target: { value: "keep the recovery draft\n" } });
+    await userEvent.click(screen.getByRole("button", { name: "Use v1 as comparison B" }));
+    await waitFor(() => expect(screen.getAllByText("vs v1").length).toBeGreaterThan(0));
+    await waitFor(() => expect(liveRefreshRef.current).not.toBeNull());
+    const refresh = liveRefreshRef.current;
+    if (refresh === null) throw new Error("Live refresh did not register");
+    failNextHeadVerification = true;
+
+    await expect(
+      refresh({ reconcileCurrentHead: true, signal: new AbortController().signal }),
+    ).rejects.toThrow("passive head lookup failed");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText("Could not verify the current file head.")).toBeTruthy();
+    expect(screen.getByText("passive head lookup failed")).toBeTruthy();
+    expect(screen.getByText("Your draft remains unchanged and fenced to head v2.")).toBeTruthy();
+    expect(editor.value).toBe("keep the recovery draft\n");
+
+    await act(async () =>
+      refresh({ reconcileCurrentHead: true, signal: new AbortController().signal }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Could not verify the current file head.")).toBeNull(),
+    );
+    expect(editor.value).toBe("keep the recovery draft\n");
+    expect(screen.getAllByText("vs v1").length).toBeGreaterThan(0);
+
+    const save = screen.getByRole("button", { name: "Save…" }) as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await userEvent.click(save);
+    expect(await screen.findByRole("dialog", { name: "Review save against head v2" })).toBeTruthy();
+  });
+
   it("debounces the live marked diff, relabels B, preserves its scroll, and collapses at the rail seam", async () => {
     const fixture = await createFixture();
     const rendered = renderWorkbench(fixture);

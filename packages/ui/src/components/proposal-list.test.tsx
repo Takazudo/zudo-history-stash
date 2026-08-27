@@ -199,7 +199,7 @@ describe("ProposalList", () => {
     expect(screen.queryByText("Grace")).toBeNull();
   });
 
-  it("registers an awaited refresh that serializes requests and rejects failures", async () => {
+  it("commits a blocked live refresh before a queued same-target retry can fail", async () => {
     const firstRelease = deferred<void>();
     const secondRelease = deferred<void>();
     let calls = 0;
@@ -223,6 +223,9 @@ describe("ProposalList", () => {
               { error: { code: "internal", message: "proposal refresh failed" } },
               { status: 503 },
             );
+          }
+          if (commandCalls === 1) {
+            return Response.json({ proposals: [], nextAfter: null, total: 7 });
           }
           return Response.json({ proposals: [], nextAfter: null, total: 0 });
         } finally {
@@ -260,6 +263,7 @@ describe("ProposalList", () => {
 
     await act(async () => firstRelease.resolve());
     await first;
+    expect(screen.getByText("7 open proposals, newest first.")).toBeTruthy();
     await waitFor(() => expect(calls).toBe(initialCalls + 2));
     await act(async () => secondRelease.resolve());
     const failure = await secondFailure;

@@ -111,7 +111,6 @@ function ProposalListForTarget({
   const clientForSignal = useStashClientForSignal();
   const hrefFor = useStashHref();
   const mountedRef = useRef(true);
-  const firstPageIntentRef = useRef(0);
   const firstPagePendingRef = useRef(0);
   const lifecycleRef = useRef(new AbortController());
   const loadingMoreRef = useRef(false);
@@ -132,7 +131,6 @@ function ProposalListForTarget({
 
   const refresh = useCallback(
     (externalSignal?: AbortSignal): Promise<void> => {
-      const intent = ++firstPageIntentRef.current;
       const lifecycleSignal = lifecycleRef.current.signal;
       firstPagePendingRef.current += 1;
       setState(INITIAL_STATE);
@@ -158,17 +156,15 @@ function ProposalListForTarget({
             throw new DOMException("The proposal list target is inactive.", "AbortError");
           }
           if (!result.ok) throw result;
-          if (firstPageIntentRef.current === intent) {
-            setState({
-              ...result.value,
-              error: null,
-              loading: false,
-              loadingMore: false,
-              loadMoreError: null,
-            });
-          }
+          setState({
+            ...result.value,
+            error: null,
+            loading: false,
+            loadingMore: false,
+            loadMoreError: null,
+          });
         } catch (error: unknown) {
-          if (!signal.aborted && mountedRef.current && firstPageIntentRef.current === intent) {
+          if (!signal.aborted && mountedRef.current) {
             setState({
               ...INITIAL_STATE,
               error,
@@ -210,7 +206,6 @@ function ProposalListForTarget({
     }
     loadingMoreRef.current = true;
     setState((current) => ({ ...current, loadingMore: true, loadMoreError: null }));
-    const intent = firstPageIntentRef.current;
 
     const execute = async (): Promise<void> => {
       const controller = new AbortController();
@@ -222,7 +217,7 @@ function ProposalListForTarget({
           .proposals(stash)
           .list(listOptions({ status, path, limit, after: state.nextAfter ?? undefined }));
         signal.throwIfAborted();
-        if (!mountedRef.current || firstPageIntentRef.current !== intent) return;
+        if (!mountedRef.current) return;
         if (!result.ok) throw result;
         setState((current) => ({
           ...current,
@@ -233,7 +228,7 @@ function ProposalListForTarget({
           loadMoreError: null,
         }));
       } catch (error: unknown) {
-        if (!signal.aborted && mountedRef.current && firstPageIntentRef.current === intent) {
+        if (!signal.aborted && mountedRef.current) {
           setState((current) => ({
             ...current,
             loadingMore: false,
@@ -254,8 +249,8 @@ function ProposalListForTarget({
   }
 
   /*
-   * The request functions above intentionally serialize first-page and load-more work. A live
-   * refresh invalidates the old pagination intent before it enters this shared queue.
+   * The request functions above intentionally serialize and commit first-page/load-more work in
+   * execution order. A live refresh also aborts an active pagination transport before it queues.
    */
 
   return (

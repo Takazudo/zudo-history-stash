@@ -20,11 +20,20 @@ export default function ProposalsPage() {
     };
   }, []);
   useViewerLiveRefresh(
-    useCallback(async ({ signal }) => {
-      const refresh = refreshRef.current;
-      if (refresh === null) throw new Error("The proposal list is not ready to refresh.");
-      await refresh(signal);
-    }, []),
+    useCallback(
+      async ({ signal }) => {
+        const refresh = refreshRef.current;
+        if (refresh === null) {
+          throw new Error(
+            `The ${status} proposal list${path === undefined ? "" : ` for ${path}`} in ${stash ?? "the active stash"} is not ready to refresh.`,
+          );
+        }
+        await refresh(signal);
+      },
+      // Scope the provider listener to the keyed ProposalList consumer lifecycle. Its signal must
+      // abort an old filter/path command even when that command's transport ignores cancellation.
+      [path, stash, status],
+    ),
   );
 
   if (!stash) {

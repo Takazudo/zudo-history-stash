@@ -276,7 +276,7 @@ describe("useFileHistory", () => {
     expect(rendered.result.current.page.versions[0]?.version).toBe(7);
   });
 
-  it("serializes command reloads and rejects a failed current-target request", async () => {
+  it("commits a blocked live reload before a queued same-target retry can fail", async () => {
     let resolveFirst!: (result: ClientResult<HistoryPage>) => void;
     const first = new Promise<ClientResult<HistoryPage>>((resolve) => {
       resolveFirst = resolve;
@@ -317,6 +317,9 @@ describe("useFileHistory", () => {
 
     await act(async () => resolveFirst({ ok: true, value: page([4, 3], null) }));
     await firstReload;
+    expect(result.current.state).toBe("ready");
+    if (result.current.state !== "ready") throw new Error("Expected committed live history");
+    expect(result.current.page.versions.map((item) => item.version)).toEqual([4, 3]);
     await waitFor(() => expect(history).toHaveBeenCalledTimes(3));
     const failure: ClientResult<HistoryPage> = {
       ok: false,

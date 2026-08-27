@@ -35,7 +35,7 @@ export type SaveMachineState =
   | { state: "saved"; version: number; changeId: number }
   | { state: "unchanged"; version: number }
   | { state: "stale"; current: Current }
-  | { state: "error"; message: string };
+  | { state: "error"; message: string; verification?: true };
 
 export type SaveMachine = SaveMachineState & {
   /** Opaque identity for the active client/stash/path lifecycle. */
@@ -432,6 +432,10 @@ export function useSaveMachine({
               transition(target, { state: "stale", current });
               return { status: "stale", current };
             }
+            const currentState = machineStatesRef.current.get(target);
+            if (currentState?.state === "error" && currentState.verification === true) {
+              transition(target, IDLE_STATE);
+            }
             return { status: "same", current };
           } catch (error: unknown) {
             const failure = errorFrom(error);
@@ -443,7 +447,7 @@ export function useSaveMachine({
               !inFlightTargetsRef.current.has(target) &&
               !reloadingTargetsRef.current.has(target)
             ) {
-              transition(target, { state: "error", message: failure.message });
+              transition(target, { state: "error", message: failure.message, verification: true });
             }
             throw failure;
           }

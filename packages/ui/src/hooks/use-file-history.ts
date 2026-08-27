@@ -46,7 +46,6 @@ interface FileHistoryTarget {
   active: boolean;
   clientForSignal: (signal: AbortSignal) => StashClient;
   firstPagePending: number;
-  intent: number;
   lifecycle: AbortController;
   limit: number | undefined;
   path: string;
@@ -109,7 +108,6 @@ export function useFileHistory(
       active: false,
       clientForSignal,
       firstPagePending: 0,
-      intent: 0,
       lifecycle: new AbortController(),
       limit,
       path,
@@ -147,7 +145,6 @@ export function useFileHistory(
 
   const reload = useCallback(
     (externalSignal?: AbortSignal): Promise<void> => {
-      const intent = ++target.intent;
       const lifecycleSignal = target.lifecycle.signal;
       target.firstPagePending += 1;
       pagingControllerRef.current?.abort();
@@ -173,9 +170,9 @@ export function useFileHistory(
           if (!target.active) {
             throw new DOMException("The history target is inactive.", "AbortError");
           }
-          if (target.intent === intent) setEntry({ target, snapshot: readySnapshot(page) });
+          setEntry({ target, snapshot: readySnapshot(page) });
         } catch (error: unknown) {
-          if (!signal.aborted && target.active && target.intent === intent) {
+          if (!signal.aborted && target.active) {
             setEntry({
               target,
               snapshot: {

@@ -22,7 +22,7 @@ import { useStashClient, type ViewerStashClient } from "./auth/stash-client-prov
 export const VIEWER_LIVE_POLL_INTERVAL_MS = 30_000;
 const CHANGE_PAGE_LIMIT = 200;
 
-export type ViewerLiveRefreshReason = LiveRefreshReason | "polling";
+export type ViewerLiveRefreshReason = LiveRefreshReason | "listener" | "polling";
 
 export interface ViewerLiveRefreshBatch {
   reason: ViewerLiveRefreshReason;
@@ -33,7 +33,7 @@ export interface ViewerLiveRefreshBatch {
   changes: readonly ChangeItem[];
   /** Advisory event path retained for diagnostics and optional prefetch only. */
   hintedPath?: string;
-  /** Aborts when the active stash, credential client, tab identity, or visibility changes. */
+  /** Aborts when the active target, stash, credential client, tab identity, or visibility changes. */
   signal: AbortSignal;
 }
 
@@ -50,9 +50,47 @@ interface AuthoritativeRefreshRequest extends Omit<LiveRefreshRequest, "reason">
 }
 
 interface RefreshQueue {
+  active: number;
   controller: AbortController;
   key: readonly [ViewerStashClient | null, string, string | undefined];
   tail: Promise<void>;
+}
+
+interface RefreshListener {
+  controller: AbortController;
+  handler: ViewerLiveRefreshHandler;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  try {
+    signal.throwIfAborted();
+  } catch (error) {
+    return error;
+  }
+  return new DOMException("The live refresh was aborted", "AbortError");
+}
+
+/** Rejects promptly on abort even when a consumer's underlying transport ignores its signal. */
+function settleWithSignal<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const handleAbort = () => {
+      cleanup();
+      reject(abortReason(signal));
+    };
+    const cleanup = () => signal.removeEventListener("abort", handleAbort);
+    signal.addEventListener("abort", handleAbort, { once: true });
+    task.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 const OFF_LIVE_STATE = { status: "off", checkpoint: null } as const;
@@ -71,9 +109,12 @@ export function ViewerLiveUpdatesProvider({
 }) {
   const { stash } = useParams();
   const { client, clientId } = useStashClient();
-  const handlersRef = useRef(new Set<ViewerLiveRefreshHandler>());
+  const listenersRef = useRef(new Set<RefreshListener>());
+  const listenerWaitersRef = useRef(new Set<() => void>());
+  const waitingForListenerRef = useRef(0);
   const refreshQueue = useMemo<RefreshQueue>(
     () => ({
+      active: 0,
       controller: new AbortController(),
       key: [client, clientId, stash],
       tail: Promise.resolve(),
@@ -81,14 +122,35 @@ export function ViewerLiveUpdatesProvider({
     [client, clientId, stash],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (refreshQueue.controller.signal.aborted) refreshQueue.controller = new AbortController();
     return () => refreshQueue.controller.abort();
   }, [refreshQueue]);
 
-  const register = useCallback((handler: ViewerLiveRefreshHandler) => {
-    handlersRef.current.add(handler);
-    return () => handlersRef.current.delete(handler);
+  const waitForListener = useCallback((signal: AbortSignal): Promise<void> => {
+    if (listenersRef.current.size > 0) return Promise.resolve();
+    signal.throwIfAborted();
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      waitingForListenerRef.current += 1;
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        waitingForListenerRef.current -= 1;
+        listenerWaitersRef.current.delete(handleListener);
+        signal.removeEventListener("abort", handleAbort);
+      };
+      const handleListener = () => {
+        cleanup();
+        resolve();
+      };
+      const handleAbort = () => {
+        cleanup();
+        reject(abortReason(signal));
+      };
+      listenerWaitersRef.current.add(handleListener);
+      signal.addEventListener("abort", handleAbort, { once: true });
+    });
   }, []);
 
   const performAuthoritativeRefresh = useCallback(
@@ -98,42 +160,63 @@ export function ViewerLiveUpdatesProvider({
         throw new Error("The live refresh target is no longer active.");
       }
 
-      const full = request.checkpoint === null;
-      let since = request.checkpoint ?? 0;
-      const changes = new Map<number, ChangeItem>();
-      const files = client.withSignal(request.signal).files(stash);
-
       while (true) {
+        await waitForListener(request.signal);
         request.signal.throwIfAborted();
-        const page = await clientValue(files.changes({ since, limit: CHANGE_PAGE_LIMIT }));
-        for (const change of page.changes) changes.set(change.changeId, change);
-        if (!page.hasMore) break;
-        const nextSince = "nextSince" in page ? page.nextSince : null;
-        if (typeof nextSince !== "number" || nextSince <= since) {
-          throw new Error("The live change feed returned an invalid nextSince cursor.");
-        }
-        since = nextSince;
-      }
+        const full = request.checkpoint === null;
+        let since = request.checkpoint ?? 0;
+        const changes = new Map<number, ChangeItem>();
+        const files = client.withSignal(request.signal).files(stash);
 
-      request.signal.throwIfAborted();
-      const batch: ViewerLiveRefreshBatch = {
-        reason: request.reason,
-        full,
-        checkpoint: request.checkpoint,
-        changes: [...changes.values()].sort((left, right) => left.changeId - right.changeId),
-        ...(request.path === undefined ? {} : { hintedPath: request.path }),
-        signal: request.signal,
-      };
-      const results = await Promise.allSettled(
-        [...handlersRef.current].map((handler) => handler(batch)),
-      );
-      const failed = results.find(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
-      );
-      if (failed !== undefined) throw failed.reason;
-      request.signal.throwIfAborted();
+        while (true) {
+          request.signal.throwIfAborted();
+          const page = await clientValue(files.changes({ since, limit: CHANGE_PAGE_LIMIT }));
+          for (const change of page.changes) changes.set(change.changeId, change);
+          if (!page.hasMore) break;
+          const nextSince = "nextSince" in page ? page.nextSince : null;
+          if (typeof nextSince !== "number" || nextSince <= since) {
+            throw new Error("The live change feed returned an invalid nextSince cursor.");
+          }
+          since = nextSince;
+        }
+
+        request.signal.throwIfAborted();
+        const listeners = [...listenersRef.current].filter(
+          (listener) => !listener.controller.signal.aborted,
+        );
+        // A route can change after the read. Re-read from the same reconciled cursor for the next
+        // listener rather than acknowledging a batch that nobody adopted.
+        if (listeners.length === 0) continue;
+
+        const orderedChanges = [...changes.values()].sort(
+          (left, right) => left.changeId - right.changeId,
+        );
+        const results = await Promise.allSettled(
+          listeners.map((listener) => {
+            const signal = AbortSignal.any([request.signal, listener.controller.signal]);
+            const batch: ViewerLiveRefreshBatch = {
+              reason: request.reason,
+              full,
+              checkpoint: request.checkpoint,
+              changes: orderedChanges,
+              ...(request.path === undefined ? {} : { hintedPath: request.path }),
+              signal,
+            };
+            return settleWithSignal(
+              Promise.resolve().then(() => listener.handler(batch)),
+              signal,
+            );
+          }),
+        );
+        const failed = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failed !== undefined) throw failed.reason;
+        request.signal.throwIfAborted();
+        return;
+      }
     },
-    [client, stash],
+    [client, stash, waitForListener],
   );
 
   const refreshAuthoritative = useCallback(
@@ -142,7 +225,12 @@ export function ViewerLiveUpdatesProvider({
       const run = async () => {
         const signal = AbortSignal.any([request.signal, queueSignal]);
         signal.throwIfAborted();
-        await performAuthoritativeRefresh({ ...request, signal });
+        refreshQueue.active += 1;
+        try {
+          await performAuthoritativeRefresh({ ...request, signal });
+        } finally {
+          refreshQueue.active -= 1;
+        }
       };
       const refresh = refreshQueue.tail.then(run, run);
       // Keep one active authoritative fetch across stream, focus/visibility, and polling triggers.
@@ -150,6 +238,32 @@ export function ViewerLiveUpdatesProvider({
       return refresh;
     },
     [performAuthoritativeRefresh, refreshQueue],
+  );
+
+  const register = useCallback(
+    (handler: ViewerLiveRefreshHandler) => {
+      const listener: RefreshListener = { controller: new AbortController(), handler };
+      listenersRef.current.add(listener);
+      const hadWaitingRefresh = waitingForListenerRef.current > 0;
+      const waiting = [...listenerWaitersRef.current];
+      for (const notify of waiting) notify();
+
+      if (refreshQueue.active > 0 && !hadWaitingRefresh) {
+        void refreshAuthoritative({
+          reason: "listener",
+          checkpoint: null,
+          signal: listener.controller.signal,
+        }).catch(() => {
+          // The listener can change again before its conservative recovery reaches the queue.
+        });
+      }
+
+      return () => {
+        listenersRef.current.delete(listener);
+        listener.controller.abort();
+      };
+    },
+    [refreshAuthoritative, refreshQueue],
   );
 
   const live = useLiveChanges(stash ?? "", {
@@ -204,19 +318,14 @@ export function ViewerLiveUpdatesProvider({
   return <ViewerLiveContext.Provider value={value}>{children}</ViewerLiveContext.Provider>;
 }
 
-/** Registers one page-level fanout handler while keeping its latest closure without churn. */
+/** Registers one page target and aborts its in-flight fanout when that target changes. */
 export function useViewerLiveRefresh(handler: ViewerLiveRefreshHandler): void {
   const context = useContext(ViewerLiveContext);
   const register = context?.register;
-  const handlerRef = useRef(handler);
   useLayoutEffect(() => {
-    handlerRef.current = handler;
-  }, [handler]);
-
-  useEffect(() => {
     if (register === undefined) return;
-    return register((batch) => handlerRef.current(batch));
-  }, [register]);
+    return register(handler);
+  }, [handler, register]);
 }
 
 export function useViewerLiveStatus(): Pick<ViewerLiveContextValue, "status" | "checkpoint"> {
