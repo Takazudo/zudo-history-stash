@@ -16,6 +16,9 @@ interface StashJson {
   lastChangeId: number | null;
   lastChangeAt: string | null;
   createdAt: string;
+  deletedAt: string | null;
+  restoreUntil: string | null;
+  restorable: boolean;
 }
 
 interface ChangeJson {
@@ -198,6 +201,9 @@ describe("stash administration", () => {
           lastChangeId: alphaChange,
           lastChangeAt: new Date(3_000).toISOString(),
           createdAt: new Date(1_000).toISOString(),
+          deletedAt: null,
+          restoreUntil: null,
+          restorable: false,
         },
       ],
       nextAfter: "alpha",

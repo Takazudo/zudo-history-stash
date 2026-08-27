@@ -3,6 +3,7 @@ import type { JsonValue } from "./canonical.js";
 
 export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
+export type GcKind = "r2-orphans" | "ledger";
 export type ErrorCode =
   | "validation"
   | "invalid-path"
@@ -15,6 +16,7 @@ export type ErrorCode =
   | "stale"
   | "exists"
   | "already-deleted"
+  | "gc-busy"
   | "already-rotated"
   | "token-expired"
   | "rate-limited"
@@ -69,6 +71,9 @@ export interface StashRecord {
   lastChangeId: number | null;
   lastChangeAt: string | null;
   createdAt: string;
+  deletedAt: string | null;
+  restoreUntil: string | null;
+  restorable: boolean;
 }
 export type StashSummary = Omit<StashRecord, "meta">;
 export interface StashListResponse {
@@ -77,6 +82,29 @@ export interface StashListResponse {
 }
 export type CreateStashResult = StashRecord;
 export type GetStashResult = StashRecord;
+export interface DeleteStashResult {
+  name: string;
+  deletedAt: string;
+  revokedTokens: number;
+  restoreUntil: string;
+}
+export type RestoreStashResult = StashRecord;
+export interface GcRunResult {
+  runId: string;
+  jobId: GcKind;
+  kind: GcKind;
+  dryRun: boolean;
+  scanned: number;
+  eligible: number;
+  deleted: number;
+  cursor: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+export interface GcRunsResponse {
+  runs: GcRunResult[];
+}
 export interface TokenRecord {
   id: string;
   label: string;
