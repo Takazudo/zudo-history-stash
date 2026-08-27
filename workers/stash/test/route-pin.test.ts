@@ -5,7 +5,6 @@ import { CLIENT_ROUTES, parseClientResponse, StashHttpError } from "@takazudo/zu
 import apiReference from "../../../docs/api.md?raw";
 import app from "../src/app.js";
 import { StashRpc } from "../src/rpc.js";
-import events from "../src/routes/events.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "./helpers/app.js";
 import { createTestEnv } from "./helpers/env.js";
 
@@ -95,17 +94,20 @@ describe("route contract pin", () => {
     expect(prototypeNames.has("stashEvents")).toBe(false);
   });
 
-  it("mounts the dedicated events skeleton rather than relying on the catch-all", async () => {
-    const response = await events.request("http://stash.test/v1/stashes/route-pin/events");
-    expect(response.status).toBe(501);
-    expect(response.headers.get("Content-Type")).toContain("application/json");
-    expect(response.headers.get("Content-Type")).not.toContain("text/event-stream");
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "not-implemented", message: "This route is not implemented yet." },
+  it("mounts the dedicated real events handler rather than relying on the catch-all", async () => {
+    await seedStash("route-pin");
+    const response = await request(app, "http://stash.test/v1/stashes/route-pin/events", {
+      headers: bearer("test-admin"),
     });
+    try {
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    } finally {
+      await response.body?.cancel().catch(() => undefined);
+    }
   });
 
-  it("authenticates, resolves, and conceals before reaching the events skeleton", async () => {
+  it("authenticates, resolves, and conceals before opening the events stream", async () => {
     await seedStash("route-pin");
     await seedStash("other-stash");
     const read = await mintToken("route-pin", "read");
@@ -118,7 +120,11 @@ describe("route contract pin", () => {
 
     for (const token of ["test-admin", read.token, write.token]) {
       const response = await request(app, path, { headers: bearer(token) });
-      expect(response.status).toBe(501);
+      try {
+        expect(response.status).toBe(200);
+      } finally {
+        await response.body?.cancel().catch(() => undefined);
+      }
     }
 
     const concealed = await request(app, path, { headers: bearer(foreign.token) });

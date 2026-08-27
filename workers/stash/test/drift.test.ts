@@ -52,6 +52,7 @@ describe("Wrangler and Env drift", () => {
       "RL_WRITE",
       "STASH_ADMIN_TOKEN",
       "STASH_DELETE_GRACE_DAYS",
+      "STASH_EVENTS",
       "STASH_EVENTS_MAX_STREAM_MS",
     ]);
     for (const name of references) {
