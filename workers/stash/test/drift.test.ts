@@ -96,6 +96,7 @@ describe("Wrangler and Env drift", () => {
     const expected = {
       STASH_DELETE_GRACE_DAYS: "30",
       GC_ORPHAN_MIN_AGE_MS: "900000",
+      GC_LEASE_TTL_MS: "300000",
     };
     expect(sectionVars(wranglerSource, "vars")).toEqual({
       ALLOWED_ORIGINS: "",

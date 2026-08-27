@@ -24,6 +24,7 @@ bucket_name = "zudo-history-stash-blobs"
 ALLOWED_ORIGINS = ""
 STASH_DELETE_GRACE_DAYS = "30"
 GC_ORPHAN_MIN_AGE_MS = "900000"
+GC_LEASE_TTL_MS = "300000"
 
 [secrets]
 required = ["STASH_ADMIN_TOKEN"]
@@ -59,6 +60,7 @@ routes = []
 ALLOWED_ORIGINS = "http://localhost:5173"
 STASH_DELETE_GRACE_DAYS = "30"
 GC_ORPHAN_MIN_AGE_MS = "900000"
+GC_LEASE_TTL_MS = "300000"
 
 [env.preview.secrets]
 required = ["STASH_ADMIN_TOKEN"]

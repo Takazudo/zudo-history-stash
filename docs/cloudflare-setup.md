@@ -46,6 +46,7 @@ does not authorize hard-purging them.
 | ------------------------- | ---------------------------- | -------------------------------------------------------------------- |
 | `STASH_DELETE_GRACE_DAYS` | `"30"`                       | Restore window for deleted stashes                                   |
 | `GC_ORPHAN_MIN_AGE_MS`    | `"900000"`                   | Minimum age for an orphaned R2 object to become eligible for cleanup |
+| `GC_LEASE_TTL_MS`         | `"300000"`                   | Lease duration for a fenced GC run                                   |
 
 Keep the same values in the root `[vars]` and `[env.preview.vars]` sections of
 `workers/stash/wrangler.toml`. This migration only adds the configuration and schema seams; the

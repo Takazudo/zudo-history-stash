@@ -44,6 +44,7 @@ export function createTestEnv(
       ALLOWED_ORIGINS: env.ALLOWED_ORIGINS,
       STASH_DELETE_GRACE_DAYS: env.STASH_DELETE_GRACE_DAYS,
       GC_ORPHAN_MIN_AGE_MS: env.GC_ORPHAN_MIN_AGE_MS,
+      GC_LEASE_TTL_MS: env.GC_LEASE_TTL_MS,
       ...overrides.env,
     },
     deps: {
