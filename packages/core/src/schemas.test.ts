@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   ChangesQuery,
   CreateStashBody,
+  CreateTokenBody,
   DiffCandidateBody,
   DiffQuery,
   FileGetQuery,
@@ -9,6 +10,7 @@ import {
   ListFilesQuery,
   ListQuery,
   PutFileBody,
+  RotateTokenBody,
 } from "./schemas.js";
 
 const importPut = (createdAt: number) => ({ kind: "put" as const, body: "x", createdAt });
@@ -53,6 +55,43 @@ describe("strict request and query schemas", () => {
     expect(DiffQuery.parse({ from: "1", to: "head" })).toMatchObject({ from: 1, to: "head" });
     expect(DiffCandidateBody.safeParse({ from: "head", body: "" }).success).toBe(true);
     expect(DiffCandidateBody.safeParse({ from: 1, body: "", extra: 1 }).success).toBe(false);
+  });
+  it("accepts one token expiry form and rejects invalid or competing forms", () => {
+    expect(CreateTokenBody.parse({ scope: "read", expiresAt: "2026-09-25T00:00:00.000Z" })).toEqual(
+      { scope: "read", expiresAt: "2026-09-25T00:00:00.000Z" },
+    );
+    expect(CreateTokenBody.safeParse({ scope: "write", ttlSeconds: 1 }).success).toBe(true);
+    expect(CreateTokenBody.safeParse({ scope: "write", ttlSeconds: 315_360_000 }).success).toBe(
+      true,
+    );
+    for (const input of [
+      { scope: "read", expiresAt: "not-a-timestamp" },
+      { scope: "read", ttlSeconds: 0 },
+      { scope: "read", ttlSeconds: 1.5 },
+      { scope: "read", ttlSeconds: 315_360_001 },
+      { scope: "read", expiresAt: "2026-09-25T00:00:00.000Z", ttlSeconds: 60 },
+      { scope: "read", ttlSeconds: 60, extra: true },
+    ]) {
+      expect(CreateTokenBody.safeParse(input).success).toBe(false);
+    }
+  });
+  it("defaults and bounds rotation grace while keeping expiry forms exclusive", () => {
+    const input: RotateTokenBody = {};
+    const parsed = RotateTokenBody.parse(input);
+    expectTypeOf(input.graceSeconds).toEqualTypeOf<number | undefined>();
+    expectTypeOf(parsed.graceSeconds).toEqualTypeOf<number>();
+    expect(parsed).toEqual({ graceSeconds: 300 });
+    expect(RotateTokenBody.parse({ graceSeconds: 0 })).toEqual({ graceSeconds: 0 });
+    expect(RotateTokenBody.safeParse({ graceSeconds: 86_400 }).success).toBe(true);
+    for (const input of [
+      { graceSeconds: -1 },
+      { graceSeconds: 86_401 },
+      { graceSeconds: 1.5 },
+      { expiresAt: "2026-09-25T00:00:00.000Z", ttlSeconds: 60 },
+      { unknown: true },
+    ]) {
+      expect(RotateTokenBody.safeParse(input).success).toBe(false);
+    }
   });
 });
 

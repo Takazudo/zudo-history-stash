@@ -3,13 +3,13 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { requireToken } from "./auth.js";
-import type { AppEnv } from "./context.js";
+import type { AppDependencies, AppEnv } from "./context.js";
 import { onError } from "./errors.js";
 import { healthResponse } from "./routes/meta.js";
 import routes from "./routes/index.js";
 
 const ALLOW_HEADERS = ["Authorization", "Content-Type", "If-None-Match", "Idempotency-Key"];
-const EXPOSE_HEADERS = ["ETag", "X-Stash-Version", "Idempotent-Replayed"];
+const EXPOSE_HEADERS = ["ETag", "X-Stash-Version", "Idempotent-Replayed", "Retry-After"];
 
 function allowedOrigins(value: string): Set<string> {
   return new Set(
@@ -20,8 +20,15 @@ function allowedOrigins(value: string): Set<string> {
   );
 }
 
-export function createApp(): Hono<AppEnv> {
+const defaultDependencies: AppDependencies = { now: () => Date.now() };
+
+export function createApp(dependencies: Partial<AppDependencies> = {}): Hono<AppEnv> {
+  const deps = { ...defaultDependencies, ...dependencies };
   const app = new Hono<AppEnv>();
+  app.use("*", async (c, next) => {
+    c.set("deps", deps);
+    await next();
+  });
   app.use("*", async (c, next) => {
     const origin = c.req.header("Origin");
     if (origin === undefined || !allowedOrigins(c.env.ALLOWED_ORIGINS).has(origin)) {

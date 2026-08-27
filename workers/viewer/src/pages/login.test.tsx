@@ -32,7 +32,13 @@ describe("LoginPage", () => {
     const client = createFakeViewerClient({
       me: async () => ({
         ok: true,
-        value: { principal: "stash", stash: "notes", tokenId: "tok_1", scope: "read" },
+        value: {
+          principal: "stash",
+          stash: "notes",
+          tokenId: "tok_1",
+          scope: "read",
+          expiresAt: null,
+        },
       }),
     });
     const { router } = renderViewerRoute("/login", client, { authenticated: false });

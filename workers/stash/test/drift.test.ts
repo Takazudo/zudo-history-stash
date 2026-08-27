@@ -18,12 +18,23 @@ describe("Wrangler and Env drift", () => {
     const source = Object.values(sourceModules).join("\n");
     const references = matches(source, /\b(?:c\.)?env\.([A-Z][A-Z0-9_]*)/g);
     const bindings = matches(wranglerSource, /\bbinding\s*=\s*"([A-Z][A-Z0-9_]*)"/g);
+    const rateLimits = matches(
+      wranglerSource,
+      /^\[\[(?:env\.[^.]+\.)?ratelimits\]\]\s*\n\s*name\s*=\s*"([A-Z][A-Z0-9_]*)"/gm,
+    );
     const vars = matches(wranglerSource, /^([A-Z][A-Z0-9_]*)\s*=\s*"/gm);
     const secrets = matches(wranglerSource, /"([A-Z][A-Z0-9_]*)"/g);
     const envKeys = matches(envSource, /^\s*([A-Z][A-Z0-9_]*):/gm);
-    const configured = new Set([...bindings, ...vars, ...secrets]);
+    const configured = new Set([...bindings, ...rateLimits, ...vars, ...secrets]);
 
-    expect([...references].sort()).toEqual(["ALLOWED_ORIGINS", "DB", "STASH_ADMIN_TOKEN"]);
+    expect([...references].sort()).toEqual([
+      "ALLOWED_ORIGINS",
+      "DB",
+      "RL_DIFF",
+      "RL_READ",
+      "RL_WRITE",
+      "STASH_ADMIN_TOKEN",
+    ]);
     for (const name of references) {
       expect(configured.has(name), `${name} missing from wrangler.toml`).toBe(true);
       expect(envKeys.has(name), `${name} missing from Env`).toBe(true);

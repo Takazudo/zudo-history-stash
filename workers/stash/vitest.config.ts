@@ -6,6 +6,7 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },
       miniflare: {
+        d1Databases: ["UPGRADE_DB"],
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),
           STASH_ADMIN_TOKEN: "test-admin",

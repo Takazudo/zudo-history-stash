@@ -10,6 +10,7 @@ const rpcMethodsByRoute = {
   getStash: "getStash",
   createToken: "createToken",
   listTokens: "listTokens",
+  rotateToken: "rotateToken",
   revokeToken: "revokeToken",
   importHistory: "importHistory",
   listChanges: "listChanges",
@@ -29,5 +30,10 @@ const routesByRpcMethod = rpcMethodsByRoute satisfies Record<keyof StashRpcMetho
 describe("StashRpcMethods route pin", () => {
   it("covers every RouteId and exposes no extra method keys", () => {
     expect(routesByRpcMethod).toBe(rpcMethodsByRoute);
+  });
+
+  it("accepts an omitted rotation grace period at the public RPC boundary", () => {
+    const input: Parameters<StashRpcMethods["rotateToken"]>[3] = {};
+    expect(input).toEqual({});
   });
 });

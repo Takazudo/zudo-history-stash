@@ -32,6 +32,7 @@
   .zhs-tokens-dialog-header h2,
   .zhs-tokens-dialog-header p,
   .zhs-tokens-dialog-body p,
+  .zhs-tokens-rotation-recovery p,
   .zhs-tokens-revoke-summary,
   .zhs-tokens-revoke-summary dd {
     margin: 0;
@@ -63,7 +64,7 @@
 
   .zhs-tokens-mint-form {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(10rem, 0.35fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(8rem, 0.3fr) minmax(10rem, 0.4fr) auto;
     align-items: end;
     gap: var(--vsp-md) var(--hsp-md);
     padding-block: var(--vsp-md);
@@ -83,12 +84,15 @@
   }
 
   .zhs-tokens-browser-warning,
-  .zhs-tokens-mint-form .zhs-error-banner {
+  .zhs-tokens-mint-form .zhs-error-banner,
+  .zhs-tokens-field--custom-expiry {
     grid-column: 1 / -1;
   }
 
   .zhs-tokens-form-actions {
     display: flex;
+    grid-column: 4;
+    grid-row: 1;
     justify-content: flex-end;
   }
 
@@ -136,7 +140,7 @@
   }
 
   .zhs-tokens-table {
-    min-inline-size: 56rem;
+    min-inline-size: 88rem;
   }
 
   .zhs-tokens-table .zhs-table__header,
@@ -147,6 +151,7 @@
 
   .zhs-tokens-table__id,
   .zhs-tokens-table__compact,
+  .zhs-tokens-table__relation,
   .zhs-tokens-table__actions {
     inline-size: 0;
     white-space: nowrap;
@@ -162,7 +167,19 @@
     font-size: var(--text-xs);
   }
 
+  .zhs-tokens-table__relation {
+    font-family: var(--font-family-mono);
+    font-size: var(--text-xs);
+  }
+
+  .zhs-tokens-table__action-group {
+    display: flex;
+    align-items: center;
+    gap: var(--hsp-sm);
+  }
+
   .zhs-tokens-scope,
+  .zhs-tokens-expired,
   .zhs-tokens-revoked-label {
     display: inline-flex;
     inline-size: fit-content;
@@ -190,8 +207,34 @@
     color: var(--theme-error);
   }
 
+  .zhs-tokens-expired {
+    background: var(--theme-error-soft);
+    color: var(--theme-error);
+  }
+
+  .zhs-tokens-rotate-dialog,
   .zhs-tokens-revoke-dialog {
     inline-size: min(calc(100% - var(--hsp-xl)), 36rem);
+  }
+
+  .zhs-tokens-rotate-dialog {
+    overflow: hidden;
+  }
+
+  .zhs-tokens-rotate-dialog__form {
+    display: grid;
+    max-block-size: calc(100dvh - var(--vsp-xl));
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .zhs-tokens-rotate-dialog__body {
+    max-block-size: 60dvh;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+
+  .zhs-tokens-rotation-recovery {
+    gap: var(--vsp-xs);
   }
 
   .zhs-tokens-dialog-header,
@@ -258,12 +301,26 @@
     }
 
     .zhs-tokens-form-actions {
+      grid-column: 1;
+      grid-row: auto;
       justify-content: flex-start;
     }
 
     .zhs-tokens-secret-value {
       align-items: stretch;
       flex-direction: column;
+    }
+  }
+
+  @media (pointer: coarse) {
+    .zhs-tokens-panel .zhs-button,
+    .zhs-tokens-panel .zhs-input,
+    .zhs-tokens-panel .zhs-select,
+    .zhs-tokens-rotate-dialog .zhs-button,
+    .zhs-tokens-rotate-dialog .zhs-input,
+    .zhs-tokens-rotate-dialog .zhs-select,
+    .zhs-tokens-revoke-dialog .zhs-button {
+      min-block-size: calc(var(--control-height) + (2 * var(--vsp-md)));
     }
   }
 }

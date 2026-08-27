@@ -10,6 +10,12 @@ export const ROUTES = [
   { id: "createToken", method: "POST", template: "/v1/stashes/:stash/tokens", principal: "admin" },
   { id: "listTokens", method: "GET", template: "/v1/stashes/:stash/tokens", principal: "admin" },
   {
+    id: "rotateToken",
+    method: "POST",
+    template: "/v1/stashes/:stash/tokens/:id/rotate",
+    principal: "admin",
+  },
+  {
     id: "revokeToken",
     method: "DELETE",
     template: "/v1/stashes/:stash/tokens/:id",

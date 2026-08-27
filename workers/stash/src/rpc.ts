@@ -1,5 +1,6 @@
 import {
   createStashClient,
+  parseClientResponse,
   type ChangesOptions,
   type ClientResult,
   type DiffOptions,
@@ -35,6 +36,8 @@ import type {
   PutResult,
   RollbackBody,
   RollbackResult,
+  RotateTokenBody,
+  RotateTokenResult,
   RouteId,
   RpcRequest,
   StashRecord,
@@ -101,6 +104,27 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
 
   async listTokens(token: string, stash: string): Promise<ClientResult<ListTokensResult>> {
     return noThrow(() => rpcClient(this, token).stashes.tokens(stash).list());
+  }
+
+  async rotateToken(
+    token: string,
+    stash: string,
+    id: string,
+    input: RotateTokenBody,
+  ): Promise<ClientResult<RotateTokenResult>> {
+    return noThrow(async () => {
+      const response = await this.request({
+        method: "POST",
+        path: `/v1/stashes/${stash}/tokens/${id}/rotate`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+        token,
+      });
+      return (await parseClientResponse<RotateTokenResult>(
+        response,
+        "rotateToken",
+      )) as ClientResult<RotateTokenResult>;
+    });
   }
 
   async revokeToken(token: string, stash: string, id: string): Promise<ClientResult<undefined>> {
@@ -241,6 +265,7 @@ const rpcMethodsByRoute = {
   getStash: "getStash",
   createToken: "createToken",
   listTokens: "listTokens",
+  rotateToken: "rotateToken",
   revokeToken: "revokeToken",
   importHistory: "importHistory",
   listChanges: "listChanges",

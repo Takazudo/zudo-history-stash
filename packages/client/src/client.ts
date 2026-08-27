@@ -35,6 +35,8 @@ import type {
   PutResult,
   RollbackBody,
   RollbackResult,
+  RotateTokenBody,
+  RotateTokenResult,
   RouteId,
   RouteMethod,
   StashRecord,
@@ -86,7 +88,8 @@ export interface MutationOptions {
 export type ClientSuccess<T> = { ok: true; value: T; replayed?: true };
 
 /** A client-facing business result. HTTP 4xx responses remain values, not thrown errors. */
-export type ClientResult<T> = ClientSuccess<T> | { ok: false; error: ApiError; current?: Current };
+export type ClientResult<T> =
+  ClientSuccess<T> | { ok: false; error: ApiError; current?: Current; retryAfter?: number };
 
 /** A representation cache hit. This is deliberately separate from a file value. */
 export type NotModifiedResult = { ok: true; notModified: true };
@@ -242,6 +245,7 @@ function getFileVersion(result: FileGetResult): number | null | undefined {
 export interface StashTokensClient {
   create(input: CreateTokenBody): Promise<ClientResult<CreateTokenResult>>;
   list(): Promise<ClientResult<ListTokensResult>>;
+  rotate(id: string, input: RotateTokenBody): Promise<ClientResult<RotateTokenResult>>;
   revoke(id: string): Promise<ClientResult<undefined>>;
 }
 
@@ -519,6 +523,16 @@ export function createStashClient(options: StashClientOptions): StashClient {
             "GET",
             target(route("listTokens", stash)),
           )) as ClientResult<ListTokensResult>;
+        },
+        async rotate(id, input) {
+          const invalid = stashError<RotateTokenResult>(stash);
+          if (invalid !== undefined) return invalid;
+          return (await call<RotateTokenResult>(
+            "rotateToken",
+            "POST",
+            target(route("rotateToken", stash, undefined, id)),
+            input,
+          )) as ClientResult<RotateTokenResult>;
         },
         async revoke(id) {
           const invalid = stashError<undefined>(stash);

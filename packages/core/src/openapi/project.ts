@@ -9,6 +9,7 @@ import {
   ImportBody,
   PutFileBody,
   RollbackBody,
+  RotateTokenBody,
 } from "../schemas.js";
 import { RESPONSE_SCHEMAS } from "./responses.js";
 
@@ -221,6 +222,13 @@ function describeRequestRefinements(source: ZodType, schema: JsonSchema): void {
     appendDescription(schema, "meta", meta);
   } else if (source === CreateTokenBody) {
     appendDescription(schema, "label", wellFormed);
+    schema.description = "expiresAt and ttlSeconds are mutually exclusive.";
+    appendDescription(schema, "expiresAt", "Mutually exclusive with ttlSeconds.");
+    appendDescription(schema, "ttlSeconds", "Mutually exclusive with expiresAt.");
+  } else if (source === RotateTokenBody) {
+    schema.description = "expiresAt and ttlSeconds are mutually exclusive.";
+    appendDescription(schema, "expiresAt", "Mutually exclusive with ttlSeconds.");
+    appendDescription(schema, "ttlSeconds", "Mutually exclusive with expiresAt.");
   } else if (source === ChangesQuery) {
     schema.description = "The since and before keyset cursors are mutually exclusive.";
     appendDescription(schema, "since", "Mutually exclusive with before.");

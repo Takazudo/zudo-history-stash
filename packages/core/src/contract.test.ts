@@ -58,7 +58,10 @@ describe("typed errors", () => {
     ["scope", 403],
     ["not-found", 404],
     ["stale", 409],
+    ["already-rotated", 409],
+    ["token-expired", 409],
     ["payload-too-large", 413],
+    ["rate-limited", 429],
     ["idempotency-key-reused", 422],
     ["internal", 500],
   ] as const)("maps %s", (code, status) => expect(statusForCode(code)).toBe(status));
@@ -66,5 +69,14 @@ describe("typed errors", () => {
   it("constructs a StashError with its HTTP status", () => {
     const error = new StashError("file-deleted", "deleted");
     expect(error).toMatchObject({ name: "StashError", code: "file-deleted", status: 404 });
+    expect(error.successorId).toBeUndefined();
+
+    const rotated = new StashError(
+      "already-rotated",
+      "Token was already rotated.",
+      undefined,
+      "tok_successor",
+    );
+    expect(rotated).toMatchObject({ status: 409, successorId: "tok_successor" });
   });
 });

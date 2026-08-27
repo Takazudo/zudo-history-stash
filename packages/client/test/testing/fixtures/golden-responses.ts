@@ -4,8 +4,10 @@ export const GOLDEN_HELLO_HASH =
   "sha256-2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 export const GOLDEN_READ_TOKEN_ID = `tok_${"0".repeat(31)}1`;
 export const GOLDEN_WRITE_TOKEN_ID = `tok_${"0".repeat(31)}2`;
+export const GOLDEN_ROTATED_TOKEN_ID = `tok_${"0".repeat(31)}3`;
 export const GOLDEN_READ_TOKEN_SECRET = `zhs_${"0".repeat(42)}1`;
 export const GOLDEN_WRITE_TOKEN_SECRET = `zhs_${"0".repeat(42)}2`;
+export const GOLDEN_ROTATED_TOKEN_SECRET = `zhs_${"0".repeat(42)}3`;
 
 export const GOLDEN_RESPONSES = {
   stash: {
@@ -38,6 +40,8 @@ export const GOLDEN_RESPONSES = {
     label: "Reader",
     scope: "read",
     createdAt: GOLDEN_CREATED_AT,
+    expiresAt: null,
+    rotatedFrom: null,
   },
   writeToken: {
     id: GOLDEN_WRITE_TOKEN_ID,
@@ -45,6 +49,39 @@ export const GOLDEN_RESPONSES = {
     label: "Writer",
     scope: "write",
     createdAt: GOLDEN_CREATED_AT,
+    expiresAt: null,
+    rotatedFrom: null,
+  },
+  rotatedToken: {
+    id: GOLDEN_ROTATED_TOKEN_ID,
+    token: GOLDEN_ROTATED_TOKEN_SECRET,
+    label: "Reader",
+    scope: "read",
+    createdAt: GOLDEN_CREATED_AT,
+    expiresAt: null,
+    rotatedFrom: GOLDEN_READ_TOKEN_ID,
+    predecessor: {
+      id: GOLDEN_READ_TOKEN_ID,
+      expiresAt: "2026-08-25T00:05:00.000Z",
+    },
+  },
+  rateLimited: {
+    ok: false,
+    error: { code: "rate-limited", message: "Rate limit exceeded.", status: 429 },
+    retryAfter: 60,
+  },
+  alreadyRotated: {
+    ok: false,
+    error: {
+      code: "already-rotated",
+      message: "Token was already rotated.",
+      status: 409,
+      successorId: GOLDEN_ROTATED_TOKEN_ID,
+    },
+  },
+  tokenExpired: {
+    ok: false,
+    error: { code: "token-expired", message: "Token is expired.", status: 409 },
   },
   tokenList: {
     tokens: [
@@ -53,6 +90,9 @@ export const GOLDEN_RESPONSES = {
         label: "Writer",
         scope: "write",
         createdAt: GOLDEN_CREATED_AT,
+        expiresAt: null,
+        rotatedFrom: null,
+        rotatedTo: null,
         revokedAt: null,
         lastUsedAt: null,
       },
@@ -61,6 +101,9 @@ export const GOLDEN_RESPONSES = {
         label: "Reader",
         scope: "read",
         createdAt: GOLDEN_CREATED_AT,
+        expiresAt: null,
+        rotatedFrom: null,
+        rotatedTo: null,
         revokedAt: null,
         lastUsedAt: null,
       },
@@ -73,6 +116,9 @@ export const GOLDEN_RESPONSES = {
         label: "Writer",
         scope: "write",
         createdAt: GOLDEN_CREATED_AT,
+        expiresAt: null,
+        rotatedFrom: null,
+        rotatedTo: null,
         revokedAt: null,
         lastUsedAt: GOLDEN_CREATED_AT,
       },
@@ -81,6 +127,9 @@ export const GOLDEN_RESPONSES = {
         label: "Reader",
         scope: "read",
         createdAt: GOLDEN_CREATED_AT,
+        expiresAt: null,
+        rotatedFrom: null,
+        rotatedTo: null,
         revokedAt: GOLDEN_CREATED_AT,
         lastUsedAt: GOLDEN_CREATED_AT,
       },

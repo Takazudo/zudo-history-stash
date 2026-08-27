@@ -3,16 +3,21 @@ import {
   CreateStashBody,
   CreateTokenBody,
   ListQuery,
+  RotateTokenBody,
   StashError,
 } from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { createAdminStore } from "../d1/admin-store.js";
 
 const admin = new Hono<AppEnv>();
+
+function adminStore(c: Context<AppEnv>) {
+  return createAdminStore(c.env, { now: c.get("deps").now });
+}
 
 function validationError(message: string): never {
   throw new StashError("validation", message);
@@ -42,7 +47,7 @@ admin.get(
   zValidator("query", ListQuery, (result) => {
     if (!result.success) validationError("Invalid stash list query.");
   }),
-  async (c) => c.json(await createAdminStore(c.env).listStashes(c.req.valid("query"))),
+  async (c) => c.json(await adminStore(c).listStashes(c.req.valid("query"))),
 );
 
 admin.post(
@@ -52,11 +57,11 @@ admin.post(
   zValidator("json", CreateStashBody, (result) => {
     if (!result.success) validationError("Invalid stash input.");
   }),
-  async (c) => c.json(await createAdminStore(c.env).createStash(c.req.valid("json")), 201),
+  async (c) => c.json(await adminStore(c).createStash(c.req.valid("json")), 201),
 );
 
 admin.get("/v1/stashes/:stash", requireRoute("getStash"), async (c) => {
-  const stash = await createAdminStore(c.env).getStash(c.req.param("stash"));
+  const stash = await adminStore(c).getStash(c.req.param("stash"));
   if (stash === null) notFound();
   return c.json(stash);
 });
@@ -69,18 +74,29 @@ admin.post(
     if (!result.success) validationError("Invalid token input.");
   }),
   async (c) =>
+    c.json(await adminStore(c).createToken(c.req.param("stash"), c.req.valid("json")), 201),
+);
+
+admin.get("/v1/stashes/:stash/tokens", requireRoute("listTokens"), async (c) =>
+  c.json(await adminStore(c).listTokens(c.req.param("stash"))),
+);
+
+admin.post(
+  "/v1/stashes/:stash/tokens/:id/rotate",
+  requireRoute("rotateToken"),
+  validateJsonSyntax,
+  zValidator("json", RotateTokenBody, (result) => {
+    if (!result.success) validationError("Invalid token rotation input.");
+  }),
+  async (c) =>
     c.json(
-      await createAdminStore(c.env).createToken(c.req.param("stash"), c.req.valid("json")),
+      await adminStore(c).rotateToken(c.req.param("stash"), c.req.param("id"), c.req.valid("json")),
       201,
     ),
 );
 
-admin.get("/v1/stashes/:stash/tokens", requireRoute("listTokens"), async (c) =>
-  c.json(await createAdminStore(c.env).listTokens(c.req.param("stash"))),
-);
-
 admin.delete("/v1/stashes/:stash/tokens/:id", requireRoute("revokeToken"), async (c) => {
-  await createAdminStore(c.env).revokeToken(c.req.param("stash"), c.req.param("id"));
+  await adminStore(c).revokeToken(c.req.param("stash"), c.req.param("id"));
   return c.body(null, 204);
 });
 
@@ -90,7 +106,7 @@ admin.get(
   zValidator("query", ChangesQuery, (result) => {
     if (!result.success) validationError("Invalid changes query.");
   }),
-  async (c) => c.json(await createAdminStore(c.env).listChanges(c.req.valid("query"))),
+  async (c) => c.json(await adminStore(c).listChanges(c.req.valid("query"))),
 );
 
 export default admin;

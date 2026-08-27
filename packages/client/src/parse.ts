@@ -14,7 +14,7 @@ import type {
 } from "./client.js";
 
 type ErrorBody = {
-  error?: { code?: unknown; message?: unknown };
+  error?: { code?: unknown; message?: unknown; successorId?: unknown };
   current?: unknown;
 };
 
@@ -71,21 +71,41 @@ function getCurrent(body: unknown): Current | undefined {
   return current === undefined ? undefined : (current as Current);
 }
 
+function getSuccessorId(body: unknown): string | undefined {
+  const successorId = getErrorBody(body).error?.successorId;
+  return typeof successorId === "string" ? successorId : undefined;
+}
+
+function parseRetryAfter(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const seconds = Number(trimmed);
+  return Number.isSafeInteger(seconds) ? seconds : undefined;
+}
+
 function withReplay<T>(value: T, replayed: boolean): ClientSuccess<T> {
   return replayed ? { ok: true, value, replayed: true } : { ok: true, value };
 }
 
-function mapFailure<T>(status: number, body: unknown): ClientResult<T> {
+function mapFailure<T>(response: Response, body: unknown): ClientResult<T> {
+  const status = response.status;
   const fallback = status >= 400 && status < 500 ? "validation" : "internal";
+  const code = getErrorCode(body, fallback) as ApiError["code"];
   const current = getCurrent(body);
+  const successorId = code === "already-rotated" ? getSuccessorId(body) : undefined;
+  const retryAfter =
+    code === "rate-limited" ? parseRetryAfter(response.headers.get("Retry-After")) : undefined;
   return {
     ok: false,
     error: {
-      code: getErrorCode(body, fallback) as ApiError["code"],
+      code,
       message: getErrorMessage(body, `History Stash request failed (${status})`),
       status,
+      ...(successorId === undefined ? {} : { successorId }),
     },
     ...(current === undefined ? {} : { current }),
+    ...(retryAfter === undefined ? {} : { retryAfter }),
   };
 }
 
@@ -106,7 +126,7 @@ export async function parseClientResponse<T>(
   }
   if (response.status === 304) return { ok: true, notModified: true };
   if (response.status < 200 || response.status >= 300) {
-    return mapFailure<T>(response.status, body);
+    return mapFailure<T>(response, body);
   }
 
   const replayed =

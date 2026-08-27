@@ -45,6 +45,28 @@ describe("viewer proxy", () => {
     expect(response.headers.get("etag")).toBe(`"v1-hash"`);
   });
 
+  it("preserves a service-binding rate-limit response body and Retry-After header", async () => {
+    const body = '{"error":{"code":"rate-limited","message":"The request was rate limited."}}';
+    const upstream = new Response(body, {
+      status: 429,
+      headers: { "Content-Type": "application/json", "Retry-After": "60" },
+    });
+    const stash = { fetch: vi.fn(async () => upstream) };
+
+    const response = await handleViewerRequest(
+      new Request("https://viewer.example/api/v1/me", {
+        headers: { Authorization: "Bearer zhs_rate_limited" },
+      }),
+      { ASSETS: assets(), STASH: stash },
+    );
+
+    expect(stash.fetch).toHaveBeenCalledTimes(1);
+    expect(response).toBe(upstream);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("60");
+    expect(await response.text()).toBe(body);
+  });
+
   it.each(["/api", "/api/health", "/api/v1", "/api/v2/health"])(
     "rejects non-contract API path %s",
     async (path) => {

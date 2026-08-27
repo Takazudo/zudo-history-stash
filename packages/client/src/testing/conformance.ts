@@ -1,7 +1,7 @@
 import { DIFF_MAX_BYTES, canonicalJson } from "@takazudo/zudo-history-stash-core";
 import type { JsonValue, RouteId } from "@takazudo/zudo-history-stash-core";
 import type { StashFetch } from "../client.js";
-import type { ConformanceOptions, ConformanceReport } from "./types.js";
+import type { ConformanceOptions, ConformanceRateLimitTarget, ConformanceReport } from "./types.js";
 
 export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "me",
@@ -10,6 +10,7 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "getStash",
   "createToken",
   "listTokens",
+  "rotateToken",
   "revokeToken",
   "listFiles",
   "getFile",
@@ -22,7 +23,7 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "getStashChanges",
 ] as const satisfies readonly RouteId[];
 
-type TraceToken = "admin" | "read" | "write" | "none";
+type TraceToken = "admin" | "read" | "write" | "expiring" | "successor" | "predecessor" | "none";
 
 interface TraceRequest {
   method: string;
@@ -38,16 +39,22 @@ interface TraceContext {
   adminToken: string;
   readToken?: string;
   writeToken?: string;
+  expiringToken?: string;
+  predecessorToken?: string;
+  successorToken?: string;
   stash: string;
   foreignStash: string;
   laterStash: string;
   values: Map<string, unknown>;
   exercised: Set<RouteId>;
+  advanceTime: ConformanceOptions["advanceTime"];
+  configureRateLimit: ConformanceOptions["configureRateLimit"];
 }
 
 interface TraceStep {
   name: string;
   routeId: RouteId;
+  before?: (context: TraceContext) => void | Promise<void>;
   request: (context: TraceContext) => TraceRequest;
   verify: (response: Response, body: unknown, context: TraceContext) => void | Promise<void>;
 }
@@ -242,29 +249,70 @@ const TRACE: readonly TraceStep[] = [
     201,
     (context) => ({ name: context.laterStash }),
   ),
-  responseStep(
-    "stash list exposes a keyset continuation",
-    "listStashes",
-    (context) => ({
+  {
+    name: "stash list exposes a keyset continuation",
+    routeId: "listStashes",
+    request: (context) => ({
       method: "GET",
       path: `/v1/stashes?limit=1&after=${context.stash}`,
     }),
-    200,
-    (context) => ({
-      stashes: [{ name: context.foreignStash }],
-      nextAfter: context.foreignStash,
-    }),
-  ),
-  responseStep(
-    "stash list continues after its keyset",
-    "listStashes",
-    (context) => ({
+    verify(response, body, context) {
+      const step = "stash list exposes a keyset continuation";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      const stashes = array(value.stashes, step);
+      assertEqual(step, stashes.length, 1, "stashes.length");
+      const first = record(stashes[0], step);
+      if (
+        typeof first.name !== "string" ||
+        first.name <= context.stash ||
+        first.name > context.foreignStash
+      ) {
+        traceFailure(
+          step,
+          "first row must be after the supplied cursor and no later than the known foreign stash",
+        );
+      }
+      // The trace creates both -foreign and -later after the primary name, so at least one row
+      // necessarily remains even when unrelated persisted stashes interleave with them.
+      assertEqual(step, value.nextAfter, first.name, "nextAfter");
+      remember(context, "stashPaginationCursor", first.name);
+    },
+  },
+  {
+    name: "stash list continues after its keyset",
+    routeId: "listStashes",
+    request: (context) => ({
       method: "GET",
-      path: `/v1/stashes?limit=1&after=${context.foreignStash}`,
+      path: `/v1/stashes?limit=1&after=${stringValue(
+        context,
+        "stashPaginationCursor",
+        "stash list continues after its keyset",
+      )}`,
     }),
-    200,
-    (context) => ({ stashes: [{ name: context.laterStash }], nextAfter: null }),
-  ),
+    verify(response, body, context) {
+      const step = "stash list continues after its keyset";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      const stashes = array(value.stashes, step);
+      assertEqual(step, stashes.length, 1, "stashes.length");
+      const row = record(stashes[0], step);
+      const cursor = stringValue(context, "stashPaginationCursor", step);
+      const upperBound = cursor < context.foreignStash ? context.foreignStash : context.laterStash;
+      if (typeof row.name !== "string" || row.name <= cursor || row.name > upperBound) {
+        traceFailure(
+          step,
+          "continued row must be after the cursor and no later than the next known trace stash",
+        );
+      }
+      if (row.name < context.laterStash) {
+        // The created -later row proves another page exists in this branch.
+        assertEqual(step, value.nextAfter, row.name, "nextAfter");
+      } else if (value.nextAfter !== null && value.nextAfter !== row.name) {
+        traceFailure(step, "nextAfter must be null or the returned last row name");
+      }
+    },
+  },
   responseStep(
     "get stash returns its aggregate",
     "getStash",
@@ -304,6 +352,8 @@ const TRACE: readonly TraceStep[] = [
         label: "conformance-read",
         scope: "read",
         createdAt: value.createdAt,
+        expiresAt: null,
+        rotatedFrom: null,
       });
       context.readToken = value.token;
       remember(context, "readToken", value.token);
@@ -335,6 +385,8 @@ const TRACE: readonly TraceStep[] = [
         label: "conformance-write",
         scope: "write",
         createdAt: value.createdAt,
+        expiresAt: null,
+        rotatedFrom: null,
       });
       context.writeToken = value.token;
       remember(context, "writeToken", value.token);
@@ -360,6 +412,9 @@ const TRACE: readonly TraceStep[] = [
           label: "conformance-read",
           scope: "read",
           createdAt: stringValue(context, "readTokenCreatedAt", step),
+          expiresAt: null,
+          rotatedFrom: null,
+          rotatedTo: null,
           revokedAt: null,
           lastUsedAt: null,
         },
@@ -368,6 +423,9 @@ const TRACE: readonly TraceStep[] = [
           label: "conformance-write",
           scope: "write",
           createdAt: stringValue(context, "writeTokenCreatedAt", step),
+          expiresAt: null,
+          rotatedFrom: null,
+          rotatedTo: null,
           revokedAt: null,
           lastUsedAt: null,
         },
@@ -390,6 +448,156 @@ const TRACE: readonly TraceStep[] = [
       }
     },
   },
+  {
+    name: "expiring token is usable before its boundary",
+    routeId: "createToken",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/tokens`,
+      body: { label: "conformance-expiring", scope: "read", ttlSeconds: 3 },
+    }),
+    verify(response, body, context) {
+      const step = "expiring token is usable before its boundary";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      if (typeof value.id !== "string") traceFailure(step, "missing token id");
+      if (typeof value.token !== "string" || !/^zhs_[A-Za-z0-9_-]{43}$/.test(value.token)) {
+        traceFailure(step, "missing or malformed token secret");
+      }
+      if (typeof value.expiresAt !== "string" || !Number.isFinite(Date.parse(value.expiresAt))) {
+        traceFailure(step, "missing or malformed expiresAt");
+      }
+      assertSubset(step, value, {
+        label: "conformance-expiring",
+        scope: "read",
+        expiresAt: value.expiresAt,
+        rotatedFrom: null,
+      });
+      context.expiringToken = value.token;
+      remember(context, "expiringTokenExpiresAt", value.expiresAt);
+    },
+  },
+  responseStep(
+    "expiring token identity includes its boundary",
+    "me",
+    () => ({ method: "GET", path: "/v1/me", token: "expiring" }),
+    200,
+    (context) => ({
+      principal: "stash",
+      stash: context.stash,
+      scope: "read",
+      expiresAt: stringValue(context, "expiringTokenExpiresAt", "expiring token identity"),
+    }),
+  ),
+  {
+    name: "expired token is concealed as unauthorized",
+    routeId: "me",
+    before: (context) => context.advanceTime(3_100),
+    request: () => ({ method: "GET", path: "/v1/me", token: "expiring" }),
+    verify(response, body) {
+      const step = "expired token is concealed as unauthorized";
+      assertStatus(step, response, 401);
+      errorCode(step, body, "unauthorized");
+    },
+  },
+  {
+    name: "create rotation predecessor with an inherited expiry",
+    routeId: "createToken",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/tokens`,
+      body: { label: "conformance-rotate", scope: "read", ttlSeconds: 60 },
+    }),
+    verify(response, body, context) {
+      const step = "create rotation predecessor with an inherited expiry";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      if (typeof value.id !== "string") traceFailure(step, "missing token id");
+      if (typeof value.token !== "string" || !/^zhs_[A-Za-z0-9_-]{43}$/.test(value.token)) {
+        traceFailure(step, "missing or malformed token secret");
+      }
+      if (typeof value.expiresAt !== "string") traceFailure(step, "missing expiresAt");
+      context.predecessorToken = value.token;
+      remember(context, "predecessorId", value.id);
+      remember(context, "predecessorOriginalExpiry", value.expiresAt);
+    },
+  },
+  {
+    name: "rotation creates one successor and truncates predecessor grace",
+    routeId: "rotateToken",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/tokens/${stringValue(
+        context,
+        "predecessorId",
+        "rotation creates one successor and truncates predecessor grace",
+      )}/rotate`,
+      body: { graceSeconds: 0 },
+    }),
+    verify(response, body, context) {
+      const step = "rotation creates one successor and truncates predecessor grace";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      if (typeof value.id !== "string") traceFailure(step, "missing successor id");
+      if (typeof value.token !== "string" || !/^zhs_[A-Za-z0-9_-]{43}$/.test(value.token)) {
+        traceFailure(step, "missing or malformed successor secret");
+      }
+      const predecessor = record(value.predecessor, step);
+      if (typeof predecessor.expiresAt !== "string") {
+        traceFailure(step, "missing predecessor grace expiry");
+      }
+      assertSubset(step, value, {
+        label: "conformance-rotate",
+        scope: "read",
+        expiresAt: stringValue(context, "predecessorOriginalExpiry", step),
+        rotatedFrom: stringValue(context, "predecessorId", step),
+        predecessor: {
+          id: stringValue(context, "predecessorId", step),
+          expiresAt: predecessor.expiresAt,
+        },
+      });
+      context.successorToken = value.token;
+      remember(context, "successorId", value.id);
+    },
+  },
+  errorStep(
+    "rotation retry names the one successor",
+    "rotateToken",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/tokens/${stringValue(
+        context,
+        "predecessorId",
+        "rotation retry names the one successor",
+      )}/rotate`,
+      body: {},
+    }),
+    409,
+    "already-rotated",
+    (context) => ({
+      error: { successorId: stringValue(context, "successorId", "rotation retry") },
+    }),
+  ),
+  errorStep(
+    "zero-grace predecessor fails authentication",
+    "me",
+    () => ({ method: "GET", path: "/v1/me", token: "predecessor" }),
+    401,
+    "unauthorized",
+  ),
+  responseStep(
+    "rotation successor authenticates with inherited expiry",
+    "me",
+    () => ({ method: "GET", path: "/v1/me", token: "successor" }),
+    200,
+    (context) => ({
+      principal: "stash",
+      stash: context.stash,
+      tokenId: stringValue(context, "successorId", "rotation successor identity"),
+      scope: "read",
+      expiresAt: stringValue(context, "predecessorOriginalExpiry", "rotation successor identity"),
+    }),
+  ),
   errorStep(
     "token creation rejects a missing stash",
     "createToken",
@@ -406,14 +614,14 @@ const TRACE: readonly TraceStep[] = [
     "me",
     () => ({ method: "GET", path: "/v1/me", token: "read" }),
     200,
-    (context) => ({ principal: "stash", stash: context.stash, scope: "read" }),
+    (context) => ({ principal: "stash", stash: context.stash, scope: "read", expiresAt: null }),
   ),
   responseStep(
     "write token identity",
     "me",
     () => ({ method: "GET", path: "/v1/me", token: "write" }),
     200,
-    (context) => ({ principal: "stash", stash: context.stash, scope: "write" }),
+    (context) => ({ principal: "stash", stash: context.stash, scope: "write", expiresAt: null }),
   ),
   responseStep(
     "stash token may get its own stash",
@@ -1131,6 +1339,32 @@ const TRACE: readonly TraceStep[] = [
     400,
     "invalid-path",
   ),
+  {
+    name: "configured write-principal limit returns retry metadata",
+    routeId: "putFile",
+    before(context) {
+      const target: ConformanceRateLimitTarget = {
+        capability: "write",
+        key: `p:${stringValue(context, "writeTokenId", "configure write rate limit")}`,
+        routeId: "putFile",
+        stash: context.stash,
+        token: stringValue(context, "writeToken", "configure write rate limit"),
+      };
+      return context.configureRateLimit(target);
+    },
+    request: (context) => ({
+      method: "PUT",
+      path: `/v1/stashes/${context.stash}/files/docs/rate-limit-probe.txt`,
+      token: "write",
+      body: {},
+    }),
+    verify(response, body) {
+      const step = "configured write-principal limit returns retry metadata";
+      assertStatus(step, response, 429);
+      assertEqual(step, response.headers.get("Retry-After"), "60", "Retry-After");
+      errorCode(step, body, "rate-limited");
+    },
+  },
   errorStep(
     "token revocation reports an unknown id",
     "revokeToken",
@@ -1231,6 +1465,24 @@ function tokenFor(
     }
     return context.writeToken;
   }
+  if (token === "expiring") {
+    if (context.expiringToken === undefined) {
+      return traceFailure(step, "expiring token was not initialized");
+    }
+    return context.expiringToken;
+  }
+  if (token === "predecessor") {
+    if (context.predecessorToken === undefined) {
+      return traceFailure(step, "rotation predecessor was not initialized");
+    }
+    return context.predecessorToken;
+  }
+  if (token === "successor") {
+    if (context.successorToken === undefined) {
+      return traceFailure(step, "rotation successor was not initialized");
+    }
+    return context.successorToken;
+  }
   return context.adminToken;
 }
 
@@ -1276,11 +1528,14 @@ export async function runConformance(
     laterStash: laterName(stash),
     values: new Map(),
     exercised: new Set(),
+    advanceTime: options.advanceTime,
+    configureRateLimit: options.configureRateLimit,
   };
 
   for (let index = 0; index < TRACE.length; index += 1) {
     const step = TRACE[index];
     if (step === undefined) return traceFailure("trace", `missing step ${index}`);
+    await step.before?.(context);
     const response = await send(context, step.request(context), step.name);
     const body = await readBody(response);
     await step.verify(response, body, context);

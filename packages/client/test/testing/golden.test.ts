@@ -225,6 +225,16 @@ const transportMatrix: TransportMatrixCase[] = [
     expected: { settled: "fulfilled", value: { ok: true, value: undefined } },
   },
   {
+    name: "rotate 201",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.rotatedToken, 201),
+    invoke: (client) => client.stashes.tokens("golden").rotate("tok_predecessor", {}),
+    expected: {
+      settled: "fulfilled",
+      value: { ok: true, value: GOLDEN_RESPONSES.rotatedToken },
+    },
+    expectedFetchUrl: "https://stash.example/v1/stashes/golden/tokens/tok_predecessor/rotate",
+  },
+  {
     name: "stale 409 includes current",
     dispatch: async () =>
       jsonResponse(
@@ -248,6 +258,37 @@ const transportMatrix: TransportMatrixCase[] = [
     expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.stale },
   },
   {
+    name: "already-rotated 409 includes successor id",
+    dispatch: async () =>
+      jsonResponse(
+        {
+          error: {
+            code: GOLDEN_RESPONSES.alreadyRotated.error.code,
+            message: GOLDEN_RESPONSES.alreadyRotated.error.message,
+            successorId: GOLDEN_RESPONSES.alreadyRotated.error.successorId,
+          },
+        },
+        409,
+      ),
+    invoke: (client) => client.stashes.tokens("golden").rotate("tok_predecessor", {}),
+    expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.alreadyRotated },
+  },
+  {
+    name: "token-expired 409",
+    dispatch: async () =>
+      jsonResponse(
+        {
+          error: {
+            code: GOLDEN_RESPONSES.tokenExpired.error.code,
+            message: GOLDEN_RESPONSES.tokenExpired.error.message,
+          },
+        },
+        409,
+      ),
+    invoke: (client) => client.stashes.tokens("golden").rotate("tok_expired", {}),
+    expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.tokenExpired },
+  },
+  {
     name: "401 is an ordinary client result",
     dispatch: async () =>
       jsonResponse(
@@ -266,6 +307,22 @@ const transportMatrix: TransportMatrixCase[] = [
         },
       },
     },
+  },
+  {
+    name: "429 carries Retry-After seconds",
+    dispatch: async () =>
+      jsonResponse(
+        {
+          error: {
+            code: GOLDEN_RESPONSES.rateLimited.error.code,
+            message: GOLDEN_RESPONSES.rateLimited.error.message,
+          },
+        },
+        429,
+        { "Retry-After": String(GOLDEN_RESPONSES.rateLimited.retryAfter) },
+      ),
+    invoke: (client) => client.me(),
+    expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.rateLimited },
   },
   {
     name: "malformed request body validation 400",
@@ -433,6 +490,7 @@ describe("client golden response parity", () => {
         stash: "golden-admin",
         tokenId: GOLDEN_RESPONSES.readToken.id,
         scope: "read",
+        expiresAt: null,
       },
     });
     await expect(writer.me()).resolves.toEqual({
@@ -442,6 +500,7 @@ describe("client golden response parity", () => {
         stash: "golden-admin",
         tokenId: GOLDEN_RESPONSES.writeToken.id,
         scope: "write",
+        expiresAt: null,
       },
     });
     await expect(tokens.revoke(GOLDEN_RESPONSES.readToken.id)).resolves.toEqual({

@@ -34,7 +34,10 @@ Authorization: Bearer <token>
 - A stash token starts with `zhs_`, belongs to one stash, and has `read` or `write` scope.
 - `write` scope includes read access. A token for another stash receives `404`, not `403`, so
   stash existence is not disclosed.
-- A missing, malformed, revoked, or duplicated `Authorization` header receives `401`.
+- A token can expire at an ISO timestamp; `expiresAt: null` means it never expires. A missing,
+  malformed, revoked, expired, or duplicated `Authorization` header receives the same `401`, so
+  token existence is not disclosed. A token that expires during a request remains valid for that
+  request.
 
 The route table uses these principal labels:
 
@@ -65,19 +68,41 @@ An expected failure is JSON. Conflicts can also include the current head at the 
 }
 ```
 
-| HTTP  | Codes                                                 |
-| ----- | ----------------------------------------------------- |
-| `400` | `validation`, `invalid-path`, `body-not-well-formed`  |
-| `401` | `unauthorized`                                        |
-| `403` | `scope`                                               |
-| `404` | `not-found`, `file-deleted`, `version-not-found`      |
-| `409` | `stale`, `exists`, `already-deleted`                  |
-| `413` | `payload-too-large`                                   |
-| `422` | `idempotency-key-reused`, `rollback-target-tombstone` |
-| `500` | `internal`                                            |
+| HTTP  | Codes                                                                    |
+| ----- | ------------------------------------------------------------------------ |
+| `400` | `validation`, `invalid-path`, `body-not-well-formed`                     |
+| `401` | `unauthorized`                                                           |
+| `403` | `scope`                                                                  |
+| `404` | `not-found`, `file-deleted`, `version-not-found`                         |
+| `409` | `stale`, `exists`, `already-deleted`, `already-rotated`, `token-expired` |
+| `413` | `payload-too-large`                                                      |
+| `422` | `idempotency-key-reused`, `rollback-target-tombstone`                    |
+| `429` | `rate-limited`                                                           |
+| `500` | `internal`                                                               |
 
 Unknown JSON keys are rejected. Request bodies are never echoed in errors. All timestamps in
 responses are ISO-8601 UTC strings; imported `createdAt` values are epoch milliseconds.
+An `already-rotated` error carries the winning successor token ID as
+`error.successorId`; it never carries the one-time successor secret.
+
+## Rate limits
+
+Routes reachable by stash principals use three Cloudflare rate-limit buckets. `RL_READ` permits
+600 operations per 60 seconds, `RL_WRITE` permits 60 per 60 seconds, and `RL_DIFF` permits 120 per
+60 seconds. Stored and candidate diff routes use `RL_DIFF`; write-capability file routes use
+`RL_WRITE`; `/v1/me`, stash metadata, file reads/lists/history, and the per-stash change feed use
+`RL_READ`.
+
+Each request checks `p:<tokenId>` first and then `s:<principal-stash>`. A failed principal check
+short-circuits before the stash bucket is consulted. The administrator is exempt, so
+administrator-only token-management routes are intentionally not rate-limited. Cloudflare limits
+are per location and eventually consistent; the contract does not promise an exact global cutoff.
+A limiter binding exception fails open and is logged rather than taking the API down.
+
+When a binding reports `{ success: false }`, the response is
+`429 { "error": { "code": "rate-limited", "message": "…" } }` with `Retry-After: 60`.
+No file, version, blob, or idempotency mutation occurs, though authentication may already have
+updated the token's `lastUsedAt` audit field.
 
 ## Quick examples
 
@@ -223,8 +248,8 @@ v1 stores text bodies up to 1,000,000 UTF-8 bytes—so those API limits still ap
 - **Principal/capability:** `any`; any valid credential.
 - **Request:** No body or query.
 - **Response:** `200 { "principal": "admin" }` for the administrator, or
-  `200 { "principal": "stash", "stash": "demo", "tokenId": "tok_…", "scope": "read" }`.
-- **Errors:** `401 unauthorized`.
+  `200 { "principal": "stash", "stash": "demo", "tokenId": "tok_…", "scope": "read", "expiresAt": null }`.
+- **Errors:** `401 unauthorized`, `429 rate-limited` with `Retry-After: 60`.
 
 ### `GET /v1/stashes`
 
@@ -253,14 +278,18 @@ v1 stores text bodies up to 1,000,000 UTF-8 bytes—so those API limits still ap
 - **Response:** `200` with `name`, `description`, `meta`, live `fileCount`, `deletedFileCount`,
   `lastChangeId`, `lastChangeAt`, and `createdAt`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for an unknown or foreign
-  stash.
+  stash, `429 rate-limited` with `Retry-After: 60`.
 
 ### `POST /v1/stashes/:stash/tokens`
 
 - **Principal/capability:** `admin`; administrator only.
-- **Request:** JSON `{ label?, scope: "read" | "write" }`.
-- **Response:** `201 { id, token, label, scope, createdAt }`. The `zhs_…` token is returned only
-  by this creation call; storage retains its hash, not the secret.
+- **Request:** JSON `{ label?, scope: "read" | "write", expiresAt? | ttlSeconds? }`.
+  `expiresAt` is an ISO-8601 UTC timestamp and `ttlSeconds` is a positive integer up to
+  `315360000`; the fields are mutually exclusive. The server requires the resolved expiry to be
+  in the future and no more than ten years away.
+- **Response:** `201 { id, token, label, scope, createdAt, expiresAt, rotatedFrom }`. The `zhs_…`
+  token is returned only by this creation call; storage retains its hash, not the secret. A token
+  created directly has `rotatedFrom: null`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `413 payload-too-large`.
 
 ### `GET /v1/stashes/:stash/tokens`
@@ -268,8 +297,29 @@ v1 stores text bodies up to 1,000,000 UTF-8 bytes—so those API limits still ap
 - **Principal/capability:** `admin`; administrator only.
 - **Request:** No body or query.
 - **Response:** `200 { tokens }`, newest first. Records contain `id`, `label`, `scope`,
-  `createdAt`, `revokedAt`, and `lastUsedAt`, but never the token secret.
+  `createdAt`, `expiresAt`, `rotatedFrom`, `rotatedTo`, `revokedAt`, and `lastUsedAt`, but never
+  the token secret.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`.
+
+### `POST /v1/stashes/:stash/tokens/:id/rotate`
+
+- **Principal/capability:** `admin`; administrator only.
+- **Request:** JSON `{ graceSeconds?, expiresAt? | ttlSeconds? }`. `graceSeconds` defaults to
+  `300` and accepts integers from `0` through `86400`. The optional successor expiry fields use
+  the same mutually exclusive rules as token creation.
+- **Response:** `201` with a one-time successor containing `id`, `token`, `label`, `scope`,
+  `createdAt`, `expiresAt`, `rotatedFrom`, and `predecessor: { id, expiresAt }`. Without an expiry
+  override, the successor keeps the predecessor's original expiry; `null` remains `null`. The
+  predecessor's expiry is shortened to the earlier of its existing expiry and the grace
+  deadline.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for an unknown or revoked
+  predecessor, `409 already-rotated`, `409 token-expired`, `413 payload-too-large`.
+
+Rotation is one-shot: one predecessor can name only one successor, and concurrent attempts yield
+one winner. A later attempt returns `already-rotated` with the winner's ID in
+`error.successorId`. If the successful response is lost, the one-time secret cannot be recovered;
+use the predecessor's `rotatedTo` value to identify and revoke the successor, then create a new
+token.
 
 ### `DELETE /v1/stashes/:stash/tokens/:id`
 
@@ -309,7 +359,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Request:** Optional `includeDeleted=true|false`, `limit`, and `after=<path>` keyset cursor.
 - **Response:** `200 { files, nextAfter }`. File summaries contain `path`, `headVersion`, `hash`,
   `size`, `deleted`, and `updatedAt`; paths are ascending.
-- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a foreign stash.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a foreign stash,
+  `429 rate-limited` with `Retry-After: 60`.
 
 ### `GET /v1/stashes/:stash/files/*path`
 
@@ -320,7 +371,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
   requested tombstone version is `200` with `deleted: true`, `hash: null`, and `body: null`. A
   matching conditional request is `304` with no body and includes `ETag` and `X-Stash-Version`.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `404 not-found`,
-  `404 file-deleted` for a tombstoned head, `404 version-not-found`, `500 internal`.
+  `404 file-deleted` for a tombstoned head, `404 version-not-found`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
 
 ### `PUT /v1/stashes/:stash/files/*path`
 
@@ -334,7 +386,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
   status and adds `Idempotent-Replayed: true`.
 - **Errors:** `400 validation`, `400 invalid-path`, `400 body-not-well-formed`,
   `401 unauthorized`, `403 scope`, `404 not-found`, `409 stale`, `409 exists`,
-  `413 payload-too-large`, `422 idempotency-key-reused`, `500 internal`.
+  `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
 
 ### `POST /v1/stashes/:stash/delete/*path`
 
@@ -346,7 +399,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
   adds `Idempotent-Replayed: true`.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `403 scope`,
   `404 not-found`, `409 stale`, `409 already-deleted`, `413 payload-too-large`,
-  `422 idempotency-key-reused`, `500 internal`.
+  `422 idempotency-key-reused`, `429 rate-limited` with `Retry-After: 60`, `500 internal`.
 
 ### `POST /v1/stashes/:stash/rollback/*path`
 
@@ -358,7 +411,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
   `Idempotent-Replayed: true`.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `403 scope`,
   `404 not-found`, `404 version-not-found`, `409 stale`, `413 payload-too-large`,
-  `422 idempotency-key-reused`, `422 rollback-target-tombstone`, `500 internal`.
+  `422 idempotency-key-reused`, `422 rollback-target-tombstone`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
 
 ### `GET /v1/stashes/:stash/history/*path`
 
@@ -367,7 +421,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Response:** `200 { path, headVersion, deleted, total, versions, nextBefore }`. Versions are
   newest first and contain metadata but no bodies: `version`, `kind`, `hash`, `size`,
   `rollbackOf`, `author`, `message`, `meta`, and `createdAt`.
-- **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `404 not-found`.
+- **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `404 not-found`,
+  `429 rate-limited` with `Retry-After: 60`.
 
 ### `GET /v1/stashes/:stash/diff/*path`
 
@@ -377,7 +432,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 - **Response:** `200` with a `DiffResult` plus `{ from, to }` side metadata. See
   [Diff results](#diff-results).
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `404 not-found`,
-  `404 version-not-found`, `500 internal`.
+  `404 version-not-found`, `429 rate-limited` with `Retry-After: 60`, `500 internal`.
 
 ### `POST /v1/stashes/:stash/diff/*path`
 
@@ -388,7 +443,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
   blob, or version is persisted.
 - **Errors:** `400 validation`, `400 invalid-path`, `400 body-not-well-formed`,
   `401 unauthorized`, `404 not-found`, `404 version-not-found`, `413 payload-too-large`,
-  `500 internal`.
+  `429 rate-limited` with `Retry-After: 60`, `500 internal`.
 
 ### `GET /v1/stashes/:stash/changes`
 
@@ -397,7 +452,8 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
   both.
 - **Response:** `200` with the same `{ changes, nextSince | nextBefore, hasMore }` shape as the admin feed,
   restricted to `:stash`.
-- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a foreign stash.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a foreign stash,
+  `429 rate-limited` with `Retry-After: 60`.
 
 ## Diff results
 
@@ -523,7 +579,7 @@ earlier live version from the same call or a prior chained call.
 
 Browser origins must appear in the Worker's `ALLOWED_ORIGINS` allow-list. Preflight is open. The
 API accepts `Authorization`, `Content-Type`, `If-None-Match`, and `Idempotency-Key`, and exposes
-`ETag`, `X-Stash-Version`, and `Idempotent-Replayed`.
+`ETag`, `X-Stash-Version`, `Idempotent-Replayed`, and `Retry-After`.
 
 > **Browser-token warning:** only put `read` tokens in client-side code. A `write` token is a
 > full-stash credential: anyone who extracts it can replace, delete, or roll back every path in

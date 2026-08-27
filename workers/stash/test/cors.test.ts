@@ -17,7 +17,7 @@ describe("CORS", () => {
       "Authorization,Content-Type,If-None-Match,Idempotency-Key",
     );
     expect(response.headers.get("Access-Control-Expose-Headers")).toBe(
-      "ETag,X-Stash-Version,Idempotent-Replayed",
+      "ETag,X-Stash-Version,Idempotent-Replayed,Retry-After",
     );
   });
 

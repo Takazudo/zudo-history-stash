@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { DiffQuery, ImportBody, ListFilesQuery, ListQuery, PutFileBody } from "../schemas.js";
+import {
+  CreateTokenBody,
+  DiffQuery,
+  ImportBody,
+  ListFilesQuery,
+  ListQuery,
+  PutFileBody,
+  RotateTokenBody,
+} from "../schemas.js";
 import { projectRequestSchema, projectResponseSchemas } from "./project.js";
 
 const propertiesOf = (schema: Record<string, unknown>) =>
@@ -44,6 +52,34 @@ describe("projectRequestSchema", () => {
     for (const branch of branches) {
       expect(branch.properties).not.toHaveProperty("rollbackOf.not");
     }
+  });
+
+  it("documents token expiry exclusivity and rotation defaults", () => {
+    const create = projectRequestSchema(CreateTokenBody);
+    expect(create.description).toBe("expiresAt and ttlSeconds are mutually exclusive.");
+    expect(propertiesOf(create).expiresAt).toMatchObject({
+      type: "string",
+      format: "date-time",
+      description: "Mutually exclusive with ttlSeconds.",
+    });
+    expect(propertiesOf(create).ttlSeconds).toMatchObject({
+      type: "integer",
+      exclusiveMinimum: 0,
+      maximum: 315_360_000,
+      description: "Mutually exclusive with expiresAt.",
+    });
+
+    const rotate = projectRequestSchema(RotateTokenBody);
+    expect(rotate.description).toBe("expiresAt and ttlSeconds are mutually exclusive.");
+    expect(rotate.required ?? []).not.toContain("graceSeconds");
+    expect(propertiesOf(rotate).graceSeconds).toMatchObject({
+      type: "integer",
+      default: 300,
+      minimum: 0,
+      maximum: 86_400,
+    });
+    expect(propertiesOf(rotate).expiresAt?.description).toBe("Mutually exclusive with ttlSeconds.");
+    expect(propertiesOf(rotate).ttlSeconds?.description).toBe("Mutually exclusive with expiresAt.");
   });
 
   it("handles only the deliberate escape hatches and fails on new unrepresentables", () => {

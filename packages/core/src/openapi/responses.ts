@@ -31,6 +31,7 @@ import type {
   MeResponse,
   PutCreatedResult,
   PutUnchangedResult,
+  RotateTokenResult,
   RollbackResult,
   StashListResponse,
   StashRecord,
@@ -62,6 +63,7 @@ export const MeResponseSchema = z.union([
     stash: z.string(),
     tokenId: z.string(),
     scope: TokenScopeSchema,
+    expiresAt: TimestampSchema.nullable(),
   }),
 ]);
 
@@ -96,6 +98,9 @@ export const TokenRecordSchema = z.strictObject({
   label: z.string(),
   scope: TokenScopeSchema,
   createdAt: TimestampSchema,
+  expiresAt: TimestampSchema.nullable(),
+  rotatedFrom: z.string().nullable(),
+  rotatedTo: z.string().nullable(),
   revokedAt: TimestampSchema.nullable(),
   lastUsedAt: TimestampSchema.nullable(),
 });
@@ -106,6 +111,15 @@ export const CreatedTokenSchema = z.strictObject({
   scope: TokenScopeSchema,
   createdAt: TimestampSchema,
   token: z.string(),
+  expiresAt: TimestampSchema.nullable(),
+  rotatedFrom: z.string().nullable(),
+});
+
+export const RotateTokenResultSchema: z.ZodType<RotateTokenResult> = CreatedTokenSchema.extend({
+  predecessor: z.strictObject({
+    id: z.string(),
+    expiresAt: TimestampSchema.nullable(),
+  }),
 });
 
 export const TokenListResponseSchema = z.strictObject({
@@ -290,6 +304,7 @@ export const ErrorCodeSchema = z.enum(ERROR_CODES);
 export const ErrorDetailSchema = z.strictObject({
   code: ErrorCodeSchema,
   message: z.string(),
+  successorId: z.string().optional(),
 });
 
 export const ErrorResponseSchema = z.strictObject({
@@ -309,6 +324,7 @@ interface ResponseTypeMap {
   CreatedToken: CreatedToken;
   TokenListResponse: TokenListResponse;
   CreateTokenResult: CreateTokenResult;
+  RotateTokenResult: RotateTokenResult;
   FileSummary: FileSummary;
   FileListResponse: FileListResponse;
   FileRecord: FileRecord;
@@ -351,6 +367,7 @@ export const RESPONSE_SCHEMAS = {
   CreatedToken: CreatedTokenSchema,
   TokenListResponse: TokenListResponseSchema,
   CreateTokenResult: CreatedTokenSchema,
+  RotateTokenResult: RotateTokenResultSchema,
   FileSummary: FileSummarySchema,
   FileListResponse: FileListResponseSchema,
   FileRecord: FileRecordSchema,

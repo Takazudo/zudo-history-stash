@@ -95,14 +95,17 @@ function responseHeader(name: ResponseHeader): OpenApiObject {
         ? "Entity tag for this exact file version."
         : name === "X-Stash-Version"
           ? "Numeric stash file version."
-          : "Whether the idempotency ledger replayed the response.",
+          : name === "Idempotent-Replayed"
+            ? "Whether the idempotency ledger replayed the response."
+            : "Seconds to wait before retrying a rate-limited request.",
     schema: {
       type:
         name === "Idempotent-Replayed"
           ? "boolean"
-          : name === "X-Stash-Version"
+          : name === "X-Stash-Version" || name === "Retry-After"
             ? "integer"
             : "string",
+      ...(name === "Retry-After" ? { minimum: 0 } : {}),
     },
   };
 }
@@ -148,6 +151,14 @@ function errorResponses(contract: RouteContract): Record<string, OpenApiObject> 
           description: `Errors: ${errors
             .map(({ code, current }) => `\`${code}\`${current ? " (includes current)" : ""}`)
             .join(", ")}.`,
+          ...(() => {
+            const headers = [...new Set(errors.flatMap((error) => error.headers ?? []))];
+            return headers.length
+              ? {
+                  headers: Object.fromEntries(headers.map((name) => [name, responseHeader(name)])),
+                }
+              : {};
+          })(),
           content: {
             "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } },
           },

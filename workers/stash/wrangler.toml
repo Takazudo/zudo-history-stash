@@ -22,6 +22,30 @@ ALLOWED_ORIGINS = ""
 [secrets]
 required = ["STASH_ADMIN_TOKEN"]
 
+[[ratelimits]]
+name = "RL_READ"
+namespace_id = "1101"
+
+[ratelimits.simple]
+limit = 600
+period = 60
+
+[[ratelimits]]
+name = "RL_WRITE"
+namespace_id = "1102"
+
+[ratelimits.simple]
+limit = 60
+period = 60
+
+[[ratelimits]]
+name = "RL_DIFF"
+namespace_id = "1103"
+
+[ratelimits.simple]
+limit = 120
+period = 60
+
 [env.preview]
 routes = []
 
@@ -35,3 +59,27 @@ required = ["STASH_ADMIN_TOKEN"]
 binding = "DB"
 database_name = "zudo-history-stash-preview"
 database_id = "REPLACE_ME"
+
+[[env.preview.ratelimits]]
+name = "RL_READ"
+namespace_id = "1201"
+
+[env.preview.ratelimits.simple]
+limit = 600
+period = 60
+
+[[env.preview.ratelimits]]
+name = "RL_WRITE"
+namespace_id = "1202"
+
+[env.preview.ratelimits.simple]
+limit = 60
+period = 60
+
+[[env.preview.ratelimits]]
+name = "RL_DIFF"
+namespace_id = "1203"
+
+[env.preview.ratelimits.simple]
+limit = 120
+period = 60

@@ -182,7 +182,11 @@ describe("golden requests", () => {
     await c.stashes.list({ limit: 2, after: "demo" });
     await c.stashes.create({ name: "new-stash", description: "desc", meta: { a: 1 } });
     await c.stashes.get("demo");
-    await c.stashes.tokens("demo").create({ label: "ci", scope: "write" });
+    await c.stashes.tokens("demo").create({
+      label: "ci",
+      scope: "write",
+      ttlSeconds: 86_400,
+    });
     await c.stashes.tokens("demo").list();
     await c.stashes.tokens("demo").revoke("tok_123");
     await c.stashes.import("demo", {
@@ -209,8 +213,12 @@ describe("golden requests", () => {
     await f.diff("docs/readme.md", { from: 1, to: "head", context: 2, maxUnifiedBytes: 100 });
     await f.diffCandidate("docs/readme.md", { from: "head", body: "candidate", context: 1 });
     await f.changes({ before: 4, limit: 2 });
+    await c.stashes.tokens("demo").rotate("tok_123", {
+      graceSeconds: 60,
+      expiresAt: "2026-08-26T00:00:00.000Z",
+    });
 
-    expect(mock).toHaveBeenCalledTimes(19);
+    expect(mock).toHaveBeenCalledTimes(20);
     expect(requestAt(0)).toMatchObject({
       url: "https://stash.example/v1/health",
       init: { method: "GET", headers: { Authorization: "Bearer admin-token" } },
@@ -230,7 +238,7 @@ describe("golden requests", () => {
     expect(requestAt(5).init).toMatchObject({
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: "ci", scope: "write" }),
+      body: JSON.stringify({ label: "ci", scope: "write", ttlSeconds: 86_400 }),
     });
     expect(requestAt(6).url).toBe("https://stash.example/v1/stashes/demo/tokens");
     expect(requestAt(7)).toMatchObject({
@@ -294,6 +302,14 @@ describe("golden requests", () => {
     expect(requestAt(18).url).toBe(
       "https://stash.example/v1/stashes/demo/changes?before=4&limit=2",
     );
+    expect(requestAt(19)).toMatchObject({
+      url: "https://stash.example/v1/stashes/demo/tokens/tok_123/rotate",
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ graceSeconds: 60, expiresAt: "2026-08-26T00:00:00.000Z" }),
+      },
+    });
   });
 });
 
@@ -328,6 +344,88 @@ describe("response mapping and safety", () => {
     expect(requestAt(0).init.headers).toEqual({
       Authorization: "Bearer admin-token",
       "If-None-Match": '"v2-hash"',
+    });
+  });
+
+  it("maps rate-limit retry metadata and already-rotated successor metadata", async () => {
+    const c = client();
+    mock.mockResolvedValueOnce(
+      jsonResponse({ error: { code: "rate-limited", message: "slow down" } }, 429, {
+        "Retry-After": "60",
+      }),
+    );
+    await expect(c.me()).resolves.toEqual({
+      ok: false,
+      error: { code: "rate-limited", message: "slow down", status: 429 },
+      retryAfter: 60,
+    });
+
+    mock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: {
+            code: "already-rotated",
+            message: "already rotated",
+            successorId: "tok_successor",
+          },
+        },
+        409,
+      ),
+    );
+    await expect(c.stashes.tokens("demo").rotate("tok_old", {})).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "already-rotated",
+        message: "already rotated",
+        status: 409,
+        successorId: "tok_successor",
+      },
+    });
+  });
+
+  it.each(["-1", "1.5", "60oops", "9007199254740992"])(
+    "omits malformed Retry-After delta-seconds %s",
+    async (retryAfter) => {
+      const c = client();
+      mock.mockResolvedValueOnce(
+        jsonResponse({ error: { code: "rate-limited", message: "slow down" } }, 429, {
+          "Retry-After": retryAfter,
+        }),
+      );
+      await expect(c.me()).resolves.toEqual({
+        ok: false,
+        error: { code: "rate-limited", message: "slow down", status: 429 },
+      });
+    },
+  );
+
+  it("does not attach response metadata to unrelated error codes or invalid fields", async () => {
+    const c = client();
+    mock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: { code: "validation", message: "bad", successorId: 123 },
+        },
+        400,
+        { "Retry-After": "60" },
+      ),
+    );
+    await expect(c.me()).resolves.toEqual({
+      ok: false,
+      error: { code: "validation", message: "bad", status: 400 },
+    });
+
+    mock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: { code: "already-rotated", message: "bad successor", successorId: 123 },
+        },
+        409,
+      ),
+    );
+    await expect(c.stashes.tokens("demo").rotate("tok_old", {})).resolves.toEqual({
+      ok: false,
+      error: { code: "already-rotated", message: "bad successor", status: 409 },
     });
   });
 
@@ -498,6 +596,27 @@ describe("putLatest", () => {
       error: { code: "stale", message: "stale-3" },
     });
     expect(mock).toHaveBeenCalledTimes(6);
+  });
+
+  it("does not retry a rate-limited put", async () => {
+    const c = client();
+    mock.mockResolvedValueOnce(
+      jsonResponse({ path: "a.txt", version: 1, hash: "h1", deleted: false }),
+    );
+    mock.mockResolvedValueOnce(
+      jsonResponse({ error: { code: "rate-limited", message: "slow down" } }, 429, {
+        "Retry-After": "60",
+      }),
+    );
+
+    await expect(c.putLatest("demo", "a.txt", "new", { retries: 3 })).resolves.toEqual({
+      ok: false,
+      error: { code: "rate-limited", message: "slow down", status: 429 },
+      retryAfter: 60,
+    });
+    expect(mock).toHaveBeenCalledTimes(2);
+    expect(requestAt(0).init.method).toBe("GET");
+    expect(requestAt(1).init.method).toBe("PUT");
   });
 
   it("shares head reads and stale retries with the rpc transport", async () => {

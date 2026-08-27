@@ -33,6 +33,7 @@ import type {
   MeResponse,
   PutCreatedResult,
   PutUnchangedResult,
+  RotateTokenResult,
   RollbackResult,
   StashListResponse,
   StashRecord,
@@ -66,6 +67,9 @@ describe("response schema type locks", () => {
     expectTypeOf<
       z.infer<typeof RESPONSE_SCHEMAS.CreateTokenResult>
     >().toEqualTypeOf<CreateTokenResult>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.RotateTokenResult>
+    >().toEqualTypeOf<RotateTokenResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.FileSummary>>().toEqualTypeOf<FileSummary>();
     expectTypeOf<
       z.infer<typeof RESPONSE_SCHEMAS.FileListResponse>
@@ -141,6 +145,15 @@ describe("response schema samples", () => {
         nextBefore: null,
       }).success,
     ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.ErrorResponse.safeParse({
+        error: {
+          code: "already-rotated",
+          message: "Token was already rotated",
+          successorId: "tok_successor",
+        },
+      }).success,
+    ).toBe(true);
   });
 });
 
