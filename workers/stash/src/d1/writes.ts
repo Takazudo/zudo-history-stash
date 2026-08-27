@@ -19,7 +19,7 @@ import {
   type RollbackResult,
 } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
-import { prepareBlob } from "./blobs.js";
+import { prepareBlob, type BlobGenerationFactory } from "./blobs.js";
 import type { IdempotencyRow, VersionRow } from "./schema.js";
 import {
   deleteBatch,
@@ -81,6 +81,7 @@ export interface StashWrites {
 
 export interface WriteDependencies extends StoreDependencies {
   onBeforeCommit?: () => void | Promise<void>;
+  createBlobGeneration?: BlobGenerationFactory;
 }
 
 function failure<T>(
@@ -269,7 +270,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       return created({ unchanged: true, version: head.head_version }, 200);
     }
 
-    const prepared = await prepareBlob(env, stash, hash, input.body);
+    const prepared = await prepareBlob(env, stash, hash, input.body, deps.createBlobGeneration);
     await deps.onBeforeCommit?.();
     const createdAt = deps.now();
     const ledger: LedgerInsert | undefined = options.idempotencyKey

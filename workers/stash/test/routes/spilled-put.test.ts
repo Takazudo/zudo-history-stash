@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { R2_SPILL_BYTES, sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { app } from "../../src/app.js";
-import { blobKey } from "../../src/d1/blobs.js";
+import { parseBlobKey } from "../../src/d1/blobs.js";
 import type { Env } from "../../src/env.js";
 import { request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
@@ -47,7 +47,6 @@ describe("spilled PUT route", () => {
   it("stores an R2 pointer and replays the public response without another upload", async () => {
     const body = "p".repeat(R2_SPILL_BYTES + 1);
     const hash = await sha256Hex(body);
-    const key = blobKey(STASH, hash);
     const calls: BlobCallCounts = { get: 0, put: 0 };
     const bindings = wrapBlobs(createTestEnv().env, { count: calls });
 
@@ -65,12 +64,27 @@ describe("spilled PUT route", () => {
     expect(result).not.toHaveProperty("r2_key");
     expect(calls).toEqual({ get: 0, put: 1 });
 
+    const row = await env.DB.prepare(
+      "SELECT body, r2_key, size_bytes FROM blobs WHERE stash_name = ? AND hash = ?",
+    )
+      .bind(STASH, hash)
+      .first<{ body: string | null; r2_key: string | null; size_bytes: number }>();
+    expect(row).toMatchObject({ body: null, size_bytes: R2_SPILL_BYTES + 1 });
+    if (row?.r2_key === null || row?.r2_key === undefined) throw new Error("Expected R2 pointer");
+    const parsedKey = parseBlobKey(row.r2_key);
+    expect(parsedKey).toMatchObject({ format: "v2", stash: STASH, hash });
+    if (parsedKey?.format !== "v2") throw new Error("Expected v2 R2 pointer");
+    expect(JSON.stringify(result)).not.toContain(row.r2_key);
+    expect(JSON.stringify(result)).not.toContain(parsedKey.generation);
     await expect(
       env.DB.prepare("SELECT body, r2_key, size_bytes FROM blobs WHERE stash_name = ? AND hash = ?")
         .bind(STASH, hash)
         .first(),
-    ).resolves.toEqual({ body: null, r2_key: key, size_bytes: R2_SPILL_BYTES + 1 });
-    await expect(env.BLOBS.head(key)).resolves.toMatchObject({ key, size: R2_SPILL_BYTES + 1 });
+    ).resolves.toEqual(row);
+    await expect(env.BLOBS.head(row.r2_key)).resolves.toMatchObject({
+      key: row.r2_key,
+      size: R2_SPILL_BYTES + 1,
+    });
 
     const replay = await put(bindings, body);
     expect(replay.status).toBe(201);
@@ -87,9 +101,15 @@ describe("spilled PUT route", () => {
     const marker = "ZHS_R2_UPLOAD_SECRET";
     const body = `${marker}${"x".repeat(R2_SPILL_BYTES + 1 - marker.length)}`;
     const hash = await sha256Hex(body);
-    const key = blobKey(STASH, hash);
+    let attemptedKey = "";
     const calls: BlobCallCounts = { get: 0, put: 0 };
-    const bindings = wrapBlobs(createTestEnv().env, { count: calls, failPut: true });
+    const bindings = wrapBlobs(createTestEnv().env, {
+      count: calls,
+      failPut: (_call, key) => {
+        attemptedKey = key;
+        return true;
+      },
+    });
 
     const response = await put(bindings, body, "failed-upload");
     expect(response.status).toBe(500);
@@ -99,12 +119,15 @@ describe("spilled PUT route", () => {
     });
     expect(text).not.toContain(marker);
     expect(text).not.toContain(hash);
-    expect(text).not.toContain(key);
+    expect(attemptedKey).not.toBe("");
+    expect(text).not.toContain(attemptedKey);
     expect(calls).toEqual({ get: 0, put: 1 });
     await expect(tableCount("blobs")).resolves.toBe(0);
     await expect(tableCount("versions")).resolves.toBe(0);
     await expect(tableCount("files")).resolves.toBe(0);
     await expect(tableCount("idempotency")).resolves.toBe(0);
-    await expect(env.BLOBS.list({ prefix: `${STASH}/` })).resolves.toMatchObject({ objects: [] });
+    await expect(env.BLOBS.list({ prefix: `v2/${STASH}/` })).resolves.toMatchObject({
+      objects: [],
+    });
   });
 });

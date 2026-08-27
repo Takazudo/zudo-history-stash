@@ -47,6 +47,13 @@ pnpm exec wrangler r2 bucket create zudo-history-stash-blobs-preview
 Keep both buckets private. Do not enable an `r2.dev` URL or attach a custom domain; the stash
 Worker accesses objects only through its R2 binding.
 
+Spilled blob rows created before the R2 generation rollout continue to read their exact legacy
+keys (`<stash>/sha256-<64 lowercase hex>`). New uploads write only generation-scoped keys
+(`v2/<stash>/<sha256-hash>/<lowercase UUID>`). Each upload attempt gets a fresh generation, so a
+concurrent or retried write cannot overwrite another attempt's object. Deploy the new Worker before
+introducing any lifecycle or garbage-collection process that interprets these formats; no data
+migration is required for legacy reads.
+
 ## Rate-limiting namespaces
 
 The stash Worker uses Cloudflare Rate Limiting bindings for three capability buckets. Namespace IDs

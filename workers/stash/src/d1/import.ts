@@ -10,7 +10,7 @@ import {
   type Result,
 } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
-import { prepareBlob, type PreparedBlob } from "./blobs.js";
+import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./blobs.js";
 import { importBatch, type PreparedImportVersion } from "./sql/import.js";
 import { selectHeadForWrite } from "./sql/writes.js";
 import type { StoreDependencies } from "./store.js";
@@ -73,6 +73,7 @@ export interface StashImport {
 
 export interface ImportDependencies extends StoreDependencies {
   onBeforeCommit?: () => void | Promise<void>;
+  createBlobGeneration?: BlobGenerationFactory;
 }
 
 function failure(
@@ -251,7 +252,10 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
 
     const storageByHash = new Map<string, PreparedBlob>();
     for (const [hash, fact] of distinctPuts) {
-      storageByHash.set(hash, await prepareBlob(env, stash, hash, fact.body));
+      storageByHash.set(
+        hash,
+        await prepareBlob(env, stash, hash, fact.body, deps.createBlobGeneration),
+      );
     }
 
     const prepared = logical.map((entry): PreparedImportVersion => {

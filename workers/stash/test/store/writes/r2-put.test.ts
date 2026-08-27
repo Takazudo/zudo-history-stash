@@ -1,10 +1,11 @@
 import { env } from "cloudflare:workers";
 import { R2_SPILL_BYTES, sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
-import { blobKey } from "../../../src/d1/blobs.js";
+import { blobKey, parseBlobKey } from "../../../src/d1/blobs.js";
 import { createWrites } from "../../../src/d1/writes.js";
 import { resetDatabase } from "../../helpers/app.js";
 import { wrapBlobs, type BlobCallCounts } from "../../helpers/env.js";
+import { generation, generationFactory } from "../../helpers/blob-generations.js";
 import { counts, expectError, setup } from "./helpers.js";
 
 interface StoredBlobRow {
@@ -44,7 +45,8 @@ beforeEach(resetDatabase);
 
 describe("R2-backed put writes", () => {
   it("keeps the exact boundary inline and stores spilled creates and updates as R2 pointers", async () => {
-    const initial = await setup();
+    const generationValue = generation(1);
+    const initial = await setup({ createBlobGeneration: () => generationValue });
     const calls: BlobCallCounts = { get: 0, put: 0 };
     const writes = createWrites(wrapBlobs(initial.env, { count: calls }), initial.deps);
     const inlineBody = "i".repeat(R2_SPILL_BYTES);
@@ -61,7 +63,7 @@ describe("R2-backed put writes", () => {
 
     const body = spilledBody("s");
     const hash = await sha256Hex(body);
-    const key = blobKey(initial.stash, hash);
+    const key = blobKey(initial.stash, hash, generationValue);
     const updated = await writes.put(initial.stash, "boundary.txt", {
       body,
       expectedVersion: 1,
@@ -115,8 +117,9 @@ describe("R2-backed put writes", () => {
 
     expect(calls).toEqual({ get: 0, put: 0 });
     expect(await counts(initial.stash)).toEqual(before);
-    await expect(env.BLOBS.list({ prefix: `${initial.stash}/` })).resolves.toMatchObject({
-      objects: [expect.objectContaining({ key: blobKey(initial.stash, await sha256Hex(body)) })],
+    const row = (await storedBlobs(initial.stash))[0];
+    await expect(env.BLOBS.list({ prefix: `v2/${initial.stash}/` })).resolves.toMatchObject({
+      objects: [expect.objectContaining({ key: row?.r2_key })],
     });
   });
 
@@ -156,7 +159,8 @@ describe("R2-backed put writes", () => {
   });
 
   it("converges concurrent same-key uploads on one ledger entry and version", async () => {
-    const initial = await setup();
+    const generations = [generation(10), generation(11)] as const;
+    const initial = await setup({ createBlobGeneration: generationFactory(...generations) });
     const calls: BlobCallCounts = { get: 0, put: 0 };
     const writes = createWrites(wrapBlobs(initial.env, { count: calls }), {
       ...initial.deps,
@@ -180,12 +184,18 @@ describe("R2-backed put writes", () => {
       files: 1,
       idempotency: 1,
     });
-    const listed = await env.BLOBS.list({ prefix: `${initial.stash}/` });
-    expect(listed.objects).toHaveLength(1);
+    const listed = await env.BLOBS.list({ prefix: `v2/${initial.stash}/` });
+    const hash = await sha256Hex(input.body);
+    expect(listed.objects.map(({ key }) => key).sort()).toEqual(
+      generations.map((value) => blobKey(initial.stash, hash, value)).sort(),
+    );
+    const [row] = await storedBlobs(initial.stash);
+    expect(listed.objects.some((object) => object.key === row?.r2_key)).toBe(true);
   });
 
   it("leaves only the losing object orphaned after a distinct-content create race", async () => {
-    const initial = await setup();
+    const generations = [generation(20), generation(21)] as const;
+    const initial = await setup({ createBlobGeneration: generationFactory(...generations) });
     const calls: BlobCallCounts = { get: 0, put: 0 };
     const writes = createWrites(wrapBlobs(initial.env, { count: calls }), {
       ...initial.deps,
@@ -193,10 +203,6 @@ describe("R2-backed put writes", () => {
     });
     const firstBody = spilledBody("a");
     const secondBody = spilledBody("b");
-    const expectedKeys = [
-      blobKey(initial.stash, await sha256Hex(firstBody)),
-      blobKey(initial.stash, await sha256Hex(secondBody)),
-    ].sort();
 
     const results = await Promise.all([
       writes.put(initial.stash, "race.txt", { body: firstBody, expectedVersion: null }),
@@ -217,9 +223,15 @@ describe("R2-backed put writes", () => {
 
     const rows = await storedBlobs(initial.stash);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ body: null, r2_key: blobKey(initial.stash, rows[0]!.hash) });
-    const listed = await env.BLOBS.list({ prefix: `${initial.stash}/` });
-    expect(listed.objects.map(({ key }) => key).sort()).toEqual(expectedKeys);
+    expect(rows[0]).toMatchObject({ body: null });
+    expect(parseBlobKey(rows[0]!.r2_key ?? "")).toMatchObject({
+      format: "v2",
+      stash: initial.stash,
+      hash: rows[0]!.hash,
+    });
+    const listed = await env.BLOBS.list({ prefix: `v2/${initial.stash}/` });
+    expect(listed.objects).toHaveLength(2);
+    expect(new Set(listed.objects.map(({ key }) => key)).size).toBe(2);
     expect(listed.objects.filter(({ key }) => key !== rows[0]!.r2_key)).toHaveLength(1);
   });
 
@@ -248,7 +260,7 @@ describe("R2-backed put writes", () => {
       files: 0,
       idempotency: 0,
     });
-    await expect(env.BLOBS.list({ prefix: `${initial.stash}/` })).resolves.toMatchObject({
+    await expect(env.BLOBS.list({ prefix: `v2/${initial.stash}/` })).resolves.toMatchObject({
       objects: [],
     });
   });
