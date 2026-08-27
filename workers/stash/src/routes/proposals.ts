@@ -18,6 +18,8 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
+import { PROPOSAL_TRANSITION } from "../d1/proposals.js";
+import { eventOrigin, publishEvents } from "../events/publish.js";
 
 const proposals = new Hono<AppEnv>();
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
@@ -116,10 +118,23 @@ function store(c: Context<AppEnv>) {
 }
 
 proposals.post("/v1/stashes/:stash/proposals", async (c) => {
-  const result = await store(c).createProposal(c.get("routeStash").name, await createBody(c), {
+  const stash = c.get("routeStash").name;
+  const result = await store(c).createProposal(stash, await createBody(c), {
     idempotencyKey: idempotencyKey(c),
   });
   if (result.replayed) c.header("Idempotent-Replayed", "true");
+  if (!result.replayed) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "proposal",
+        proposalId: result.value.id,
+        stash,
+        path: result.value.path,
+        status: "open",
+        origin: eventOrigin(c.req.raw),
+      },
+    ]);
+  }
   return c.json(result.value, 201);
 });
 
@@ -154,24 +169,64 @@ proposals.get(
 );
 
 proposals.post("/v1/stashes/:stash/proposals/:id/approve", async (c) => {
+  const stash = c.get("routeStash").name;
+  const proposalId = c.req.param("id");
   const result = await store(c).approveProposal(
-    c.get("routeStash").name,
-    c.req.param("id"),
+    stash,
+    proposalId,
     await approveBody(c),
     principalId(c),
   );
   if (result === null) return notFound();
+  const transition = result[PROPOSAL_TRANSITION];
+  if (transition !== undefined) {
+    const origin = eventOrigin(c.req.raw);
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "change",
+        changeId: result.appliedChangeId,
+        stash,
+        path: transition.path,
+        version: result.appliedVersion,
+        kind: "put",
+        origin,
+        createdAt: result.createdAt,
+      },
+      {
+        type: "proposal",
+        proposalId,
+        stash,
+        path: transition.path,
+        status: "applied",
+        origin,
+      },
+    ]);
+  }
   return c.json(result);
 });
 
 proposals.post("/v1/stashes/:stash/proposals/:id/reject", async (c) => {
+  const stash = c.get("routeStash").name;
+  const proposalId = c.req.param("id");
   const result = await store(c).rejectProposal(
-    c.get("routeStash").name,
-    c.req.param("id"),
+    stash,
+    proposalId,
     await rejectBody(c),
     principalId(c),
   );
   if (result === null) return notFound();
+  if (result[PROPOSAL_TRANSITION] !== undefined) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "proposal",
+        proposalId,
+        stash,
+        path: result.path,
+        status: "rejected",
+        origin: eventOrigin(c.req.raw),
+      },
+    ]);
+  }
   return c.json(result);
 });
 

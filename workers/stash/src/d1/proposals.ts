@@ -100,6 +100,20 @@ export interface ProposalCreateResult {
   replayed?: true;
 }
 
+export const PROPOSAL_TRANSITION = Symbol("proposal-transition");
+
+export type ProposalTransitionResult<T> = T & {
+  readonly [PROPOSAL_TRANSITION]?: { path: string };
+};
+
+function withProposalTransition<T extends object>(
+  value: T,
+  path: string,
+): ProposalTransitionResult<T> {
+  Object.defineProperty(value, PROPOSAL_TRANSITION, { value: { path } });
+  return value;
+}
+
 export interface ListProposalOptions {
   status?: "open" | "applied" | "rejected" | "expired" | "all";
   path?: string;
@@ -134,13 +148,13 @@ export interface ProposalStore {
     id: string,
     input: ApproveProposalInput,
     decidedBy: string,
-  ): Promise<ApproveProposalResult | null>;
+  ): Promise<ProposalTransitionResult<ApproveProposalResult> | null>;
   rejectProposal(
     stash: string,
     id: string,
     input: RejectProposalInput,
     decidedBy: string,
-  ): Promise<ProposalRecord | null>;
+  ): Promise<ProposalTransitionResult<ProposalRecord> | null>;
 }
 
 function validation(message: string): never {
@@ -718,7 +732,7 @@ export function createProposals(env: Env, deps: ProposalDependencies): ProposalS
         }
         const applied = await selectProposalById(db, stashName, proposalIdValue);
         if (applied === null) return internal("Applied proposal could not be read.");
-        return appliedResult(db, applied);
+        return withProposalTransition(await appliedResult(db, applied), proposal.path);
       }
       return approvalOutcome(db, stashName, proposalIdValue, decidedAt);
     },
@@ -748,7 +762,7 @@ export function createProposals(env: Env, deps: ProposalDependencies): ProposalS
       if (result.meta.changes === 1) {
         const rejected = await selectProposalById(db, stashName, proposalIdValue);
         if (rejected === null) return internal("Rejected proposal could not be read.");
-        return mapProposal(rejected, decidedAt);
+        return withProposalTransition(mapProposal(rejected, decidedAt), proposal.path);
       }
 
       await ensureLive(db, stashName);
