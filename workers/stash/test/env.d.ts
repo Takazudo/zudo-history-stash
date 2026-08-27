@@ -17,6 +17,8 @@ declare global {
       RL_DIFF: RateLimiter;
       STASH_ADMIN_TOKEN: string;
       ALLOWED_ORIGINS: string;
+      STASH_DELETE_GRACE_DAYS: string;
+      GC_ORPHAN_MIN_AGE_MS: string;
       TEST_MIGRATIONS: D1Migration[];
       STASH_RPC: TestStashRpcBinding;
     }

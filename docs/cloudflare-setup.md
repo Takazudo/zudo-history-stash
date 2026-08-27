@@ -34,6 +34,23 @@ pnpm exec wrangler d1 create zudo-history-stash-preview
 
 The deployment remains skipped until the Cloudflare credentials and committed D1 IDs are ready. Apply migrations from `workers/stash` with `pnpm exec wrangler d1 migrations apply zudo-history-stash --remote` before deploying code.
 
+## Stash lifecycle variables
+
+The committed Worker variables reserve the lifecycle policy used by the later lifecycle and GC
+implementation in this Worker:
+
+Deleted stashes remain retained rows; `STASH_DELETE_GRACE_DAYS` controls their restore window and
+does not authorize hard-purging them.
+
+| Variable                  | Production and preview value | Purpose                                                              |
+| ------------------------- | ---------------------------- | -------------------------------------------------------------------- |
+| `STASH_DELETE_GRACE_DAYS` | `"30"`                       | Restore window for deleted stashes                                   |
+| `GC_ORPHAN_MIN_AGE_MS`    | `"900000"`                   | Minimum age for an orphaned R2 object to become eligible for cleanup |
+
+Keep the same values in the root `[vars]` and `[env.preview.vars]` sections of
+`workers/stash/wrangler.toml`. This migration only adds the configuration and schema seams; the
+later lifecycle and garbage-collection implementation in this Worker will consume them.
+
 ## R2 provisioning
 
 Create separate production and preview buckets. Their names already match the committed `BLOBS`
