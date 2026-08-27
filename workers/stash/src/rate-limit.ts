@@ -29,6 +29,7 @@ export const RATE_LIMIT_BINDING_BY_ROUTE = {
   getProposalDiff: "RL_DIFF",
   approveProposal: "RL_WRITE",
   rejectProposal: "RL_WRITE",
+  stashEvents: "RL_READ",
   listFiles: "RL_READ",
   getFile: "RL_READ",
   putFile: "RL_WRITE",

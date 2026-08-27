@@ -1,5 +1,6 @@
 export type RoutePrincipal = "open" | "any" | "admin" | "admin-or-stash" | "read" | "write";
 export type RouteMethod = "GET" | "POST" | "PUT" | "DELETE";
+export type RouteTransport = "any" | "fetch-only";
 
 export const ROUTES = [
   { id: "health", method: "GET", template: "/v1/health", principal: "open" },
@@ -73,6 +74,13 @@ export const ROUTES = [
     template: "/v1/stashes/:stash/proposals/:id/reject",
     principal: "write",
   },
+  {
+    id: "stashEvents",
+    method: "GET",
+    template: "/v1/stashes/:stash/events",
+    principal: "read",
+    transport: "fetch-only",
+  },
   { id: "listFiles", method: "GET", template: "/v1/stashes/:stash/files", principal: "read" },
   { id: "getFile", method: "GET", template: "/v1/stashes/:stash/files/*path", principal: "read" },
   { id: "putFile", method: "PUT", template: "/v1/stashes/:stash/files/*path", principal: "write" },
@@ -112,7 +120,16 @@ export const ROUTES = [
   method: RouteMethod;
   template: string;
   principal: RoutePrincipal;
+  transport?: RouteTransport;
 }[];
 
 export type Route = (typeof ROUTES)[number];
 export type RouteId = Route["id"];
+export type FetchOnlyRouteId = Extract<Route, { transport: "fetch-only" }>["id"];
+export type RpcRouteId = Exclude<RouteId, FetchOnlyRouteId>;
+
+/** Resolves the optional transport marker to its semantic default. */
+export function transportForRoute(routeId: RouteId): RouteTransport {
+  const route = ROUTES.find((candidate) => candidate.id === routeId);
+  return route && "transport" in route ? route.transport : "any";
+}

@@ -62,8 +62,9 @@ export interface StashRpcBinding {
 }
 
 /**
- * One explicit RPC method per core route. Proposal methods temporarily return their registered
- * HTTP skeleton response until the proposal client lifecycle is implemented.
+ * One explicit RPC method per transport-eligible core route. Fetch-only routes remain available
+ * through `request()` and are deliberately absent here. Proposal methods temporarily return their
+ * registered HTTP skeleton response until the proposal client lifecycle is implemented.
  */
 export interface StashRpcMethods {
   health(token: string): Promise<ClientResult<HealthResponse>>;

@@ -9,6 +9,7 @@ import {
   DeleteFileBody,
   DiffCandidateBody,
   DiffQuery,
+  EventsQuery,
   FileGetQuery,
   HistoryQuery,
   ImportBody,
@@ -23,19 +24,27 @@ import {
   RunGcBody,
   RotateTokenBody,
 } from "../schemas.js";
-import type { RouteId } from "../routes.js";
+import type { RouteId, RouteTransport } from "../routes.js";
 import type { RESPONSE_SCHEMAS } from "./responses.js";
 import type { SAMPLES } from "./samples.js";
 
 export type RequestHeader = "Idempotency-Key" | "If-None-Match";
-export type ResponseHeader = "ETag" | "X-Stash-Version" | "Idempotent-Replayed" | "Retry-After";
+export type ResponseHeader =
+  | "ETag"
+  | "X-Stash-Version"
+  | "Idempotent-Replayed"
+  | "Retry-After"
+  | "Cache-Control"
+  | "X-Accel-Buffering";
 export type ResponseStatus = 200 | 201 | 204 | 304;
+export type ResponseMediaType = "application/json" | "text/event-stream";
 
 export interface RouteResponse {
   schema?: keyof typeof RESPONSE_SCHEMAS;
   description: string;
   headers?: ResponseHeader[];
   example?: keyof typeof SAMPLES;
+  mediaType?: ResponseMediaType;
 }
 
 export interface RouteError {
@@ -55,6 +64,8 @@ export interface RouteContract {
   responses: Partial<Record<ResponseStatus, RouteResponse>>;
   errors: RouteError[];
   wildcardPath: boolean;
+  /** Defaults to `any`; fetch-only routes have no named RPC method. */
+  transport?: RouteTransport;
 }
 
 const response = (
@@ -64,7 +75,16 @@ const response = (
   headers?: ResponseHeader[],
 ): RouteResponse => ({ description, schema, example, ...(headers ? { headers } : {}) });
 
-const noContentResponse = (description: string): RouteResponse => ({ description });
+const noContentResponse = (description: string, headers?: ResponseHeader[]): RouteResponse => ({
+  description,
+  ...(headers ? { headers } : {}),
+});
+
+const eventStreamResponse = (
+  description: string,
+  schema: keyof typeof RESPONSE_SCHEMAS,
+  headers: ResponseHeader[],
+): RouteResponse => ({ description, schema, headers, mediaType: "text/event-stream" });
 
 const error = (
   code: ErrorCode,
@@ -80,7 +100,7 @@ const error = (
 
 const rateLimited = (): RouteError => error("rate-limited", false, undefined, ["Retry-After"]);
 
-export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
+export const ROUTE_CONTRACTS = {
   health: {
     summary: "Health check",
     description: "Returns the service health marker without requiring authentication.",
@@ -422,6 +442,23 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     ],
     wildcardPath: false,
   },
+  stashEvents: {
+    summary: "Stream stash events",
+    description:
+      "Streams advisory stash events as Server-Sent Events after subscribing live, replaying missed changes, and establishing a replay checkpoint.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    query: EventsQuery,
+    responses: {
+      200: eventStreamResponse(
+        "A Server-Sent Events stream of ready, change, proposal, and reconnect events.",
+        "StashEvent",
+        ["Cache-Control", "X-Accel-Buffering"],
+      ),
+    },
+    errors: [error("unauthorized"), error("scope"), error("not-found"), rateLimited()],
+    wildcardPath: false,
+    transport: "fetch-only",
+  },
   listFiles: {
     summary: "List files",
     description: "Returns a keyset-paginated list of file summaries.",
@@ -444,10 +481,10 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
         "ETag",
         "X-Stash-Version",
       ]),
-      304: {
-        description: "The requested representation has not changed; the response has no body.",
-        headers: ["ETag", "X-Stash-Version"],
-      },
+      304: noContentResponse(
+        "The requested representation has not changed; the response has no body.",
+        ["ETag", "X-Stash-Version"],
+      ),
     },
     errors: [
       error("validation"),
@@ -615,4 +652,4 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
     wildcardPath: false,
   },
-};
+} as const satisfies Record<RouteId, RouteContract>;

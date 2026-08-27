@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ERROR_CODES } from "../errors.js";
-import { ROUTES } from "../routes.js";
+import { ROUTES, transportForRoute } from "../routes.js";
 import { RESPONSE_SCHEMAS } from "./responses.js";
 import { SAMPLES } from "./samples.js";
 import { ROUTE_CONTRACTS } from "./contracts.js";
@@ -66,6 +66,7 @@ describe("route contract coverage", () => {
       getProposalDiff: [],
       approveProposal: ["stale"],
       rejectProposal: [],
+      stashEvents: [],
       listFiles: [],
       getFile: ["file-deleted"],
       putFile: ["stale", "exists"],
@@ -136,6 +137,38 @@ describe("route contract coverage", () => {
     expect(contract.responses[304]?.example).toBeUndefined();
   });
 
+  it("marks only stash events fetch-only and declares its SSE contract", () => {
+    expect(
+      ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only").map(({ id }) => id),
+    ).toEqual(["stashEvents"]);
+    for (const route of ROUTES) {
+      expect(transportForRoute(route.id), route.id).toBe(
+        route.id === "stashEvents" ? "fetch-only" : "any",
+      );
+      const contract = ROUTE_CONTRACTS[route.id];
+      expect("transport" in contract ? contract.transport : "any", route.id).toBe(
+        transportForRoute(route.id),
+      );
+    }
+    expect(ROUTE_CONTRACTS.stashEvents).toMatchObject({
+      transport: "fetch-only",
+      wildcardPath: false,
+      responses: {
+        200: {
+          schema: "StashEvent",
+          mediaType: "text/event-stream",
+          headers: ["Cache-Control", "X-Accel-Buffering"],
+        },
+      },
+    });
+    expect(ROUTE_CONTRACTS.stashEvents.errors.map(({ code }) => code)).toEqual([
+      "unauthorized",
+      "scope",
+      "not-found",
+      "rate-limited",
+    ]);
+  });
+
   it("declares rate limiting only for stash-principal routes with Retry-After", () => {
     const expected = new Set([
       "me",
@@ -146,6 +179,7 @@ describe("route contract coverage", () => {
       "getProposalDiff",
       "approveProposal",
       "rejectProposal",
+      "stashEvents",
       "listFiles",
       "getFile",
       "putFile",

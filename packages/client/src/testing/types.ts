@@ -170,6 +170,7 @@ export interface FakeStashState {
 }
 
 export interface FakeStash {
+  /** Fetch-compatible surface; the fetch-only events route deliberately returns 501 until #148. */
   fetch: StashFetch;
   state: FakeStashState;
   /** Creates a stash directly for fixture setup and returns its public name. */

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import prettier from "prettier";
 import { describe, expect, it } from "vitest";
 import { statusForCode } from "../errors.js";
-import { ROUTES } from "../routes.js";
+import { ROUTES, transportForRoute } from "../routes.js";
 import { ROUTE_CONTRACTS } from "./contracts.js";
 import type { OpenApiDocument } from "./document.js";
 import { buildOpenApiDocument } from "./document.js";
@@ -31,6 +31,7 @@ type DocumentedRouteSection = {
 type OpenApiOperation = Record<string, unknown> & {
   operationId?: unknown;
   "x-principal"?: unknown;
+  "x-transport"?: unknown;
 };
 
 function sortKeys(value: unknown): unknown {
@@ -177,6 +178,16 @@ describe("OpenAPI and API reference drift", () => {
       const route = ROUTES.find(({ id }) => id === operation.operationId);
       expect(route, `unexpected operationId ${String(operation.operationId)}`).toBeDefined();
       expect(operation["x-principal"], String(operation.operationId)).toBe(route?.principal);
+    }
+  });
+
+  it("keeps OpenAPI transport markers aligned with the non-default route metadata", () => {
+    const documentOperations = operations(committedOpenApi);
+    for (const route of ROUTES) {
+      const operation = documentOperations.find(({ operationId }) => operationId === route.id);
+      expect(operation?.["x-transport"], route.id).toBe(
+        transportForRoute(route.id) === "fetch-only" ? "fetch-only" : undefined,
+      );
     }
   });
 });

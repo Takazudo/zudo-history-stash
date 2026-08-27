@@ -5,6 +5,46 @@ export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
 export type GcKind = "r2-orphans" | "ledger";
 export type ProposalStatus = "open" | "applied" | "rejected" | "expired";
+export type ReconnectReason = "lifetime" | "replay-limit" | "shutdown";
+
+export interface StashReadyEvent {
+  type: "ready";
+  head: number | null;
+  checkpoint: number | null;
+}
+
+export interface StashChangeEvent {
+  type: "change";
+  changeId: number;
+  stash: string;
+  path: string;
+  version: number;
+  kind: VersionKind;
+  origin: string | null;
+  createdAt: string;
+}
+
+export interface StashProposalEvent {
+  type: "proposal";
+  proposalId: string;
+  stash: string;
+  path: string;
+  status: ProposalStatus;
+  origin: string | null;
+}
+
+export interface StashReconnectEvent {
+  type: "reconnect";
+  reason: ReconnectReason;
+}
+
+/** One validated advisory event yielded by the fetch-only live stream. */
+export type StashEvent =
+  StashReadyEvent | StashChangeEvent | StashProposalEvent | StashReconnectEvent;
+
+/** Stream lifecycle state. Client packages bind the failure parameter to their HTTP error type. */
+export type LiveStatus<Failure = unknown> =
+  "connecting" | "live" | "reconnecting" | "closed" | { failed: Failure };
 export type ErrorCode =
   | "validation"
   | "invalid-path"

@@ -1,11 +1,12 @@
-import { ROUTES } from "@takazudo/zudo-history-stash-core";
+import { ROUTES, transportForRoute } from "@takazudo/zudo-history-stash-core";
 import { createExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { CLIENT_ROUTES, parseClientResponse, StashHttpError } from "@takazudo/zudo-history-stash";
 import apiReference from "../../../docs/api.md?raw";
 import app from "../src/app.js";
 import { StashRpc } from "../src/rpc.js";
-import { bearer, request, resetDatabase, seedStash } from "./helpers/app.js";
+import events from "../src/routes/events.js";
+import { bearer, mintToken, request, resetDatabase, seedStash } from "./helpers/app.js";
 import { createTestEnv } from "./helpers/env.js";
 
 type RouteTuple = readonly [string, string];
@@ -79,14 +80,49 @@ describe("route contract pin", () => {
     expect(documentedRouteSet()).toEqual(expected);
   });
 
-  it("exposes every route as an explicit StashRpc prototype method", () => {
+  it("exposes exactly every transport-eligible route as a named StashRpc method", () => {
     const prototypeNames = new Set(Object.getOwnPropertyNames(StashRpc.prototype));
-    for (const { id } of ROUTES) {
+    const rpcRoutes = ROUTES.filter(({ id }) => transportForRoute(id) === "any");
+    for (const { id } of rpcRoutes) {
       expect(prototypeNames.has(id), `missing StashRpc.prototype.${id}`).toBe(true);
       expect(typeof Object.getOwnPropertyDescriptor(StashRpc.prototype, id)?.value).toBe(
         "function",
       );
     }
+    expect(ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only")).toEqual([
+      expect.objectContaining({ id: "stashEvents" }),
+    ]);
+    expect(prototypeNames.has("stashEvents")).toBe(false);
+  });
+
+  it("mounts the dedicated events skeleton rather than relying on the catch-all", async () => {
+    const response = await events.request("http://stash.test/v1/stashes/route-pin/events");
+    expect(response.status).toBe(501);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(response.headers.get("Content-Type")).not.toContain("text/event-stream");
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not-implemented", message: "This route is not implemented yet." },
+    });
+  });
+
+  it("authenticates, resolves, and conceals before reaching the events skeleton", async () => {
+    await seedStash("route-pin");
+    await seedStash("other-stash");
+    const read = await mintToken("route-pin", "read");
+    const write = await mintToken("route-pin", "write");
+    const foreign = await mintToken("other-stash", "read");
+    const path = "http://stash.test/v1/stashes/route-pin/events?since=0";
+
+    const unauthenticated = await request(app, path);
+    expect(unauthenticated.status).toBe(401);
+
+    for (const token of ["test-admin", read.token, write.token]) {
+      const response = await request(app, path, { headers: bearer(token) });
+      expect(response.status).toBe(501);
+    }
+
+    const concealed = await request(app, path, { headers: bearer(foreign.token) });
+    expect(concealed.status).toBe(404);
   });
 
   it.each(proposalRouteProbes)("mounts the dedicated real handler for $id", async (route) => {

@@ -131,6 +131,18 @@ describe("deleted stash concealment matrix", () => {
       });
     }
   });
+
+  it("returns 404 for a deleted events stash before the mounted 501 skeleton", async () => {
+    await seedStash(TARGET);
+    await markDeleted(TARGET, NOW - DAY_MS);
+
+    const response = await request(app, `http://stash.test/v1/stashes/${TARGET}/events`, {
+      headers: bearer("test-admin"),
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "not-found" } });
+  });
 });
 
 describe("deleted-aware administration", () => {
