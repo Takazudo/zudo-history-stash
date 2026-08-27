@@ -8,6 +8,7 @@ import {
   STASH_EVENTS_PUBLISH_PATH,
   type StashEvents,
 } from "../../src/events/stash-events.js";
+import { prefixedLiveStream } from "../../src/events/subscribe.js";
 import type { Env } from "../../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
@@ -191,6 +192,51 @@ function instrumentSubscriptionCancellation(
   };
 }
 
+function instrumentSubscriptionRejection(
+  bindings: Env,
+  stash: string,
+): {
+  bindings: Env;
+  capturedSignal: () => AbortSignal | undefined;
+  subscribeCalls: () => number;
+} {
+  let signal: AbortSignal | undefined;
+  let calls = 0;
+  const namespace = new Proxy(bindings.STASH_EVENTS, {
+    get(target, property) {
+      if (property === "getByName") {
+        return (...args: Parameters<typeof target.getByName>) => {
+          const stub = target.getByName(...args);
+          if (args[0] !== stash) return stub;
+          return new Proxy(stub, {
+            get(stubTarget, stubProperty) {
+              if (stubProperty === "fetch") {
+                return (...fetchArgs: Parameters<typeof stubTarget.fetch>) => {
+                  const input = fetchArgs[0];
+                  const url = new URL(input instanceof Request ? input.url : String(input));
+                  if (url.pathname !== "/subscribe") return stubTarget.fetch(...fetchArgs);
+                  calls += 1;
+                  signal = input instanceof Request ? input.signal : undefined;
+                  return Promise.reject(new Error("subscription dispatch failed"));
+                };
+              }
+              const value: unknown = Reflect.get(stubTarget, stubProperty, stubTarget);
+              return typeof value === "function" ? value.bind(stubTarget) : value;
+            },
+          });
+        };
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return {
+    bindings: { ...bindings, STASH_EVENTS: namespace },
+    capturedSignal: () => signal,
+    subscribeCalls: () => calls,
+  };
+}
+
 function delayedAscendingSnapshot(db: D1Database): {
   db: D1Database;
   snapshotTaken: Promise<void>;
@@ -273,6 +319,76 @@ async function seedChanges(bindings: Env, stash: string, count: number): Promise
     await bindings.DB.batch(statements);
   }
 }
+
+describe("prefixed live stream", () => {
+  it("releases each consumed replay frame before continuing with the live reader", async () => {
+    const firstReplay = new Uint8Array([1]);
+    const secondReplay = new Uint8Array([2]);
+    const thirdReplay = new Uint8Array([3]);
+    const prefix = [firstReplay, secondReplay, thirdReplay];
+    let liveController!: ReadableStreamDefaultController<Uint8Array>;
+    const liveSource = new ReadableStream<Uint8Array>({
+      start(controller) {
+        liveController = controller;
+      },
+    });
+    const liveReader = liveSource.getReader();
+    let liveClosed = false;
+    let closeCalls = 0;
+    const stream = prefixedLiveStream(
+      prefix,
+      {
+        reader: liveReader,
+        async close(reason) {
+          if (liveClosed) return;
+          liveClosed = true;
+          closeCalls += 1;
+          await liveReader.cancel(reason);
+        },
+      },
+      liveReader.read(),
+    );
+    const reader = stream.getReader();
+
+    try {
+      await expect(reader.read()).resolves.toEqual({ done: false, value: firstReplay });
+      expect(prefix).not.toContain(firstReplay);
+      await expect(reader.read()).resolves.toEqual({ done: false, value: secondReplay });
+      await expect(reader.read()).resolves.toEqual({ done: false, value: thirdReplay });
+      expect(prefix).toHaveLength(0);
+
+      const liveFrame = new Uint8Array([4]);
+      liveController.enqueue(liveFrame);
+      await expect(reader.read()).resolves.toEqual({ done: false, value: liveFrame });
+      expect(closeCalls).toBe(0);
+    } finally {
+      await reader.cancel();
+    }
+    expect(closeCalls).toBe(1);
+  });
+
+  it("releases unconsumed replay frames when downstream cancellation wins", async () => {
+    const prefix = [new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])];
+    const liveReader = new ReadableStream<Uint8Array>().getReader();
+    let closeCalls = 0;
+    const stream = prefixedLiveStream(
+      prefix,
+      {
+        reader: liveReader,
+        async close(reason) {
+          closeCalls += 1;
+          await liveReader.cancel(reason);
+        },
+      },
+      liveReader.read(),
+    );
+
+    await stream.cancel("downstream closed");
+
+    expect(prefix).toHaveLength(0);
+    expect(closeCalls).toBe(1);
+  });
+});
 
 beforeEach(resetDatabase);
 
@@ -486,6 +602,26 @@ describe("stash events route", () => {
 
     expect(await subscriberCount(bindings, stash)).toBe(0);
     expect(await subscriberCount(bindings, "deleted-events")).toBe(0);
+  });
+
+  it("aborts the internal subscription when its initial dispatch rejects", async () => {
+    const stash = "events-subscribe-rejection";
+    await seedStash(stash);
+    const baseBindings = createTestEnv().env;
+    const probe = instrumentSubscriptionRejection(baseBindings, stash);
+
+    const response = await connect(stash, "", "test-admin", probe.bindings);
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(response.headers.get("X-Accel-Buffering")).toBeNull();
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "internal", message: "An internal error occurred." },
+    });
+    expect(probe.subscribeCalls()).toBe(1);
+    expect(probe.capturedSignal()).toBeDefined();
+    expect(probe.capturedSignal()?.aborted).toBe(true);
+    expect(await subscriberCount(baseBindings, stash)).toBe(0);
   });
 
   it("rotates after 1,000 replayed changes and closes without a ready frame", async () => {

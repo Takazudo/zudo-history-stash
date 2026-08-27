@@ -42,34 +42,53 @@ interface LiveSubscription {
   close: (reason?: unknown) => Promise<void>;
 }
 
-function prefixedLiveStream(
+/** @internal Exported only so the replay/live composition can be regression-tested directly. */
+export function prefixedLiveStream(
   prefix: Uint8Array[],
   live: LiveSubscription,
   firstLiveRead: Promise<ReadableStreamReadResult<Uint8Array>>,
 ): ReadableStream<Uint8Array> {
+  const releasedFrame = new Uint8Array();
   let prefixIndex = 0;
   let nextLiveRead: Promise<ReadableStreamReadResult<Uint8Array>> | undefined = firstLiveRead;
   let canceled = false;
+
+  const clearBufferedState = () => {
+    for (let index = prefixIndex; index < prefix.length; index += 1) {
+      prefix[index] = releasedFrame;
+    }
+    prefix.length = 0;
+    prefixIndex = 0;
+    nextLiveRead = undefined;
+  };
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       const prefixed = prefix[prefixIndex];
       if (prefixed !== undefined) {
+        prefix[prefixIndex] = releasedFrame;
         prefixIndex += 1;
+        if (prefixIndex === prefix.length) {
+          prefix.length = 0;
+          prefixIndex = 0;
+        }
         controller.enqueue(prefixed);
         return;
       }
 
       try {
-        const result = await (nextLiveRead ?? live.reader.read());
+        const pendingRead = nextLiveRead ?? live.reader.read();
         nextLiveRead = undefined;
+        const result = await pendingRead;
         if (canceled) return;
         if (result.done) {
+          clearBufferedState();
           controller.close();
           return;
         }
         controller.enqueue(result.value);
       } catch (error) {
+        clearBufferedState();
         if (!canceled) {
           await live.close(error);
           if (!canceled) controller.error(error);
@@ -78,6 +97,7 @@ function prefixedLiveStream(
     },
     async cancel(reason) {
       canceled = true;
+      clearBufferedState();
       await live.close(reason);
     },
   });
@@ -105,14 +125,20 @@ export async function subscribeToStashEvents(
 ): Promise<ReadableStream<Uint8Array>> {
   const stub = env.STASH_EVENTS.getByName(stash);
   const subscriptionAbort = new AbortController();
-  const response = await stub.fetch(
-    new Request(`${INTERNAL_ORIGIN}${STASH_EVENTS_SUBSCRIBE_PATH}`, {
-      headers: {
-        [STASH_EVENTS_MAX_STREAM_MS_HEADER]: env.STASH_EVENTS_MAX_STREAM_MS,
-      },
-      signal: subscriptionAbort.signal,
-    }),
-  );
+  let response: Response;
+  try {
+    response = await stub.fetch(
+      new Request(`${INTERNAL_ORIGIN}${STASH_EVENTS_SUBSCRIBE_PATH}`, {
+        headers: {
+          [STASH_EVENTS_MAX_STREAM_MS_HEADER]: env.STASH_EVENTS_MAX_STREAM_MS,
+        },
+        signal: subscriptionAbort.signal,
+      }),
+    );
+  } catch (error) {
+    subscriptionAbort.abort();
+    throw error;
+  }
   if (!response.ok || response.body === null) {
     try {
       await response.body?.cancel();
