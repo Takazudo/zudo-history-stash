@@ -6,8 +6,10 @@ import type {
   FileRecordWithEtag,
   GetDiffResult,
   HistoryPage,
+  ProposalListResponse,
   StashClient,
   StashFilesClient,
+  StashProposalsClient,
   VersionRecord,
 } from "@takazudo/zudo-history-stash";
 import { createMemoryRouter, type InitialEntry, Outlet, RouterProvider } from "react-router-dom";
@@ -88,7 +90,10 @@ function diffResult(from: number, to: number): ClientResult<GetDiffResult> {
   };
 }
 
-function clientWithFiles(overrides: Partial<StashFilesClient> = {}): ViewerStashClient {
+function clientWithFiles(
+  overrides: Partial<StashFilesClient> = {},
+  proposalList?: StashProposalsClient["list"],
+): ViewerStashClient {
   const base = createFakeViewerClient();
   const defaults: Pick<StashFilesClient, "get" | "history" | "diff"> = {
     get: async (): Promise<FileGetResult> => ({ ok: true, value: fileRecord() }),
@@ -101,6 +106,9 @@ function clientWithFiles(overrides: Partial<StashFilesClient> = {}): ViewerStash
   };
   return createFakeViewerClient({
     files: (stash) => ({ ...base.files(stash), ...defaults, ...overrides }),
+    ...(proposalList === undefined
+      ? {}
+      : { proposals: (stash: string) => ({ ...base.proposals(stash), list: proposalList }) }),
   });
 }
 
@@ -186,6 +194,59 @@ describe("FilePage", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: "Wrap long lines" }));
     expect(body.getAttribute("data-wrap-long-lines")).toBe("true");
     expect(body.className).toContain("file-body-pane--wrap");
+  });
+
+  it("links a nonzero exact-path open count and hides a zero count", async () => {
+    const path = "folder/a file?#.txt";
+    const list = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: true,
+      value: { proposals: [], nextAfter: null, total: 2 },
+    }));
+    const { unmount } = renderFileRoute(
+      "/s/notes/f/folder/a%20file%3F%23.txt",
+      clientWithFiles(
+        {
+          get: async () => ({ ok: true, value: fileRecord({ path }) }),
+          history: async () => ({ ok: true, value: historyPage({ path }) }),
+        },
+        list,
+      ),
+    );
+
+    const badge = await screen.findByRole("link", { name: `2 open proposals for ${path}` });
+    expect(badge.getAttribute("href")).toBe("/s/notes/proposals?path=folder%2Fa+file%3F%23.txt");
+    expect(list).toHaveBeenCalledWith({ status: "open", path, limit: 1 });
+
+    unmount();
+    const zeroList = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: true,
+      value: { proposals: [], nextAfter: null, total: 0 },
+    }));
+    renderFileRoute("/s/notes/f/docs/readme.txt", clientWithFiles({}, zeroList));
+    await waitFor(() => expect(zeroList).toHaveBeenCalled());
+    expect(screen.queryByRole("link", { name: /open proposals? for/u })).toBeNull();
+  });
+
+  it("keeps proposal count failures independent and skips the count for invalid input", async () => {
+    const failedList = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: false,
+      error: { status: 503, code: "internal", message: "Proposal count unavailable" },
+    }));
+    const rendered = renderFileRoute("/s/notes/f/docs/readme.txt", clientWithFiles({}, failedList));
+
+    expect(
+      await screen.findByText(
+        (_content, element) =>
+          element?.tagName === "PRE" && element.textContent === "hello\nworld\n",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Proposal count unavailable")).toBeNull();
+    rendered.unmount();
+
+    const invalidList = vi.fn<StashProposalsClient["list"]>();
+    renderFileRoute("/s/notes/f/docs/readme.txt?version=zero", clientWithFiles({}, invalidList));
+    expect(await screen.findByText("The version query must be a positive integer.")).toBeTruthy();
+    expect(invalidList).not.toHaveBeenCalled();
   });
 
   it("copies the full hash while presenting a shortened value", async () => {
