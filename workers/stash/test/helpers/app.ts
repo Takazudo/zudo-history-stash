@@ -29,6 +29,7 @@ export async function resetDatabase(): Promise<void> {
   const { DB: db, BLOBS: blobs } = createTestEnv().env;
   for (const table of [
     "gc_runs",
+    "proposals",
     "idempotency",
     "versions",
     "files",

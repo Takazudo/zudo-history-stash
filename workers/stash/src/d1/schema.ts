@@ -91,6 +91,29 @@ export interface GcRunRow {
   finished_at: number | null;
 }
 
+export interface ProposalRow {
+  id: string;
+  stash_name: string;
+  path: string;
+  base_version: number | null;
+  blob_hash: string;
+  size_bytes: number;
+  author: string;
+  message: string;
+  meta_json: string;
+  status: "open" | "applied" | "rejected";
+  expires_at: number;
+  created_at: number;
+  idempotency_key: string | null;
+  request_hash: string | null;
+  decision_attempt: string | null;
+  decided_at: number | null;
+  decided_by: string | null;
+  decision_reason: string | null;
+  applied_version: number | null;
+  applied_change_id: number | null;
+}
+
 export const TABLE_NAMES = [
   "stashes",
   "tokens",
@@ -100,6 +123,7 @@ export const TABLE_NAMES = [
   "idempotency",
   "gc_jobs",
   "gc_runs",
+  "proposals",
 ] as const;
 
 export const TABLE_COLUMNS = {
@@ -158,6 +182,28 @@ export const TABLE_COLUMNS = {
     "started_at",
     "finished_at",
   ],
+  proposals: [
+    "id",
+    "stash_name",
+    "path",
+    "base_version",
+    "blob_hash",
+    "size_bytes",
+    "author",
+    "message",
+    "meta_json",
+    "status",
+    "expires_at",
+    "created_at",
+    "idempotency_key",
+    "request_hash",
+    "decision_attempt",
+    "decided_at",
+    "decided_by",
+    "decision_reason",
+    "applied_version",
+    "applied_change_id",
+  ],
 } as const satisfies Record<(typeof TABLE_NAMES)[number], readonly string[]>;
 
 export interface DatabaseSchema {
@@ -169,4 +215,5 @@ export interface DatabaseSchema {
   idempotency: IdempotencyRow;
   gc_jobs: GcJobRow;
   gc_runs: GcRunRow;
+  proposals: ProposalRow;
 }
