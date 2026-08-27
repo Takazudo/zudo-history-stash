@@ -191,6 +191,13 @@ describe("GET stash diff", () => {
     const routeApp = new Hono<AppEnv>();
     routeApp.use("*", async (c, next) => {
       c.set("principal", { kind: "admin" });
+      c.set("routeStash", {
+        name: "fake",
+        description: "",
+        meta_json: "{}",
+        created_at: 0,
+        deleted_at: null,
+      });
       await next();
     });
     routeApp.route("/", createDiffRoutes({ createReads: () => ({ getFile, listHistory }) }));
@@ -239,6 +246,13 @@ describe("GET stash diff", () => {
     const routeApp = new Hono<AppEnv>();
     routeApp.use("*", async (c, next) => {
       c.set("principal", { kind: "admin" });
+      c.set("routeStash", {
+        name: "fake",
+        description: "",
+        meta_json: "{}",
+        created_at: 0,
+        deleted_at: null,
+      });
       await next();
     });
     routeApp.route("/", createDiffRoutes({ createReads: () => ({ getFile, listHistory }) }));

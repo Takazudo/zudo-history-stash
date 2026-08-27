@@ -1,7 +1,7 @@
 import { ROUTES, StashError, type RouteId } from "@takazudo/zudo-history-stash-core";
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv, Principal } from "./context.js";
-import type { TokenRow } from "./d1/schema.js";
+import type { StashRow, TokenRow } from "./d1/schema.js";
 
 const encoder = new TextEncoder();
 const LAST_USED_INTERVAL_MS = 60_000;
@@ -95,18 +95,35 @@ export function requireRoute(routeId: RouteId): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const principal = c.get("principal");
     const stash = c.req.param("stash");
-    if (principal.kind === "admin") {
-      await next();
-      return;
+    if (principal.kind !== "admin") {
+      if (route.principal === "admin") {
+        throw new StashError("not-found", "The requested resource was not found.");
+      }
+      if (stash !== undefined && principal.stash !== stash) {
+        throw new StashError("not-found", "The requested resource was not found.");
+      }
+      if (route.principal === "write" && principal.scope !== "write") {
+        throw new StashError("scope", "This token does not have write access.");
+      }
     }
-    if (route.principal === "admin") {
-      throw new StashError("not-found", "The requested resource was not found.");
-    }
-    if (stash !== undefined && principal.stash !== stash) {
-      throw new StashError("not-found", "The requested resource was not found.");
-    }
-    if (route.principal === "write" && principal.scope !== "write") {
-      throw new StashError("scope", "This token does not have write access.");
+    const allowsDeleted =
+      route.id === "deleteStash" ||
+      route.id === "restoreStash" ||
+      (route.id === "getStash" && principal.kind === "admin");
+    if (stash !== undefined && !allowsDeleted) {
+      const row = await c.env.DB.withSession("first-primary")
+        .prepare(
+          `SELECT name, description, meta_json, created_at, deleted_at
+           FROM stashes
+           WHERE name = ? AND deleted_at IS NULL
+           LIMIT 1`,
+        )
+        .bind(stash)
+        .first<StashRow>();
+      if (row === null) {
+        throw new StashError("not-found", "The requested resource was not found.");
+      }
+      c.set("routeStash", row);
     }
     await next();
   };

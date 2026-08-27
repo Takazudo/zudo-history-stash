@@ -17,7 +17,6 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
 import { Hono, type Context } from "hono";
-import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
 import type { ReadFileMetadata, ReadFileRecord } from "../d1/reads.js";
@@ -141,20 +140,18 @@ function fileEtag(record: ReadFileMetadata): string {
 
 files.get(
   "/v1/stashes/:stash/files",
-  requireRoute("listFiles"),
   zValidator("query", ListFilesQuery, (result) => {
     if (!result.success) throw new StashError("validation", "Invalid file list query.");
   }),
   async (c) => {
     const store = createStashStore(c.env);
     const query = c.req.valid("query");
-    return c.json(await store.reads.listFiles(c.req.param("stash"), query));
+    return c.json(await store.reads.listFiles(c.get("routeStash").name, query));
   },
 );
 
 files.get(
   "/v1/stashes/:stash/files/:path{.+}",
-  requireRoute("getFile"),
   zValidator("query", FileGetQuery, (result) => {
     if (!result.success) throw new StashError("validation", "Invalid file query.");
   }),
@@ -162,7 +159,7 @@ files.get(
     const path = filePath(c);
     const query = c.req.valid("query");
     const reads = createStashStore(c.env).reads;
-    const source = await reads.getFileSource(c.req.param("stash"), path, query);
+    const source = await reads.getFileSource(c.get("routeStash").name, path, query);
     if (source === null) {
       throw new StashError(
         query.version === undefined ? "not-found" : "version-not-found",
@@ -191,12 +188,12 @@ files.get(
   },
 );
 
-files.put("/v1/stashes/:stash/files/:path{.+}", requireRoute("putFile"), async (c) => {
+files.put("/v1/stashes/:stash/files/:path{.+}", async (c) => {
   const path = filePath(c);
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.put(c.req.param("stash"), path, await putBody(c), {
+    await store.writes.put(c.get("routeStash").name, path, await putBody(c), {
       idempotencyKey: key,
     }),
   );
@@ -204,12 +201,12 @@ files.put("/v1/stashes/:stash/files/:path{.+}", requireRoute("putFile"), async (
   return c.json(result.value, result.statusCode);
 });
 
-files.post("/v1/stashes/:stash/delete/:path{.+}", requireRoute("deleteFile"), async (c) => {
+files.post("/v1/stashes/:stash/delete/:path{.+}", async (c) => {
   const path = filePath(c);
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.delete(c.req.param("stash"), path, await deleteBody(c), {
+    await store.writes.delete(c.get("routeStash").name, path, await deleteBody(c), {
       idempotencyKey: key,
     }),
   );
@@ -217,12 +214,12 @@ files.post("/v1/stashes/:stash/delete/:path{.+}", requireRoute("deleteFile"), as
   return c.json(result.value, result.statusCode);
 });
 
-files.post("/v1/stashes/:stash/rollback/:path{.+}", requireRoute("rollbackFile"), async (c) => {
+files.post("/v1/stashes/:stash/rollback/:path{.+}", async (c) => {
   const path = filePath(c);
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.rollback(c.req.param("stash"), path, await rollbackBody(c), {
+    await store.writes.rollback(c.get("routeStash").name, path, await rollbackBody(c), {
       idempotencyKey: key,
     }),
   );

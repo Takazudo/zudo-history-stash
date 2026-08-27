@@ -12,7 +12,6 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
-import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import type { StashReads, ReadVersionRecord } from "../d1/reads.js";
 import { createStashStore } from "../d1/store.js";
@@ -160,12 +159,11 @@ export function createDiffRoutes(dependencies: DiffRouteDependencies = {}): Hono
 
   diff.get(
     "/v1/stashes/:stash/diff/*",
-    requireRoute("getDiff"),
     zValidator("query", DiffRouteQuery, (result) => {
       if (!result.success) throw new StashError("validation", "Invalid diff query.");
     }),
     async (c) => {
-      const stash = c.req.param("stash");
+      const stash = c.get("routeStash").name;
       const path = diffPath(c.req.path, stash);
       const query = c.req.valid("query");
       const reads = createReads(c.env);
@@ -205,12 +203,11 @@ export function createDiffRoutes(dependencies: DiffRouteDependencies = {}): Hono
 
   diff.post(
     "/v1/stashes/:stash/diff/*",
-    requireRoute("diffCandidate"),
     zValidator("json", DiffCandidateRouteBody, (result) => {
       if (!result.success) return candidateValidationError(result);
     }),
     async (c) => {
-      const stash = c.req.param("stash");
+      const stash = c.get("routeStash").name;
       const path = diffPath(c.req.path, stash);
       const input = c.req.valid("json");
       const reads = createReads(c.env);
