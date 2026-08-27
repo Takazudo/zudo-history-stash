@@ -11,6 +11,7 @@ import history from "./history.js";
 import importRoutes from "./import.js";
 import lifecycle from "./lifecycle.js";
 import meta from "./meta.js";
+import proposals from "./proposals.js";
 
 function middlewarePath(route: (typeof ROUTES)[number]): string {
   // Diff handlers accept Hono's empty wildcard; other wildcard handlers require a file path.
@@ -32,6 +33,7 @@ routes.route("/", history);
 routes.route("/", diff);
 routes.route("/", importRoutes);
 routes.route("/", lifecycle);
+routes.route("/", proposals);
 routes.all("/v1/*", (c) =>
   c.json(
     { error: { code: "not-implemented", message: "This route is not implemented yet." } },
