@@ -43,6 +43,8 @@ describe("Wrangler and Env drift", () => {
       "ALLOWED_ORIGINS",
       "BLOBS",
       "DB",
+      "GC_LEASE_TTL_MS",
+      "GC_ORPHAN_MIN_AGE_MS",
       "RL_DIFF",
       "RL_READ",
       "RL_WRITE",
