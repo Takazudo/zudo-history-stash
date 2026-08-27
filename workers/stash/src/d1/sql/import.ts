@@ -1,21 +1,40 @@
+import type { PreparedBlob } from "../blobs.js";
 import { fence, type SqlFragment } from "./writes.js";
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
 
-export interface PreparedImportVersion {
+interface PreparedImportBase {
   version: number;
-  kind: "put" | "delete" | "rollback";
-  body: string | null;
-  hash: string | null;
   size: number;
-  rollbackOf: number | null;
   author: string;
   message: string;
   metaJson: string;
   createdAt: number;
 }
+
+type PreparedImportPut = PreparedImportBase &
+  PreparedBlob & {
+    kind: "put";
+    hash: string;
+    rollbackOf: null;
+  };
+
+export type PreparedImportVersion =
+  | PreparedImportPut
+  | (PreparedImportBase & {
+      kind: "delete";
+      body: null;
+      hash: null;
+      rollbackOf: null;
+    })
+  | (PreparedImportBase & {
+      kind: "rollback";
+      body: null;
+      hash: string;
+      rollbackOf: number;
+    });
 
 export interface ImportBatchInput {
   stash: string;
@@ -38,21 +57,21 @@ function operationFence(input: ImportBatchInput): SqlFragment {
 function putStatements(
   db: Preparer,
   input: ImportBatchInput,
-  entry: PreparedImportVersion,
+  entry: PreparedImportPut,
   importFence: SqlFragment,
 ): D1PreparedStatement[] {
-  if (entry.body === null || entry.hash === null) throw new Error("Invalid prepared import put");
   return [
     db
       .prepare(
         `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
-         SELECT ?, ?, ?, NULL, ?, ? WHERE ${importFence.sql}
+         SELECT ?, ?, ?, ?, ?, ? WHERE ${importFence.sql}
          ON CONFLICT(stash_name, hash) DO NOTHING`,
       )
       .bind(
         input.stash,
         entry.hash,
         entry.body,
+        entry.r2_key,
         entry.size,
         entry.createdAt,
         ...importFence.params,
