@@ -20,6 +20,17 @@ The resource rule keeps child work proportional: a sub-issue runs its own packag
 
 Worker tests use the Cloudflare Vitest plugin and apply migrations in setup. Exercise routes with `app.request(url, init, env, ctx)`, wait for the execution context, and assert D1 rows directly. Inject `now` and IDs for deterministic responses, and use the `onBeforeCommit` seam for a real two-writer race. A process-group reaper prevents orphaned workerd processes.
 
+Authentication route tests inject the clock through `createApp({ now })`; token creation and
+rotation store tests pass `now` through the store dependencies; the fake conformance adapter uses
+`createFakeStash({ now })`. The RPC parity matrix freezes `Date.now()` before dispatch through the
+default app. These seams test equality with `expires_at` as already expired without sleeping.
+
+Rate-limit unit and RPC tests override only the relevant `RL_READ`, `RL_WRITE`, or `RL_DIFF`
+binding with a Cloudflare-shaped fake whose `limit({ key })` call resolves to `{ success: false }`.
+Use a stash principal because administrators are exempt, and use a rejecting fake separately to
+prove limiter failures fail open. `createTestEnv()` supplies fresh allow-all bindings for
+unspecified limiters, so denial state is never shared between transports or tests.
+
 ### `@cloudflare/vitest-plugin` 1.0 D1 isolation
 
 Verified with two tests in the same test file inserting the same primary-key row: D1 storage is isolated per test file, not per individual test. The second test observes the first test's row and receives a UNIQUE-constraint failure. Stateful suites must call the shared `resetDatabase()` helper from `beforeEach`; migrations are applied once from `test/setup.ts` with `applyD1Migrations`.
@@ -50,6 +61,18 @@ unchanged at every tier. Every persisting case is declared directly with
 Preview and production therefore share the same read assertions while discovering mutation cases
 as skipped. A `POST` candidate diff remains in the read lane because the route has read capability
 and never persists its body.
+
+The local-only mutation lane also mints a token with `ttlSeconds: 1` and proves it becomes the
+public `401 unauthorized`, then rotates a separate token and proves both credentials during the
+grace period, the second `409 already-rotated` response, and predecessor expiry while the successor
+remains usable. These cases intentionally use the running Worker's real clock and bindings plus
+unique stash/token keys. Every boundary wait is derived from the expiry timestamp returned by the
+Worker, with a small post-boundary margin, rather than from a guessed fixed delay.
+
+The injected-clock Worker/RPC tests and fake conformance trace run inside the ordinary workspace
+test lane. The server-backed HTTP contract, checked-in live conformance runner, and Playwright live
+suite are separate evidence lanes. `pnpm b4push` includes the ordinary workspace tests but does not
+start a Worker or transitively run those server-backed gates; record each one independently.
 
 Against `pnpm dev:stash` plus the seeded fixture:
 

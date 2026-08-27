@@ -3,7 +3,176 @@ import { describe, expect, it } from "vitest";
 import { API_BASE_URL, MUTATION_ALLOWED } from "./env.js";
 import { createAdminClient, uniqueStash, unwrap } from "./helpers.js";
 
+const EXPIRY_MARGIN_MS = 100;
+const MAX_BOUNDARY_WAIT_MS = 15_000;
+
+async function waitUntilAfter(expiresAt: string): Promise<void> {
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) throw new Error(`Invalid expiry timestamp: ${expiresAt}`);
+
+  const target = expiresAtMs + EXPIRY_MARGIN_MS;
+  const waitMs = target - Date.now();
+  if (waitMs > MAX_BOUNDARY_WAIT_MS) {
+    throw new Error(`Expiry boundary is more than ${MAX_BOUNDARY_WAIT_MS}ms in the future`);
+  }
+  if (waitMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+  if (Date.now() <= expiresAtMs) throw new Error("Expiry boundary wait completed too early");
+}
+
 describe("local-only HTTP mutation contract", () => {
+  it.runIf(MUTATION_ALLOWED)("expires a ttlSeconds token as unauthorized", async () => {
+    const admin = createAdminClient();
+    const stash = uniqueStash("expiry");
+    unwrap(await admin.stashes.create({ name: stash }), "create expiry fixture stash");
+
+    const mintStartedAt = Date.now();
+    const token = unwrap(
+      await admin.stashes.tokens(stash).create({
+        label: "contract-expiring",
+        scope: "read",
+        ttlSeconds: 1,
+      }),
+      "mint expiring token",
+    );
+    if (token.expiresAt === null) throw new Error("ttlSeconds token did not return expiresAt");
+    expect(Object.keys(token).sort()).toEqual([
+      "createdAt",
+      "expiresAt",
+      "id",
+      "label",
+      "rotatedFrom",
+      "scope",
+      "token",
+    ]);
+    expect(token.label).toBe("contract-expiring");
+    expect(token.scope).toBe("read");
+    expect(token.rotatedFrom).toBeNull();
+    expect(/^tok_[0-9a-f]{32}$/u.test(token.id)).toBe(true);
+    expect(/^zhs_[A-Za-z0-9_-]{43}$/u.test(token.token)).toBe(true);
+    expect(Number.isFinite(Date.parse(token.createdAt))).toBe(true);
+    expect(Date.parse(token.expiresAt)).toBeGreaterThan(mintStartedAt);
+    expect(Date.parse(token.expiresAt) - Date.parse(token.createdAt)).toBe(1_000);
+
+    await waitUntilAfter(token.expiresAt);
+    const expired = await createStashClient({ baseUrl: API_BASE_URL, token: token.token }).me();
+    expect(expired).toEqual({
+      ok: false,
+      error: {
+        status: 401,
+        code: "unauthorized",
+        message: "A valid bearer token is required.",
+      },
+    });
+  });
+
+  it.runIf(MUTATION_ALLOWED)(
+    "honors rotation grace and reports the one-shot successor",
+    async () => {
+      const admin = createAdminClient();
+      const stash = uniqueStash("rotation");
+      unwrap(await admin.stashes.create({ name: stash }), "create rotation fixture stash");
+
+      const predecessor = unwrap(
+        await admin.stashes.tokens(stash).create({
+          label: "contract-rotation",
+          scope: "read",
+        }),
+        "mint rotation predecessor",
+      );
+      expect(predecessor.expiresAt).toBeNull();
+
+      const successor = unwrap(
+        await admin.stashes.tokens(stash).rotate(predecessor.id, { graceSeconds: 5 }),
+        "rotate predecessor",
+      );
+      expect(successor).toMatchObject({
+        label: predecessor.label,
+        scope: predecessor.scope,
+        expiresAt: null,
+        rotatedFrom: predecessor.id,
+        predecessor: { id: predecessor.id },
+      });
+      expect(/^tok_[0-9a-f]{32}$/u.test(successor.id)).toBe(true);
+      expect(/^zhs_[A-Za-z0-9_-]{43}$/u.test(successor.token)).toBe(true);
+      expect(successor.token === predecessor.token).toBe(false);
+      if (successor.predecessor.expiresAt === null) {
+        throw new Error("rotated predecessor did not return a grace expiry");
+      }
+
+      const predecessorClient = createStashClient({
+        baseUrl: API_BASE_URL,
+        token: predecessor.token,
+      });
+      const successorClient = createStashClient({ baseUrl: API_BASE_URL, token: successor.token });
+      expect(unwrap(await predecessorClient.me(), "predecessor during grace")).toMatchObject({
+        principal: "stash",
+        stash,
+        tokenId: predecessor.id,
+        scope: "read",
+        expiresAt: successor.predecessor.expiresAt,
+      });
+      expect(unwrap(await successorClient.me(), "successor during grace")).toMatchObject({
+        principal: "stash",
+        stash,
+        tokenId: successor.id,
+        scope: "read",
+        expiresAt: null,
+      });
+
+      const secondRotation = await admin.stashes
+        .tokens(stash)
+        .rotate(predecessor.id, { graceSeconds: 5 });
+      expect(secondRotation).toEqual({
+        ok: false,
+        error: {
+          status: 409,
+          code: "already-rotated",
+          message: "Token was already rotated.",
+          successorId: successor.id,
+        },
+      });
+
+      const listed = unwrap(await admin.stashes.tokens(stash).list(), "list rotated tokens");
+      expect(listed.tokens).toHaveLength(2);
+      expect(listed.tokens.filter(({ rotatedFrom }) => rotatedFrom === predecessor.id)).toEqual([
+        expect.objectContaining({
+          id: successor.id,
+          expiresAt: null,
+          rotatedFrom: predecessor.id,
+          rotatedTo: null,
+        }),
+      ]);
+      expect(listed.tokens.find(({ id }) => id === predecessor.id)).toMatchObject({
+        expiresAt: successor.predecessor.expiresAt,
+        rotatedFrom: null,
+        rotatedTo: successor.id,
+      });
+      const listedJson = JSON.stringify(listed);
+      expect(listedJson.includes(predecessor.token)).toBe(false);
+      expect(listedJson.includes(successor.token)).toBe(false);
+
+      await waitUntilAfter(successor.predecessor.expiresAt);
+      const expiredPredecessor = await predecessorClient.me();
+      expect(expiredPredecessor).toEqual({
+        ok: false,
+        error: {
+          status: 401,
+          code: "unauthorized",
+          message: "A valid bearer token is required.",
+        },
+      });
+      expect(unwrap(await successorClient.me(), "successor after grace")).toMatchObject({
+        principal: "stash",
+        stash,
+        tokenId: successor.id,
+        scope: "read",
+        expiresAt: null,
+      });
+
+      unwrap(await admin.stashes.tokens(stash).revoke(successor.id), "revoke rotation successor");
+    },
+  );
+
   it.runIf(MUTATION_ALLOWED)(
     "fences, replays, rolls back, and tombstones file writes",
     async () => {
