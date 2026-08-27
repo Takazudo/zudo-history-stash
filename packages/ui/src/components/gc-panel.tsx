@@ -19,6 +19,23 @@ function maxObjectsValue(value: string): number | null {
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 500 ? parsed : null;
 }
 
+function mergeRecentRuns(
+  kind: GcKind,
+  pinned: GcRunResult | null,
+  runs: readonly GcRunResult[],
+): GcRunResult[] {
+  const merged = pinned?.kind === kind ? [pinned, ...runs] : [...runs];
+  const seen = new Set<string>();
+  return merged
+    .filter((run) => run.kind === kind)
+    .filter((run) => {
+      if (seen.has(run.runId)) return false;
+      seen.add(run.runId);
+      return true;
+    })
+    .slice(0, RECENT_LIMIT);
+}
+
 function RunDetails({ run, title }: { run: GcRunResult; title: string }) {
   return (
     <section className="zhs-gc-panel__result" aria-label={title}>
@@ -104,38 +121,55 @@ export function GcPanel({ className }: GcPanelProps) {
   const [recentRuns, setRecentRuns] = useState<GcRunResult[]>([]);
   const [runError, setRunError] = useState<unknown | null>(null);
   const [runsError, setRunsError] = useState<unknown | null>(null);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
   const runControllerRef = useRef<AbortController | null>(null);
   const runGenerationRef = useRef(0);
+  const historyControllerRef = useRef<AbortController | null>(null);
+  const historyGenerationRef = useRef(0);
+  const pinnedRecentRunRef = useRef<GcRunResult | null>(null);
   const parsedMax = maxObjectsValue(maxObjects);
   const maxError = parsedMax === null ? "Enter a whole number from 1 through 500." : null;
 
   useEffect(() => {
     if (!ready || !isAdmin) {
+      historyGenerationRef.current += 1;
+      historyControllerRef.current?.abort();
+      historyControllerRef.current = null;
+      pinnedRecentRunRef.current = null;
       setRecentRuns([]);
       setRunsError(null);
+      setLoadingRuns(false);
       return;
     }
     const controller = new AbortController();
-    setRecentRuns([]);
+    historyControllerRef.current?.abort();
+    historyControllerRef.current = controller;
+    const generation = ++historyGenerationRef.current;
     setLoadingRuns(true);
     setRunsError(null);
     void clientForSignal(controller.signal)
       .admin.gc.runs({ kind, limit: RECENT_LIMIT })
       .then(
         (result) => {
-          if (controller.signal.aborted) return;
-          if (result.ok) setRecentRuns(result.value.runs);
-          else setRunsError(result);
+          if (controller.signal.aborted || historyGenerationRef.current !== generation) return;
+          if (result.ok) {
+            setRecentRuns(mergeRecentRuns(kind, pinnedRecentRunRef.current, result.value.runs));
+          } else setRunsError(result);
           setLoadingRuns(false);
+          historyControllerRef.current = null;
         },
         (error: unknown) => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || historyGenerationRef.current !== generation) return;
           setRunsError(error);
           setLoadingRuns(false);
+          historyControllerRef.current = null;
         },
       );
-    return () => controller.abort();
-  }, [clientForSignal, isAdmin, kind, ready]);
+    return () => {
+      controller.abort();
+      if (historyControllerRef.current === controller) historyControllerRef.current = null;
+    };
+  }, [clientForSignal, historyRefresh, isAdmin, kind, ready]);
 
   useEffect(() => {
     if (ready && isAdmin) return;
@@ -161,8 +195,13 @@ export function GcPanel({ className }: GcPanelProps) {
     runControllerRef.current?.abort();
     runControllerRef.current = controller;
     const generation = ++runGenerationRef.current;
+    historyGenerationRef.current += 1;
+    historyControllerRef.current?.abort();
+    historyControllerRef.current = null;
     setRunning(true);
+    setLoadingRuns(false);
     setRunError(null);
+    setRunsError(null);
     const input: RunGcBody = {
       kind,
       dryRun,
@@ -178,18 +217,15 @@ export function GcPanel({ className }: GcPanelProps) {
         return;
       }
       setCurrentRun(result.value);
-      setRecentRuns((runs) =>
-        [result.value, ...runs.filter((run) => run.runId !== result.value.runId)].slice(
-          0,
-          RECENT_LIMIT,
-        ),
-      );
+      pinnedRecentRunRef.current = result.value;
+      setRecentRuns((runs) => mergeRecentRuns(kind, result.value, runs));
     } catch (error: unknown) {
       if (!controller.signal.aborted && runGenerationRef.current === generation) setRunError(error);
     } finally {
       if (!controller.signal.aborted && runGenerationRef.current === generation) {
         setRunning(false);
         runControllerRef.current = null;
+        setHistoryRefresh((value) => value + 1);
       }
     }
   }
@@ -222,6 +258,13 @@ export function GcPanel({ className }: GcPanelProps) {
             value={kind}
             disabled={running}
             onChange={(event) => {
+              historyGenerationRef.current += 1;
+              historyControllerRef.current?.abort();
+              historyControllerRef.current = null;
+              pinnedRecentRunRef.current = null;
+              setRecentRuns([]);
+              setRunsError(null);
+              setLoadingRuns(false);
               setKind(event.currentTarget.value as GcKind);
               setCursor("");
               setCurrentRun(null);

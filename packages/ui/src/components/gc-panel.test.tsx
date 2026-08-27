@@ -1,6 +1,6 @@
-import { createStashClient, type StashFetch } from "@takazudo/zudo-history-stash";
+import { createStashClient, type GcRunResult, type StashFetch } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
@@ -12,6 +12,38 @@ const PRIVATE_KEY = `v2/notes/sha256-${"a".repeat(64)}/00000000-0000-4000-8000-0
 
 function requestFor(call: Parameters<StashFetch>): Request {
   return new Request(call[0], call[1]);
+}
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function persistedRun(overrides: Partial<GcRunResult> = {}): GcRunResult {
+  return {
+    runId: "persisted-run",
+    jobId: "r2-orphans",
+    kind: "r2-orphans",
+    dryRun: false,
+    scanned: 7,
+    eligible: 4,
+    deleted: 3,
+    cursor: "opaque-persisted-cursor",
+    startedAt: "2026-08-26T23:00:00.000Z",
+    finishedAt: "2026-08-26T23:00:01.000Z",
+    error: "public retry note",
+    ...overrides,
+  };
 }
 
 function adminFixture() {
@@ -113,19 +145,7 @@ describe("GcPanel", () => {
 
   it("loads persisted recent runs from the admin history endpoint", async () => {
     const { client, fake, fetch } = adminFixture();
-    fake.state.gcRuns.push({
-      runId: "persisted-run",
-      jobId: "r2-orphans",
-      kind: "r2-orphans",
-      dryRun: false,
-      scanned: 7,
-      eligible: 4,
-      deleted: 3,
-      cursor: "opaque-persisted-cursor",
-      startedAt: "2026-08-26T23:00:00.000Z",
-      finishedAt: "2026-08-26T23:00:01.000Z",
-      error: "public retry note",
-    });
+    fake.state.gcRuns.push(persistedRun());
     renderPanel(client);
 
     const recent = await screen.findByRole("region", { name: "Run persisted-run" });
@@ -143,6 +163,77 @@ describe("GcPanel", () => {
             request.url.endsWith("/v1/admin/gc/runs?kind=r2-orphans&limit=10"),
         ),
     ).toBe(true);
+  });
+
+  it("keeps a completed run when the pre-run history response resolves late", async () => {
+    const { fake } = adminFixture();
+    const initialHistory = deferredResponse();
+    let historyRequests = 0;
+    const fetch = vi.fn<StashFetch>((...args) => {
+      const request = requestFor(args);
+      if (request.method === "GET" && request.url.includes("/v1/admin/gc/runs")) {
+        historyRequests += 1;
+        if (historyRequests === 1) return initialHistory.promise;
+      }
+      return fake.fetch(...args);
+    });
+    const client = createStashClient({ baseUrl: "https://fake.invalid", token: ADMIN, fetch });
+    renderPanel(client);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Run" }));
+    const current = await screen.findByRole("region", { name: "Current run" });
+    const completedRunId = within(current).getByText("Run ID").nextElementSibling?.textContent;
+    expect(completedRunId).toBeTruthy();
+    await waitFor(() => expect(historyRequests).toBeGreaterThanOrEqual(2));
+    expect(screen.getByRole("region", { name: `Run ${completedRunId}` })).toBeTruthy();
+
+    await act(async () => {
+      initialHistory.resolve(jsonResponse({ runs: [] }));
+      await initialHistory.promise;
+    });
+    expect(screen.getByRole("region", { name: `Run ${completedRunId}` })).toBeTruthy();
+  });
+
+  it("clears old-kind rows and errors before the next kind history resolves", async () => {
+    const { fake } = adminFixture();
+    fake.state.gcRuns.push(persistedRun({ error: null }));
+    const ledgerHistory = deferredResponse();
+    let r2HistoryRequests = 0;
+    let ledgerHistoryRequests = 0;
+    const fetch = vi.fn<StashFetch>((...args) => {
+      const request = requestFor(args);
+      if (request.method === "GET" && request.url.includes("/v1/admin/gc/runs")) {
+        if (request.url.includes("kind=ledger")) {
+          ledgerHistoryRequests += 1;
+          return ledgerHistory.promise;
+        }
+        r2HistoryRequests += 1;
+        if (r2HistoryRequests === 2) {
+          return Promise.resolve(
+            jsonResponse(
+              { error: { code: "internal", message: "History temporarily unavailable." } },
+              500,
+            ),
+          );
+        }
+      }
+      return fake.fetch(...args);
+    });
+    const client = createStashClient({ baseUrl: "https://fake.invalid", token: ADMIN, fetch });
+    renderPanel(client);
+    const user = userEvent.setup();
+
+    expect(await screen.findByRole("region", { name: "Run persisted-run" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(await screen.findByText("Could not load recent runs")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Run persisted-run" })).toBeTruthy();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Kind" }), "ledger");
+    await waitFor(() => expect(ledgerHistoryRequests).toBe(1));
+    expect(screen.queryByRole("region", { name: "Run persisted-run" })).toBeNull();
+    expect(screen.queryByText("Could not load recent runs")).toBeNull();
+    expect(screen.getByText("Loading recent runs…")).toBeTruthy();
   });
 
   it("renders nothing and makes no GC calls for a non-admin principal", async () => {
