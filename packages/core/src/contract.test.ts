@@ -58,7 +58,10 @@ describe("typed errors", () => {
     ["scope", 403],
     ["not-found", 404],
     ["stale", 409],
+    ["already-rotated", 409],
+    ["token-expired", 409],
     ["payload-too-large", 413],
+    ["rate-limited", 429],
     ["idempotency-key-reused", 422],
     ["internal", 500],
   ] as const)("maps %s", (code, status) => expect(statusForCode(code)).toBe(status));

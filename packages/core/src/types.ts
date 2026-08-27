@@ -15,6 +15,9 @@ export type ErrorCode =
   | "stale"
   | "exists"
   | "already-deleted"
+  | "already-rotated"
+  | "token-expired"
+  | "rate-limited"
   | "payload-too-large"
   | "idempotency-key-reused"
   | "rollback-target-tombstone"
@@ -31,6 +34,7 @@ export interface Current {
 export interface ErrorDetail {
   code: ErrorCode;
   message: string;
+  successorId?: string;
 }
 export interface ErrorResponse {
   error: ErrorDetail;
@@ -49,7 +53,13 @@ export interface HealthResponse {
 }
 export type MeResponse =
   | { principal: "admin" }
-  | { principal: "stash"; stash: string; tokenId: string; scope: TokenScope };
+  | {
+      principal: "stash";
+      stash: string;
+      tokenId: string;
+      scope: TokenScope;
+      expiresAt: string | null;
+    };
 export interface StashRecord {
   name: string;
   description: string;
@@ -72,16 +82,27 @@ export interface TokenRecord {
   label: string;
   scope: TokenScope;
   createdAt: string;
+  expiresAt: string | null;
+  rotatedFrom: string | null;
+  rotatedTo: string | null;
   revokedAt: string | null;
   lastUsedAt: string | null;
 }
-export interface CreatedToken extends Omit<TokenRecord, "revokedAt" | "lastUsedAt"> {
+export interface CreatedToken extends Omit<
+  TokenRecord,
+  "expiresAt" | "rotatedFrom" | "rotatedTo" | "revokedAt" | "lastUsedAt"
+> {
   token: string;
+  expiresAt: string | null;
+  rotatedFrom: string | null;
 }
 export interface TokenListResponse {
   tokens: TokenRecord[];
 }
 export type CreateTokenResult = CreatedToken;
+export type RotateTokenResult = CreatedToken & {
+  predecessor: { id: string; expiresAt: string | null };
+};
 export type RevokeTokenResult = undefined;
 export interface FileSummary {
   path: string;

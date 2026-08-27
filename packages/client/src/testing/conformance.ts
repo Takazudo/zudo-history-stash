@@ -304,6 +304,8 @@ const TRACE: readonly TraceStep[] = [
         label: "conformance-read",
         scope: "read",
         createdAt: value.createdAt,
+        expiresAt: null,
+        rotatedFrom: null,
       });
       context.readToken = value.token;
       remember(context, "readToken", value.token);
@@ -335,6 +337,8 @@ const TRACE: readonly TraceStep[] = [
         label: "conformance-write",
         scope: "write",
         createdAt: value.createdAt,
+        expiresAt: null,
+        rotatedFrom: null,
       });
       context.writeToken = value.token;
       remember(context, "writeToken", value.token);
@@ -360,6 +364,9 @@ const TRACE: readonly TraceStep[] = [
           label: "conformance-read",
           scope: "read",
           createdAt: stringValue(context, "readTokenCreatedAt", step),
+          expiresAt: null,
+          rotatedFrom: null,
+          rotatedTo: null,
           revokedAt: null,
           lastUsedAt: null,
         },
@@ -368,6 +375,9 @@ const TRACE: readonly TraceStep[] = [
           label: "conformance-write",
           scope: "write",
           createdAt: stringValue(context, "writeTokenCreatedAt", step),
+          expiresAt: null,
+          rotatedFrom: null,
+          rotatedTo: null,
           revokedAt: null,
           lastUsedAt: null,
         },
@@ -406,14 +416,14 @@ const TRACE: readonly TraceStep[] = [
     "me",
     () => ({ method: "GET", path: "/v1/me", token: "read" }),
     200,
-    (context) => ({ principal: "stash", stash: context.stash, scope: "read" }),
+    (context) => ({ principal: "stash", stash: context.stash, scope: "read", expiresAt: null }),
   ),
   responseStep(
     "write token identity",
     "me",
     () => ({ method: "GET", path: "/v1/me", token: "write" }),
     200,
-    (context) => ({ principal: "stash", stash: context.stash, scope: "write" }),
+    (context) => ({ principal: "stash", stash: context.stash, scope: "write", expiresAt: null }),
   ),
   responseStep(
     "stash token may get its own stash",

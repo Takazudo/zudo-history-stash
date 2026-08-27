@@ -140,7 +140,13 @@ describe("StashPage", () => {
     const client = createFakeViewerClient({
       me: async () => ({
         ok: true,
-        value: { principal: "stash", stash: "notes", tokenId: "tok_write", scope: "write" },
+        value: {
+          principal: "stash",
+          stash: "notes",
+          tokenId: "tok_write",
+          scope: "write",
+          expiresAt: null,
+        },
       }),
     });
     renderViewerRoute("/s/notes", client);

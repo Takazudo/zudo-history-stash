@@ -65,10 +65,39 @@ export const CreateStashBody = z.strictObject({
   description: wellFormed.optional(),
   meta,
 });
-export const CreateTokenBody = z.strictObject({
-  label: wellFormed.optional(),
-  scope: z.enum(["read", "write"]),
-});
+const tokenExpirationFields = {
+  expiresAt: z.iso.datetime().optional(),
+  ttlSeconds: z.number().int().positive().max(315_360_000).optional(),
+};
+export const CreateTokenBody = z
+  .strictObject({
+    label: wellFormed.optional(),
+    scope: z.enum(["read", "write"]),
+    ...tokenExpirationFields,
+  })
+  .superRefine((value, context) => {
+    if (value.expiresAt !== undefined && value.ttlSeconds !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["ttlSeconds"],
+        message: "expiresAt and ttlSeconds are mutually exclusive",
+      });
+    }
+  });
+export const RotateTokenBody = z
+  .strictObject({
+    graceSeconds: z.number().int().min(0).max(86_400).default(300),
+    ...tokenExpirationFields,
+  })
+  .superRefine((value, context) => {
+    if (value.expiresAt !== undefined && value.ttlSeconds !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["ttlSeconds"],
+        message: "expiresAt and ttlSeconds are mutually exclusive",
+      });
+    }
+  });
 
 const importCommon = { author, message, meta, createdAt: z.number().int().nonnegative() };
 const ImportPut = z.strictObject({
@@ -168,6 +197,7 @@ export type ImportBody = z.infer<typeof ImportBody>;
 export type ImportVersion = z.infer<typeof ImportVersion>;
 export type CreateStashBody = z.infer<typeof CreateStashBody>;
 export type CreateTokenBody = z.infer<typeof CreateTokenBody>;
+export type RotateTokenBody = z.input<typeof RotateTokenBody>;
 export type DiffQuery = z.infer<typeof DiffQuery>;
 export type DiffCandidateBody = z.infer<typeof DiffCandidateBody>;
 export type ListQuery = z.infer<typeof ListQuery>;

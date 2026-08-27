@@ -37,6 +37,7 @@ const UNSUPPORTED_SAMPLES: Record<
   health: { method: "GET", path: "/v1/health" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
+  rotateToken: { method: "POST", path: "/v1/stashes/demo/tokens/tok_1/rotate" },
 };
 
 describe("fake route boundary", () => {
@@ -226,6 +227,9 @@ describe("token administration and capabilities", () => {
           label: "Writer",
           scope: "write",
           createdAt: writer.createdAt,
+          expiresAt: null,
+          rotatedFrom: null,
+          rotatedTo: null,
           revokedAt: null,
           lastUsedAt: null,
         },
@@ -234,6 +238,9 @@ describe("token administration and capabilities", () => {
           label: "Reader",
           scope: "read",
           createdAt: reader.createdAt,
+          expiresAt: null,
+          rotatedFrom: null,
+          rotatedTo: null,
           revokedAt: null,
           lastUsedAt: null,
         },
@@ -252,6 +259,7 @@ describe("token administration and capabilities", () => {
       stash: "demo",
       tokenId: reader.id,
       scope: "read",
+      expiresAt: null,
     });
     expect((await asToken(reader.token, "/v1/stashes/demo")).status).toBe(200);
     expect((await asToken(reader.token, "/v1/stashes/foreign")).status).toBe(404);

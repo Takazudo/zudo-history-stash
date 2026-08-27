@@ -36,7 +36,7 @@ describe("buildOpenApiDocument", () => {
   it("contains every operation with the route identity and short principal", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
-    expect(all).toHaveLength(19);
+    expect(all).toHaveLength(20);
     expect(all.map((operation) => operation.operationId)).toEqual(ROUTES.map((route) => route.id));
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);
@@ -118,5 +118,24 @@ describe("buildOpenApiDocument", () => {
     expect(
       ((responses["409"]?.content as ObjectValue)["application/json"] as ObjectValue).schema,
     ).toEqual({ $ref: "#/components/schemas/ErrorResponse" });
+  });
+
+  it("documents Retry-After on every rate-limited response", () => {
+    const document = buildOpenApiDocument({ version: "test" });
+    const rateLimited = operations(document).filter((operation) => {
+      const responses = operation.responses as Record<string, ObjectValue>;
+      return responses["429"] !== undefined;
+    });
+    expect(rateLimited).toHaveLength(11);
+    for (const operation of rateLimited) {
+      const responses = operation.responses as Record<string, ObjectValue>;
+      expect(responses["429"]?.headers).toHaveProperty("Retry-After");
+    }
+    const rotate = operations(document).find(
+      (operation) => operation.operationId === "rotateToken",
+    );
+    const rotateResponses = rotate?.responses as Record<string, ObjectValue>;
+    expect(rotateResponses["201"]).toBeDefined();
+    expect(rotateResponses["429"]).toBeUndefined();
   });
 });

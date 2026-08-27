@@ -433,6 +433,7 @@ describe("client golden response parity", () => {
         stash: "golden-admin",
         tokenId: GOLDEN_RESPONSES.readToken.id,
         scope: "read",
+        expiresAt: null,
       },
     });
     await expect(writer.me()).resolves.toEqual({
@@ -442,6 +443,7 @@ describe("client golden response parity", () => {
         stash: "golden-admin",
         tokenId: GOLDEN_RESPONSES.writeToken.id,
         scope: "write",
+        expiresAt: null,
       },
     });
     await expect(tokens.revoke(GOLDEN_RESPONSES.readToken.id)).resolves.toEqual({

@@ -318,8 +318,15 @@ describe("stash token administration", () => {
       label: string;
       scope: "read" | "write";
       createdAt: string;
+      expiresAt: string | null;
+      rotatedFrom: string | null;
     }>();
-    expect(created).toMatchObject({ label: "Viewer", scope: "read" });
+    expect(created).toMatchObject({
+      label: "Viewer",
+      scope: "read",
+      expiresAt: null,
+      rotatedFrom: null,
+    });
     expect(created.id).toMatch(/^tok_[0-9a-f]{32}$/);
     expect(created.token).toMatch(/^zhs_[A-Za-z0-9_-]{43}$/);
 
@@ -350,6 +357,9 @@ describe("stash token administration", () => {
           label: "Viewer",
           scope: "read",
           createdAt: created.createdAt,
+          expiresAt: null,
+          rotatedFrom: null,
+          rotatedTo: null,
           revokedAt: null,
           lastUsedAt: null,
         },

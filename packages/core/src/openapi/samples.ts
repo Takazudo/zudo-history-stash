@@ -3,6 +3,7 @@ import type { RESPONSE_SCHEMAS, ResponseSchemaName } from "./responses.js";
 
 const CREATED_AT = "2026-08-26T00:00:00.000Z";
 const UPDATED_AT = "2026-08-26T01:00:00.000Z";
+const EXPIRES_AT = "2026-09-25T00:00:00.000Z";
 const HASH_A = `sha256-${"a".repeat(64)}`;
 const HASH_B = `sha256-${"b".repeat(64)}`;
 
@@ -32,6 +33,9 @@ const tokenRecord = {
   label: "read-only example",
   scope: "read",
   createdAt: CREATED_AT,
+  expiresAt: EXPIRES_AT,
+  rotatedFrom: null,
+  rotatedTo: null,
   revokedAt: null,
   lastUsedAt: null,
 } as const;
@@ -42,6 +46,16 @@ const createdToken = {
   scope: tokenRecord.scope,
   createdAt: tokenRecord.createdAt,
   token: "zhs_example_read_token",
+  expiresAt: tokenRecord.expiresAt,
+  rotatedFrom: tokenRecord.rotatedFrom,
+} as const;
+
+const rotatedToken = {
+  ...createdToken,
+  id: "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D8",
+  token: "zhs_example_rotated_token",
+  rotatedFrom: tokenRecord.id,
+  predecessor: { id: tokenRecord.id, expiresAt: "2026-08-26T00:05:00.000Z" },
 } as const;
 
 const fileSummary = {
@@ -130,6 +144,7 @@ const responseSamples = {
     stash: "demo",
     tokenId: tokenRecord.id,
     scope: "read",
+    expiresAt: tokenRecord.expiresAt,
   },
   StashRecord: stashRecord,
   StashSummary: stashSummary,
@@ -140,6 +155,7 @@ const responseSamples = {
   CreatedToken: createdToken,
   TokenListResponse: { tokens: oneToken },
   CreateTokenResult: createdToken,
+  RotateTokenResult: rotatedToken,
   FileSummary: fileSummary,
   FileListResponse: { files: oneFile, nextAfter: null },
   FileRecord: fileRecord,

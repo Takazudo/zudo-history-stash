@@ -22,6 +22,8 @@ import type {
   PutResult,
   RollbackBody,
   RollbackResult,
+  RotateTokenBody,
+  RotateTokenResult,
   RpcRequest,
   StashRecord,
 } from "@takazudo/zudo-history-stash-core";
@@ -58,6 +60,12 @@ export interface StashRpcMethods {
     input: CreateTokenBody,
   ): Promise<ClientResult<CreateTokenResult>>;
   listTokens(token: string, stash: string): Promise<ClientResult<ListTokensResult>>;
+  rotateToken(
+    token: string,
+    stash: string,
+    id: string,
+    input: RotateTokenBody,
+  ): Promise<ClientResult<RotateTokenResult>>;
   revokeToken(token: string, stash: string, id: string): Promise<ClientResult<undefined>>;
   importHistory(
     token: string,
