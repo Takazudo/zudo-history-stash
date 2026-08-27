@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import app from "../src/app.js";
+import { sha256Hex } from "../src/auth.js";
 import { createStashStore } from "../src/d1/store.js";
 import type { Env } from "../src/env.js";
 import { StashRpc } from "../src/rpc.js";
@@ -19,7 +20,16 @@ import {
   seedRpcFixture,
 } from "./helpers/rpc.js";
 
-const PARITY_HEADERS = ["etag", "x-stash-version", "idempotent-replayed", "content-type"] as const;
+const PARITY_HEADERS = [
+  "etag",
+  "x-stash-version",
+  "idempotent-replayed",
+  "content-type",
+  "retry-after",
+] as const;
+
+const RPC_EXPIRED_TOKEN = `zhs_${"E".repeat(43)}`;
+const RPC_EXPIRED_TOKEN_ID = `tok_${"e".repeat(32)}`;
 
 interface ResponseSnapshot {
   status: number;
@@ -109,6 +119,34 @@ async function seedTwoVersions(): Promise<void> {
   await putFixture("second version\n", 1);
 }
 
+async function seedExpiredTokenAtBoundary(): Promise<void> {
+  await createTestEnv()
+    .env.DB.prepare(
+      `INSERT INTO tokens
+         (id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at,
+          expires_at, rotated_from, rotated_to)
+       VALUES (?, ?, ?, 'fixed expired reader', 'read', ?, NULL, NULL, ?, NULL, NULL)`,
+    )
+    .bind(
+      RPC_EXPIRED_TOKEN_ID,
+      RPC_STASH,
+      await sha256Hex(RPC_EXPIRED_TOKEN),
+      RPC_FIXED_NOW - 1,
+      RPC_FIXED_NOW,
+    )
+    .run();
+}
+
+function readLimitedBindings(): Env {
+  return createTestEnv({
+    env: {
+      RL_READ: {
+        limit: () => Promise.resolve({ success: false }),
+      },
+    },
+  }).env;
+}
+
 function jsonRequest(
   method: "POST" | "PUT",
   path: string,
@@ -157,6 +195,22 @@ const scenarios: ParityScenario[] = [
     expectedStatus: 200,
     expectedBodyIncludes: `"stash":"${RPC_STASH}"`,
     init: { method: "GET", path: "/v1/me", token: RPC_WRITE_TOKEN },
+  },
+  {
+    name: "me token expired at exact clock boundary",
+    expectedStatus: 401,
+    expectedBody: '{"error":{"code":"unauthorized","message":"A valid bearer token is required."}}',
+    expectedHeaders: { "content-type": "application/json" },
+    seed: seedExpiredTokenAtBoundary,
+    init: { method: "GET", path: "/v1/me", token: RPC_EXPIRED_TOKEN },
+  },
+  {
+    name: "me stash principal rate limited",
+    expectedStatus: 429,
+    expectedBody: '{"error":{"code":"rate-limited","message":"The request was rate limited."}}',
+    expectedHeaders: { "content-type": "application/json", "retry-after": "60" },
+    init: { method: "GET", path: "/v1/me", token: RPC_READ_TOKEN },
+    bindings: readLimitedBindings,
   },
   {
     name: "list stashes with limit and after",
