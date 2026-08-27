@@ -16,6 +16,26 @@ interface MintDraft {
   targetKey: object;
   label: string;
   scope: TokenScope;
+  expiry: MintExpiry;
+  customExpiresAt: string;
+}
+
+type MintExpiry = "never" | "day" | "month" | "year" | "custom";
+
+const TTL_SECONDS: Record<Exclude<MintExpiry, "never" | "custom">, number> = {
+  day: 86_400,
+  month: 2_592_000,
+  year: 31_536_000,
+};
+
+function initialDraft(targetKey: object): MintDraft {
+  return { targetKey, label: "", scope: "read", expiry: "never", customExpiresAt: "" };
+}
+
+function expirationInput(expiry: MintExpiry, customExpiresAt: string) {
+  if (expiry === "never") return {};
+  if (expiry === "custom") return { expiresAt: customExpiresAt.trim() };
+  return { ttlSeconds: TTL_SECONDS[expiry] };
 }
 
 interface MintOperation {
@@ -31,10 +51,12 @@ export function MintTokenForm({ disabled = false, onMint, targetKey }: MintToken
   const titleId = useId();
   const operationGenerationRef = useRef(0);
   const activeOperationRef = useRef<MintOperation | null>(null);
-  const [draft, setDraft] = useState<MintDraft>({ targetKey, label: "", scope: "read" });
+  const [draft, setDraft] = useState<MintDraft>(() => initialDraft(targetKey));
   const [operationSnapshot, setOperationSnapshot] = useState<MintOperationSnapshot | null>(null);
   const label = draft.targetKey === targetKey ? draft.label : "";
   const scope = draft.targetKey === targetKey ? draft.scope : "read";
+  const expiry = draft.targetKey === targetKey ? draft.expiry : "never";
+  const customExpiresAt = draft.targetKey === targetKey ? draft.customExpiresAt : "";
   const submitting = operationSnapshot?.state === "submitting";
   const error =
     operationSnapshot?.operation.targetKey === targetKey && operationSnapshot.state === "error"
@@ -47,6 +69,14 @@ export function MintTokenForm({ disabled = false, onMint, targetKey }: MintToken
       activeOperationRef.current?.targetKey === operation.targetKey &&
       activeOperationRef.current.generation === operation.generation
     );
+  }
+
+  function updateDraft(update: Partial<Omit<MintDraft, "targetKey">>) {
+    setDraft((current) => ({
+      ...(current.targetKey === targetKey ? current : initialDraft(targetKey)),
+      ...update,
+      targetKey,
+    }));
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -64,9 +94,10 @@ export function MintTokenForm({ disabled = false, onMint, targetKey }: MintToken
       await onMint({
         scope,
         ...(normalizedLabel ? { label: normalizedLabel } : {}),
+        ...expirationInput(expiry, customExpiresAt),
       });
       if (!isCurrentOperation(operation)) return;
-      setDraft({ targetKey, label: "", scope: "read" });
+      setDraft(initialDraft(targetKey));
       setOperationSnapshot(null);
     } catch (requestError) {
       if (isCurrentOperation(operation)) {
@@ -100,7 +131,7 @@ export function MintTokenForm({ disabled = false, onMint, targetKey }: MintToken
             disabled={controlsDisabled}
             name="label"
             value={label}
-            onChange={(event) => setDraft({ targetKey, label: event.currentTarget.value, scope })}
+            onChange={(event) => updateDraft({ label: event.currentTarget.value })}
           />
         </label>
         <label className="zhs-tokens-field">
@@ -109,14 +140,46 @@ export function MintTokenForm({ disabled = false, onMint, targetKey }: MintToken
             disabled={controlsDisabled}
             name="scope"
             value={scope}
-            onChange={(event) =>
-              setDraft({ targetKey, label, scope: event.currentTarget.value as TokenScope })
-            }
+            onChange={(event) => updateDraft({ scope: event.currentTarget.value as TokenScope })}
           >
             <option value="read">Read</option>
             <option value="write">Write</option>
           </Select>
         </label>
+        <label className="zhs-tokens-field">
+          <span className="zhs-tokens-field__label">Expiry</span>
+          <Select
+            disabled={controlsDisabled}
+            name="expiry"
+            value={expiry}
+            onChange={(event) => updateDraft({ expiry: event.currentTarget.value as MintExpiry })}
+          >
+            <option value="never">Never</option>
+            <option value="day">1 day</option>
+            <option value="month">30 days</option>
+            <option value="year">1 year</option>
+            <option value="custom">Custom ISO</option>
+          </Select>
+        </label>
+        <div className="zhs-tokens-form-actions">
+          <Button disabled={controlsDisabled} type="submit" variant="primary">
+            {submitting ? "Minting…" : "Mint token"}
+          </Button>
+        </div>
+        {expiry === "custom" ? (
+          <label className="zhs-tokens-field zhs-tokens-field--custom-expiry">
+            <span className="zhs-tokens-field__label">Custom expiry (ISO 8601)</span>
+            <Input
+              autoComplete="off"
+              disabled={controlsDisabled}
+              name="expiresAt"
+              placeholder="2027-08-26T09:00:00.000Z"
+              required
+              value={customExpiresAt}
+              onChange={(event) => updateDraft({ customExpiresAt: event.currentTarget.value })}
+            />
+          </label>
+        ) : null}
         {scope === "write" ? (
           <Notice className="zhs-tokens-browser-warning" variant="warning">
             Write tokens can modify this stash. Do not expose a write token in a public browser
@@ -125,11 +188,6 @@ export function MintTokenForm({ disabled = false, onMint, targetKey }: MintToken
           </Notice>
         ) : null}
         {error ? <ErrorBanner error={error} title="Could not mint the token" /> : null}
-        <div className="zhs-tokens-form-actions">
-          <Button disabled={controlsDisabled} type="submit" variant="primary">
-            {submitting ? "Minting…" : "Mint token"}
-          </Button>
-        </div>
       </form>
     </section>
   );

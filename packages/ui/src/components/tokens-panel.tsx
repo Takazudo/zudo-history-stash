@@ -1,9 +1,26 @@
-import type { CreateTokenBody, StashClient, TokenRecord } from "@takazudo/zudo-history-stash";
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type {
+  CreateTokenBody,
+  RotateTokenBody,
+  RotateTokenResult,
+  StashClient,
+  TokenRecord,
+} from "@takazudo/zudo-history-stash";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useIsAdmin, useStashClient, useStashClientForSignal } from "../provider/hooks.js";
 import { Button } from "../primitives/button.js";
+import { Dialog } from "../primitives/dialog.js";
 import { Input } from "../primitives/input.js";
 import { Notice } from "../primitives/notice.js";
+import { Select } from "../primitives/select.js";
 import {
   Table,
   TableBody,
@@ -13,7 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from "../primitives/table.js";
-import { ErrorBanner } from "./error-banner.js";
+import { ErrorBanner, stashErrorDetails } from "./error-banner.js";
 import { MintTokenForm } from "./mint-token-form.js";
 import { RelativeTime } from "./relative-time.js";
 import { RevokeTokenDialog } from "./revoke-token-dialog.js";
@@ -36,6 +53,8 @@ interface TokenListSnapshot {
 interface SecretSnapshot {
   originStash: string;
   token: string;
+  kind: "mint" | "rotation";
+  successorId?: string;
 }
 
 interface MintAttempt {
@@ -57,6 +76,24 @@ interface RevokeErrorSnapshot {
   error: unknown;
   operation: RevokeSnapshot;
 }
+
+interface RotateSnapshot {
+  target: TokenTarget;
+  token: TokenRecord;
+}
+
+interface RotateAttempt {
+  completion?: Promise<void>;
+  operation: RotateSnapshot;
+}
+
+interface RotateErrorSnapshot {
+  error: unknown;
+  operation: RotateSnapshot;
+}
+
+type SecretProducer =
+  { kind: "mint"; attempt: MintAttempt } | { kind: "rotation"; operation: RotateSnapshot };
 
 export interface TokensPanelProps {
   stash: string;
@@ -83,12 +120,20 @@ function isSameRevokeSubject(left: RevokeSnapshot, right: RevokeSnapshot): boole
   return isSameTokenTarget(left.target, right.target) && left.token.id === right.token.id;
 }
 
+function isSameRotateSubject(left: RotateSnapshot, right: RotateSnapshot): boolean {
+  return isSameTokenTarget(left.target, right.target) && left.token.id === right.token.id;
+}
+
 function OneTimeSecret({
+  kind,
   originStash,
+  successorId,
   token,
   onDismiss,
 }: {
+  kind: SecretSnapshot["kind"];
   originStash: string;
+  successorId?: string;
   token: string;
   onDismiss: () => void;
 }) {
@@ -105,11 +150,16 @@ function OneTimeSecret({
   }
 
   return (
-    <Notice className="zhs-tokens-secret" variant="warning">
+    <Notice className="zhs-tokens-secret" role="status" variant="warning">
       <strong>Shown once — store it now</strong>
       <p>
         Origin stash: <code>{originStash}</code>
       </p>
+      {successorId ? (
+        <p>
+          Successor ID: <code>{successorId}</code>
+        </p>
+      ) : null}
       <div className="zhs-tokens-secret-value">
         <Input
           aria-label="New token secret"
@@ -126,10 +176,17 @@ function OneTimeSecret({
       {copyState === "error" ? (
         <p role="alert">Copy failed. Select the secret above and copy it manually.</p>
       ) : null}
-      <p>
-        If this response was lost before you copied it, the secret is unrecoverable: revoke this
-        token and mint a new one
-      </p>
+      {kind === "rotation" ? (
+        <p>
+          If you lose this secret, revoke the successor and mint a new token — a rotated token
+          cannot be rotated again
+        </p>
+      ) : (
+        <p>
+          If this response was lost before you copied it, the secret is unrecoverable: revoke this
+          token and mint a new one
+        </p>
+      )}
       <div className="zhs-tokens-secret-actions">
         <Button size="sm" onClick={onDismiss}>
           I stored it
@@ -139,15 +196,279 @@ function OneTimeSecret({
   );
 }
 
+function TokenExpiry({ expiresAt, now }: { expiresAt: string | null; now: number }) {
+  if (expiresAt === null) return <>Never</>;
+  const timestamp = Date.parse(expiresAt);
+  if (Number.isFinite(timestamp) && timestamp <= now) {
+    return (
+      <span className="zhs-tokens-expired" title={new Date(timestamp).toLocaleString()}>
+        Expired
+      </span>
+    );
+  }
+  return <RelativeTime now={now} value={expiresAt} />;
+}
+
+type RotateExpiry = "inherit" | "day" | "month" | "year" | "custom";
+
+interface RotateDraft {
+  operationKey: object;
+  graceSeconds: number;
+  expiry: RotateExpiry;
+  customExpiresAt: string;
+}
+
+interface RotateOperation {
+  operationKey: object;
+  generation: number;
+}
+
+type RotateOperationSnapshot =
+  | { operation: RotateOperation; state: "submitting" }
+  | { operation: RotateOperation; state: "error"; error: unknown };
+
+const ROTATE_TTL_SECONDS: Record<Exclude<RotateExpiry, "inherit" | "custom">, number> = {
+  day: 86_400,
+  month: 2_592_000,
+  year: 31_536_000,
+};
+
+function initialRotateDraft(operationKey: object): RotateDraft {
+  return { operationKey, graceSeconds: 300, expiry: "inherit", customExpiresAt: "" };
+}
+
+function rotateInput(draft: Omit<RotateDraft, "operationKey">): RotateTokenBody {
+  const expiry =
+    draft.expiry === "inherit"
+      ? {}
+      : draft.expiry === "custom"
+        ? { expiresAt: draft.customExpiresAt.trim() }
+        : { ttlSeconds: ROTATE_TTL_SECONDS[draft.expiry] };
+  return { graceSeconds: draft.graceSeconds, ...expiry };
+}
+
+function RotateTokenDialog({
+  error: controlledError,
+  open,
+  operationKey,
+  pending = false,
+  token,
+  onClose,
+  onConfirm,
+}: {
+  error?: unknown;
+  open: boolean;
+  operationKey: object;
+  pending?: boolean;
+  token: TokenRecord;
+  onClose: () => void;
+  onConfirm: (input: RotateTokenBody) => Promise<void>;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const activeOperationKeyRef = useRef(operationKey);
+  const operationGenerationRef = useRef(0);
+  const activeOperationRef = useRef<RotateOperation | null>(null);
+  const [draft, setDraft] = useState<RotateDraft>(() => initialRotateDraft(operationKey));
+  const [operationSnapshot, setOperationSnapshot] = useState<RotateOperationSnapshot | null>(null);
+  const graceSeconds = draft.operationKey === operationKey ? draft.graceSeconds : 300;
+  const expiry = draft.operationKey === operationKey ? draft.expiry : "inherit";
+  const customExpiresAt = draft.operationKey === operationKey ? draft.customExpiresAt : "";
+  const localSubmitting =
+    operationSnapshot?.operation.operationKey === operationKey &&
+    operationSnapshot.state === "submitting";
+  const localError =
+    operationSnapshot?.operation.operationKey === operationKey &&
+    operationSnapshot.state === "error"
+      ? operationSnapshot.error
+      : null;
+  const submitting = pending || localSubmitting;
+  const error = controlledError ?? localError;
+  const errorDetails = error === null || error === undefined ? null : stashErrorDetails(error);
+
+  useLayoutEffect(() => {
+    if (activeOperationKeyRef.current === operationKey) return;
+    activeOperationKeyRef.current = operationKey;
+    if (activeOperationRef.current?.operationKey !== operationKey) {
+      activeOperationRef.current = null;
+    }
+  }, [operationKey]);
+
+  function updateDraft(update: Partial<Omit<RotateDraft, "operationKey">>) {
+    setDraft((current) => ({
+      ...(current.operationKey === operationKey ? current : initialRotateDraft(operationKey)),
+      ...update,
+      operationKey,
+    }));
+  }
+
+  function isCurrentOperation(operation: RotateOperation): boolean {
+    return (
+      activeOperationKeyRef.current === operation.operationKey &&
+      activeOperationRef.current?.operationKey === operation.operationKey &&
+      activeOperationRef.current.generation === operation.generation
+    );
+  }
+
+  function handleClose() {
+    if (pending || activeOperationRef.current?.operationKey === operationKey) return;
+    onClose();
+  }
+
+  async function handleConfirm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending || activeOperationRef.current?.operationKey === operationKey) return;
+
+    const operation: RotateOperation = {
+      operationKey,
+      generation: ++operationGenerationRef.current,
+    };
+    activeOperationRef.current = operation;
+    setOperationSnapshot({ operation, state: "submitting" });
+    try {
+      await onConfirm(
+        rotateInput({
+          graceSeconds,
+          expiry,
+          customExpiresAt,
+        }),
+      );
+      if (isCurrentOperation(operation)) setOperationSnapshot(null);
+    } catch (requestError) {
+      if (isCurrentOperation(operation)) {
+        setOperationSnapshot({ operation, state: "error", error: requestError });
+      }
+    } finally {
+      if (isCurrentOperation(operation)) {
+        activeOperationRef.current = null;
+        setOperationSnapshot((current) =>
+          current?.operation.generation === operation.generation && current.state === "submitting"
+            ? null
+            : current,
+        );
+      }
+    }
+  }
+
+  return (
+    <Dialog
+      aria-describedby={descriptionId}
+      aria-labelledby={titleId}
+      className="zhs-tokens-rotate-dialog"
+      open={open}
+      onClose={handleClose}
+    >
+      <form
+        aria-busy={submitting ? "true" : undefined}
+        className="zhs-tokens-rotate-dialog__form"
+        onSubmit={(event) => void handleConfirm(event)}
+      >
+        <header className="zhs-tokens-dialog-header">
+          <div>
+            <p className="zhs-tokens-dialog-eyebrow">Access token</p>
+            <h2 id={titleId}>Rotate token</h2>
+          </div>
+          <Button
+            aria-label="Close rotate token dialog"
+            disabled={submitting}
+            size="sm"
+            onClick={handleClose}
+          >
+            Close
+          </Button>
+        </header>
+        <div className="zhs-tokens-dialog-body zhs-tokens-rotate-dialog__body">
+          <p id={descriptionId}>
+            Mint a successor for <code>{token.label || token.id}</code>. The current token remains
+            valid only for the selected grace period.
+          </p>
+          <label className="zhs-tokens-field">
+            <span className="zhs-tokens-field__label">Grace period</span>
+            <Select
+              disabled={submitting}
+              name="graceSeconds"
+              value={String(graceSeconds)}
+              onChange={(event) => updateDraft({ graceSeconds: Number(event.currentTarget.value) })}
+            >
+              <option value="0">None — expire immediately</option>
+              <option value="300">5 minutes</option>
+              <option value="3600">1 hour</option>
+              <option value="86400">24 hours</option>
+            </Select>
+          </label>
+          <label className="zhs-tokens-field">
+            <span className="zhs-tokens-field__label">Successor expiry</span>
+            <Select
+              disabled={submitting}
+              name="successorExpiry"
+              value={expiry}
+              onChange={(event) =>
+                updateDraft({ expiry: event.currentTarget.value as RotateExpiry })
+              }
+            >
+              <option value="inherit">Inherit predecessor expiry</option>
+              <option value="day">1 day</option>
+              <option value="month">30 days</option>
+              <option value="year">1 year</option>
+              <option value="custom">Custom ISO</option>
+            </Select>
+          </label>
+          {expiry === "custom" ? (
+            <label className="zhs-tokens-field">
+              <span className="zhs-tokens-field__label">Custom successor expiry (ISO 8601)</span>
+              <Input
+                autoComplete="off"
+                disabled={submitting}
+                name="expiresAt"
+                placeholder="2027-08-26T09:00:00.000Z"
+                required
+                value={customExpiresAt}
+                onChange={(event) => updateDraft({ customExpiresAt: event.currentTarget.value })}
+              />
+            </label>
+          ) : null}
+          {error ? <ErrorBanner error={error} title="Could not rotate the token" /> : null}
+          {errorDetails?.code === "already-rotated" ? (
+            <Notice className="zhs-tokens-rotation-recovery" variant="warning">
+              <strong>This token was already rotated.</strong>
+              {errorDetails.successorId ? (
+                <p>
+                  Successor ID: <code>{errorDetails.successorId}</code>
+                </p>
+              ) : (
+                <p>The successor ID was not returned.</p>
+              )}
+              <p>Revoke the successor and mint a new token if its one-time secret was lost.</p>
+            </Notice>
+          ) : null}
+        </div>
+        <footer className="zhs-tokens-dialog-footer">
+          <Button disabled={submitting} onClick={handleClose}>
+            Cancel
+          </Button>
+          <Button disabled={submitting} type="submit" variant="primary">
+            {submitting ? "Rotating…" : "Confirm rotation"}
+          </Button>
+        </footer>
+      </form>
+    </Dialog>
+  );
+}
+
 function TokenTable({
+  rotateDisabled,
   stash,
   tokens,
+  onRotate,
   onRevoke,
 }: {
+  rotateDisabled: boolean;
   stash: string;
   tokens: TokenRecord[];
+  onRotate: (token: TokenRecord) => void;
   onRevoke: (token: TokenRecord) => void;
 }) {
+  const now = Date.now();
   return (
     <div className="zhs-tokens-table-scroll">
       <Table className="zhs-tokens-table">
@@ -158,6 +479,9 @@ function TokenTable({
             <TableHeader scope="col">Label</TableHeader>
             <TableHeader scope="col">Scope</TableHeader>
             <TableHeader scope="col">Created</TableHeader>
+            <TableHeader scope="col">Expires</TableHeader>
+            <TableHeader scope="col">Rotated from</TableHeader>
+            <TableHeader scope="col">Rotated to</TableHeader>
             <TableHeader scope="col">Last used</TableHeader>
             <TableHeader scope="col">Revoked</TableHeader>
             <TableHeader scope="col">Actions</TableHeader>
@@ -176,26 +500,47 @@ function TokenTable({
                 </span>
               </TableCell>
               <TableCell className="zhs-tokens-table__compact">
-                <RelativeTime value={token.createdAt} />
+                <RelativeTime now={now} value={token.createdAt} />
+              </TableCell>
+              <TableCell className="zhs-tokens-table__compact zhs-tokens-table__expiry">
+                <TokenExpiry expiresAt={token.expiresAt} now={now} />
+              </TableCell>
+              <TableCell className="zhs-tokens-table__relation">
+                {token.rotatedFrom ? <code>{token.rotatedFrom}</code> : "—"}
+              </TableCell>
+              <TableCell className="zhs-tokens-table__relation">
+                {token.rotatedTo ? <code>{token.rotatedTo}</code> : "—"}
               </TableCell>
               <TableCell className="zhs-tokens-table__compact">
-                {token.lastUsedAt ? <RelativeTime value={token.lastUsedAt} /> : "Never"}
+                {token.lastUsedAt ? <RelativeTime now={now} value={token.lastUsedAt} /> : "Never"}
               </TableCell>
               <TableCell className="zhs-tokens-table__compact">
-                {token.revokedAt ? <RelativeTime value={token.revokedAt} /> : "Active"}
+                {token.revokedAt ? <RelativeTime now={now} value={token.revokedAt} /> : "Active"}
               </TableCell>
               <TableCell className="zhs-tokens-table__actions">
                 {token.revokedAt ? (
                   <span className="zhs-tokens-revoked-label">Revoked</span>
                 ) : (
-                  <Button
-                    aria-label={`Revoke ${token.label || token.id}`}
-                    size="sm"
-                    variant="danger"
-                    onClick={() => onRevoke(token)}
-                  >
-                    Revoke
-                  </Button>
+                  <div className="zhs-tokens-table__action-group">
+                    {token.rotatedTo === null ? (
+                      <Button
+                        aria-label={`Rotate ${token.label ? `${token.label} (${token.id})` : token.id}`}
+                        disabled={rotateDisabled}
+                        size="sm"
+                        onClick={() => onRotate(token)}
+                      >
+                        Rotate…
+                      </Button>
+                    ) : null}
+                    <Button
+                      aria-label={`Revoke ${token.label || token.id}`}
+                      size="sm"
+                      variant="danger"
+                      onClick={() => onRevoke(token)}
+                    >
+                      Revoke
+                    </Button>
+                  </div>
                 )}
               </TableCell>
             </TableRow>
@@ -218,18 +563,40 @@ export function TokensPanel({ stash }: TokensPanelProps) {
   const mintGenerationRef = useRef(0);
   const activeMintAttemptRef = useRef<MintAttempt | null>(null);
   const secretSnapshotRef = useRef<SecretSnapshot | null>(null);
+  const activeSecretProducerRef = useRef<SecretProducer | null>(null);
+  const activeRotateAttemptsRef = useRef<RotateAttempt[]>([]);
+  const rotateSnapshotRef = useRef<RotateSnapshot | null>(null);
   const activeRevokeAttemptsRef = useRef<RevokeAttempt[]>([]);
   const revokeSnapshotRef = useRef<RevokeSnapshot | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [mintAttempt, setMintAttempt] = useState<MintAttempt | null>(null);
   const [listSnapshot, setListSnapshot] = useState<TokenListSnapshot | null>(null);
   const [secretSnapshot, setSecretSnapshot] = useState<SecretSnapshot | null>(null);
+  const [rotateSnapshot, setRotateSnapshot] = useState<RotateSnapshot | null>(null);
+  const [rotateAttempts, setRotateAttempts] = useState<RotateAttempt[]>([]);
+  const [rotateErrorSnapshot, setRotateErrorSnapshot] = useState<RotateErrorSnapshot | null>(null);
   const [revokeSnapshot, setRevokeSnapshot] = useState<RevokeSnapshot | null>(null);
   const [revokeAttempts, setRevokeAttempts] = useState<RevokeAttempt[]>([]);
   const [revokeErrorSnapshot, setRevokeErrorSnapshot] = useState<RevokeErrorSnapshot | null>(null);
 
   useLayoutEffect(() => {
     activeTargetRef.current = target;
+    const selected = rotateSnapshotRef.current;
+    if (
+      selected !== null &&
+      !isSameTokenTarget(selected.target, target) &&
+      !activeRotateAttemptsRef.current.some((attempt) => attempt.operation === selected)
+    ) {
+      rotateSnapshotRef.current = null;
+      if (
+        activeSecretProducerRef.current?.kind === "rotation" &&
+        activeSecretProducerRef.current.operation === selected
+      ) {
+        activeSecretProducerRef.current = null;
+      }
+      setRotateSnapshot((current) => (current === selected ? null : current));
+      setRotateErrorSnapshot((current) => (current?.operation === selected ? null : current));
+    }
   }, [target]);
 
   useEffect(() => {
@@ -265,12 +632,21 @@ export function TokensPanel({ stash }: TokensPanelProps) {
 
   const handleMint = useCallback(
     async (input: CreateTokenBody) => {
-      if (activeMintAttemptRef.current !== null || secretSnapshotRef.current !== null) return;
+      if (
+        activeSecretProducerRef.current !== null ||
+        activeMintAttemptRef.current !== null ||
+        activeRotateAttemptsRef.current.length > 0 ||
+        rotateSnapshotRef.current !== null ||
+        secretSnapshotRef.current !== null
+      ) {
+        return;
+      }
 
       const attempt: MintAttempt = {
         target,
         generation: ++mintGenerationRef.current,
       };
+      activeSecretProducerRef.current = { kind: "mint", attempt };
       activeMintAttemptRef.current = attempt;
       setMintAttempt(attempt);
       try {
@@ -279,11 +655,21 @@ export function TokensPanel({ stash }: TokensPanelProps) {
           .create(input);
         if (!result.ok) throw result;
 
-        const secret = { originStash: attempt.target.stash, token: result.value.token };
+        const secret: SecretSnapshot = {
+          kind: "mint",
+          originStash: attempt.target.stash,
+          token: result.value.token,
+        };
         secretSnapshotRef.current = secret;
         setSecretSnapshot(secret);
         if (isSameTokenTarget(activeTargetRef.current, attempt.target)) refresh();
       } finally {
+        if (
+          activeSecretProducerRef.current?.kind === "mint" &&
+          activeSecretProducerRef.current.attempt === attempt
+        ) {
+          activeSecretProducerRef.current = null;
+        }
         if (activeMintAttemptRef.current?.generation === attempt.generation) {
           activeMintAttemptRef.current = null;
           setMintAttempt((current) =>
@@ -296,6 +682,18 @@ export function TokensPanel({ stash }: TokensPanelProps) {
   );
 
   const visibleSecret = secretSnapshot;
+  const visibleRotate =
+    rotateSnapshot !== null && isSameTokenTarget(rotateSnapshot.target, target)
+      ? rotateSnapshot
+      : null;
+  const visibleRotateAttempt =
+    visibleRotate === null
+      ? null
+      : (rotateAttempts.find((attempt) => attempt.operation === visibleRotate) ?? null);
+  const visibleRotateError =
+    visibleRotate !== null && rotateErrorSnapshot?.operation === visibleRotate
+      ? rotateErrorSnapshot.error
+      : null;
   const visibleRevoke =
     revokeSnapshot !== null && isSameTokenTarget(revokeSnapshot.target, target)
       ? revokeSnapshot
@@ -322,6 +720,170 @@ export function TokensPanel({ stash }: TokensPanelProps) {
     revokeSnapshotRef.current = operation;
     setRevokeSnapshot(operation);
     setRevokeErrorSnapshot((current) => (current?.operation === operation ? current : null));
+  }
+
+  function selectRotate(token: TokenRecord) {
+    if (
+      activeSecretProducerRef.current !== null ||
+      activeMintAttemptRef.current !== null ||
+      activeRotateAttemptsRef.current.length > 0 ||
+      secretSnapshotRef.current !== null
+    ) {
+      return;
+    }
+    const candidate = { target, token };
+    activeSecretProducerRef.current = { kind: "rotation", operation: candidate };
+    rotateSnapshotRef.current = candidate;
+    setRotateSnapshot(candidate);
+    setRotateErrorSnapshot(null);
+  }
+
+  function closeRotate(operation: RotateSnapshot) {
+    if (
+      activeRotateAttemptsRef.current.some((attempt) => attempt.operation === operation) ||
+      rotateSnapshotRef.current !== operation
+    ) {
+      return;
+    }
+    rotateSnapshotRef.current = null;
+    if (
+      activeSecretProducerRef.current?.kind === "rotation" &&
+      activeSecretProducerRef.current.operation === operation
+    ) {
+      activeSecretProducerRef.current = null;
+    }
+    setRotateSnapshot((current) => (current === operation ? null : current));
+    setRotateErrorSnapshot((current) => (current?.operation === operation ? null : current));
+  }
+
+  function updateListAfterRotation(operation: RotateSnapshot, result: RotateTokenResult) {
+    setListSnapshot((current) => {
+      if (current?.target !== operation.target || current.result.state !== "ready") return current;
+      const successor: TokenRecord = {
+        id: result.id,
+        label: result.label,
+        scope: result.scope,
+        createdAt: result.createdAt,
+        expiresAt: result.expiresAt,
+        rotatedFrom: result.rotatedFrom,
+        rotatedTo: null,
+        revokedAt: null,
+        lastUsedAt: null,
+      };
+      const tokens = current.result.tokens
+        .filter((token) => token.id !== successor.id)
+        .map((token) =>
+          token.id === operation.token.id
+            ? {
+                ...token,
+                expiresAt: result.predecessor.expiresAt,
+                rotatedTo: result.id,
+              }
+            : token,
+        );
+      return {
+        target: current.target,
+        result: { state: "ready", tokens: newestFirst([successor, ...tokens]) },
+      };
+    });
+  }
+
+  function markAlreadyRotated(operation: RotateSnapshot, successorId: string) {
+    setListSnapshot((current) => {
+      if (current?.target !== operation.target || current.result.state !== "ready") return current;
+      return {
+        target: current.target,
+        result: {
+          state: "ready",
+          tokens: current.result.tokens.map((token) =>
+            token.id === operation.token.id ? { ...token, rotatedTo: successorId } : token,
+          ),
+        },
+      };
+    });
+  }
+
+  function handleRotate(operation: RotateSnapshot, input: RotateTokenBody): Promise<void> {
+    const existingAttempt = activeRotateAttemptsRef.current.find((attempt) =>
+      isSameRotateSubject(attempt.operation, operation),
+    );
+    if (existingAttempt !== undefined) {
+      return existingAttempt.completion ?? Promise.resolve();
+    }
+    if (
+      activeSecretProducerRef.current?.kind !== "rotation" ||
+      activeSecretProducerRef.current.operation !== operation ||
+      secretSnapshotRef.current !== null
+    ) {
+      return Promise.resolve();
+    }
+
+    const attempt: RotateAttempt = { operation };
+    activeRotateAttemptsRef.current = [...activeRotateAttemptsRef.current, attempt];
+    setRotateAttempts((current) => [...current, attempt]);
+    setRotateErrorSnapshot((current) => (current?.operation === operation ? null : current));
+
+    const completion = (async () => {
+      try {
+        const result = await operation.target.client.stashes
+          .tokens(operation.target.stash)
+          .rotate(operation.token.id, input);
+        if (!result.ok) throw result;
+
+        const secret: SecretSnapshot = {
+          kind: "rotation",
+          originStash: operation.target.stash,
+          successorId: result.value.id,
+          token: result.value.token,
+        };
+        secretSnapshotRef.current = secret;
+        setSecretSnapshot(secret);
+        updateListAfterRotation(operation, result.value);
+        if (rotateSnapshotRef.current === operation) {
+          rotateSnapshotRef.current = null;
+          setRotateSnapshot((current) => (current === operation ? null : current));
+        }
+        if (
+          activeSecretProducerRef.current?.kind === "rotation" &&
+          activeSecretProducerRef.current.operation === operation
+        ) {
+          activeSecretProducerRef.current = null;
+        }
+        setRotateErrorSnapshot((current) => (current?.operation === operation ? null : current));
+        if (isSameTokenTarget(activeTargetRef.current, operation.target)) refresh();
+      } catch (error) {
+        const details = stashErrorDetails(error);
+        if (details.code === "already-rotated") {
+          if (details.successorId !== undefined) markAlreadyRotated(operation, details.successorId);
+          if (isSameTokenTarget(activeTargetRef.current, operation.target)) refresh();
+        }
+        if (rotateSnapshotRef.current === operation) {
+          setRotateErrorSnapshot({ operation, error });
+        }
+        throw error;
+      } finally {
+        activeRotateAttemptsRef.current = activeRotateAttemptsRef.current.filter(
+          (current) => current !== attempt,
+        );
+        setRotateAttempts((current) => current.filter((item) => item !== attempt));
+        if (
+          rotateSnapshotRef.current === operation &&
+          !isSameTokenTarget(activeTargetRef.current, operation.target)
+        ) {
+          rotateSnapshotRef.current = null;
+          if (
+            activeSecretProducerRef.current?.kind === "rotation" &&
+            activeSecretProducerRef.current.operation === operation
+          ) {
+            activeSecretProducerRef.current = null;
+          }
+          setRotateSnapshot((current) => (current === operation ? null : current));
+          setRotateErrorSnapshot((current) => (current?.operation === operation ? null : current));
+        }
+      }
+    })();
+    attempt.completion = completion;
+    return completion;
   }
 
   function closeRevoke(operation: RevokeSnapshot) {
@@ -407,7 +969,12 @@ export function TokensPanel({ stash }: TokensPanelProps) {
       </header>
 
       <MintTokenForm
-        disabled={mintAttempt !== null || secretSnapshot !== null}
+        disabled={
+          mintAttempt !== null ||
+          rotateSnapshot !== null ||
+          rotateAttempts.length > 0 ||
+          secretSnapshot !== null
+        }
         targetKey={target}
         onMint={handleMint}
       />
@@ -415,7 +982,9 @@ export function TokensPanel({ stash }: TokensPanelProps) {
       {visibleSecret ? (
         <OneTimeSecret
           key={visibleSecret.token}
+          kind={visibleSecret.kind}
           originStash={visibleSecret.originStash}
+          successorId={visibleSecret.successorId}
           token={visibleSecret.token}
           onDismiss={() => {
             if (secretSnapshotRef.current !== visibleSecret) return;
@@ -446,9 +1015,30 @@ export function TokensPanel({ stash }: TokensPanelProps) {
           <p className="zhs-tokens-empty">No tokens have been minted for this stash.</p>
         ) : null}
         {listResult.state === "ready" && listResult.tokens.length > 0 ? (
-          <TokenTable stash={stash} tokens={listResult.tokens} onRevoke={selectRevoke} />
+          <TokenTable
+            rotateDisabled={
+              mintAttempt !== null || rotateAttempts.length > 0 || secretSnapshot !== null
+            }
+            stash={stash}
+            tokens={listResult.tokens}
+            onRotate={selectRotate}
+            onRevoke={selectRevoke}
+          />
         ) : null}
       </section>
+
+      {visibleRotate ? (
+        <RotateTokenDialog
+          key={`${visibleRotate.target.stash}:${visibleRotate.token.id}`}
+          error={visibleRotateError}
+          open={true}
+          operationKey={visibleRotate}
+          pending={visibleRotateAttempt !== null}
+          token={visibleRotate.token}
+          onClose={() => closeRotate(visibleRotate)}
+          onConfirm={(input) => handleRotate(visibleRotate, input)}
+        />
+      ) : null}
 
       {visibleRevoke ? (
         <RevokeTokenDialog

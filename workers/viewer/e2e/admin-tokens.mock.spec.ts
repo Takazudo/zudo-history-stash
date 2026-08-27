@@ -45,6 +45,9 @@ async function installFixture(page: Page) {
                     label: "deploy operator",
                     scope: "write",
                     createdAt: CREATED_AT,
+                    expiresAt: null,
+                    rotatedFrom: null,
+                    rotatedTo: null,
                     revokedAt: null,
                     lastUsedAt: null,
                   },
@@ -68,6 +71,8 @@ async function installFixture(page: Page) {
             label: "deploy operator",
             scope: "write",
             createdAt: CREATED_AT,
+            expiresAt: null,
+            rotatedFrom: null,
           },
         });
         return;
@@ -124,6 +129,9 @@ test("@smoke admin token mint reveals the secret once and refreshes metadata wit
         label: "deploy operator",
         scope: "write",
         createdAt: CREATED_AT,
+        expiresAt: null,
+        rotatedFrom: null,
+        rotatedTo: null,
         revokedAt: null,
         lastUsedAt: null,
       },

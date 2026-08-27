@@ -6,6 +6,8 @@ export interface ErrorDetails {
   status?: number;
   code?: string;
   message: string;
+  retryAfter?: number;
+  successorId?: string;
 }
 
 function isFailure(value: unknown): value is Extract<ClientResult<unknown>, { ok: false }> {
@@ -15,7 +17,12 @@ function isFailure(value: unknown): value is Extract<ClientResult<unknown>, { ok
 }
 
 export function stashErrorDetails(value: unknown): ErrorDetails {
-  if (isFailure(value)) return value.error;
+  if (isFailure(value)) {
+    return {
+      ...value.error,
+      ...(value.retryAfter === undefined ? {} : { retryAfter: value.retryAfter }),
+    };
+  }
   if (value instanceof StashHttpError) {
     let message = value.message;
     if (value.body && typeof value.body === "object" && "error" in value.body) {
@@ -43,6 +50,14 @@ export function stashErrorMessage(value: unknown): string {
   }
   if (details.status === 403 || details.code === "scope") {
     return "This token does not have permission for that operation.";
+  }
+  if (
+    (details.status === 429 || details.code === "rate-limited") &&
+    typeof details.retryAfter === "number" &&
+    Number.isSafeInteger(details.retryAfter) &&
+    details.retryAfter >= 0
+  ) {
+    return `Rate limited — try again in ${details.retryAfter}s`;
   }
   if (details.code === "exists") return "A stash with that name already exists.";
   return details.message;
