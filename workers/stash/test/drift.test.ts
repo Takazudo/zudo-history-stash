@@ -29,6 +29,7 @@ describe("Wrangler and Env drift", () => {
 
     expect([...references].sort()).toEqual([
       "ALLOWED_ORIGINS",
+      "BLOBS",
       "DB",
       "RL_DIFF",
       "RL_READ",
@@ -39,6 +40,28 @@ describe("Wrangler and Env drift", () => {
       expect(configured.has(name), `${name} missing from wrangler.toml`).toBe(true);
       expect(envKeys.has(name), `${name} missing from Env`).toBe(true);
     }
+  });
+
+  it("pins separate production and preview R2 buckets", () => {
+    const buckets = Array.from(
+      wranglerSource.matchAll(
+        /^\[\[((?:env\.preview\.)?r2_buckets)\]\]\s*\n\s*binding\s*=\s*"([^"]+)"\s*\n\s*bucket_name\s*=\s*"([^"]+)"/gm,
+      ),
+      (match) => ({ section: match[1], binding: match[2], bucketName: match[3] }),
+    );
+
+    expect(buckets).toEqual([
+      {
+        section: "r2_buckets",
+        binding: "BLOBS",
+        bucketName: "zudo-history-stash-blobs",
+      },
+      {
+        section: "env.preview.r2_buckets",
+        binding: "BLOBS",
+        bucketName: "zudo-history-stash-blobs-preview",
+      },
+    ]);
   });
 
   it("keeps used required secrets in Env", () => {

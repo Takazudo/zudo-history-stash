@@ -11,6 +11,7 @@ declare global {
     interface Env {
       DB: D1Database;
       UPGRADE_DB: D1Database;
+      BLOBS: R2Bucket;
       RL_READ: RateLimiter;
       RL_WRITE: RateLimiter;
       RL_DIFF: RateLimiter;

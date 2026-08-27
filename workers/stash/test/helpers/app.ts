@@ -26,11 +26,18 @@ export async function seedStash(name: string): Promise<void> {
 }
 
 export async function resetDatabase(): Promise<void> {
-  const db = createTestEnv().env.DB;
+  const { DB: db, BLOBS: blobs } = createTestEnv().env;
   for (const table of ["idempotency", "versions", "files", "blobs", "tokens", "stashes"]) {
     await db.prepare(`DELETE FROM ${table}`).run();
   }
   await db.prepare("DELETE FROM sqlite_sequence WHERE name = 'versions'").run();
+
+  for (;;) {
+    const page = await blobs.list({ limit: 1_000 });
+    const keys = page.objects.map(({ key }) => key);
+    if (keys.length === 0) break;
+    await blobs.delete(keys);
+  }
 }
 
 export async function mintToken(
