@@ -151,6 +151,7 @@ const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
   getProposalDiff: "diff",
   approveProposal: "write",
   rejectProposal: "write",
+  stashEvents: "read",
   listFiles: "read",
   getFile: "read",
   putFile: "write",
@@ -251,7 +252,12 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   if (method === "POST" && pathname === "/v1/admin/gc") return { routeId: "runGc" };
   if (method === "GET" && pathname === "/v1/admin/gc/runs") return { routeId: "listGcRuns" };
 
-  let match = /^\/v1\/stashes\/([^/]+)\/proposals\/([^/]+)\/diff$/.exec(pathname);
+  let match = /^\/v1\/stashes\/([^/]+)\/events$/.exec(pathname);
+  if (method === "GET" && match?.[1] !== undefined) {
+    return { routeId: "stashEvents", stash: decode(match[1]) };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/proposals\/([^/]+)\/diff$/.exec(pathname);
   if (method === "GET" && match?.[1] !== undefined && match[2] !== undefined) {
     return {
       routeId: "getProposalDiff",

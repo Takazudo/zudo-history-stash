@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { ROUTES } from "./routes.js";
+import { ROUTES, transportForRoute } from "./routes.js";
 
 const expected = [
   ["GET", "/v1/health", "open"],
@@ -23,6 +23,7 @@ const expected = [
   ["GET", "/v1/stashes/:stash/proposals/:id/diff", "read"],
   ["POST", "/v1/stashes/:stash/proposals/:id/approve", "write"],
   ["POST", "/v1/stashes/:stash/proposals/:id/reject", "write"],
+  ["GET", "/v1/stashes/:stash/events", "read"],
   ["GET", "/v1/stashes/:stash/files", "read"],
   ["GET", "/v1/stashes/:stash/files/*path", "read"],
   ["PUT", "/v1/stashes/:stash/files/*path", "write"],
@@ -35,9 +36,13 @@ const expected = [
 ];
 
 it("pins every API endpoint, template, method, and capability", () => {
-  expect(ROUTES).toHaveLength(30);
+  expect(ROUTES).toHaveLength(31);
   expect(ROUTES.map(({ method, template, principal }) => [method, template, principal])).toEqual(
     expected,
   );
   expect(new Set(ROUTES.map(({ id }) => id)).size).toBe(ROUTES.length);
+  expect(ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only")).toEqual([
+    expect.objectContaining({ id: "stashEvents", transport: "fetch-only" }),
+  ]);
+  expect(ROUTES.filter(({ id }) => transportForRoute(id) === "any")).toHaveLength(30);
 });

@@ -33,6 +33,7 @@ const DOCUMENT_DESCRIPTION = [
   "Stash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.",
   "GC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.",
   "Proposals are expiring candidate writes against an immutable base. Approval never rebases: a moved head returns 409 stale with current, while repeated creation and approval have explicit replay semantics.",
+  "The per-stash live stream uses bearer-authenticated fetch and Server-Sent Events. It is fetch-only because browser EventSource cannot send the Authorization header and streaming responses are not exposed as named RPC methods.",
 ].join("\n\n");
 
 const WILDCARD_WARNING =
@@ -100,7 +101,11 @@ function responseHeader(name: ResponseHeader): OpenApiObject {
           ? "Numeric stash file version."
           : name === "Idempotent-Replayed"
             ? "Whether the server replayed an idempotent response."
-            : "Seconds to wait before retrying a rate-limited request.",
+            : name === "Retry-After"
+              ? "Seconds to wait before retrying a rate-limited request."
+              : name === "Cache-Control"
+                ? "Disables storage of the live stream response."
+                : "Disables reverse-proxy response buffering.",
     schema: {
       type:
         name === "Idempotent-Replayed"
@@ -109,6 +114,11 @@ function responseHeader(name: ResponseHeader): OpenApiObject {
             ? "integer"
             : "string",
       ...(name === "Retry-After" ? { minimum: 0 } : {}),
+      ...(name === "Cache-Control"
+        ? { const: "no-store" }
+        : name === "X-Accel-Buffering"
+          ? { const: "no" }
+          : {}),
     },
   };
 }
@@ -127,7 +137,7 @@ function successResponses(contract: RouteContract): Record<string, OpenApiObject
       const content = response.schema
         ? {
             content: {
-              "application/json": {
+              [response.mediaType ?? "application/json"]: {
                 schema: { $ref: `#/components/schemas/${response.schema}` },
                 ...(response.example ? { example: SAMPLES[response.example] } : {}),
               },
@@ -189,6 +199,7 @@ function buildOperation(
       ...(wildcard ? [WILDCARD_WARNING] : []),
     ].join("\n\n"),
     "x-principal": route.principal,
+    ...(contract.transport === "fetch-only" ? { "x-transport": "fetch-only" } : {}),
     ...(wildcard ? { "x-wildcard": true } : {}),
     ...(route.id === "health" ? { security: [] } : {}),
     ...(parameters.length ? { parameters } : {}),

@@ -90,7 +90,8 @@ Cloudflare-shaped capability/key verdicts (rejections fail open, matching the Wo
 
 The fake implements `GET /v1/me`, stash list/create/detail, token create/list/rotate/revoke, and the
 stash-scoped file list, file read/write/delete/rollback, history, changes, and stored/candidate diff
-routes. Health, import, cross-stash changes, and unknown routes return `501 not-implemented`.
+routes. Health, import, cross-stash changes, fetch-only stash events, and unknown routes return
+`501 not-implemented`.
 `await fake.mintToken()` remains available for direct fixture setup, accepts `expiresAt` or
 `ttlSeconds`, and uses the same hash-only storage path as the token-management routes.
 

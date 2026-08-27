@@ -2346,6 +2346,68 @@
         ],
         "type": "object"
       },
+      "StashChangeEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "changeId": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": ["put", "delete", "rollback"],
+            "type": "string"
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "stash": {
+            "type": "string"
+          },
+          "type": {
+            "const": "change",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["type", "changeId", "stash", "path", "version", "kind", "origin", "createdAt"],
+        "type": "object"
+      },
+      "StashEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/StashReadyEvent"
+          },
+          {
+            "$ref": "#/components/schemas/StashChangeEvent"
+          },
+          {
+            "$ref": "#/components/schemas/StashProposalEvent"
+          },
+          {
+            "$ref": "#/components/schemas/StashReconnectEvent"
+          }
+        ]
+      },
       "StashListResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2367,6 +2429,91 @@
           }
         },
         "required": ["stashes", "nextAfter"],
+        "type": "object"
+      },
+      "StashProposalEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "origin": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "proposalId": {
+            "pattern": "^prp_\\d{13}[0-9a-f]{8}$",
+            "type": "string"
+          },
+          "stash": {
+            "type": "string"
+          },
+          "status": {
+            "enum": ["open", "applied", "rejected", "expired"],
+            "type": "string"
+          },
+          "type": {
+            "const": "proposal",
+            "type": "string"
+          }
+        },
+        "required": ["type", "proposalId", "stash", "path", "status", "origin"],
+        "type": "object"
+      },
+      "StashReadyEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "oneOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "oneOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "const": "ready",
+            "type": "string"
+          }
+        },
+        "required": ["type", "head", "checkpoint"],
+        "type": "object"
+      },
+      "StashReconnectEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "enum": ["lifetime", "replay-limit", "shutdown"],
+            "type": "string"
+          },
+          "type": {
+            "const": "reconnect",
+            "type": "string"
+          }
+        },
+        "required": ["type", "reason"],
         "type": "object"
       },
       "StashRecord": {
@@ -2743,7 +2890,7 @@
     }
   },
   "info": {
-    "description": "Credentials for one stash cannot reveal another stash: foreign stashes are concealed as 404 responses.\n\nLists and change feeds use keyset cursors (after, before, or since); limit defaults to 50 and has a maximum of 200.\n\nFile reads use ETags, If-None-Match, and 304 responses for conditional requests.\n\nFile-mutation idempotency keys are retained in a 7-day ledger. Proposal-creation keys are stored on the proposal row instead; either kind returns 422 idempotency-key-reused when reused for a different canonical request.\n\nStash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.\n\nGC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.\n\nProposals are expiring candidate writes against an immutable base. Approval never rebases: a moved head returns 409 stale with current, while repeated creation and approval have explicit replay semantics.",
+    "description": "Credentials for one stash cannot reveal another stash: foreign stashes are concealed as 404 responses.\n\nLists and change feeds use keyset cursors (after, before, or since); limit defaults to 50 and has a maximum of 200.\n\nFile reads use ETags, If-None-Match, and 304 responses for conditional requests.\n\nFile-mutation idempotency keys are retained in a 7-day ledger. Proposal-creation keys are stored on the proposal row instead; either kind returns 422 idempotency-key-reused when reused for a different canonical request.\n\nStash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.\n\nGC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.\n\nProposals are expiring candidate writes against an immutable base. Approval never rebases: a moved head returns 409 stale with current, while repeated creation and approval have explicit replay semantics.\n\nThe per-stash live stream uses bearer-authenticated fetch and Server-Sent Events. It is fetch-only because browser EventSource cannot send the Authorization header and streaming responses are not exposed as named RPC methods.",
     "title": "zudo-history-stash",
     "version": "0.0.0"
   },
@@ -4186,6 +4333,115 @@
         "summary": "Preview a candidate diff",
         "x-principal": "read",
         "x-wildcard": true
+      }
+    },
+    "/v1/stashes/{stash}/events": {
+      "get": {
+        "description": "Streams advisory stash events as Server-Sent Events after subscribing live, replaying missed changes, and establishing a replay checkpoint.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "stashEvents",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/StashEvent"
+                }
+              }
+            },
+            "description": "A Server-Sent Events stream of ready, change, proposal, and reconnect events.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Disables storage of the live stream response.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Accel-Buffering": {
+                "description": "Disables reverse-proxy response buffering.",
+                "schema": {
+                  "const": "no",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Stream stash events",
+        "x-principal": "read",
+        "x-transport": "fetch-only"
       }
     },
     "/v1/stashes/{stash}/files": {

@@ -49,7 +49,7 @@ import type {
   RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
-  RouteId,
+  RpcRouteId,
   RpcRequest,
   StashRecord,
 } from "@takazudo/zudo-history-stash-core";
@@ -412,6 +412,10 @@ const rpcMethodsByRoute = {
   getDiff: "getDiff",
   diffCandidate: "diffCandidate",
   getStashChanges: "getStashChanges",
-} as const satisfies Record<RouteId, keyof StashRpc>;
+} as const satisfies Record<RpcRouteId, keyof StashRpcMethods>;
 
 void rpcMethodsByRoute;
+
+type MappedRpcMethod = (typeof rpcMethodsByRoute)[keyof typeof rpcMethodsByRoute];
+const rpcMethodCoverage: Record<Exclude<keyof StashRpcMethods, MappedRpcMethod>, never> = {};
+void rpcMethodCoverage;

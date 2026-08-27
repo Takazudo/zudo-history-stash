@@ -742,6 +742,23 @@ describe("named-entrypoint RPC boundary", () => {
     expect(response.headers.get("content-type")).toBe("application/json");
     expect(await response.text()).toContain('"body":"boundary body\\n"');
   });
+
+  it("keeps fetch-only events off the named method surface while generic request stays total", async () => {
+    await resetDatabase();
+    await seedRpcFixture();
+
+    expect(Object.getOwnPropertyNames(StashRpc.prototype)).not.toContain("stashEvents");
+    const response = await env.STASH_RPC.request({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/events`,
+      token: RPC_READ_TOKEN,
+    });
+
+    expect(response.status).toBe(501);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not-implemented", message: "This route is not implemented yet." },
+    });
+  });
 });
 
 interface ProposalLifecycleProjection {

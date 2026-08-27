@@ -36,7 +36,7 @@ describe("buildOpenApiDocument", () => {
   it("contains every operation with the route identity and short principal", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
-    expect(all).toHaveLength(30);
+    expect(all).toHaveLength(31);
     expect(all.map((operation) => operation.operationId)).toEqual(ROUTES.map((route) => route.id));
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);
@@ -126,7 +126,7 @@ describe("buildOpenApiDocument", () => {
       const responses = operation.responses as Record<string, ObjectValue>;
       return responses["429"] !== undefined;
     });
-    expect(rateLimited).toHaveLength(17);
+    expect(rateLimited).toHaveLength(18);
     for (const operation of rateLimited) {
       const responses = operation.responses as Record<string, ObjectValue>;
       expect(responses["429"]?.headers).toHaveProperty("Retry-After");
@@ -137,6 +137,39 @@ describe("buildOpenApiDocument", () => {
     const rotateResponses = rotate?.responses as Record<string, ObjectValue>;
     expect(rotateResponses["201"]).toBeDefined();
     expect(rotateResponses["429"]).toBeUndefined();
+  });
+
+  it("models stash events as a fetch-only SSE stream with resolvable event components", () => {
+    const document = buildOpenApiDocument({ version: "test" });
+    const operation = document.paths["/v1/stashes/{stash}/events"]?.get;
+    expect(operation?.operationId).toBe("stashEvents");
+    expect(operation?.["x-principal"]).toBe("read");
+    expect(operation?.["x-transport"]).toBe("fetch-only");
+    const responses = operation?.responses as Record<string, ObjectValue>;
+    const content = responses["200"]?.content as Record<string, ObjectValue>;
+    expect(content).toEqual({
+      "text/event-stream": {
+        schema: { $ref: "#/components/schemas/StashEvent" },
+      },
+    });
+    expect(content).not.toHaveProperty("application/json");
+    expect(responses["200"]?.headers).toMatchObject({
+      "Cache-Control": { schema: { type: "string", const: "no-store" } },
+      "X-Accel-Buffering": { schema: { type: "string", const: "no" } },
+    });
+    for (const name of [
+      "StashReadyEvent",
+      "StashChangeEvent",
+      "StashProposalEvent",
+      "StashReconnectEvent",
+      "StashEvent",
+    ]) {
+      expect(document.components.schemas[name], name).toBeDefined();
+    }
+    const nonFetchOnly = operations(document).filter(
+      (candidate) => candidate.operationId !== "stashEvents",
+    );
+    for (const candidate of nonFetchOnly) expect(candidate["x-transport"]).toBeUndefined();
   });
 
   it("documents proposal replay, filters, decisions, and stale current metadata", () => {

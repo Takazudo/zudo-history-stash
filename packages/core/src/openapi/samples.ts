@@ -111,6 +111,27 @@ const changeItem = {
   createdAt: UPDATED_AT,
 } as const;
 
+const stashReadyEvent = { type: "ready", head: 7, checkpoint: 7 } as const;
+const stashChangeEvent = {
+  type: "change",
+  changeId: 7,
+  stash: "demo",
+  path: "docs/guide.md",
+  version: 3,
+  kind: "put",
+  origin: "viewer-1",
+  createdAt: UPDATED_AT,
+} as const;
+const stashProposalEvent = {
+  type: "proposal",
+  proposalId: "prp_1787702400000deadbeef",
+  stash: "demo",
+  path: "docs/proposed.md",
+  status: "open",
+  origin: "viewer-1",
+} as const;
+const stashReconnectEvent = { type: "reconnect", reason: "lifetime" } as const;
+
 const diffLines = ["-Hello, stash!", "+Hello, history stash!"];
 const diffHunk = {
   oldStart: 1,
@@ -216,6 +237,11 @@ const responseSamples = {
   RestoreStashResult: stashRecord,
   GcRunResult: gcRun,
   GcRunsResponse: { runs: [gcRun] },
+  StashReadyEvent: stashReadyEvent,
+  StashChangeEvent: stashChangeEvent,
+  StashProposalEvent: stashProposalEvent,
+  StashReconnectEvent: stashReconnectEvent,
+  StashEvent: stashChangeEvent,
   ProposalRecord: proposalRecord,
   RejectedProposalRecord: rejectedProposalRecord,
   ProposalWithBody: { ...proposalRecord, body: "Hello, proposed docs!\n" },

@@ -45,6 +45,11 @@ import type {
   RollbackResult,
   RestoreStashResult,
   StashListResponse,
+  StashChangeEvent,
+  StashEvent,
+  StashProposalEvent,
+  StashReadyEvent,
+  StashReconnectEvent,
   StashRecord,
   StashSummary,
   TokenListResponse,
@@ -76,6 +81,19 @@ describe("response schema type locks", () => {
     >().toEqualTypeOf<RestoreStashResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.GcRunResult>>().toEqualTypeOf<GcRunResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.GcRunsResponse>>().toEqualTypeOf<GcRunsResponse>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.StashReadyEvent>
+    >().toEqualTypeOf<StashReadyEvent>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.StashChangeEvent>
+    >().toEqualTypeOf<StashChangeEvent>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.StashProposalEvent>
+    >().toEqualTypeOf<StashProposalEvent>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.StashReconnectEvent>
+    >().toEqualTypeOf<StashReconnectEvent>();
+    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.StashEvent>>().toEqualTypeOf<StashEvent>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.ProposalRecord>>().toEqualTypeOf<ProposalRecord>();
     expectTypeOf<
       z.infer<typeof RESPONSE_SCHEMAS.ProposalWithBody>

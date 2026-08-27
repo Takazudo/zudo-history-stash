@@ -41,6 +41,7 @@ const UNSUPPORTED_SAMPLES: Record<
   health: { method: "GET", path: "/v1/health" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
+  stashEvents: { method: "GET", path: "/v1/stashes/demo/events" },
 };
 
 const EMPTY_DIFF_ROUTES = [

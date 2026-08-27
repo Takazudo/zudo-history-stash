@@ -5,6 +5,7 @@ import type { AppEnv } from "../context.js";
 import { rateLimit } from "../rate-limit.js";
 import admin from "./admin.js";
 import diff from "./diff.js";
+import events from "./events.js";
 import files from "./files.js";
 import gc from "./gc.js";
 import history from "./history.js";
@@ -34,6 +35,7 @@ routes.route("/", diff);
 routes.route("/", importRoutes);
 routes.route("/", lifecycle);
 routes.route("/", proposals);
+routes.route("/", events);
 routes.all("/v1/*", (c) =>
   c.json(
     { error: { code: "not-implemented", message: "This route is not implemented yet." } },
