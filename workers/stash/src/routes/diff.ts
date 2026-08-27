@@ -1,9 +1,12 @@
 import {
+  DIFF_MAX_BYTES,
   DiffCandidateBody,
   DiffQuery,
   MAX_BODY_BYTES,
   StashError,
   computeDiff,
+  sha256Hex,
+  utf8ByteLength,
   validatePath,
   type DiffSide,
 } from "@takazudo/zudo-history-stash-core";
@@ -50,8 +53,9 @@ export interface DiffRouteDependencies {
   createReads?: (env: Env) => DiffReads;
 }
 
-interface ResolvedHead {
+interface ResolvedSide {
   side: DiffSide;
+  size: number;
 }
 
 function notFound(): never {
@@ -74,21 +78,24 @@ function diffPath(requestPath: string, stash: string): string {
   return path;
 }
 
-function toSide(version: ReadVersionRecord): DiffSide {
+function toResolvedSide(version: ReadVersionRecord): ResolvedSide {
   return {
-    version: version.version,
-    hash: version.hash,
-    deleted: version.kind === "delete",
+    side: {
+      version: version.version,
+      hash: version.hash,
+      deleted: version.kind === "delete",
+    },
+    size: version.size,
   };
 }
 
-async function readHead(reads: DiffReads, stash: string, path: string): Promise<ResolvedHead> {
+async function readHead(reads: DiffReads, stash: string, path: string): Promise<ResolvedSide> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const page = await reads.listHistory(stash, path, { limit: 1 });
     if (page === null) return notFound();
     const version = page.versions[0];
     if (version !== undefined && version.version === page.headVersion) {
-      return { side: toSide(version) };
+      return toResolvedSide(version);
     }
   }
   return internalReadError();
@@ -99,27 +106,36 @@ async function resolveSide(
   stash: string,
   path: string,
   version: number,
-  head: ResolvedHead,
-): Promise<DiffSide> {
-  if (version === head.side.version) return head.side;
+  head: ResolvedSide,
+): Promise<ResolvedSide> {
+  if (version === head.side.version) return head;
   if (version > head.side.version) return versionNotFound();
 
   const page = await reads.listHistory(stash, path, { before: version + 1, limit: 1 });
   const resolved = page?.versions[0];
   if (resolved === undefined || resolved.version !== version) return versionNotFound();
-  return toSide(resolved);
+  return toResolvedSide(resolved);
 }
 
 async function loadText(
   reads: DiffReads,
   stash: string,
   path: string,
-  side: DiffSide,
+  resolved: ResolvedSide,
 ): Promise<string> {
+  const { side, size } = resolved;
   if (side.deleted) return "";
   const file = await reads.getFile(stash, path, { version: side.version });
   if (file === null) return versionNotFound();
-  if (file.deleted || file.body === null || file.hash !== side.hash) return internalReadError();
+  if (
+    file.version !== side.version ||
+    file.deleted ||
+    file.body === null ||
+    file.hash !== side.hash ||
+    file.size !== size
+  ) {
+    return internalReadError();
+  }
   return file.body;
 }
 
@@ -158,7 +174,18 @@ export function createDiffRoutes(dependencies: DiffRouteDependencies = {}): Hono
       const toVersion = query.to === "head" ? head.side.version : query.to;
       const to = await resolveSide(reads, stash, path, toVersion, head);
 
-      if (from.hash === to.hash) return c.json({ state: "same" as const, from, to });
+      if (from.side.hash === to.side.hash) {
+        return c.json({ state: "same" as const, from: from.side, to: to.side });
+      }
+
+      if (from.size > DIFF_MAX_BYTES || to.size > DIFF_MAX_BYTES) {
+        return c.json({
+          state: "oversized" as const,
+          reason: "bytes" as const,
+          from: from.side,
+          to: to.side,
+        });
+      }
 
       const [fromText, toText] = await Promise.all([
         loadText(reads, stash, path, from),
@@ -167,12 +194,12 @@ export function createDiffRoutes(dependencies: DiffRouteDependencies = {}): Hono
       const result = computeDiff({
         fromText,
         toText,
-        fromLabel: `a/${path}@v${from.version}`,
-        toLabel: `b/${path}@v${to.version}`,
+        fromLabel: `a/${path}@v${from.side.version}`,
+        toLabel: `b/${path}@v${to.side.version}`,
         context: query.context,
         maxUnifiedBytes: query.maxUnifiedBytes,
       });
-      return c.json({ ...result, from, to });
+      return c.json({ ...result, from: from.side, to: to.side });
     },
   );
 
@@ -190,11 +217,20 @@ export function createDiffRoutes(dependencies: DiffRouteDependencies = {}): Hono
       const head = await readHead(reads, stash, path);
       const fromVersion = input.from === "head" ? head.side.version : input.from;
       const from = await resolveSide(reads, stash, path, fromVersion, head);
+      const candidateHash = await sha256Hex(input.body);
+      const candidateSize = utf8ByteLength(input.body);
+
+      if (candidateHash === from.side.hash) return c.json({ state: "same" as const });
+
+      if (from.size > DIFF_MAX_BYTES || candidateSize > DIFF_MAX_BYTES) {
+        return c.json({ state: "oversized" as const, reason: "bytes" as const });
+      }
+
       const fromText = await loadText(reads, stash, path, from);
       const result = computeDiff({
         fromText,
         toText: input.body,
-        fromLabel: `a/${path}@v${from.version}`,
+        fromLabel: `a/${path}@v${from.side.version}`,
         toLabel: `b/${path}@candidate`,
         context: input.context,
       });
