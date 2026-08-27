@@ -14,6 +14,7 @@ import {
   MAX_BODY_BYTES,
   PutFileBody,
   ROUTES,
+  RotateTokenBody,
   RollbackBody,
   canonicalJson,
   computeDiff,
@@ -40,6 +41,8 @@ import type {
   FakeBlobRow,
   FakeFileRow,
   FakeIdempotencyRow,
+  FakeMintTokenOptions,
+  FakeRateLimitInput,
   FakeStash,
   FakeStashOptions,
   FakeStashRow,
@@ -51,6 +54,7 @@ import type {
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 const MAX_DIFF_CONTEXT = 10;
 const LAST_USED_INTERVAL_MS = 60_000;
+const MAX_TOKEN_TTL_MS = 315_360_000 * 1_000;
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
 
 const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
@@ -60,6 +64,7 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "getStash",
   "createToken",
   "listTokens",
+  "rotateToken",
   "revokeToken",
   "listFiles",
   "getFile",
@@ -71,6 +76,29 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "diffCandidate",
   "getStashChanges",
 ]);
+
+const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
+  health: null,
+  me: "read",
+  listStashes: null,
+  createStash: null,
+  getStash: "read",
+  createToken: null,
+  listTokens: null,
+  rotateToken: null,
+  revokeToken: null,
+  importHistory: null,
+  listChanges: null,
+  listFiles: "read",
+  getFile: "read",
+  putFile: "write",
+  deleteFile: "write",
+  rollbackFile: "write",
+  getHistory: "read",
+  getDiff: "diff",
+  diffCandidate: "diff",
+  getStashChanges: "read",
+} as const satisfies Record<RouteId, "read" | "write" | "diff" | null>;
 
 type Principal =
   | { kind: "admin" }
@@ -93,12 +121,14 @@ class FakeHttpError extends Error {
   readonly code: ErrorCode;
   readonly status: number;
   readonly current?: Current;
+  readonly successorId?: string;
 
-  constructor(code: ErrorCode, message: string, current?: Current) {
+  constructor(code: ErrorCode, message: string, current?: Current, successorId?: string) {
     super(message);
     this.code = code;
     this.status = statusForCode(code);
     this.current = current;
+    this.successorId = successorId;
   }
 }
 
@@ -121,7 +151,11 @@ function unsupported(): Response {
 function errorResponse(error: FakeHttpError): Response {
   return json(
     {
-      error: { code: error.code, message: error.message },
+      error: {
+        code: error.code,
+        message: error.message,
+        ...(error.successorId === undefined ? {} : { successorId: error.successorId }),
+      },
       ...(error.status === 409 && error.current !== undefined ? { current: error.current } : {}),
     },
     error.status,
@@ -130,6 +164,10 @@ function errorResponse(error: FakeHttpError): Response {
 
 function fail(code: ErrorCode, message: string, current?: Current): never {
   throw new FakeHttpError(code, message, current);
+}
+
+function rotationRefusal(code: "already-rotated", message: string, successorId: string): never {
+  throw new FakeHttpError(code, message, undefined, successorId);
 }
 
 function decode(value: string): string {
@@ -147,7 +185,16 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   if (method === "GET" && pathname === "/v1/stashes") return { routeId: "listStashes" };
   if (method === "POST" && pathname === "/v1/stashes") return { routeId: "createStash" };
 
-  let match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)$/.exec(pathname);
+  let match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)\/rotate$/.exec(pathname);
+  if (method === "POST" && match?.[1] !== undefined && match[2] !== undefined) {
+    return {
+      routeId: "rotateToken",
+      stash: decode(match[1]),
+      tokenId: decode(match[2]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)$/.exec(pathname);
   if (method === "DELETE" && match?.[1] !== undefined && match[2] !== undefined) {
     return {
       routeId: "revokeToken",
@@ -220,6 +267,25 @@ function cloneMeta(meta: Record<string, JsonValue> | undefined): Record<string, 
 
 function iso(value: number): string {
   return new Date(value).toISOString();
+}
+
+function resolveTokenExpiry(input: FakeMintTokenOptions, now: number): number | null {
+  const expiresAt =
+    input.expiresAt !== undefined
+      ? Date.parse(input.expiresAt)
+      : input.ttlSeconds !== undefined
+        ? now + input.ttlSeconds * 1_000
+        : null;
+  if (
+    expiresAt !== null &&
+    (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + MAX_TOKEN_TTL_MS)
+  ) {
+    return fail(
+      "validation",
+      "Token expiry must be in the future and no more than ten years away.",
+    );
+  }
+  return expiresAt;
 }
 
 function ordered<T extends { path: string }>(rows: T[]): T[] {
@@ -309,6 +375,7 @@ function changesPage(rows: FakeVersionRow[], since: number | undefined, limit: n
 export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const now = options.now ?? Date.now;
   const adminToken = options.adminToken ?? "admin";
+  const limiter = options.rateLimit ?? (() => ({ success: true }));
   const state: FakeStashState = {
     stashes: new Map(),
     tokens: new Map(),
@@ -396,10 +463,13 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return row;
   };
 
-  const mintStoredToken = async (
+  const prepareStoredToken = async (
     stash: string,
     scope: TokenScope,
     label: string,
+    createdAt: number,
+    expiresAt: number | null,
+    rotatedFrom: string | null,
   ): Promise<{ row: FakeTokenRow; token: string }> => {
     requireAdminStash(stash);
     const serial = nextToken;
@@ -407,7 +477,6 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const tokenSerial = serial.toString(36).padStart(43, "0");
     const idSerial = serial.toString(16).padStart(32, "0");
     const token = `zhs_${tokenSerial}`;
-    const createdAt = now();
     const row: FakeTokenRow = {
       id: `tok_${idSerial}`,
       tokenHash: (await sha256Hex(token)).slice("sha256-".length),
@@ -415,14 +484,32 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       label,
       scope,
       createdAt,
-      expiresAt: null,
-      rotatedFrom: null,
+      expiresAt,
+      rotatedFrom,
       rotatedTo: null,
       revokedAt: null,
       lastUsedAt: null,
     };
-    state.tokens.set(row.id, row);
     return { row, token };
+  };
+
+  const mintStoredToken = async (
+    stash: string,
+    scope: TokenScope,
+    options: FakeMintTokenOptions = {},
+  ): Promise<{ row: FakeTokenRow; token: string }> => {
+    const createdAt = now();
+    const expiresAt = resolveTokenExpiry(options, createdAt);
+    const created = await prepareStoredToken(
+      stash,
+      scope,
+      options.label ?? "",
+      createdAt,
+      expiresAt,
+      null,
+    );
+    state.tokens.set(created.row.id, created.row);
+    return created;
   };
 
   const authenticate = async (request: Request): Promise<Principal> => {
@@ -435,11 +522,14 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       return fail("unauthorized", "A valid bearer token is required.");
     }
     const tokenHash = (await sha256Hex(token)).slice("sha256-".length);
+    const usedAt = now();
     const row = [...state.tokens.values()].find(
-      (candidate) => candidate.tokenHash === tokenHash && candidate.revokedAt === null,
+      (candidate) =>
+        candidate.tokenHash === tokenHash &&
+        candidate.revokedAt === null &&
+        (candidate.expiresAt === null || candidate.expiresAt > usedAt),
     );
     if (row === undefined) return fail("unauthorized", "A valid bearer token is required.");
-    const usedAt = now();
     if (row.lastUsedAt === null || row.lastUsedAt <= usedAt - LAST_USED_INTERVAL_MS) {
       row.lastUsedAt = usedAt;
     }
@@ -465,6 +555,43 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (route.principal === "write" && principal.scope !== "write") {
       return fail("scope", "This token does not have write access.");
     }
+  };
+
+  const applyRateLimit = async (
+    principal: Principal,
+    routeId: RouteId,
+  ): Promise<Response | undefined> => {
+    const capability = RATE_LIMIT_CAPABILITY_BY_ROUTE[routeId];
+    if (principal.kind === "admin" || capability === null) return undefined;
+
+    const limited = async (key: string): Promise<boolean | undefined> => {
+      const input: FakeRateLimitInput = { capability, key, routeId };
+      try {
+        return !(await limiter(input)).success;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const principalLimited = await limited(`p:${principal.tokenId}`);
+    if (principalLimited === undefined) return undefined;
+    if (principalLimited) {
+      return json(
+        { error: { code: "rate-limited", message: "The request was rate limited." } },
+        429,
+        { "Retry-After": "60" },
+      );
+    }
+
+    const stashLimited = await limited(`s:${principal.stash}`);
+    if (stashLimited) {
+      return json(
+        { error: { code: "rate-limited", message: "The request was rate limited." } },
+        429,
+        { "Retry-After": "60" },
+      );
+    }
+    return undefined;
   };
 
   const idempotencyKey = (request: Request): string | undefined => {
@@ -610,7 +737,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const handleCreateToken = async (request: Request, stash: string): Promise<Response> => {
     const parsed = CreateTokenBody.safeParse(await requestJson(request));
     if (!parsed.success) return fail("validation", "Invalid token input.");
-    const { row, token } = await mintStoredToken(stash, parsed.data.scope, parsed.data.label ?? "");
+    const { row, token } = await mintStoredToken(stash, parsed.data.scope, parsed.data);
     return json(
       {
         id: row.id,
@@ -620,6 +747,77 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         createdAt: iso(row.createdAt),
         expiresAt: row.expiresAt === null ? null : iso(row.expiresAt),
         rotatedFrom: row.rotatedFrom,
+      },
+      201,
+    );
+  };
+
+  const requireRotationPredecessor = (
+    stash: string,
+    id: string,
+    requestNow: number,
+  ): FakeTokenRow => {
+    const name = requireAdminStash(stash).name;
+    const row = state.tokens.get(id);
+    if (row === undefined || row.stash !== name || row.revokedAt !== null) {
+      return fail("not-found", "The requested resource was not found.");
+    }
+    if (row.rotatedTo !== null) {
+      return rotationRefusal("already-rotated", "Token was already rotated.", row.rotatedTo);
+    }
+    if (row.expiresAt !== null && row.expiresAt <= requestNow) {
+      return fail("token-expired", "Token is expired.");
+    }
+    return row;
+  };
+
+  const handleRotateToken = async (
+    request: Request,
+    stash: string,
+    id: string,
+  ): Promise<Response> => {
+    const parsed = RotateTokenBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid token rotation input.");
+
+    const requestNow = now();
+    const predecessor = requireRotationPredecessor(stash, id, requestNow);
+    const originalExpiry = predecessor.expiresAt;
+    const hasExpiryOverride =
+      parsed.data.expiresAt !== undefined || parsed.data.ttlSeconds !== undefined;
+    const successorExpiry = hasExpiryOverride
+      ? resolveTokenExpiry(parsed.data, requestNow)
+      : originalExpiry;
+    const graceEnd = requestNow + parsed.data.graceSeconds * 1_000;
+    const prepared = await prepareStoredToken(
+      predecessor.stash,
+      predecessor.scope,
+      predecessor.label,
+      requestNow,
+      successorExpiry,
+      predecessor.id,
+    );
+
+    // This re-check plus both mutations form one await-free commit section. Concurrent calls can
+    // prepare candidates in parallel, but only one can claim rotatedTo and publish a successor.
+    const currentPredecessor = requireRotationPredecessor(stash, id, requestNow);
+    const predecessorExpiry = Math.min(currentPredecessor.expiresAt ?? graceEnd, graceEnd);
+    currentPredecessor.rotatedTo = prepared.row.id;
+    currentPredecessor.expiresAt = predecessorExpiry;
+    state.tokens.set(prepared.row.id, prepared.row);
+
+    return json(
+      {
+        id: prepared.row.id,
+        token: prepared.token,
+        label: prepared.row.label,
+        scope: prepared.row.scope,
+        createdAt: iso(prepared.row.createdAt),
+        expiresAt: prepared.row.expiresAt === null ? null : iso(prepared.row.expiresAt),
+        rotatedFrom: prepared.row.rotatedFrom,
+        predecessor: {
+          id: currentPredecessor.id,
+          expiresAt: iso(predecessorExpiry),
+        },
       },
       201,
     );
@@ -1062,6 +1260,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       if (match === undefined || !SUPPORTED_ROUTE_IDS.has(match.routeId)) return unsupported();
       const principal = await authenticate(request);
       authorize(principal, match);
+      const rateLimited = await applyRateLimit(principal, match.routeId);
+      if (rateLimited !== undefined) return rateLimited;
       const url = new URL(request.url);
       const stash = match.stash;
       const path = match.path === undefined ? undefined : requirePath(match.path);
@@ -1088,6 +1288,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           return await handleCreateToken(request, stash ?? "");
         case "listTokens":
           return handleListTokens(stash ?? "");
+        case "rotateToken":
+          return await handleRotateToken(request, stash ?? "", match.tokenId ?? "");
         case "revokeToken":
           return handleRevokeToken(stash ?? "", match.tokenId ?? "");
         case "listFiles":
@@ -1123,11 +1325,10 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     createStash(name) {
       return createStashRow(name).name;
     },
-    async mintToken(stash, scope) {
-      if (scope !== "read" && scope !== "write") {
-        throw new TypeError("scope must be read or write");
-      }
-      return (await mintStoredToken(stash, scope, "")).token;
+    async mintToken(stash, scope, tokenOptions = {}) {
+      const parsed = CreateTokenBody.safeParse({ ...tokenOptions, scope });
+      if (!parsed.success) throw new TypeError("Invalid fixture token input");
+      return (await mintStoredToken(stash, parsed.data.scope, parsed.data)).token;
     },
     reset() {
       state.stashes.clear();

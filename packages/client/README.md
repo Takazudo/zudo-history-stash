@@ -85,23 +85,29 @@ const client = createStashClient({
 
 `fake.state` exposes the in-memory stash, token, blob, file, version, and idempotency tables for
 direct fixture setup and assertions. `fake.reset()` clears those tables without replacing the
-state object. Pass `now` to freeze timestamps.
+state object. Pass `now` to control timestamps and token expiry; pass `rateLimit` to inject
+Cloudflare-shaped capability/key verdicts (rejections fail open, matching the Worker).
 
-The fake implements `GET /v1/me`, stash list/create/detail, token create/list/revoke, and the
+The fake implements `GET /v1/me`, stash list/create/detail, token create/list/rotate/revoke, and the
 stash-scoped file list, file read/write/delete/rollback, history, changes, and stored/candidate diff
 routes. Health, import, cross-stash changes, and unknown routes return `501 not-implemented`.
-`await fake.mintToken()` remains available for direct fixture setup and uses the same hash-only
-storage path as the token-management routes.
+`await fake.mintToken()` remains available for direct fixture setup, accepts `expiresAt` or
+`ttlSeconds`, and uses the same hash-only storage path as the token-management routes.
 
 The same exported conformance runner is used to detect drift between the fake and the real Worker:
 
 ```ts
 import { runConformance } from "@takazudo/zudo-history-stash/testing";
 
-await runConformance(fetch, "http://localhost:8787/api", {
-  adminToken: process.env.STASH_ADMIN_TOKEN!,
+await runConformance(targetFetch, targetBaseUrl, {
+  adminToken,
+  advanceTime,
+  configureRateLimit,
 });
 ```
 
-Fake and real-Worker conformance runs use the same options object; the trace creates, authenticates,
-lists, and revokes its read/write tokens through the admin endpoints.
+`advanceTime(milliseconds)` crosses the trace's expiry boundary; `configureRateLimit(target)`
+arranges a denial for the supplied capability and `p:<tokenId>` key. The fake test adapter can move
+an injected clock and update a verdict set synchronously. For a running local Worker, use the
+checked-in `packages/client/scripts/conformance-live.mjs` runner documented in the repository's
+`TESTING.md`; it sleeps for the real clock and safely exhausts the local write bucket.
