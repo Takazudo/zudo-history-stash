@@ -8,6 +8,8 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "listStashes",
   "createStash",
   "getStash",
+  "deleteStash",
+  "restoreStash",
   "createToken",
   "listTokens",
   "rotateToken",
@@ -21,9 +23,12 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "getDiff",
   "diffCandidate",
   "getStashChanges",
+  "runGc",
+  "listGcRuns",
 ] as const satisfies readonly RouteId[];
 
-type TraceToken = "admin" | "read" | "write" | "expiring" | "successor" | "predecessor" | "none";
+type TraceToken =
+  "admin" | "read" | "write" | "expiring" | "successor" | "predecessor" | "foreign" | "none";
 
 interface TraceRequest {
   method: string;
@@ -42,6 +47,7 @@ interface TraceContext {
   expiringToken?: string;
   predecessorToken?: string;
   successorToken?: string;
+  foreignToken?: string;
   stash: string;
   foreignStash: string;
   laterStash: string;
@@ -1425,6 +1431,229 @@ const TRACE: readonly TraceStep[] = [
       }
     },
   },
+  {
+    name: "create foreign probe token",
+    routeId: "createToken",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.foreignStash}/tokens`,
+      body: { label: "conformance-foreign", scope: "read" },
+    }),
+    verify(response, body, context) {
+      const step = "create foreign probe token";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      if (typeof value.token !== "string") traceFailure(step, "missing foreign token secret");
+      context.foreignToken = value.token;
+    },
+  },
+  {
+    name: "delete conceals the live stash and revokes its tokens",
+    routeId: "deleteStash",
+    request: (context) => ({
+      method: "DELETE",
+      path: `/v1/stashes/${context.stash}`,
+    }),
+    verify(response, body, context) {
+      const step = "delete conceals the live stash and revokes its tokens";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      assertSubset(step, value, { name: context.stash });
+      if (typeof value.deletedAt !== "string" || typeof value.restoreUntil !== "string") {
+        traceFailure(step, "delete response must include both lifecycle timestamps");
+      }
+      if (typeof value.revokedTokens !== "number" || value.revokedTokens < 1) {
+        traceFailure(step, "delete response must report revoked tokens");
+      }
+      remember(context, "deletedAt", value.deletedAt);
+      remember(context, "restoreUntil", value.restoreUntil);
+    },
+  },
+  {
+    name: "deleted stash remains visible only through explicit admin get",
+    routeId: "getStash",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}`,
+    }),
+    verify(response, body, context) {
+      const step = "deleted stash remains visible only through explicit admin get";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      assertSubset(step, value, {
+        name: context.stash,
+        deletedAt: stringValue(context, "deletedAt", step),
+        restoreUntil: stringValue(context, "restoreUntil", step),
+        restorable: true,
+      });
+    },
+  },
+  {
+    name: "default stash list conceals a deleted stash",
+    routeId: "listStashes",
+    request: () => ({ method: "GET", path: "/v1/stashes" }),
+    verify(response, body, context) {
+      const step = "default stash list conceals a deleted stash";
+      assertStatus(step, response, 200);
+      const stashes = array(record(body, step).stashes, step);
+      if (stashes.some((entry) => record(entry, step).name === context.stash)) {
+        traceFailure(step, "deleted stash appeared without includeDeleted");
+      }
+    },
+  },
+  {
+    name: "includeDeleted stash list exposes a deleted stash",
+    routeId: "listStashes",
+    request: () => ({ method: "GET", path: "/v1/stashes?includeDeleted=true" }),
+    verify(response, body, context) {
+      const step = "includeDeleted stash list exposes a deleted stash";
+      assertStatus(step, response, 200);
+      const stashes = array(record(body, step).stashes, step);
+      const deleted = stashes.find((entry) => record(entry, step).name === context.stash);
+      if (deleted === undefined) traceFailure(step, "deleted stash is missing with includeDeleted");
+      assertSubset(step, deleted, {
+        deletedAt: stringValue(context, "deletedAt", step),
+        restoreUntil: stringValue(context, "restoreUntil", step),
+        restorable: true,
+      });
+    },
+  },
+  errorStep(
+    "deleted stash normal routes are concealed even for admin",
+    "listFiles",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/files`,
+    }),
+    404,
+    "not-found",
+  ),
+  errorStep(
+    "former stash token is revoked after deletion",
+    "me",
+    () => ({ method: "GET", path: "/v1/me", token: "write" }),
+    401,
+    "unauthorized",
+  ),
+  errorStep(
+    "foreign token probing a deleted stash is concealed",
+    "getStash",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}`,
+      token: "foreign",
+    }),
+    404,
+    "not-found",
+  ),
+  {
+    name: "restore returns the original stash without its old tokens",
+    routeId: "restoreStash",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/restore`,
+    }),
+    verify(response, body, context) {
+      const step = "restore returns the original stash without its old tokens";
+      assertStatus(step, response, 200);
+      assertSubset(step, body, {
+        name: context.stash,
+        deletedAt: null,
+        restoreUntil: null,
+        restorable: false,
+      });
+    },
+  },
+  errorStep(
+    "restored stash does not revive its former token",
+    "me",
+    () => ({ method: "GET", path: "/v1/me", token: "write" }),
+    401,
+    "unauthorized",
+  ),
+  errorStep(
+    "restored stash name is never recycled",
+    "createStash",
+    (context) => ({ method: "POST", path: "/v1/stashes", body: { name: context.stash } }),
+    409,
+    "exists",
+  ),
+  {
+    name: "GC dry run returns a private-safe page",
+    routeId: "runGc",
+    request: () => ({
+      method: "POST",
+      path: "/v1/admin/gc",
+      body: { kind: "r2-orphans", dryRun: true, maxObjects: 1 },
+    }),
+    verify(response, body, context) {
+      const step = "GC dry run returns a private-safe page";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      assertSubset(step, value, {
+        jobId: "r2-orphans",
+        kind: "r2-orphans",
+        dryRun: true,
+        deleted: 0,
+        error: null,
+      });
+      if (typeof value.runId !== "string" || !/^[0-9a-f-]{36}$/.test(value.runId)) {
+        traceFailure(step, "runId must be a UUID");
+      }
+      if (typeof value.scanned !== "number" || typeof value.eligible !== "number") {
+        traceFailure(step, "GC counters are missing");
+      }
+      if (value.cursor !== null && typeof value.cursor !== "string") {
+        traceFailure(step, "cursor must be nullable and opaque");
+      }
+      if (typeof value.startedAt !== "string") traceFailure(step, "startedAt is missing");
+      remember(context, "gcRunId", value.runId);
+    },
+  },
+  {
+    name: "GC run history is newest first and never exposes R2 keys",
+    routeId: "listGcRuns",
+    request: () => ({ method: "GET", path: "/v1/admin/gc/runs?kind=r2-orphans&limit=10" }),
+    verify(response, body, context) {
+      const step = "GC run history is newest first and never exposes R2 keys";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      const runs = array(value.runs, step);
+      const run = runs.find((entry) => record(entry, step).runId === context.values.get("gcRunId"));
+      if (run === undefined) traceFailure(step, "the dry-run page is missing from history");
+      assertSubset(step, run, { jobId: "r2-orphans", kind: "r2-orphans", dryRun: true });
+      const serialized = JSON.stringify(body);
+      for (const forbidden of ["r2_key", "r2Key", "v2/"]) {
+        if (serialized.includes(forbidden)) traceFailure(step, `history leaked ${forbidden}`);
+      }
+    },
+  },
+  {
+    name: "ledger GC dry run has its own stable job kind",
+    routeId: "runGc",
+    request: () => ({
+      method: "POST",
+      path: "/v1/admin/gc",
+      body: { kind: "ledger", dryRun: true, maxObjects: 1 },
+    }),
+    verify(response, body) {
+      const step = "ledger GC dry run has its own stable job kind";
+      assertStatus(step, response, 200);
+      assertSubset(step, body, { jobId: "ledger", kind: "ledger", dryRun: true, deleted: 0 });
+    },
+  },
+  {
+    name: "ledger GC history can be filtered by kind",
+    routeId: "listGcRuns",
+    request: () => ({ method: "GET", path: "/v1/admin/gc/runs?kind=ledger&limit=10" }),
+    verify(response, body) {
+      const step = "ledger GC history can be filtered by kind";
+      assertStatus(step, response, 200);
+      const runs = array(record(body, step).runs, step);
+      if (runs.length < 1) traceFailure(step, "ledger dry run is missing from history");
+      for (const run of runs) assertSubset(step, run, { jobId: "ledger", kind: "ledger" });
+    },
+  },
 ];
 
 /** Stable, serializable trace metadata for coverage and documentation checks. */
@@ -1482,6 +1711,12 @@ function tokenFor(
       return traceFailure(step, "rotation successor was not initialized");
     }
     return context.successorToken;
+  }
+  if (token === "foreign") {
+    if (context.foreignToken === undefined) {
+      return traceFailure(step, "foreign token was not initialized");
+    }
+    return context.foreignToken;
   }
   return context.adminToken;
 }

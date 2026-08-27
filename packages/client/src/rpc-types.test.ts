@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type { RouteId } from "@takazudo/zudo-history-stash-core";
+import type { ListGcRunsOptions, ListStashesOptions } from "./client.js";
 import type { StashRpcMethods } from "./rpc-types.js";
 
 const rpcMethodsByRoute = {
@@ -57,5 +58,13 @@ describe("StashRpcMethods route pin", () => {
       includeDeleted: true,
     };
     expect(input).toEqual({ includeDeleted: true });
+  });
+
+  it("keeps high-level list options strict after schema preprocessing", () => {
+    expectTypeOf<ListStashesOptions["includeDeleted"]>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<ListStashesOptions["limit"]>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<ListStashesOptions["after"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<ListGcRunsOptions["kind"]>().toEqualTypeOf<"r2-orphans" | "ledger" | undefined>();
+    expectTypeOf<ListGcRunsOptions["limit"]>().toEqualTypeOf<number | undefined>();
   });
 });

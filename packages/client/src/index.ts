@@ -3,7 +3,13 @@ export const VERSION = "0.0.0";
 
 export * from "./client.js";
 export * from "./parse.js";
-export * from "./rpc-types.js";
+export {
+  type ListGcRunsOptions,
+  type ListStashesRpcOptions,
+  type StashRpcBinding,
+  type StashRpcEntrypoint,
+  type StashRpcMethods,
+} from "./rpc-types.js";
 export {
   ROUTES,
   formatEtag,

@@ -18,8 +18,6 @@ import type {
   GcRunResult,
   GcRunsResponse,
   ListChangesResult,
-  ListGcRunsQuery,
-  ListStashesQuery,
   ListStashesResult,
   ListTokensResult,
   MeResponse,
@@ -41,15 +39,17 @@ import type {
   FileGetOptions,
   FileGetResult,
   HistoryOptions,
+  ListGcRunsOptions as ClientListGcRunsOptions,
   ListFilesOptions,
+  ListStashesOptions,
   MutationOptions,
 } from "./client.js";
 
-/** Optional raw query values for the GC run history RPC. */
-export type ListGcRunsOptions = Partial<ListGcRunsQuery>;
+/** Optional query values for the GC run history RPC. */
+export type ListGcRunsOptions = ClientListGcRunsOptions;
 
 /** Optional raw query values for the stash list RPC, including deleted-row visibility. */
-export type ListStashesRpcOptions = Partial<ListStashesQuery>;
+export type ListStashesRpcOptions = ListStashesOptions;
 
 /** The minimal named RPC binding exposed by the stash Worker. */
 export interface StashRpcBinding {

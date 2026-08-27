@@ -7,15 +7,18 @@ import {
   DiffCandidateBody,
   DiffQuery,
   FileGetQuery,
+  ListGcRunsQuery,
   HistoryQuery,
   IDEMPOTENCY_KEY_MAX_CHARS,
   ListFilesQuery,
-  ListQuery,
+  ListStashesQuery,
   MAX_BODY_BYTES,
   PutFileBody,
+  R2_SPILL_BYTES,
   ROUTES,
   RotateTokenBody,
   RollbackBody,
+  RunGcBody,
   canonicalJson,
   computeDiff,
   formatEtag,
@@ -32,6 +35,7 @@ import type {
   Current,
   DiffSide,
   ErrorCode,
+  GcKind,
   JsonValue,
   RouteId,
   TokenScope,
@@ -40,8 +44,10 @@ import type { StashFetch } from "../client.js";
 import type {
   FakeBlobRow,
   FakeFileRow,
+  FakeGcJobRow,
   FakeIdempotencyRow,
   FakeMintTokenOptions,
+  FakeR2ObjectRow,
   FakeRateLimitInput,
   FakeStash,
   FakeStashOptions,
@@ -55,6 +61,12 @@ const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 const MAX_DIFF_CONTEXT = 10;
 const LAST_USED_INTERVAL_MS = 60_000;
 const MAX_TOKEN_TTL_MS = 315_360_000 * 1_000;
+const DEFAULT_DELETE_GRACE_DAYS = 30;
+const DEFAULT_GC_ORPHAN_MIN_AGE_MS = 900_000;
+const GC_LEASE_TTL_MS = 300_000;
+const MAX_R2_GC_PAGE_OBJECTS = 24;
+const SHA256_HASH = /^sha256-[0-9a-f]{64}$/;
+const LOWERCASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
 
 const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
@@ -62,6 +74,26 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "listStashes",
   "createStash",
   "getStash",
+  "deleteStash",
+  "restoreStash",
+  "createToken",
+  "listTokens",
+  "rotateToken",
+  "revokeToken",
+  "listFiles",
+  "getFile",
+  "putFile",
+  "deleteFile",
+  "rollbackFile",
+  "getHistory",
+  "getDiff",
+  "diffCandidate",
+  "getStashChanges",
+  "runGc",
+  "listGcRuns",
+]);
+
+const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
   "createToken",
   "listTokens",
   "rotateToken",
@@ -189,6 +221,9 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   if (method === "GET" && pathname === "/v1/stashes") return { routeId: "listStashes" };
   if (method === "POST" && pathname === "/v1/stashes") return { routeId: "createStash" };
 
+  if (method === "POST" && pathname === "/v1/admin/gc") return { routeId: "runGc" };
+  if (method === "GET" && pathname === "/v1/admin/gc/runs") return { routeId: "listGcRuns" };
+
   let match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)\/rotate$/.exec(pathname);
   if (method === "POST" && match?.[1] !== undefined && match[2] !== undefined) {
     return {
@@ -216,8 +251,16 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   }
 
   match = /^\/v1\/stashes\/([^/]+)$/.exec(pathname);
+  if (method === "DELETE" && match?.[1] !== undefined) {
+    return { routeId: "deleteStash", stash: decode(match[1]) };
+  }
   if (method === "GET" && match?.[1] !== undefined) {
     return { routeId: "getStash", stash: decode(match[1]) };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/restore$/.exec(pathname);
+  if (method === "POST" && match?.[1] !== undefined) {
+    return { routeId: "restoreStash", stash: decode(match[1]) };
   }
 
   match = /^\/v1\/stashes\/([^/]+)\/files$/.exec(pathname);
@@ -380,16 +423,54 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const now = options.now ?? Date.now;
   const adminToken = options.adminToken ?? "admin";
   const limiter = options.rateLimit ?? (() => ({ success: true }));
+  const deleteGraceDays = options.deleteGraceDays ?? DEFAULT_DELETE_GRACE_DAYS;
+  const gcOrphanMinAgeMs = options.gcOrphanMinAgeMs ?? DEFAULT_GC_ORPHAN_MIN_AGE_MS;
+  if (!Number.isSafeInteger(deleteGraceDays) || deleteGraceDays < 1) {
+    throw new TypeError("deleteGraceDays must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(gcOrphanMinAgeMs) || gcOrphanMinAgeMs < 0) {
+    throw new TypeError("gcOrphanMinAgeMs must be a non-negative safe integer");
+  }
   const state: FakeStashState = {
     stashes: new Map(),
     tokens: new Map(),
     blobs: new Map(),
+    r2Objects: new Map(),
     files: new Map(),
     versions: [],
     idempotency: new Map(),
+    gcJobs: new Map<GcKind, FakeGcJobRow>([
+      [
+        "r2-orphans",
+        {
+          kind: "r2-orphans",
+          nextCursor: null,
+          leaseOwner: null,
+          leaseGeneration: 0,
+          leaseUntil: null,
+          updatedAt: 0,
+        },
+      ],
+      [
+        "ledger",
+        {
+          kind: "ledger",
+          nextCursor: null,
+          leaseOwner: null,
+          leaseGeneration: 0,
+          leaseUntil: null,
+          updatedAt: 0,
+        },
+      ],
+    ]),
+    gcRuns: [],
   };
   let nextToken = 1;
   let nextChangeId = 1;
+  let nextR2ObjectSerial = 1;
+  let nextGcRun = 1;
+  let nextGcCursorSerial = 1;
+  const gcCursorPositions = new Map<string, { kind: GcKind; afterKey: string }>();
 
   const nested = <T>(table: Map<string, Map<string, T>>, stash: string): Map<string, T> => {
     let rows = table.get(stash);
@@ -432,6 +513,14 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return requireStash(stash);
   };
 
+  const requireLiveStash = (stash: string): FakeStashRow => {
+    const row = requireAdminStash(stash);
+    if (row.deletedAt !== null) {
+      return fail("not-found", "The requested resource was not found.");
+    }
+    return row;
+  };
+
   const stashRecord = (row: FakeStashRow) => {
     const files = [...(state.files.get(row.name)?.values() ?? [])];
     const versions = state.versions.filter((version) => version.stash === row.name);
@@ -440,6 +529,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         latest === undefined || version.changeId > latest.changeId ? version : latest,
       undefined,
     );
+    const deletedAt = row.deletedAt;
+    const restoreUntilMs = deletedAt === null ? null : deletedAt + deleteGraceDays * 86_400_000;
     return {
       name: row.name,
       description: row.description,
@@ -449,9 +540,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       lastChangeId: last?.changeId ?? null,
       lastChangeAt: last === undefined ? null : iso(last.createdAt),
       createdAt: iso(row.createdAt),
-      deletedAt: null,
-      restoreUntil: null,
-      restorable: false,
+      deletedAt: deletedAt === null ? null : iso(deletedAt),
+      restoreUntil: restoreUntilMs === null ? null : iso(restoreUntilMs),
+      restorable: restoreUntilMs !== null && now() < restoreUntilMs,
     };
   };
 
@@ -465,7 +556,13 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (state.stashes.has(name)) {
       return fail("exists", "A stash with that name already exists.");
     }
-    const row = { name, description, meta: cloneMeta(meta), createdAt: now() };
+    const row = {
+      name,
+      description,
+      meta: cloneMeta(meta),
+      createdAt: now(),
+      deletedAt: null,
+    };
     state.stashes.set(name, row);
     return row;
   };
@@ -478,7 +575,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     expiresAt: number | null,
     rotatedFrom: string | null,
   ): Promise<{ row: FakeTokenRow; token: string }> => {
-    requireAdminStash(stash);
+    requireLiveStash(stash);
     const serial = nextToken;
     nextToken += 1;
     const tokenSerial = serial.toString(36).padStart(43, "0");
@@ -723,10 +820,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   };
 
   const handleListStashes = (url: URL): Response => {
-    const parsed = ListQuery.safeParse(queryObject(url));
+    const parsed = ListStashesQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid stash list query.");
     const candidates = [...state.stashes.values()]
       .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      .filter((row) => parsed.data.includeDeleted || row.deletedAt === null)
       .filter((row) => parsed.data.after === undefined || row.name > parsed.data.after);
     const hasMore = candidates.length > parsed.data.limit;
     const page = candidates.slice(0, parsed.data.limit);
@@ -740,6 +838,220 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   };
 
   const handleGetStash = (stash: string): Response => json(stashRecord(requireAdminStash(stash)));
+
+  const handleDeleteStash = (stash: string): Response => {
+    const row = requireAdminStash(stash);
+    if (row.deletedAt !== null) {
+      return fail("already-deleted", "Stash is already deleted.");
+    }
+    const deletedAt = now();
+    let revokedTokens = 0;
+    for (const token of state.tokens.values()) {
+      if (token.stash !== stash || token.revokedAt !== null) continue;
+      token.revokedAt = deletedAt;
+      revokedTokens += 1;
+    }
+    row.deletedAt = deletedAt;
+    const restoreUntil = deletedAt + deleteGraceDays * 86_400_000;
+    return json({
+      name: row.name,
+      deletedAt: iso(deletedAt),
+      revokedTokens,
+      restoreUntil: iso(restoreUntil),
+    });
+  };
+
+  const handleRestoreStash = (stash: string): Response => {
+    const row = requireAdminStash(stash);
+    const deletedAt = row.deletedAt;
+    if (deletedAt === null) return fail("not-found", "The requested resource was not found.");
+    const restoreUntil = deletedAt + deleteGraceDays * 86_400_000;
+    if (now() >= restoreUntil) return fail("not-found", "The requested resource was not found.");
+    row.deletedAt = null;
+    return json(stashRecord(row));
+  };
+
+  const nextGcRunId = (): string =>
+    `00000000-0000-4000-8000-${String(nextGcRun++).padStart(12, "0")}`;
+
+  const nextGcCursor = (kind: GcKind, afterKey: string): string => {
+    const cursor = `fake-gc-cursor-${String(nextGcCursorSerial).padStart(8, "0")}`;
+    nextGcCursorSerial += 1;
+    gcCursorPositions.set(cursor, { kind, afterKey });
+    return cursor;
+  };
+
+  const gcJob = (kind: GcKind): FakeGcJobRow => {
+    const job = state.gcJobs.get(kind);
+    if (job === undefined) return fail("internal", "The fake GC job registry is incomplete.");
+    return job;
+  };
+
+  type OrphanCandidate = FakeR2ObjectRow & { accepted: boolean; referenced: boolean };
+  type LedgerCandidate = { key: string; row: FakeIdempotencyRow };
+
+  const parseAcceptedR2Key = (key: string): { stash: string; hash: string } | null => {
+    const segments = key.split("/");
+    const legacy = segments.length === 2;
+    const v2 = segments.length === 4 && segments[0] === "v2";
+    if (!legacy && !v2) return null;
+    const stash = segments[legacy ? 0 : 1];
+    const hash = segments[legacy ? 1 : 2];
+    if (stash === undefined || hash === undefined || !validateStashName(stash).ok) return null;
+    if (!SHA256_HASH.test(hash)) return null;
+    if (!legacy && (segments[3] === undefined || !LOWERCASE_UUID.test(segments[3]))) return null;
+    return { stash, hash };
+  };
+
+  const orphanCandidates = (): OrphanCandidate[] => {
+    // A version points to a logical blob by hash, but only the blob row's exact immutable
+    // generation is live in R2. A later upload of the same hash therefore remains collectible.
+    const referenced = new Set(
+      [...state.blobs.values()]
+        .flatMap((rows) => [...rows.values()])
+        .map((blob) => blob.r2Key)
+        .filter((key): key is string => key !== null),
+    );
+    return [...state.r2Objects.values()]
+      .map((row) => {
+        const parsed = parseAcceptedR2Key(row.key);
+        return {
+          ...row,
+          accepted: parsed !== null,
+          referenced: parsed !== null && referenced.has(row.key),
+        };
+      })
+      .sort((left, right) => left.key.localeCompare(right.key));
+  };
+
+  const ledgerCandidates = (): LedgerCandidate[] =>
+    [...state.idempotency.entries()]
+      .flatMap(([stash, rows]) =>
+        [...rows.entries()].map(([key, row]) => ({ key: `${stash}\u0000${key}`, row })),
+      )
+      .sort((left, right) => left.key.localeCompare(right.key));
+
+  const compareGcRuns = (left: { startedAt: string; runId: string }, right: typeof left) =>
+    right.startedAt.localeCompare(left.startedAt) || right.runId.localeCompare(left.runId);
+
+  const pruneGcRuns = (kind: GcKind): void => {
+    const forKind = state.gcRuns.filter((run) => run.kind === kind);
+    if (forKind.length <= 500) return;
+    const keep = new Set(forKind.sort(compareGcRuns).slice(0, 500));
+    for (let index = state.gcRuns.length - 1; index >= 0; index -= 1) {
+      const run = state.gcRuns[index];
+      if (run !== undefined && run.kind === kind && !keep.has(run)) state.gcRuns.splice(index, 1);
+    }
+  };
+
+  const pageStart = <T extends { key: string }>(
+    candidates: readonly T[],
+    cursor: string | undefined,
+    kind: GcKind,
+  ): number => {
+    if (cursor === undefined) return 0;
+    const position = gcCursorPositions.get(cursor);
+    if (position === undefined) return fail("validation", "Invalid GC cursor.");
+    if (position.kind !== kind) return fail("validation", "GC cursor kind does not match the job.");
+    const start = candidates.findIndex((candidate) => candidate.key > position.afterKey);
+    return start === -1 ? candidates.length : start;
+  };
+
+  const validateGcCursor = (cursor: string | undefined, kind: GcKind): void => {
+    if (cursor === undefined) return;
+    const position = gcCursorPositions.get(cursor);
+    if (position === undefined) return fail("validation", "Invalid GC cursor.");
+    if (position.kind !== kind) return fail("validation", "GC cursor kind does not match the job.");
+  };
+
+  const handleRunGc = async (request: Request): Promise<Response> => {
+    const parsed = RunGcBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid garbage-collection input.");
+    const { kind, dryRun, maxObjects, cursor: explicitCursor } = parsed.data;
+    const job = gcJob(kind);
+    const inputCursor = explicitCursor ?? job.nextCursor ?? undefined;
+    validateGcCursor(inputCursor, kind);
+    const startedAt = now();
+    if (job.leaseUntil !== null && job.leaseUntil > startedAt) {
+      return fail("gc-busy", "A garbage-collection run is already in progress.");
+    }
+    const runId = nextGcRunId();
+    job.leaseOwner = runId;
+    job.leaseGeneration += 1;
+    job.leaseUntil = startedAt + GC_LEASE_TTL_MS;
+    job.updatedAt = startedAt;
+
+    const run = {
+      runId,
+      jobId: kind,
+      kind,
+      dryRun,
+      scanned: 0,
+      eligible: 0,
+      deleted: 0,
+      cursor: null as string | null,
+      startedAt: iso(startedAt),
+      finishedAt: null as string | null,
+      error: null as string | null,
+    };
+    state.gcRuns.push(run);
+
+    if (kind === "r2-orphans") {
+      const candidates = orphanCandidates();
+      const start = pageStart(candidates, inputCursor, kind);
+      const page = candidates.slice(start, start + Math.min(maxObjects, MAX_R2_GC_PAGE_OBJECTS));
+      run.scanned = page.length;
+      const eligible = page.filter(
+        (candidate) =>
+          candidate.accepted &&
+          !candidate.referenced &&
+          startedAt - candidate.createdAt > gcOrphanMinAgeMs,
+      );
+      run.eligible = eligible.length;
+      if (!dryRun) {
+        for (const candidate of eligible) {
+          state.r2Objects.delete(candidate.key);
+        }
+        run.deleted = eligible.length;
+      }
+      const last = page.at(-1);
+      run.cursor =
+        last === undefined || start + page.length >= candidates.length
+          ? null
+          : nextGcCursor(kind, last.key);
+    } else {
+      const candidates = ledgerCandidates();
+      const start = pageStart(candidates, inputCursor, kind);
+      const page = candidates.slice(start, start + maxObjects);
+      run.scanned = page.length;
+      // The fake has no configured idempotency retention clock; ledger rows are retained.
+      run.cursor =
+        page.at(-1) === undefined || start + page.length >= candidates.length
+          ? null
+          : nextGcCursor(kind, page.at(-1)?.key ?? "");
+    }
+
+    if (!dryRun) job.nextCursor = run.cursor;
+    const finishedAt = now();
+    run.finishedAt = iso(finishedAt);
+    job.leaseOwner = null;
+    job.leaseUntil = null;
+    job.updatedAt = finishedAt;
+    pruneGcRuns(kind);
+    return json(run);
+  };
+
+  const handleListGcRuns = (url: URL): Response => {
+    const parsed = ListGcRunsQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid garbage-collection run query.");
+    pruneGcRuns("r2-orphans");
+    pruneGcRuns("ledger");
+    const runs = state.gcRuns
+      .filter((run) => parsed.data.kind === undefined || run.kind === parsed.data.kind)
+      .sort(compareGcRuns)
+      .slice(0, parsed.data.limit);
+    return json({ runs });
+  };
 
   const handleCreateToken = async (request: Request, stash: string): Promise<Response> => {
     const parsed = CreateTokenBody.safeParse(await requestJson(request));
@@ -1004,11 +1316,25 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       message: parsed.data.message ?? "",
       meta: cloneMeta(parsed.data.meta),
     });
+    let objectKey: string | null = null;
+    if (size > R2_SPILL_BYTES) {
+      const generation = `00000000-0000-4000-8000-${String(nextR2ObjectSerial).padStart(12, "0")}`;
+      objectKey = `v2/${stash}/${bodyHash}/${generation}`;
+      nextR2ObjectSerial += 1;
+      state.r2Objects.set(objectKey, {
+        key: objectKey,
+        stash,
+        hash: bodyHash,
+        size,
+        createdAt: version.createdAt,
+      });
+    }
     if (!blobRows.has(bodyHash)) {
       const blob: FakeBlobRow = {
         stash,
         hash: bodyHash,
         body: parsed.data.body,
+        r2Key: objectKey,
         size,
         createdAt: version.createdAt,
       };
@@ -1272,6 +1598,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       const url = new URL(request.url);
       const stash = match.stash;
       const path = match.path === undefined ? undefined : requirePath(match.path);
+      if (stash !== undefined && LIVE_STASH_ROUTE_IDS.has(match.routeId)) {
+        requireLiveStash(stash);
+      }
       switch (match.routeId) {
         case "me":
           return json(
@@ -1291,6 +1620,10 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           return await handleCreateStash(request);
         case "getStash":
           return handleGetStash(stash ?? "");
+        case "deleteStash":
+          return handleDeleteStash(stash ?? "");
+        case "restoreStash":
+          return handleRestoreStash(stash ?? "");
         case "createToken":
           return await handleCreateToken(request, stash ?? "");
         case "listTokens":
@@ -1317,6 +1650,10 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           return await handleCandidateDiff(request, stash ?? "", path ?? "");
         case "getStashChanges":
           return handleChanges(stash ?? "", url);
+        case "runGc":
+          return await handleRunGc(request);
+        case "listGcRuns":
+          return handleListGcRuns(url);
         default:
           return unsupported();
       }
@@ -1341,11 +1678,24 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       state.stashes.clear();
       state.tokens.clear();
       state.blobs.clear();
+      state.r2Objects.clear();
       state.files.clear();
       state.versions.length = 0;
       state.idempotency.clear();
+      state.gcRuns.length = 0;
+      for (const job of state.gcJobs.values()) {
+        job.nextCursor = null;
+        job.leaseOwner = null;
+        job.leaseGeneration = 0;
+        job.leaseUntil = null;
+        job.updatedAt = 0;
+      }
+      gcCursorPositions.clear();
       nextToken = 1;
       nextChangeId = 1;
+      nextR2ObjectSerial = 1;
+      nextGcRun = 1;
+      nextGcCursorSerial = 1;
     },
   };
 }
