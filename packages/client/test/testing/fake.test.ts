@@ -427,6 +427,154 @@ describe("stash administration routes", () => {
     expect(runRows.runs[0]?.runId).toBe(nonDryBody.runId);
   });
 
+  it("caps R2 pages at 24 and continues without skipping while ledger keeps its limit", async () => {
+    const now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const old = now - 900_001;
+    const objectKeys = Array.from({ length: 25 }, (_, index) => {
+      const hash = `sha256-${String(index).padStart(2, "0")}${"a".repeat(62)}`;
+      return `v2/demo/${hash}/00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
+    });
+    fake.state.blobs.set(
+      "demo",
+      new Map(
+        objectKeys.map((key, index) => {
+          const hash = key.split("/")[2] ?? "";
+          return [
+            hash,
+            {
+              stash: "demo",
+              hash,
+              body: String(index),
+              r2Key: null,
+              size: 1,
+              createdAt: old,
+            },
+          ];
+        }),
+      ),
+    );
+    const ledgerRows = new Map();
+    for (const [index, key] of objectKeys.entries()) {
+      const hash = key.split("/")[2] ?? "";
+      fake.state.r2Objects.set(key, {
+        key,
+        stash: "demo",
+        hash,
+        size: 1,
+        createdAt: old,
+      });
+      const ledgerKey = `ledger-${String(index).padStart(2, "0")}`;
+      ledgerRows.set(ledgerKey, {
+        stash: "demo",
+        key: ledgerKey,
+        requestHash: `request-${String(index)}`,
+        path: `docs/${String(index)}.txt`,
+        version: 1,
+        statusCode: 200,
+        createdAt: old,
+      });
+    }
+    fake.state.idempotency.set("demo", ledgerRows);
+    const logicalBefore = JSON.stringify([...fake.state.blobs.entries()]);
+
+    const dryFirst = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", dryRun: true, maxObjects: 500 }),
+    });
+    expect(dryFirst.status).toBe(200);
+    const dryFirstBody = (await dryFirst.json()) as {
+      runId: string;
+      scanned: number;
+      eligible: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(dryFirstBody).toMatchObject({ scanned: 24, eligible: 24, deleted: 0 });
+    expect(dryFirstBody.cursor).toEqual(expect.any(String));
+    expect(fake.state.gcJobs.get("r2-orphans")?.nextCursor).toBeNull();
+    expect([...fake.state.r2Objects.keys()]).toEqual(objectKeys);
+
+    const dryContinuation = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "r2-orphans",
+        dryRun: true,
+        maxObjects: 500,
+        cursor: dryFirstBody.cursor,
+      }),
+    });
+    expect(dryContinuation.status).toBe(200);
+    await expect(dryContinuation.json()).resolves.toMatchObject({
+      scanned: 1,
+      eligible: 1,
+      deleted: 0,
+      cursor: null,
+    });
+    expect(fake.state.r2Objects.size).toBe(25);
+    expect(JSON.stringify([...fake.state.blobs.entries()])).toBe(logicalBefore);
+
+    const nonDryFirst = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", maxObjects: 500 }),
+    });
+    expect(nonDryFirst.status).toBe(200);
+    const nonDryFirstBody = (await nonDryFirst.json()) as {
+      runId: string;
+      scanned: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(nonDryFirstBody).toMatchObject({ scanned: 24, deleted: 24 });
+    expect(nonDryFirstBody.cursor).toEqual(expect.any(String));
+    expect(nonDryFirstBody.runId).not.toBe(dryFirstBody.runId);
+    expect([...fake.state.r2Objects.keys()]).toEqual([objectKeys[24]]);
+
+    const nonDryContinuation = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "r2-orphans",
+        maxObjects: 500,
+        cursor: nonDryFirstBody.cursor,
+      }),
+    });
+    expect(nonDryContinuation.status).toBe(200);
+    const nonDryContinuationBody = (await nonDryContinuation.json()) as {
+      runId: string;
+      scanned: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(nonDryContinuationBody).toMatchObject({
+      scanned: 1,
+      deleted: 1,
+      cursor: null,
+    });
+    expect(nonDryContinuationBody.runId).not.toBe(nonDryFirstBody.runId);
+    expect(nonDryFirstBody.scanned + nonDryContinuationBody.scanned).toBe(25);
+    expect(nonDryFirstBody.deleted + nonDryContinuationBody.deleted).toBe(25);
+    expect(fake.state.r2Objects.size).toBe(0);
+    expect(JSON.stringify([...fake.state.blobs.entries()])).toBe(logicalBefore);
+
+    const ledger = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "ledger", dryRun: true, maxObjects: 500 }),
+    });
+    expect(ledger.status).toBe(200);
+    await expect(ledger.json()).resolves.toMatchObject({
+      scanned: 25,
+      eligible: 0,
+      deleted: 0,
+      cursor: null,
+    });
+  });
+
   it("validates opaque cursors, uses a strict age boundary, and preserves logical history", async () => {
     const now = Date.parse("2026-08-26T00:00:00.000Z");
     const fake = createFakeStash({ adminToken: ADMIN, now: () => now });

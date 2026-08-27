@@ -1519,6 +1519,16 @@ const TRACE: readonly TraceStep[] = [
     },
   },
   errorStep(
+    "deleted stash normal routes are concealed even for admin",
+    "listFiles",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/files`,
+    }),
+    404,
+    "not-found",
+  ),
+  errorStep(
     "former stash token is revoked after deletion",
     "me",
     () => ({ method: "GET", path: "/v1/me", token: "write" }),

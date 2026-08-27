@@ -97,6 +97,7 @@ describe("shared conformance trace", () => {
         "deleted stash remains visible only through explicit admin get",
         "default stash list conceals a deleted stash",
         "includeDeleted stash list exposes a deleted stash",
+        "deleted stash normal routes are concealed even for admin",
         "former stash token is revoked after deletion",
         "foreign token probing a deleted stash is concealed",
         "restore returns the original stash without its old tokens",

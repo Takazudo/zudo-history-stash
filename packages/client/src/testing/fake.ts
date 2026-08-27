@@ -64,6 +64,7 @@ const MAX_TOKEN_TTL_MS = 315_360_000 * 1_000;
 const DEFAULT_DELETE_GRACE_DAYS = 30;
 const DEFAULT_GC_ORPHAN_MIN_AGE_MS = 900_000;
 const GC_LEASE_TTL_MS = 300_000;
+const MAX_R2_GC_PAGE_OBJECTS = 24;
 const SHA256_HASH = /^sha256-[0-9a-f]{64}$/;
 const LOWERCASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
@@ -998,7 +999,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (kind === "r2-orphans") {
       const candidates = orphanCandidates();
       const start = pageStart(candidates, inputCursor, kind);
-      const page = candidates.slice(start, start + maxObjects);
+      const page = candidates.slice(start, start + Math.min(maxObjects, MAX_R2_GC_PAGE_OBJECTS));
       run.scanned = page.length;
       const eligible = page.filter(
         (candidate) =>
