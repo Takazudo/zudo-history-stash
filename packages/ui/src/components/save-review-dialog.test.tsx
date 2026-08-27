@@ -942,6 +942,40 @@ describe("SaveReviewDialog", () => {
     expect(within(screen.getByRole("status")).getByText("Proposal saved")).toBeTruthy();
   });
 
+  it("keeps proposal success terminal when the consumer callback throws", async () => {
+    const fixture = await makeFixture("base\n");
+    const consumerError = new Error("consumer callback failed");
+    const callbackFailure = deferred<unknown>();
+    const onUnhandled = (reason: unknown) => {
+      if (reason === consumerError) callbackFailure.resolve(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const onProposed = vi.fn(() => {
+      throw consumerError;
+    });
+
+    try {
+      render(
+        <ProposalFakeBackedHost
+          draft="proposal body\n"
+          fixture={fixture}
+          onProposed={onProposed}
+        />,
+      );
+      await userEvent.click(await screen.findByRole("button", { name: "Save as proposal" }));
+      await callbackFailure.promise;
+
+      expect(onProposed).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: "Proposal saved" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Retry proposal" })).toBeNull();
+      expect(screen.queryByText("The proposal response was interrupted")).toBeNull();
+      const proposals = await fixture.client.proposals(STASH).list({ status: "all" });
+      expect(proposals.ok && proposals.value.total).toBe(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("does not render Save as proposal after a read principal resolves", async () => {
     const adminToken = "save-proposal-read-admin";
     const fake = createFakeStash({ adminToken });

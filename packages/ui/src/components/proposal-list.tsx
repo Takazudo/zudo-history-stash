@@ -116,7 +116,8 @@ function ProposalListForTarget({ stash, status = "open", path, limit }: Proposal
 
   useEffect(() => {
     const controller = new AbortController();
-    loadMoreControllerRef.current = controller;
+    loadMoreControllerRef.current?.abort();
+    loadMoreControllerRef.current = null;
     loadingMoreRef.current = false;
     setState(INITIAL_STATE);
 
@@ -155,12 +156,14 @@ function ProposalListForTarget({ stash, status = "open", path, limit }: Proposal
     loadingMoreRef.current = true;
     setState((current) => ({ ...current, loadingMore: true, loadMoreError: null }));
     const controller = new AbortController();
+    loadMoreControllerRef.current?.abort();
+    loadMoreControllerRef.current = controller;
 
     try {
       const result = await clientForSignal(controller.signal)
         .proposals(stash)
         .list(listOptions({ status, path, limit, after: state.nextAfter }));
-      if (!mountedRef.current) return;
+      if (controller.signal.aborted || !mountedRef.current) return;
       if (!result.ok) throw result;
       setState((current) => ({
         ...current,
@@ -171,7 +174,7 @@ function ProposalListForTarget({ stash, status = "open", path, limit }: Proposal
         loadMoreError: null,
       }));
     } catch (error: unknown) {
-      if (mountedRef.current) {
+      if (!controller.signal.aborted && mountedRef.current) {
         setState((current) => ({
           ...current,
           loadingMore: false,
@@ -179,8 +182,10 @@ function ProposalListForTarget({ stash, status = "open", path, limit }: Proposal
         }));
       }
     } finally {
-      loadingMoreRef.current = false;
-      if (loadMoreControllerRef.current === controller) loadMoreControllerRef.current = null;
+      if (loadMoreControllerRef.current === controller) {
+        loadMoreControllerRef.current = null;
+        loadingMoreRef.current = false;
+      }
     }
   }
 

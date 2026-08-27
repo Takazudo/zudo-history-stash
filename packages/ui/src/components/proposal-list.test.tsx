@@ -1,6 +1,6 @@
 import { createStashClient, type ProposalRecord } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
@@ -9,6 +9,14 @@ import { ProposalList } from "./proposal-list.js";
 const STASH = "notes";
 const PATH = "docs/readme.txt";
 const BASE_URL = "https://proposal-list.test";
+
+function deferred<T>() {
+  let resolvePromise!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
 
 async function createProposal(
   client: ReturnType<typeof createStashClient>,
@@ -88,5 +96,80 @@ describe("ProposalList", () => {
     expect(within(table).getByText("Ada")).toBeTruthy();
     expect(within(table).getByText("First proposal")).toBeTruthy();
     expect(within(table).getByLabelText("Proposal status: applied")).toBeTruthy();
+  });
+
+  it("aborts a superseded pagination owner and ignores its forced late result", async () => {
+    const adminToken = "proposal-list-pagination-admin";
+    const fake = createFakeStash({ adminToken });
+    fake.createStash(STASH);
+    const client = createStashClient({ baseUrl: BASE_URL, token: adminToken, fetch: fake.fetch });
+    await createProposal(client, {
+      path: PATH,
+      body: "older candidate\n",
+      baseVersion: null,
+      author: "Ada",
+      message: "Older proposal",
+    });
+    await createProposal(client, {
+      path: PATH,
+      body: "newer candidate\n",
+      baseVersion: null,
+      author: "Grace",
+      message: "Newer proposal",
+    });
+    const nextPath = "docs/next.txt";
+    await createProposal(client, {
+      path: nextPath,
+      body: "next candidate\n",
+      baseVersion: null,
+      author: "Lin",
+      message: "Next target",
+    });
+
+    const pageStarted = deferred<void>();
+    const pageRelease = deferred<void>();
+    const pageFinished = deferred<void>();
+    const pageSignal: { current: AbortSignal | null } = { current: null };
+    let delayed = false;
+    const clientForSignal = (signal: AbortSignal) =>
+      createStashClient({
+        baseUrl: BASE_URL,
+        token: adminToken,
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+          if (!delayed && url.searchParams.has("after") && url.searchParams.get("path") === PATH) {
+            delayed = true;
+            pageSignal.current = signal;
+            pageStarted.resolve();
+            await pageRelease.promise;
+            const response = await fake.fetch(input, init);
+            pageFinished.resolve();
+            return response;
+          }
+          return fake.fetch(input, init);
+        },
+      });
+    const view = (path: string) => (
+      <StashUiProvider client={client} clientForSignal={clientForSignal}>
+        <ProposalList limit={1} path={path} stash={STASH} status="all" />
+      </StashUiProvider>
+    );
+    const rendered = render(view(PATH));
+    expect(await screen.findByText(`2 proposals for ${PATH}, newest first.`)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await pageStarted.promise;
+
+    rendered.rerender(view(nextPath));
+    expect(await screen.findByText(`1 proposal for ${nextPath}, newest first.`)).toBeTruthy();
+    expect(pageSignal.current?.aborted).toBe(true);
+    await act(async () => {
+      pageRelease.resolve();
+      await pageFinished.promise;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(screen.getByText("Lin")).toBeTruthy();
+    expect(screen.queryByText("Ada")).toBeNull();
+    expect(screen.queryByText("Grace")).toBeNull();
   });
 });

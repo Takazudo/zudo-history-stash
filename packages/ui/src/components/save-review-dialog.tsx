@@ -140,6 +140,7 @@ function SaveAsProposalButtonAllowed({
     const controller = new AbortController();
     controllerRef.current = controller;
     const isCurrent = () => lifecycleRef.current === lifecycle && !controller.signal.aborted;
+    let created: ProposalRecord | null = null;
 
     try {
       const result = await clientForSignal(controller.signal)
@@ -148,7 +149,7 @@ function SaveAsProposalButtonAllowed({
       if (!isCurrent()) return;
       if (result.ok) {
         attemptRef.current = null;
-        onProposed(result.value);
+        created = result.value;
       } else {
         attemptRef.current = null;
         onFailure(result, false);
@@ -163,6 +164,8 @@ function SaveAsProposalButtonAllowed({
       }
       if (controllerRef.current === controller) controllerRef.current = null;
     }
+
+    if (created !== null && isCurrent()) onProposed(created);
   }
 
   const retrying = state.state === "error" && state.transport;
