@@ -271,6 +271,7 @@ describe("proposal store", () => {
       path: "expired-replay.md",
       body: "e".repeat(R2_SPILL_BYTES + 1),
       baseVersion: null,
+      expiresAt: new Date(NOW + 1).toISOString(),
     } as const;
     const first = await proposals.createProposal(STASH, input, {
       idempotencyKey: "expired-replay-key",
@@ -279,7 +280,7 @@ describe("proposal store", () => {
     expect(calls.put).toBe(1);
     expect(idCalls).toBe(1);
 
-    clock = Date.parse(first.value.expiresAt);
+    clock = NOW + 1;
     bindings.PROPOSAL_TTL_DAYS = "invalid-after-create";
     const replay = await proposals.createProposal(STASH, input, {
       idempotencyKey: "expired-replay-key",
