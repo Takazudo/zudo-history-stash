@@ -56,9 +56,20 @@ async function exhaustLocalWriteLimit(baseUrl, target) {
 async function main() {
   const baseUrl = requiredEnvironment("API_BASE_URL").replace(/\/+$/, "");
   const adminToken = requiredEnvironment("STASH_ADMIN_TOKEN");
+  const testTier = (process.env.TEST_TIER ?? "local").trim();
+  if (testTier !== "local") {
+    throw new Error("conformance-live is a mutating local-only lane; TEST_TIER must be local");
+  }
   const parsedBaseUrl = new URL(baseUrl);
   if (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") {
     throw new Error("API_BASE_URL must use http or https");
+  }
+  if (
+    parsedBaseUrl.hostname !== "localhost" &&
+    parsedBaseUrl.hostname !== "127.0.0.1" &&
+    parsedBaseUrl.hostname !== "[::1]"
+  ) {
+    throw new Error("conformance-live may mutate only a loopback dev:full origin");
   }
 
   console.log(`[conformance-live] running against ${baseUrl}`);

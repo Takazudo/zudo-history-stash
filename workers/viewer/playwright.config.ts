@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { resolveViewerBaseUrl } from "./e2e/live-safety.js";
 
 export function resolveWorkers(value: string | undefined): number | `${number}%` | undefined {
   if (value === undefined || value === "") return undefined;
@@ -9,8 +10,7 @@ export function resolveWorkers(value: string | undefined): number | `${number}%`
 
 const externalBaseUrl = process.env.PW_BASE_URL;
 const liveHarness = process.env.PW_LIVE === "1";
-const baseURL =
-  externalBaseUrl ?? (liveHarness ? "http://localhost:8787" : "http://127.0.0.1:5173");
+const baseURL = resolveViewerBaseUrl(externalBaseUrl, liveHarness);
 
 export default defineConfig({
   testDir: "./e2e",

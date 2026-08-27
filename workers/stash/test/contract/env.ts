@@ -15,18 +15,33 @@ export function parseTestTier(value: string | undefined): TestTier {
   throw new Error(`TEST_TIER must be local, preview, or production; received ${tier}`);
 }
 
-export function mutationAllowedFor(tier: TestTier): boolean {
-  return tier === "local";
+export function isLoopbackBaseUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    (parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "[::1]")
+  );
+}
+
+export function mutationAllowedFor(tier: TestTier, baseUrl = "http://localhost"): boolean {
+  return tier === "local" && isLoopbackBaseUrl(baseUrl);
 }
 
 const environment = runtimeEnvironment();
 
 export const TEST_TIER = parseTestTier(environment.TEST_TIER);
-export const MUTATION_ALLOWED = mutationAllowedFor(TEST_TIER);
 export const API_BASE_URL = (environment.API_BASE_URL ?? "http://localhost:8787").replace(
   /\/+$/u,
   "",
 );
+export const MUTATION_ALLOWED = mutationAllowedFor(TEST_TIER, API_BASE_URL);
 export const STASH_ADMIN_TOKEN =
   environment.STASH_ADMIN_TOKEN ?? (TEST_TIER === "local" ? "dev-admin-token" : "");
 export const SEEDED_STASH = environment.CONTRACT_STASH_NAME ?? "demo";

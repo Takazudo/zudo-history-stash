@@ -289,6 +289,136 @@ describe("local-only HTTP mutation contract", () => {
   );
 
   it.runIf(MUTATION_ALLOWED)(
+    "deletes and restores a spilled stash without reviving its former token",
+    async () => {
+      const admin = createAdminClient();
+      const stash = uniqueStash("lifecycle-r2");
+      unwrap(await admin.stashes.create({ name: stash }), "create lifecycle fixture stash");
+
+      const formerToken = unwrap(
+        await admin.stashes.tokens(stash).create({
+          label: "contract-lifecycle-former",
+          scope: "write",
+        }),
+        "mint former lifecycle token",
+      );
+      const formerClient = createStashClient({
+        baseUrl: API_BASE_URL,
+        token: formerToken.token,
+      });
+      const body = largeFileBody();
+      const spilled = unwrap(
+        await formerClient.files(stash).put("contract/lifecycle-r2.txt", {
+          body,
+          expectedVersion: null,
+          author: "contract-suite",
+          message: "Create lifecycle spill fixture",
+        }),
+        "write lifecycle spill fixture",
+      );
+      if ("unchanged" in spilled) throw new Error("lifecycle spill unexpectedly skipped a write");
+      expect(spilled).toMatchObject({ version: 1, size: LARGE_FILE_BYTES });
+
+      const deleted = unwrap(await admin.stashes.delete(stash), "delete lifecycle fixture stash");
+      expect(deleted).toMatchObject({
+        name: stash,
+        revokedTokens: 1,
+        deletedAt: expect.any(String),
+        restoreUntil: expect.any(String),
+      });
+      expect(Date.parse(deleted.restoreUntil)).toBeGreaterThan(Date.parse(deleted.deletedAt));
+      expect(await formerClient.me()).toEqual({
+        ok: false,
+        error: {
+          status: 401,
+          code: "unauthorized",
+          message: "A valid bearer token is required.",
+        },
+      });
+
+      let after: string | undefined;
+      let deletedSummary:
+        | {
+            name: string;
+            deletedAt: string | null;
+            restoreUntil: string | null;
+            restorable: boolean;
+          }
+        | undefined;
+      for (let pageNumber = 0; pageNumber < 100 && deletedSummary === undefined; pageNumber += 1) {
+        const page = unwrap(
+          await admin.stashes.list({
+            includeDeleted: true,
+            limit: 200,
+            ...(after ? { after } : {}),
+          }),
+          "list deleted lifecycle fixture",
+        );
+        deletedSummary = page.stashes.find(({ name }) => name === stash);
+        if (deletedSummary !== undefined || page.nextAfter === null) break;
+        after = page.nextAfter;
+      }
+      expect(deletedSummary).toMatchObject({
+        name: stash,
+        deletedAt: deleted.deletedAt,
+        restoreUntil: deleted.restoreUntil,
+        restorable: true,
+      });
+
+      const restored = unwrap(
+        await admin.stashes.restore(stash),
+        "restore lifecycle fixture stash",
+      );
+      expect(restored).toMatchObject({
+        name: stash,
+        deletedAt: null,
+        restoreUntil: null,
+        restorable: false,
+        fileCount: 1,
+      });
+      expect(unwrap(await admin.stashes.get(stash), "admin read after restore")).toMatchObject({
+        name: stash,
+        deletedAt: null,
+        fileCount: 1,
+      });
+      const restoredFile = await admin.files(stash).get("contract/lifecycle-r2.txt");
+      if (!restoredFile.ok || "notModified" in restoredFile) {
+        throw new Error("restored lifecycle spill was not readable by the administrator");
+      }
+      expect(restoredFile.value).toMatchObject({
+        path: "contract/lifecycle-r2.txt",
+        version: 1,
+        hash: spilled.hash,
+        size: LARGE_FILE_BYTES,
+        deleted: false,
+        body,
+      });
+      expect(await formerClient.me()).toEqual({
+        ok: false,
+        error: {
+          status: 401,
+          code: "unauthorized",
+          message: "A valid bearer token is required.",
+        },
+      });
+
+      const replacementToken = unwrap(
+        await admin.stashes.tokens(stash).create({
+          label: "contract-lifecycle-replacement",
+          scope: "read",
+        }),
+        "mint replacement lifecycle token",
+      );
+      expect(
+        unwrap(
+          await createStashClient({ baseUrl: API_BASE_URL, token: replacementToken.token }).me(),
+          "authenticate replacement lifecycle token",
+        ),
+      ).toMatchObject({ principal: "stash", stash, tokenId: replacementToken.id, scope: "read" });
+    },
+  );
+
+  it.runIf(MUTATION_ALLOWED)(
     "fences, replays, rolls back, and tombstones file writes",
     async () => {
       const admin = createAdminClient();
