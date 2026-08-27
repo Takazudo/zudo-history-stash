@@ -3,6 +3,7 @@ import {
   CreateStashBody,
   CreateTokenBody,
   ListQuery,
+  RotateTokenBody,
   StashError,
   canonicalJson,
   validateStashName,
@@ -10,6 +11,7 @@ import {
   type ChangesPage,
   type CreatedToken,
   type JsonValue,
+  type RotateTokenResult,
   type StashListResponse,
   type StashRecord,
   type StashSummary,
@@ -18,6 +20,7 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { mintToken, sha256Hex } from "../auth.js";
 import type { Env } from "../env.js";
+import type { TokenRow } from "./schema.js";
 
 const STASH_AGGREGATES = `
   FROM stashes AS s
@@ -77,6 +80,58 @@ const LIST_TOKENS = `
   LEFT JOIN tokens AS t ON t.stash_name = s.name
   WHERE s.name = ?
   ORDER BY t.created_at DESC, t.id DESC
+`;
+
+const GET_TOKEN_FOR_ROTATION = `
+  SELECT
+    id,
+    stash_name,
+    token_hash,
+    label,
+    scope,
+    created_at,
+    revoked_at,
+    last_used_at,
+    expires_at,
+    rotated_from,
+    rotated_to
+  FROM tokens
+  WHERE id = ? AND stash_name = ?
+`;
+
+const INSERT_ROTATION_SUCCESSOR = `
+  INSERT INTO tokens
+    (id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at,
+     expires_at, rotated_from, rotated_to)
+  SELECT ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL
+  WHERE EXISTS (
+    SELECT 1
+    FROM tokens AS predecessor
+    WHERE predecessor.id = ?
+      AND predecessor.stash_name = ?
+      AND predecessor.revoked_at IS NULL
+      AND predecessor.rotated_to IS NULL
+      AND (predecessor.expires_at IS NULL OR predecessor.expires_at > ?)
+  )
+`;
+
+const UPDATE_ROTATION_PREDECESSOR = `
+  UPDATE tokens AS predecessor
+  SET
+    rotated_to = ?,
+    expires_at = MIN(COALESCE(expires_at, ?), ?)
+  WHERE predecessor.id = ?
+    AND predecessor.stash_name = ?
+    AND predecessor.revoked_at IS NULL
+    AND predecessor.rotated_to IS NULL
+    AND (predecessor.expires_at IS NULL OR predecessor.expires_at > ?)
+    AND EXISTS (
+      SELECT 1
+      FROM tokens AS successor
+      WHERE successor.id = ?
+        AND successor.stash_name = ?
+        AND successor.rotated_from = ?
+    )
 `;
 
 const CHANGES_ASC = `
@@ -168,6 +223,7 @@ interface ChangeRow {
 export interface AdminStoreDependencies {
   now: () => number;
   mintToken: () => { id: string; token: string };
+  onBeforeRotateCommit?: () => void | Promise<void>;
 }
 
 export interface AdminStore {
@@ -176,6 +232,7 @@ export interface AdminStore {
   getStash(stash: string): Promise<StashRecord | null>;
   createToken(stash: string, input: CreateTokenBody): Promise<CreatedToken>;
   listTokens(stash: string): Promise<TokenListResponse>;
+  rotateToken(stash: string, id: string, input: RotateTokenBody): Promise<RotateTokenResult>;
   revokeToken(stash: string, id: string): Promise<void>;
   listChanges(query: ChangesQuery): Promise<ChangesPage>;
 }
@@ -230,7 +287,7 @@ function toIso(value: number): string {
 }
 
 function resolveTokenExpiry(
-  input: Pick<CreateTokenBody, "expiresAt" | "ttlSeconds">,
+  input: { expiresAt?: string; ttlSeconds?: number },
   now: number,
 ): number | null {
   const expiresAt =
@@ -246,6 +303,29 @@ function resolveTokenExpiry(
     validation("Token expiry must be in the future and no more than ten years away.");
   }
   return expiresAt;
+}
+
+function knownRotationRefusal(row: TokenRow | null, now: number): StashError | null {
+  if (row === null || row.revoked_at !== null) {
+    return new StashError("not-found", "The requested resource was not found.");
+  }
+  if (row.rotated_to !== null) {
+    return new StashError(
+      "already-rotated",
+      "Token was already rotated.",
+      undefined,
+      row.rotated_to,
+    );
+  }
+  if (row.expires_at !== null && row.expires_at <= now) {
+    return new StashError("token-expired", "Token is expired.");
+  }
+  return null;
+}
+
+function assertRotationEligible(row: TokenRow | null, now: number): asserts row is TokenRow {
+  const refusal = knownRotationRefusal(row, now);
+  if (refusal !== null) throw refusal;
 }
 
 function mapStashSummary(row: StashAggregateRow): StashSummary {
@@ -413,6 +493,89 @@ export function createAdminStore(
         .all<TokenListRow>();
       if (result.results.length === 0) notFound();
       return { tokens: result.results.map(mapToken).filter((token) => token !== null) };
+    },
+
+    async rotateToken(stash, id, input) {
+      const name = validateStash(stash);
+      const parsed = RotateTokenBody.safeParse(input);
+      if (!parsed.success) validation("Invalid token rotation input.");
+
+      const now = deps.now();
+      const db = env.DB.withSession("first-primary");
+      const predecessor = await db.prepare(GET_TOKEN_FOR_ROTATION).bind(id, name).first<TokenRow>();
+      assertRotationEligible(predecessor, now);
+
+      const hasExpiryOverride =
+        parsed.data.expiresAt !== undefined || parsed.data.ttlSeconds !== undefined;
+      const successorExpiresAt = hasExpiryOverride
+        ? resolveTokenExpiry(parsed.data, now)
+        : predecessor.expires_at;
+      const graceEnd = now + parsed.data.graceSeconds * 1_000;
+      const predecessorExpiresAt = Math.min(predecessor.expires_at ?? graceEnd, graceEnd);
+      const created = deps.mintToken();
+      const tokenHash = await sha256Hex(created.token);
+
+      await deps.onBeforeRotateCommit?.();
+      let batchFailure: { error: unknown } | undefined;
+      try {
+        const results = await db.batch([
+          db
+            .prepare(INSERT_ROTATION_SUCCESSOR)
+            .bind(
+              created.id,
+              name,
+              tokenHash,
+              predecessor.label,
+              predecessor.scope,
+              now,
+              successorExpiresAt,
+              predecessor.id,
+              predecessor.id,
+              name,
+              now,
+            ),
+          db
+            .prepare(UPDATE_ROTATION_PREDECESSOR)
+            .bind(
+              created.id,
+              graceEnd,
+              graceEnd,
+              predecessor.id,
+              name,
+              now,
+              created.id,
+              name,
+              predecessor.id,
+            ),
+        ]);
+        if (results.at(-1)?.meta.changes === 1) {
+          return {
+            id: created.id,
+            token: created.token,
+            label: predecessor.label,
+            scope: predecessor.scope,
+            createdAt: toIso(now),
+            expiresAt: successorExpiresAt === null ? null : toIso(successorExpiresAt),
+            rotatedFrom: predecessor.id,
+            predecessor: {
+              id: predecessor.id,
+              expiresAt: toIso(predecessorExpiresAt),
+            },
+          };
+        }
+      } catch (error) {
+        // The outcome can be ambiguous if D1 commits but the batch response is lost.
+        batchFailure = { error };
+      }
+
+      const current = await db
+        .prepare(GET_TOKEN_FOR_ROTATION)
+        .bind(predecessor.id, name)
+        .first<TokenRow>();
+      const refusal = knownRotationRefusal(current, now);
+      if (refusal !== null) throw refusal;
+      if (batchFailure !== undefined) throw batchFailure.error;
+      throw new StashError("internal", "Token rotation could not be completed.");
     },
 
     async revokeToken(stash, id) {

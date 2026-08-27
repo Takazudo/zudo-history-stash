@@ -55,11 +55,13 @@ export class StashError extends Error {
   readonly code: ErrorCode;
   readonly status: number;
   readonly current?: Current;
+  readonly successorId?: string;
 
-  constructor(code: ErrorCode, message: string, current?: Current) {
+  constructor(code: ErrorCode, message: string, current?: Current, successorId?: string) {
     super(message);
     this.code = code;
     this.status = statusForCode(code);
     this.current = current;
+    this.successorId = successorId;
   }
 }

@@ -69,5 +69,14 @@ describe("typed errors", () => {
   it("constructs a StashError with its HTTP status", () => {
     const error = new StashError("file-deleted", "deleted");
     expect(error).toMatchObject({ name: "StashError", code: "file-deleted", status: 404 });
+    expect(error.successorId).toBeUndefined();
+
+    const rotated = new StashError(
+      "already-rotated",
+      "Token was already rotated.",
+      undefined,
+      "tok_successor",
+    );
+    expect(rotated).toMatchObject({ status: 409, successorId: "tok_successor" });
   });
 });
