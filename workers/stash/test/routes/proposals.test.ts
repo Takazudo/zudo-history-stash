@@ -215,6 +215,28 @@ describe("proposal create route", () => {
     });
     await expectError(malformed, 400, "validation");
 
+    const malformedType = await request(app, url(), {
+      method: "POST",
+      headers: {
+        ...bearer("test-admin"),
+        "Content-Type": "application/json;",
+        "Idempotency-Key": "malformed-content-type",
+      },
+      body: JSON.stringify({ path: "a.txt", body: "x", baseVersion: null }),
+    });
+    await expectError(malformedType, 400, "validation");
+    expect(malformedType.headers.get("Idempotent-Replayed")).toBeNull();
+    await expect(
+      createTestEnv()
+        .env.DB.prepare(
+          "SELECT (SELECT COUNT(*) FROM proposals) AS proposals, (SELECT COUNT(*) FROM blobs) AS blobs",
+        )
+        .first(),
+    ).resolves.toMatchObject({ proposals: 0, blobs: 0 });
+    expect((await createTestEnv().env.BLOBS.list({ prefix: `v2/${STASH}/` })).objects).toHaveLength(
+      0,
+    );
+
     await expectError(
       await postCreate({ path: "a.txt", body: "\ud800", baseVersion: null }),
       400,
@@ -539,6 +561,34 @@ describe("proposal decision routes", () => {
       404,
       "not-found",
     );
+  });
+
+  it("rejects malformed decision media types without a transition or replay header", async () => {
+    const proposal = await createProposal();
+
+    for (const decision of ["approve", "reject"] as const) {
+      const response = await request(
+        app,
+        url(`/${proposal.id}/${decision}`),
+        jsonInit("POST", {}, "test-admin", { "Content-Type": "application/json;" }),
+      );
+      await expectError(response, 400, "validation");
+      expect(response.headers.get("Idempotent-Replayed")).toBeNull();
+    }
+
+    await expect(
+      createStashStore(createTestEnv().env, { now: () => clock }).proposals.getProposal(
+        STASH,
+        proposal.id,
+      ),
+    ).resolves.toMatchObject({ status: "open", decidedAt: null, decidedBy: null });
+    await expect(
+      createTestEnv()
+        .env.DB.prepare(
+          "SELECT (SELECT COUNT(*) FROM versions) AS versions, (SELECT COUNT(*) FROM files) AS files",
+        )
+        .first(),
+    ).resolves.toMatchObject({ versions: 0, files: 0 });
   });
 
   it("rejects read tokens on every write route but permits all read routes", async () => {

@@ -20,7 +20,7 @@ import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
 
 const proposals = new Hono<AppEnv>();
-const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(?:;.*)?$/i;
+const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
 
 // The core schema's expiresAt refinement compares against Date.now(). Proposal creation must
 // perform only structural validation here so a same-key replay remains valid after expiry. The
