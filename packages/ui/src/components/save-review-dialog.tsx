@@ -1,6 +1,19 @@
-import type { FileRecord, FileRecordWithEtag } from "@takazudo/zudo-history-stash";
+import type {
+  CreateProposalBody,
+  FileRecord,
+  FileRecordWithEtag,
+  ProposalRecord,
+} from "@takazudo/zudo-history-stash";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useCandidateDiff } from "../hooks/use-candidate-diff.js";
 import { useDiffViewPreferences } from "../hooks/use-diff-view-preferences.js";
 import {
@@ -9,6 +22,7 @@ import {
   type SaveMachine,
   type SaveMachineState,
 } from "../hooks/use-save-machine.js";
+import { useCanWrite, useStashClientForSignal } from "../provider/hooks.js";
 import { Button } from "../primitives/button.js";
 import { Dialog } from "../primitives/dialog.js";
 import { Input } from "../primitives/input.js";
@@ -16,6 +30,7 @@ import { Notice } from "../primitives/notice.js";
 import { Textarea } from "../primitives/textarea.js";
 import { DiffControls } from "./diff-controls.js";
 import { DiffPane } from "./diff-pane.js";
+import { ErrorBanner } from "./error-banner.js";
 
 const AUTHOR_STORAGE_KEY = "zhs.author";
 const MAX_AUTHOR_BYTES = 200;
@@ -29,6 +44,7 @@ export type SaveReviewCompletion = Extract<SaveMachineState, { state: "saved" | 
 
 export interface SaveReviewDialogProps {
   open: boolean;
+  stash?: string;
   head: FileRecord;
   draft: string;
   lineEnding: LineEnding;
@@ -36,6 +52,7 @@ export interface SaveReviewDialogProps {
   onClose: () => void;
   onDiscard: () => void;
   onSaved: (completion: SaveReviewCompletion) => void;
+  onProposed?: (record: ProposalRecord) => void;
 }
 
 interface SameAsHeadSnapshot {
@@ -43,6 +60,135 @@ interface SameAsHeadSnapshot {
   lineEnding: LineEnding;
   headHash: string | null;
   same: boolean;
+}
+
+interface FrozenProposalAttempt {
+  readonly input: Readonly<CreateProposalBody>;
+  readonly options: Readonly<{ idempotencyKey: string }>;
+}
+
+type ProposalSaveState =
+  | { state: "idle" }
+  | { state: "error"; error: unknown; transport: boolean }
+  | { state: "created"; record: ProposalRecord };
+
+interface SaveAsProposalButtonProps {
+  stash: string;
+  path: string;
+  body: string;
+  baseVersion: number;
+  author: string;
+  message: string;
+  disabled: boolean;
+  state: ProposalSaveState;
+  onBegin: () => boolean;
+  onEnd: () => void;
+  onFailure: (error: unknown, transport: boolean) => void;
+  onProposed: (record: ProposalRecord) => void;
+}
+
+function SaveAsProposalButtonAllowed({
+  stash,
+  path,
+  body,
+  baseVersion,
+  author,
+  message,
+  disabled,
+  state,
+  onBegin,
+  onEnd,
+  onFailure,
+  onProposed,
+}: SaveAsProposalButtonProps) {
+  const clientForSignal = useStashClientForSignal();
+  const pendingRef = useRef(false);
+  const attemptRef = useRef<FrozenProposalAttempt | null>(null);
+  const lifecycleRef = useRef(0);
+  const controllerRef = useRef<AbortController | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(
+    () => () => {
+      lifecycleRef.current += 1;
+      pendingRef.current = false;
+      attemptRef.current = null;
+      controllerRef.current?.abort();
+      controllerRef.current = null;
+      onEnd();
+    },
+    [onEnd],
+  );
+
+  async function createProposal() {
+    if (pendingRef.current || disabled || state.state === "created") {
+      return;
+    }
+    const retryingTransport = state.state === "error" && state.transport;
+    const attempt =
+      retryingTransport && attemptRef.current !== null
+        ? attemptRef.current
+        : Object.freeze({
+            input: Object.freeze({ path, body, baseVersion, author, message }),
+            options: Object.freeze({ idempotencyKey: globalThis.crypto.randomUUID() }),
+          });
+    if (!onBegin()) return;
+    attemptRef.current = attempt;
+    pendingRef.current = true;
+    setSubmitting(true);
+    const lifecycle = lifecycleRef.current;
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const isCurrent = () => lifecycleRef.current === lifecycle && !controller.signal.aborted;
+
+    try {
+      const result = await clientForSignal(controller.signal)
+        .proposals(stash)
+        .create(attempt.input, attempt.options);
+      if (!isCurrent()) return;
+      if (result.ok) {
+        attemptRef.current = null;
+        onProposed(result.value);
+      } else {
+        attemptRef.current = null;
+        onFailure(result, false);
+      }
+    } catch (error: unknown) {
+      if (isCurrent()) onFailure(error, true);
+    } finally {
+      if (isCurrent()) {
+        pendingRef.current = false;
+        setSubmitting(false);
+        onEnd();
+      }
+      if (controllerRef.current === controller) controllerRef.current = null;
+    }
+  }
+
+  const retrying = state.state === "error" && state.transport;
+
+  return (
+    <Button
+      disabled={disabled || submitting || state.state === "created"}
+      onClick={() => void createProposal()}
+    >
+      {submitting
+        ? retrying
+          ? "Retrying proposal…"
+          : "Saving proposal…"
+        : state.state === "created"
+          ? "Proposal saved"
+          : retrying
+            ? "Retry proposal"
+            : "Save as proposal"}
+    </Button>
+  );
+}
+
+function SaveAsProposalButton(props: SaveAsProposalButtonProps) {
+  const capability = useCanWrite(props.stash);
+  if (!capability.ready || !capability.canWrite) return null;
+  return <SaveAsProposalButtonAllowed {...props} />;
 }
 
 function readRememberedAuthor(): string {
@@ -101,6 +247,7 @@ function keyForTargetIdentity(identity: object): number {
 }
 
 function SaveReviewDialogOpen({
+  stash,
   head,
   draft,
   lineEnding,
@@ -108,6 +255,7 @@ function SaveReviewDialogOpen({
   onClose,
   onDiscard,
   onSaved,
+  onProposed,
 }: Omit<SaveReviewDialogProps, "open">) {
   const titleId = useId();
   const descriptionId = useId();
@@ -122,10 +270,13 @@ function SaveReviewDialogOpen({
   const [reconciling, setReconciling] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [proposing, setProposing] = useState(false);
+  const [proposalSave, setProposalSave] = useState<ProposalSaveState>({ state: "idle" });
   const lifecycleRef = useRef(0);
   const renderEpochRef = useRef(0);
   const hashSequenceRef = useRef(0);
   const pendingOperationRef = useRef<PendingOperation | null>(null);
+  const proposalPendingRef = useRef(false);
   const completionArmedRef = useRef(false);
   const reportedCompletionRef = useRef<SaveReviewCompletion | null>(null);
   const machineStateRef = useRef(machine.state);
@@ -146,9 +297,32 @@ function SaveReviewDialogOpen({
   const authorBytes = utf8ByteLength(author);
   const messageBytes = utf8ByteLength(message);
   const machineSaving = machine.state === "saving";
-  const busy = machineSaving || reconciling || reloading || retrying;
+  const busy = machineSaving || reconciling || reloading || retrying || proposing;
+  const proposalFrozen = proposalSave.state === "error" && proposalSave.transport;
   const fieldsDisabled =
-    busy || machine.state === "error" || machine.state === "saved" || machine.state === "unchanged";
+    busy ||
+    proposalFrozen ||
+    machine.state === "error" ||
+    machine.state === "saved" ||
+    machine.state === "unchanged";
+
+  const beginProposal = useCallback(() => {
+    if (
+      pendingOperationRef.current !== null ||
+      proposalPendingRef.current ||
+      machineStateRef.current !== "idle"
+    ) {
+      return false;
+    }
+    proposalPendingRef.current = true;
+    setProposing(true);
+    return true;
+  }, []);
+
+  const endProposal = useCallback(() => {
+    proposalPendingRef.current = false;
+    setProposing(false);
+  }, []);
 
   useLayoutEffect(() => {
     renderEpochRef.current += 1;
@@ -163,6 +337,7 @@ function SaveReviewDialogOpen({
       lifecycleRef.current += 1;
       hashSequenceRef.current += 1;
       pendingOperationRef.current = null;
+      proposalPendingRef.current = false;
       completionArmedRef.current = false;
     },
     [],
@@ -212,13 +387,25 @@ function SaveReviewDialogOpen({
   }, [machine.state]);
 
   function requestClose() {
-    if (pendingOperationRef.current !== null || machine.state === "saving") return;
+    if (
+      pendingOperationRef.current !== null ||
+      proposalPendingRef.current ||
+      machine.state === "saving"
+    ) {
+      return;
+    }
     if (!machine.resetSession()) return;
     onClose();
   }
 
   function requestDiscard() {
-    if (pendingOperationRef.current !== null || machine.state === "saving") return;
+    if (
+      pendingOperationRef.current !== null ||
+      proposalPendingRef.current ||
+      machine.state === "saving"
+    ) {
+      return;
+    }
     if (!machine.resetSession()) return;
     onDiscard();
   }
@@ -228,8 +415,10 @@ function SaveReviewDialogOpen({
     if (
       machine.state !== "idle" ||
       sameAsHead !== false ||
+      proposalFrozen ||
       busy ||
       pendingOperationRef.current !== null ||
+      proposalPendingRef.current ||
       authorBytes > MAX_AUTHOR_BYTES ||
       messageBytes > MAX_MESSAGE_BYTES
     ) {
@@ -268,7 +457,14 @@ function SaveReviewDialogOpen({
   }
 
   async function reloadAndCompare() {
-    if (machine.state !== "stale" || busy || pendingOperationRef.current !== null) return;
+    if (
+      machine.state !== "stale" ||
+      busy ||
+      pendingOperationRef.current !== null ||
+      proposalPendingRef.current
+    ) {
+      return;
+    }
     const lifecycle = lifecycleRef.current;
     pendingOperationRef.current = "reload";
     setReloading(true);
@@ -290,7 +486,8 @@ function SaveReviewDialogOpen({
       machine.state !== "error" ||
       !machine.canRetry ||
       busy ||
-      pendingOperationRef.current !== null
+      pendingOperationRef.current !== null ||
+      proposalPendingRef.current
     ) {
       return;
     }
@@ -381,6 +578,26 @@ function SaveReviewDialogOpen({
             <Notice className="zhs-save-review-dialog__notice" variant="success">
               <strong>Saved v{machine.version}</strong>
             </Notice>
+          ) : null}
+
+          {proposalSave.state === "created" ? (
+            <Notice className="zhs-save-review-dialog__notice" variant="success">
+              <strong>Proposal saved</strong>
+              <p>
+                {proposalSave.record.id} is fenced to v{proposalSave.record.baseVersion}.
+              </p>
+            </Notice>
+          ) : null}
+
+          {proposalSave.state === "error" ? (
+            <ErrorBanner
+              error={proposalSave.error}
+              title={
+                proposalSave.transport
+                  ? "The proposal response was interrupted"
+                  : "Could not save this proposal"
+              }
+            />
           ) : null}
 
           <section className="zhs-save-review-dialog__review" aria-label="Save diff">
@@ -497,7 +714,32 @@ function SaveReviewDialogOpen({
               <Button disabled={busy} onClick={requestClose}>
                 Cancel
               </Button>
-              <Button disabled={busy || sameAsHead !== false} type="submit" variant="primary">
+              {stash === undefined ? null : (
+                <SaveAsProposalButton
+                  author={author}
+                  baseVersion={displayHead.version}
+                  body={exactDraft}
+                  disabled={busy}
+                  message={message}
+                  path={displayHead.path}
+                  stash={stash}
+                  state={proposalSave}
+                  onBegin={beginProposal}
+                  onEnd={endProposal}
+                  onFailure={(error, transport) =>
+                    setProposalSave({ state: "error", error, transport })
+                  }
+                  onProposed={(record) => {
+                    setProposalSave({ state: "created", record });
+                    onProposed?.(record);
+                  }}
+                />
+              )}
+              <Button
+                disabled={busy || proposalFrozen || sameAsHead !== false}
+                type="submit"
+                variant="primary"
+              >
                 {machineSaving
                   ? `Saving v${nextVersion}…`
                   : reconciling
