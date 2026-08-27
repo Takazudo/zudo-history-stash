@@ -1,10 +1,16 @@
 import { env } from "cloudflare:workers";
-import type { Env } from "../../src/env.js";
+import type { Env, RateLimiter } from "../../src/env.js";
 import type { StoreDependencies } from "../../src/d1/store.js";
 
 export interface TestEnvironment {
   env: Env;
   deps: StoreDependencies;
+}
+
+function allowAllRateLimiter(): RateLimiter {
+  return {
+    limit: () => Promise.resolve({ success: true }),
+  };
 }
 
 export function createTestEnv(
@@ -17,6 +23,9 @@ export function createTestEnv(
   return {
     env: {
       DB: env.DB,
+      RL_READ: allowAllRateLimiter(),
+      RL_WRITE: allowAllRateLimiter(),
+      RL_DIFF: allowAllRateLimiter(),
       STASH_ADMIN_TOKEN: env.STASH_ADMIN_TOKEN,
       ALLOWED_ORIGINS: env.ALLOWED_ORIGINS,
       ...overrides.env,

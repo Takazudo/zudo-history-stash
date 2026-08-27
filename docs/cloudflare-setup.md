@@ -33,6 +33,24 @@ pnpm exec wrangler d1 create zudo-history-stash-preview
 
 The deployment remains skipped until the Cloudflare credentials and committed D1 IDs are ready. Apply migrations from `workers/stash` with `pnpm exec wrangler d1 migrations apply zudo-history-stash --remote` before deploying code.
 
+## Rate-limiting namespaces
+
+The stash Worker uses Cloudflare Rate Limiting bindings for three capability buckets. Namespace IDs
+are account-wide: bindings with the same ID share counters, even across Workers. Keep production and
+preview on the committed, disjoint allocation below.
+
+| Binding    | Capability | Limit per location | Production namespace | Preview namespace |
+| ---------- | ---------- | ------------------ | -------------------- | ----------------- |
+| `RL_READ`  | Reads      | 600 per 60 seconds | `1101`               | `1201`            |
+| `RL_WRITE` | Writes     | 60 per 60 seconds  | `1102`               | `1202`            |
+| `RL_DIFF`  | Diffs      | 120 per 60 seconds | `1103`               | `1203`            |
+
+The platform counters are per Cloudflare location, permissive, and eventually consistent. The API
+therefore guarantees only that a limiter result of `{ success: false }` produces a `429` response
+with `Retry-After: 60`; it does not promise an exact global cutoff. Administrator requests bypass
+the bindings, and a binding exception fails open with a structured warning so a limiter outage does
+not take the stash API down.
+
 ## Worker secret and viewer access
 
 Set the admin credential locally or remotely; the value is never committed:

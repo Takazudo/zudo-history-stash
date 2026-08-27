@@ -9,7 +9,7 @@ import { healthResponse } from "./routes/meta.js";
 import routes from "./routes/index.js";
 
 const ALLOW_HEADERS = ["Authorization", "Content-Type", "If-None-Match", "Idempotency-Key"];
-const EXPOSE_HEADERS = ["ETag", "X-Stash-Version", "Idempotent-Replayed"];
+const EXPOSE_HEADERS = ["ETag", "X-Stash-Version", "Idempotent-Replayed", "Retry-After"];
 
 function allowedOrigins(value: string): Set<string> {
   return new Set(

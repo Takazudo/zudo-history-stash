@@ -2,6 +2,7 @@ import { ROUTES } from "@takazudo/zudo-history-stash-core";
 import { Hono } from "hono";
 import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
+import { rateLimit } from "../rate-limit.js";
 import admin from "./admin.js";
 import diff from "./diff.js";
 import files from "./files.js";
@@ -12,7 +13,12 @@ import meta from "./meta.js";
 const routes = new Hono<AppEnv>();
 for (const route of ROUTES) {
   if (route.principal !== "open") {
-    routes.on(route.method, route.template.replace("*path", "*"), requireRoute(route.id));
+    routes.on(
+      route.method,
+      route.template.replace("*path", ":path{.+}"),
+      requireRoute(route.id),
+      rateLimit(route.id),
+    );
   }
 }
 routes.route("/", meta);
