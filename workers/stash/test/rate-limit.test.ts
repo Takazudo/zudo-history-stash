@@ -107,6 +107,41 @@ describe("rate-limit route buckets", () => {
     expect(diff.limit).toHaveBeenCalledOnce();
     expect(diff.limit).toHaveBeenCalledWith({ key: `p:${token.id}` });
   });
+
+  it.each([
+    { method: "GET", suffix: "", body: undefined },
+    { method: "GET", suffix: "/", body: undefined },
+    { method: "POST", suffix: "", body: { from: "head", body: "candidate" } },
+    { method: "POST", suffix: "/", body: { from: "head", body: "candidate" } },
+  ])(
+    "limits $method /diff$suffix before empty-path validation",
+    async ({ method, suffix, body }) => {
+      await seedStash("alpha");
+      const token = await mintToken("alpha", "read");
+      const read = createLimiter(() => Promise.reject(new Error("wrong bucket")));
+      const diff = createLimiter(() => Promise.resolve({ success: false }));
+      const bindings = createTestEnv({ env: { RL_READ: read, RL_DIFF: diff } }).env;
+      const headers = new Headers(bearer(token.token));
+      if (body !== undefined) headers.set("Content-Type", "application/json");
+      const query = method === "GET" ? "?from=1&to=head" : "";
+
+      const response = await request(
+        app,
+        `http://stash.test/v1/stashes/alpha/diff${suffix}${query}`,
+        {
+          method,
+          headers,
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        },
+        bindings,
+      );
+
+      await expectRateLimited(response);
+      expect(read.limit).not.toHaveBeenCalled();
+      expect(diff.limit).toHaveBeenCalledOnce();
+      expect(diff.limit).toHaveBeenCalledWith({ key: `p:${token.id}` });
+    },
+  );
 });
 
 describe("rate-limit ordering and keys", () => {
@@ -191,6 +226,24 @@ describe("rate-limit ordering and keys", () => {
     );
 
     await expectRateLimited(response);
+    expect(read.limit).toHaveBeenCalledTimes(2);
+    expect(read.limit.mock.calls).toEqual([[{ key: `p:${token.id}` }], [{ key: "s:alpha" }]]);
+  });
+
+  it("charges /files once without also running the get-file limiter", async () => {
+    await seedStash("alpha");
+    const token = await mintToken("alpha", "read");
+    const read = createLimiter();
+    const bindings = createTestEnv({ env: { RL_READ: read } }).env;
+
+    const response = await request(
+      app,
+      "http://stash.test/v1/stashes/alpha/files",
+      { headers: bearer(token.token) },
+      bindings,
+    );
+
+    expect(response.status).toBe(200);
     expect(read.limit.mock.calls).toEqual([[{ key: `p:${token.id}` }], [{ key: "s:alpha" }]]);
   });
 
