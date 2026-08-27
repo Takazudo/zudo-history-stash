@@ -1,7 +1,9 @@
 import type { ChangeItem, FileSummary } from "@takazudo/zudo-history-stash";
 import {
   Bytes,
+  Button,
   ChangeRow,
+  DeleteStashDialog,
   LoadMore,
   PathCell,
   RelativeTime,
@@ -10,7 +12,7 @@ import {
   useStashHref,
 } from "@takazudo/zudo-history-stash-ui";
 import { useState, type ChangeEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { Page } from "../app/shell/page.js";
 import { Table } from "../app/shell/table.js";
@@ -66,11 +68,13 @@ function FileTable({ files, stash }: { files: FileSummary[]; stash: string }) {
 
 export default function StashPage() {
   const { stash } = useParams();
+  const navigate = useNavigate();
   const { client } = useStashClient();
   const write = useCanWrite(stash ?? "");
   const admin = useIsAdmin();
   const hrefFor = useStashHref();
   const [includeDeleted, setIncludeDeleted] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const files = usePagedData<FileSummary, string>(
     async (signal, after) => {
       if (!client || !stash) return { items: [], nextCursor: null };
@@ -125,12 +129,17 @@ export default function StashPage() {
               </Link>
             ) : null}
             {admin.ready && admin.isAdmin ? (
-              <Link
-                className="zhs-button zhs-button--secondary"
-                to={hrefFor({ kind: "tokens", stash })}
-              >
-                Tokens
-              </Link>
+              <>
+                <Link
+                  className="zhs-button zhs-button--secondary"
+                  to={hrefFor({ kind: "tokens", stash })}
+                >
+                  Tokens
+                </Link>
+                <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+                  Delete stash
+                </Button>
+              </>
             ) : null}
           </div>
         ) : null
@@ -200,6 +209,14 @@ export default function StashPage() {
             </section>
           </aside>
         </div>
+      ) : null}
+      {stash ? (
+        <DeleteStashDialog
+          open={deleteOpen}
+          stash={stash}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => navigate("/")}
+        />
       ) : null}
     </Page>
   );
