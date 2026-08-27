@@ -27,6 +27,7 @@ interface HeadForImportRow {
 interface ImportTargetRow {
   version: number;
   blob_hash: string | null;
+  size_bytes: number;
 }
 
 interface ImportPutFact {
@@ -127,7 +128,7 @@ async function readExistingTargets(
   const placeholders = versions.map(() => "?").join(", ");
   const rows = await db
     .prepare(
-      `SELECT version, blob_hash FROM versions
+      `SELECT version, blob_hash, size_bytes FROM versions
        WHERE stash_name = ? AND path = ? AND version IN (${placeholders})`,
     )
     .bind(stash, path, ...versions)
@@ -249,8 +250,10 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
         const importedTarget = importedTargetIndex >= 0 ? logical[importedTargetIndex] : undefined;
         const storedTarget = storedTargets.get(entry.rollbackOf);
         const hash = importedTarget?.hash ?? storedTarget?.blob_hash ?? null;
-        const size = importedTarget?.size ?? 0;
-        if (hash === null) return failure("validation", 400, "Invalid import rollback target");
+        const size = importedTarget?.size ?? storedTarget?.size_bytes;
+        if (hash === null || size === undefined) {
+          return failure("validation", 400, "Invalid import rollback target");
+        }
         logical.push({
           version,
           kind: "rollback",

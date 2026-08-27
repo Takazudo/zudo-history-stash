@@ -9,7 +9,12 @@ import { createTestEnv } from "../helpers/env.js";
 const STASH = "publish-events";
 const BASE = `http://stash.test/v1/stashes/${STASH}`;
 
-function recordingEnv(options: { importVersionIds?: readonly number[]; reject?: boolean } = {}): {
+function recordingEnv(
+  options: {
+    failure?: "reject" | "throw";
+    importVersionIds?: readonly number[];
+  } = {},
+): {
   bindings: Env;
   events: StashEvent[];
   names: string[];
@@ -26,10 +31,14 @@ function recordingEnv(options: { importVersionIds?: readonly number[]; reject?: 
           return new Proxy(stub, {
             get(stubTarget, stubProperty, stubReceiver) {
               if (stubProperty === "fetch") {
-                return async (input: Request) => {
-                  if (options.reject) throw new Error("Injected event publication failure");
-                  events.push(StashEventSchema.parse(await input.json()));
-                  return new Response(null, { status: 204 });
+                return (input: Request): Promise<Response> => {
+                  const error = new Error("Injected event publication failure");
+                  if (options.failure === "throw") throw error;
+                  if (options.failure === "reject") return Promise.reject(error);
+                  return input.json().then((value) => {
+                    events.push(StashEventSchema.parse(value));
+                    return new Response(null, { status: 204 });
+                  });
                 };
               }
               const value = Reflect.get(stubTarget, stubProperty, stubReceiver);
@@ -239,6 +248,42 @@ describe("event publication", () => {
     });
     expect(refused.status).toBe(409);
     expect(events).toHaveLength(3);
+
+    const continued = await mutation(
+      bindings,
+      "/import",
+      {
+        path: "history.txt",
+        expectedVersion: 3,
+        versions: [{ kind: "rollback", body: null, rollbackOf: 1, createdAt: 1_003 }],
+      },
+      { clientId: "continuation" },
+    );
+    expect(continued.status).toBe(201);
+    const rollbackRow = await bindings.DB.prepare(
+      `SELECT id, size_bytes, created_at FROM versions
+       WHERE stash_name = ? AND path = ? AND version = 4`,
+    )
+      .bind(STASH, "history.txt")
+      .first<{ id: number; size_bytes: number; created_at: number }>();
+    if (rollbackRow === null) throw new Error("Expected committed continuation rollback");
+    expect(rollbackRow.size_bytes).toBe(3);
+    expect(events).toHaveLength(4);
+    expect(events.at(-1)).toEqual({
+      type: "change",
+      changeId: rollbackRow.id,
+      stash: STASH,
+      path: "history.txt",
+      version: 4,
+      kind: "rollback",
+      origin: "continuation",
+      createdAt: new Date(rollbackRow.created_at).toISOString(),
+    });
+    await expect(continued.json()).resolves.toEqual({
+      path: "history.txt",
+      headVersion: 4,
+      firstChangeId: rollbackRow.id,
+    });
   });
 
   it("publishes proposal transitions once, with approval change before status", async () => {
@@ -310,30 +355,33 @@ describe("event publication", () => {
     expect(events).toHaveLength(count);
   });
 
-  it("swallows publication failures after the durable commit", async () => {
-    const { bindings, names } = recordingEnv({ reject: true });
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      const response = await mutation(
-        bindings,
-        "/files/failure.txt",
-        { body: "committed", expectedVersion: null },
-        { method: "PUT" },
-      );
-      expect(response.status).toBe(201);
-      const result = await response.json<{ version: number; changeId: number }>();
-      expect(result).toMatchObject({ version: 1, changeId: expect.any(Number) });
-      await expect(
-        bindings.DB.prepare(
-          "SELECT COUNT(*) AS count FROM versions WHERE stash_name = ? AND path = ?",
-        )
-          .bind(STASH, "failure.txt")
-          .first("count"),
-      ).resolves.toBe(1);
-      expect(names).toEqual([STASH]);
-      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("publication failed"));
-    } finally {
-      consoleError.mockRestore();
-    }
-  });
+  it.each(["reject", "throw"] as const)(
+    "swallows a %s from stub.fetch after the durable commit",
+    async (failure) => {
+      const { bindings, names } = recordingEnv({ failure });
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const response = await mutation(
+          bindings,
+          `/files/${failure}.txt`,
+          { body: "committed", expectedVersion: null },
+          { method: "PUT" },
+        );
+        expect(response.status).toBe(201);
+        const result = await response.json<{ version: number; changeId: number }>();
+        expect(result).toMatchObject({ version: 1, changeId: expect.any(Number) });
+        await expect(
+          bindings.DB.prepare(
+            "SELECT COUNT(*) AS count FROM versions WHERE stash_name = ? AND path = ?",
+          )
+            .bind(STASH, `${failure}.txt`)
+            .first("count"),
+        ).resolves.toBe(1);
+        expect(names).toEqual([STASH]);
+        expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("publication failed"));
+      } finally {
+        consoleError.mockRestore();
+      }
+    },
+  );
 });
