@@ -16,6 +16,10 @@ binding = "DB"
 database_name = "zudo-history-stash"
 database_id = "REPLACE_ME" # wrangler d1 create zudo-history-stash
 
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "zudo-history-stash-blobs"
+
 [vars]
 ALLOWED_ORIGINS = ""
 
@@ -59,6 +63,10 @@ required = ["STASH_ADMIN_TOKEN"]
 binding = "DB"
 database_name = "zudo-history-stash-preview"
 database_id = "REPLACE_ME"
+
+[[env.preview.r2_buckets]]
+binding = "BLOBS"
+bucket_name = "zudo-history-stash-blobs-preview"
 
 [[env.preview.ratelimits]]
 name = "RL_READ"

@@ -15,6 +15,7 @@ import {
   MAX_MESSAGE_BYTES,
   MAX_META_BYTES,
   MAX_PATH_BYTES,
+  R2_SPILL_BYTES,
 } from "./limits.js";
 
 it("pins every architecture limit", () => {
@@ -27,6 +28,7 @@ it("pins every architecture limit", () => {
     LIST_LIMIT_DEFAULT,
     LIST_LIMIT_MAX,
     DIFF_MAX_BYTES,
+    R2_SPILL_BYTES,
     DIFF_TIMEOUT_MS,
     DIFF_MAX_EDIT_LENGTH,
     IDEMPOTENCY_KEY_MAX_CHARS,
@@ -42,6 +44,7 @@ it("pins every architecture limit", () => {
     LIST_LIMIT_DEFAULT: 50,
     LIST_LIMIT_MAX: 200,
     DIFF_MAX_BYTES: 524_288,
+    R2_SPILL_BYTES: 524_288,
     DIFF_TIMEOUT_MS: 2_000,
     DIFF_MAX_EDIT_LENGTH: 50_000,
     IDEMPOTENCY_KEY_MAX_CHARS: 200,

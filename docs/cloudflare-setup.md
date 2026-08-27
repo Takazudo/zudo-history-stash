@@ -6,12 +6,13 @@ The Workers are created by `wrangler deploy` from this repository. Do not create
 
 Create a scoped Cloudflare API token with these permissions:
 
-| Scope   | Permission              |
-| ------- | ----------------------- |
-| Account | Workers Scripts — Edit  |
-| Account | Account Settings — Read |
-| Account | D1 — Edit               |
-| Zone    | Workers Routes — Edit   |
+| Scope   | Permission                 |
+| ------- | -------------------------- |
+| Account | Workers Scripts — Edit     |
+| Account | Account Settings — Read    |
+| Account | D1 — Edit                  |
+| Account | Workers R2 Storage — Write |
+| Zone    | Workers Routes — Edit      |
 
 The Zone permission needs the actual zone in the token's Zone Resources selection when routes are used. Set the CI credentials with:
 
@@ -32,6 +33,19 @@ pnpm exec wrangler d1 create zudo-history-stash-preview
 ```
 
 The deployment remains skipped until the Cloudflare credentials and committed D1 IDs are ready. Apply migrations from `workers/stash` with `pnpm exec wrangler d1 migrations apply zudo-history-stash --remote` before deploying code.
+
+## R2 provisioning
+
+Create separate production and preview buckets. Their names already match the committed `BLOBS`
+bindings in `workers/stash/wrangler.toml`:
+
+```bash
+pnpm exec wrangler r2 bucket create zudo-history-stash-blobs
+pnpm exec wrangler r2 bucket create zudo-history-stash-blobs-preview
+```
+
+Keep both buckets private. Do not enable an `r2.dev` URL or attach a custom domain; the stash
+Worker accesses objects only through its R2 binding.
 
 ## Rate-limiting namespaces
 

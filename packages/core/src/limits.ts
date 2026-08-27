@@ -6,6 +6,7 @@ export const MAX_MESSAGE_BYTES = 2_000;
 export const LIST_LIMIT_DEFAULT = 50;
 export const LIST_LIMIT_MAX = 200;
 export const DIFF_MAX_BYTES = 524_288;
+export const R2_SPILL_BYTES = DIFF_MAX_BYTES;
 export const DIFF_TIMEOUT_MS = 2_000;
 export const DIFF_MAX_EDIT_LENGTH = 50_000;
 export const DIFF_MAX_INTRALINE_LENGTH = 800;

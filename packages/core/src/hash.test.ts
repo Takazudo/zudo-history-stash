@@ -8,3 +8,20 @@ it.each([
 ])("hashes UTF-8 text %j", async (input, expected) =>
   expect(await sha256Hex(input)).toBe(expected),
 );
+
+it("hashes raw ArrayBuffer bytes", async () => {
+  const bytes = new Uint8Array([0x61, 0x62, 0x63]).buffer;
+
+  await expect(sha256Hex(bytes)).resolves.toBe(
+    "sha256-ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  );
+});
+
+it("hashes only the addressed bytes of an offset view", async () => {
+  const backing = new Uint8Array([0xff, 0x61, 0x62, 0x63, 0xff]);
+  const view = new DataView(backing.buffer, 1, 3);
+
+  await expect(sha256Hex(view)).resolves.toBe(
+    "sha256-ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  );
+});
