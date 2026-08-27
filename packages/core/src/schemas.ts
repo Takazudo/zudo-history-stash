@@ -33,9 +33,15 @@ const body = wellFormed.refine(
 const expectedVersion = z.number().int().positive().nullable();
 const author = boundedString(MAX_AUTHOR_BYTES).optional();
 const message = boundedString(MAX_MESSAGE_BYTES).optional();
-const meta = z
+const metaObject = z
   .record(z.string(), z.json())
-  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= MAX_META_BYTES, "Meta is too large")
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= MAX_META_BYTES, "Meta is too large");
+const meta = metaObject.optional();
+const proposalMeta = metaObject
+  .refine(
+    (value) => !Object.prototype.hasOwnProperty.call(value, "proposalId"),
+    "meta.proposalId is platform-owned",
+  )
   .optional();
 
 export const PutFileBody = z.strictObject({
@@ -207,6 +213,32 @@ export const ListGcRunsQuery = z.strictObject({
   kind: z.enum(["r2-orphans", "ledger"]).optional(),
   limit,
 });
+export const CreateProposalBody = z.strictObject({
+  path: z.string().refine((value) => validatePath(value).ok, "Invalid file path"),
+  body,
+  baseVersion: expectedVersion,
+  author,
+  message,
+  meta: proposalMeta,
+  expiresAt: z.iso
+    .datetime()
+    .refine((value) => Date.parse(value) > Date.now(), "expiresAt must be in the future")
+    .optional(),
+});
+export const ListProposalsQuery = z.strictObject({
+  status: z.enum(["open", "applied", "rejected", "expired", "all"]).default("open"),
+  path: z
+    .string()
+    .refine((value) => validatePath(value).ok, "Invalid file path")
+    .optional(),
+  limit,
+  after: z.string().optional(),
+});
+export const ApproveProposalBody = z.strictObject({ author, message });
+export const RejectProposalBody = z.strictObject({
+  reason: boundedString(MAX_MESSAGE_BYTES).optional(),
+});
+export const ProposalDiffQuery = z.strictObject({ context: optionalQueryInteger(0) });
 
 export type PutFileBody = z.infer<typeof PutFileBody>;
 export type DeleteFileBody = z.infer<typeof DeleteFileBody>;
@@ -229,3 +261,9 @@ export type RunGcBody = z.input<typeof RunGcBody>;
 export type ListGcRunsQuery = z.input<typeof ListGcRunsQuery>;
 export type ParsedRunGcBody = z.output<typeof RunGcBody>;
 export type ParsedListGcRunsQuery = z.output<typeof ListGcRunsQuery>;
+export type CreateProposalBody = z.infer<typeof CreateProposalBody>;
+export type ListProposalsQuery = z.input<typeof ListProposalsQuery>;
+export type ParsedListProposalsQuery = z.output<typeof ListProposalsQuery>;
+export type ApproveProposalBody = z.infer<typeof ApproveProposalBody>;
+export type RejectProposalBody = z.infer<typeof RejectProposalBody>;
+export type ProposalDiffQuery = z.infer<typeof ProposalDiffQuery>;

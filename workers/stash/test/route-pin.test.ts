@@ -1,11 +1,41 @@
 import { ROUTES } from "@takazudo/zudo-history-stash-core";
-import { describe, expect, it } from "vitest";
+import { createExecutionContext } from "cloudflare:test";
+import { beforeEach, describe, expect, it } from "vitest";
 import { CLIENT_ROUTES, parseClientResponse, StashHttpError } from "@takazudo/zudo-history-stash";
 import apiReference from "../../../docs/api.md?raw";
 import app from "../src/app.js";
 import { StashRpc } from "../src/rpc.js";
+import { bearer, request, resetDatabase, seedStash } from "./helpers/app.js";
+import { createTestEnv } from "./helpers/env.js";
 
 type RouteTuple = readonly [string, string];
+
+const proposalSkeletonRoutes = [
+  { id: "createProposal", method: "POST", path: "/v1/stashes/route-pin/proposals" },
+  { id: "listProposals", method: "GET", path: "/v1/stashes/route-pin/proposals" },
+  {
+    id: "getProposal",
+    method: "GET",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef",
+  },
+  {
+    id: "getProposalDiff",
+    method: "GET",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/diff",
+  },
+  {
+    id: "approveProposal",
+    method: "POST",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/approve",
+  },
+  {
+    id: "rejectProposal",
+    method: "POST",
+    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/reject",
+  },
+] as const;
+
+beforeEach(resetDatabase);
 
 function sorted(routes: readonly RouteTuple[]): RouteTuple[] {
   return [...routes].sort(([methodA, pathA], [methodB, pathB]) => {
@@ -56,6 +86,58 @@ describe("route contract pin", () => {
       expect(typeof Object.getOwnPropertyDescriptor(StashRpc.prototype, id)?.value).toBe(
         "function",
       );
+    }
+  });
+
+  it.each(proposalSkeletonRoutes)("mounts the dedicated 501 handler for $id", async (route) => {
+    await seedStash("route-pin");
+    const hasBody = route.method === "POST";
+    const response = await request(app, `http://stash.test${route.path}`, {
+      method: route.method,
+      headers: {
+        ...bearer("test-admin"),
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(hasBody ? { body: "{}" } : {}),
+    });
+
+    expect(response.status).toBe(501);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "not-implemented",
+        message: "Proposal routes are registered but not implemented yet.",
+      },
+    });
+  });
+
+  it("keeps all six typed proposal RPC methods on the raw 501 skeleton boundary", async () => {
+    await seedStash("route-pin");
+    const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
+    const proposalId = "prp_0000000000000deadbeef";
+    const calls = [
+      () =>
+        rpc.createProposal(
+          "test-admin",
+          "route-pin",
+          { path: "docs/proposal.md", body: "candidate", baseVersion: null },
+          "route-pin-create",
+        ),
+      () => rpc.listProposals("test-admin", "route-pin", { status: "all", limit: 1 }),
+      () => rpc.getProposal("test-admin", "route-pin", proposalId),
+      () => rpc.getProposalDiff("test-admin", "route-pin", proposalId, { context: 1 }),
+      () => rpc.approveProposal("test-admin", "route-pin", proposalId, {}),
+      () => rpc.rejectProposal("test-admin", "route-pin", proposalId, {}),
+    ];
+
+    for (const call of calls) {
+      const response = await call();
+      expect(response.status).toBe(501);
+      await expect(response.json()).resolves.toEqual({
+        error: {
+          code: "not-implemented",
+          message: "Proposal routes are registered but not implemented yet.",
+        },
+      });
     }
   });
 

@@ -3,10 +3,12 @@ import { z } from "zod";
 import { MAX_BODY_BYTES } from "../limits.js";
 import {
   CreateTokenBody,
+  CreateProposalBody,
   DiffQuery,
   ImportBody,
   ListFilesQuery,
   ListQuery,
+  ListProposalsQuery,
   PutFileBody,
   RotateTokenBody,
 } from "../schemas.js";
@@ -81,6 +83,27 @@ describe("projectRequestSchema", () => {
     });
     expect(propertiesOf(rotate).expiresAt?.description).toBe("Mutually exclusive with ttlSeconds.");
     expect(propertiesOf(rotate).ttlSeconds?.description).toBe("Mutually exclusive with expiresAt.");
+  });
+
+  it("projects strict proposal inputs, filters, and platform-owned metadata", () => {
+    const create = projectRequestSchema(CreateProposalBody);
+    expect(propertiesOf(create).path?.description).toContain("file-path rules");
+    expect(propertiesOf(create).body?.description).toContain(String(MAX_BODY_BYTES));
+    expect(propertiesOf(create).meta?.description).toContain("proposalId is platform-owned");
+    expect(propertiesOf(create).expiresAt).toMatchObject({
+      type: "string",
+      format: "date-time",
+    });
+    expect(propertiesOf(create).expiresAt?.description).toContain("future");
+
+    const list = projectRequestSchema(ListProposalsQuery);
+    expect(list.required ?? []).not.toContain("status");
+    expect(propertiesOf(list).status).toMatchObject({
+      type: "string",
+      default: "open",
+      enum: ["open", "applied", "rejected", "expired", "all"],
+    });
+    expect(propertiesOf(list).limit).toMatchObject({ default: 50, maximum: 200 });
   });
 
   it("handles only the deliberate escape hatches and fails on new unrepresentables", () => {

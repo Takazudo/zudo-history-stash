@@ -36,7 +36,7 @@ describe("buildOpenApiDocument", () => {
   it("contains every operation with the route identity and short principal", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
-    expect(all).toHaveLength(24);
+    expect(all).toHaveLength(30);
     expect(all.map((operation) => operation.operationId)).toEqual(ROUTES.map((route) => route.id));
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);
@@ -126,7 +126,7 @@ describe("buildOpenApiDocument", () => {
       const responses = operation.responses as Record<string, ObjectValue>;
       return responses["429"] !== undefined;
     });
-    expect(rateLimited).toHaveLength(11);
+    expect(rateLimited).toHaveLength(17);
     for (const operation of rateLimited) {
       const responses = operation.responses as Record<string, ObjectValue>;
       expect(responses["429"]?.headers).toHaveProperty("Retry-After");
@@ -137,5 +137,27 @@ describe("buildOpenApiDocument", () => {
     const rotateResponses = rotate?.responses as Record<string, ObjectValue>;
     expect(rotateResponses["201"]).toBeDefined();
     expect(rotateResponses["429"]).toBeUndefined();
+  });
+
+  it("documents proposal replay, filters, decisions, and stale current metadata", () => {
+    const document = buildOpenApiDocument({ version: "test" });
+    const create = document.paths["/v1/stashes/{stash}/proposals"]?.post;
+    const createResponses = create?.responses as Record<string, ObjectValue>;
+    expect(create?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Idempotency-Key", in: "header", required: false }),
+      ]),
+    );
+    expect(createResponses["201"]?.headers).toHaveProperty("Idempotent-Replayed");
+    expect(
+      (createResponses["201"]?.headers as Record<string, ObjectValue>)["Idempotent-Replayed"]
+        ?.description,
+    ).toBe("Whether the server replayed an idempotent response.");
+
+    const approve = document.paths["/v1/stashes/{stash}/proposals/{id}/approve"]?.post;
+    const approveResponses = approve?.responses as Record<string, ObjectValue>;
+    expect(approveResponses["409"]?.description).toContain("`stale` (includes current)");
+    expect(approveResponses["409"]?.description).toContain("`proposal-expired`");
+    expect(approveResponses["409"]?.description).toContain("`proposal-closed`");
   });
 });

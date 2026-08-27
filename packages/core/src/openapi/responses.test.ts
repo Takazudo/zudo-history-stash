@@ -4,6 +4,7 @@ import type { DiffHunk, DiffResult, DiffStats } from "../diff.js";
 import type { ERROR_CODES } from "../errors.js";
 import type {
   CandidateDiffResult,
+  ApproveProposalResult,
   ChangesPage,
   ChangeItem,
   CreateStashResult,
@@ -34,6 +35,10 @@ import type {
   ListStashesResult,
   ListTokensResult,
   MeResponse,
+  ProposalDiffResult,
+  ProposalListResponse,
+  ProposalRecord,
+  ProposalWithBody,
   PutCreatedResult,
   PutUnchangedResult,
   RotateTokenResult,
@@ -71,6 +76,19 @@ describe("response schema type locks", () => {
     >().toEqualTypeOf<RestoreStashResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.GcRunResult>>().toEqualTypeOf<GcRunResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.GcRunsResponse>>().toEqualTypeOf<GcRunsResponse>();
+    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.ProposalRecord>>().toEqualTypeOf<ProposalRecord>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ProposalWithBody>
+    >().toEqualTypeOf<ProposalWithBody>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ProposalListResponse>
+    >().toEqualTypeOf<ProposalListResponse>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ApproveProposalResult>
+    >().toEqualTypeOf<ApproveProposalResult>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ProposalDiffResult>
+    >().toEqualTypeOf<ProposalDiffResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.TokenRecord>>().toEqualTypeOf<TokenRecord>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.CreatedToken>>().toEqualTypeOf<CreatedToken>();
     expectTypeOf<
@@ -176,6 +194,18 @@ describe("response schema samples", () => {
       RESPONSE_SCHEMAS.GcRunResult.safeParse({
         ...SAMPLES.GcRunResult,
         jobId: "ledger",
+      }).success,
+    ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.ProposalRecord.safeParse({
+        ...SAMPLES.ProposalRecord,
+        id: "proposal-not-time-sortable",
+      }).success,
+    ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.ProposalDiffResult.safeParse({
+        ...SAMPLES.ProposalDiffResult,
+        current: undefined,
       }).success,
     ).toBe(false);
   });

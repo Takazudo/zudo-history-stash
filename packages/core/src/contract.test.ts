@@ -64,6 +64,8 @@ describe("typed errors", () => {
     ["already-rotated", 409],
     ["token-expired", 409],
     ["gc-busy", 409],
+    ["proposal-expired", 409],
+    ["proposal-closed", 409],
     ["payload-too-large", 413],
     ["rate-limited", 429],
     ["idempotency-key-reused", 422],

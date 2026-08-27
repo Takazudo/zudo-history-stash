@@ -144,12 +144,42 @@ const gcRun = {
   error: null,
 } as const;
 
+const proposalRecord = {
+  id: "prp_1787702400000deadbeef",
+  stash: "demo",
+  path: "docs/proposed.md",
+  baseVersion: 2,
+  author: "review-bot",
+  message: "Propose documentation update",
+  meta: { source: "automation" },
+  size: 22,
+  hash: HASH_A,
+  createdAt: CREATED_AT,
+  expiresAt: EXPIRES_AT,
+  status: "open",
+  decidedAt: null,
+  decidedBy: null,
+  decisionReason: null,
+  appliedVersion: null,
+  appliedChangeId: null,
+} as const;
+const oneProposal = [proposalRecord];
+
 const readyDiff = {
   state: "ready",
   unified: "@@ -1 +1 @@\n-Hello, stash!\n+Hello, history stash!\n",
   truncated: false,
   hunks: oneHunk,
   stats: diffStats,
+} as const;
+
+const currentHead = {
+  version: 3,
+  hash: HASH_A,
+  deleted: false,
+  kind: "put",
+  author: "docs-bot",
+  createdAt: UPDATED_AT,
 } as const;
 
 const responseSamples = {
@@ -179,6 +209,23 @@ const responseSamples = {
   RestoreStashResult: stashRecord,
   GcRunResult: gcRun,
   GcRunsResponse: { runs: [gcRun] },
+  ProposalRecord: proposalRecord,
+  ProposalWithBody: { ...proposalRecord, body: "Hello, proposed docs!\n" },
+  ProposalListResponse: { proposals: oneProposal, nextAfter: null, total: 1 },
+  ApproveProposalResult: {
+    status: "applied",
+    appliedVersion: 3,
+    appliedChangeId: 8,
+    hash: HASH_A,
+    createdAt: UPDATED_AT,
+  },
+  ProposalDiffResult: {
+    ...readyDiff,
+    base: { version: 2, hash: HASH_B, deleted: false },
+    candidate: { hash: HASH_A, size: 22 },
+    current: currentHead,
+    stale: true,
+  },
   TokenRecord: tokenRecord,
   CreatedToken: createdToken,
   TokenListResponse: { tokens: oneToken },
@@ -221,25 +268,11 @@ const responseSamples = {
   DiffStats: diffStats,
   DiffResult: readyDiff,
   FileDiffResult: { ...readyDiff, from: diffSideFrom, to: diffSideTo },
-  Current: {
-    version: 3,
-    hash: HASH_A,
-    deleted: false,
-    kind: "put",
-    author: "docs-bot",
-    createdAt: UPDATED_AT,
-  },
+  Current: currentHead,
   ErrorDetail: { code: "stale", message: "Expected version is stale" },
   ErrorResponse: {
     error: { code: "stale", message: "Expected version is stale" },
-    current: {
-      version: 3,
-      hash: HASH_A,
-      deleted: false,
-      kind: "put",
-      author: "docs-bot",
-      createdAt: UPDATED_AT,
-    },
+    current: currentHead,
   },
   ListStashesResult: { stashes: oneStash, nextAfter: null },
   ListTokensResult: { tokens: oneToken },

@@ -38,6 +38,21 @@ const UNSUPPORTED_SAMPLES: Record<
   health: { method: "GET", path: "/v1/health" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
+  createProposal: { method: "POST", path: "/v1/stashes/demo/proposals" },
+  listProposals: { method: "GET", path: "/v1/stashes/demo/proposals" },
+  getProposal: { method: "GET", path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef" },
+  getProposalDiff: {
+    method: "GET",
+    path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef/diff",
+  },
+  approveProposal: {
+    method: "POST",
+    path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef/approve",
+  },
+  rejectProposal: {
+    method: "POST",
+    path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef/reject",
+  },
 };
 
 const EMPTY_DIFF_ROUTES = [

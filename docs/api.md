@@ -68,17 +68,17 @@ An expected failure is JSON. Conflicts can also include the current head at the 
 }
 ```
 
-| HTTP  | Codes                                                                               |
-| ----- | ----------------------------------------------------------------------------------- |
-| `400` | `validation`, `invalid-path`, `body-not-well-formed`                                |
-| `401` | `unauthorized`                                                                      |
-| `403` | `scope`                                                                             |
-| `404` | `not-found`, `file-deleted`, `version-not-found`                                    |
-| `409` | `stale`, `exists`, `already-deleted`, `gc-busy`, `already-rotated`, `token-expired` |
-| `413` | `payload-too-large`                                                                 |
-| `422` | `idempotency-key-reused`, `rollback-target-tombstone`                               |
-| `429` | `rate-limited`                                                                      |
-| `500` | `internal`                                                                          |
+| HTTP  | Codes                                                                                                                      |
+| ----- | -------------------------------------------------------------------------------------------------------------------------- |
+| `400` | `validation`, `invalid-path`, `body-not-well-formed`                                                                       |
+| `401` | `unauthorized`                                                                                                             |
+| `403` | `scope`                                                                                                                    |
+| `404` | `not-found`, `file-deleted`, `version-not-found`                                                                           |
+| `409` | `stale`, `exists`, `already-deleted`, `gc-busy`, `already-rotated`, `token-expired`, `proposal-expired`, `proposal-closed` |
+| `413` | `payload-too-large`                                                                                                        |
+| `422` | `idempotency-key-reused`, `rollback-target-tombstone`                                                                      |
+| `429` | `rate-limited`                                                                                                             |
+| `500` | `internal`                                                                                                                 |
 
 Unknown JSON keys are rejected. Request bodies are never echoed in errors. All timestamps in
 responses are ISO-8601 UTC strings; imported `createdAt` values are epoch milliseconds.
@@ -94,12 +94,14 @@ request strictly above that aggregate limit receives `413 payload-too-large` bef
 authentication or any D1 or R2 access. Imports still contain at most 20 versions, but the encoded
 request limit can require fewer versions per call.
 
-Text bodies of at most **524,288 bytes** are stored inline in D1. Larger bodies are stored in
-private R2 under content-addressed keys; D1 retains the authoritative metadata, hash, size, file
-head, history, and pointer. Reads verify the R2 object's raw byte size and SHA-256 hash before a
-fatal, BOM-preserving UTF-8 decode. Responses never expose the private object key. Diffing remains
-limited to 524,288 bytes per side, so equal-hash and oversized results use metadata without
-loading R2 bodies.
+Text bodies of at most **524,288 bytes** are stored inline in D1. Larger file and proposal
+candidate bodies are stored in private R2 under content-addressed keys; D1 retains the
+authoritative metadata, hash, size, file head or proposal reference, history, and pointer. Reads
+verify the R2 object's raw byte size and SHA-256 hash before a fatal, BOM-preserving UTF-8 decode.
+Responses never expose the private object key. Diffing remains limited to 524,288 bytes per side,
+so equal-hash and oversized results use metadata without loading R2 bodies. A proposal candidate
+is referenced through its blob row as soon as it is created, so a successfully stored proposal is
+not an R2 orphan.
 
 Compare-and-set eligibility is checked before upload. An eligible large write uploads to R2 before
 the fenced D1 commit; a race or other refusal after upload can therefore leave an unreferenced
@@ -110,9 +112,9 @@ reachable through the API.
 
 Routes reachable by stash principals use three Cloudflare rate-limit buckets. `RL_READ` permits
 600 operations per 60 seconds, `RL_WRITE` permits 60 per 60 seconds, and `RL_DIFF` permits 120 per
-60 seconds. Stored and candidate diff routes use `RL_DIFF`; write-capability file routes use
-`RL_WRITE`; `/v1/me`, stash metadata, file reads/lists/history, and the per-stash change feed use
-`RL_READ`.
+60 seconds. Stored, candidate, and proposal diff routes use `RL_DIFF`; write-capability file
+routes plus proposal create/approve/reject use `RL_WRITE`; `/v1/me`, stash metadata, file
+reads/lists/history, proposal list/get, and the per-stash change feed use `RL_READ`.
 
 Each request checks `p:<tokenId>` first and then `s:<principal-stash>`. Lifecycle routes and
 `POST /v1/admin/gc` use the write class; `GET /v1/admin/gc/runs` uses the read class. A failed principal check
@@ -455,6 +457,73 @@ The production cron invokes this bounded round-robin at `17 3 * * *` UTC. Previe
 must be run manually. Deploy generation-aware v2 writers and the migration before the API, verify
 the API's dry-run and recovery behavior, and deploy/enable the production schedule last.
 
+### `POST /v1/stashes/:stash/proposals`
+
+- **Principal/capability:** `write`; administrator or a matching `write` token.
+- **Request:** Strict JSON `{ path, body, baseVersion, author?, message?, meta?, expiresAt? }`,
+  optionally with `Idempotency-Key`. `baseVersion` is a positive version or `null` when the path
+  must not exist. `path` and `body` use the normal file-path and 5 MB well-formed-text rules.
+  `expiresAt`, when supplied, is a future ISO timestamp; otherwise the server uses
+  `PROPOSAL_TTL_DAYS` (default 14). `meta.proposalId` is platform-owned and therefore rejected;
+  the server stamps the generated proposal ID and validates the final metadata size.
+- **Response:** `201 ProposalRecord`. Replaying the same key and canonical body returns the same
+  record with the same `201` status and `Idempotent-Replayed: true`.
+- **Errors:** `400 validation`, `400 body-not-well-formed`, `401 unauthorized`, `403 scope`,
+  `404 not-found`, `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
+
+### `GET /v1/stashes/:stash/proposals`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
+- **Request:** Optional `status=open|applied|rejected|expired|all` (default `open`), exact `path`,
+  `limit` (default `50`, maximum `200`), and opaque `after` cursor.
+- **Response:** `200 { proposals, nextAfter, total }`. Results are ordered newest first by
+  `createdAt`, then `id`; `total` counts all rows matching the selected status and path filters,
+  not only the returned page. `nextAfter` is `null` when the filtered result is exhausted.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited` with
+  `Retry-After: 60`.
+
+### `GET /v1/stashes/:stash/proposals/:id`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
+- **Request:** No body or query.
+- **Response:** `200 ProposalWithBody`, containing the proposal record plus its immutable
+  candidate `body`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
+
+### `GET /v1/stashes/:stash/proposals/:id/diff`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
+- **Request:** Optional non-negative `context` query value.
+- **Response:** `200 ProposalDiffResult`: the normal three-state `DiffResult` plus immutable
+  `base`, `candidate`, and separately moving `current` and `stale` fields.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
+
+### `POST /v1/stashes/:stash/proposals/:id/approve`
+
+- **Principal/capability:** `write`; administrator or a matching `write` token. There is no
+  built-in approval policy or caller-supplied approver identity.
+- **Request:** Strict JSON `{ author?, message? }`. These optional values override the proposal's
+  stored author/message on the applied version; they do not control `decidedBy`.
+- **Response:** `200 { status: "applied", appliedVersion, appliedChangeId, hash, createdAt }`.
+  Re-approval of an already-applied proposal reconstructs and returns the same stored result,
+  including after the proposal's expiry time.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 stale`
+  with root-level `current`, `409 proposal-expired`, `409 proposal-closed`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
+
+### `POST /v1/stashes/:stash/proposals/:id/reject`
+
+- **Principal/capability:** `write`; administrator or a matching `write` token.
+- **Request:** Strict JSON `{ reason? }`; the optional well-formed reason is bounded to 2,000
+  UTF-8 bytes.
+- **Response:** `200 ProposalRecord`. Re-rejecting an already-rejected proposal is idempotent.
+  An open proposal may be rejected even when its expiry time has passed.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`,
+  `409 proposal-closed` for an applied proposal, `429 rate-limited` with `Retry-After: 60`.
+
 ### `GET /v1/stashes/:stash/files`
 
 - **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
@@ -557,6 +626,43 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a foreign stash,
   `429 rate-limited` with `Retry-After: 60`.
 
+## Proposals
+
+A proposal is a stored candidate write: its path, candidate body, exact `baseVersion`, author,
+message, metadata, expiry, and optional creation idempotency key. Its ID is time-sortable
+(`prp_` plus a zero-padded 13-digit epoch-millisecond value and eight lowercase hex digits).
+`ProposalRecord` always includes `expiresAt` and has these lifecycle fields:
+
+- `status`: `open`, `applied`, `rejected`, or computed `expired`;
+- `decidedAt`, `decidedBy`, and `decisionReason` (nullable until a decision);
+- `appliedVersion` and `appliedChangeId` (nullable unless applied).
+
+Expiry is computed when an open proposal has `expiresAt <= now`; equality is expired. Expiry does
+not erase the proposal or its candidate. Approval of an expired open proposal returns
+`proposal-expired`, while rejection is still allowed and an already-applied proposal remains
+idempotently readable/approvable. `decidedBy` is always the authenticated identity (`admin` or the
+stash token ID), never a caller-supplied string.
+
+Approval is an exact-head fenced operation, not a rebase. One attempt first claims a live, open,
+unexpired proposal only when the path head still equals `baseVersion`; it then inserts an ordinary
+`put` version and writes the file head last in the same fenced batch. Exactly one changed head row
+is the verdict. A losing attempt writes no partial proposal, version, or head state. If the head
+moved, the API returns `409 stale` with `current` and leaves the proposal open. A successful
+version gets platform-stamped `meta.proposalId`, so the normal history, change feed, rollback, and
+diff surfaces retain the audit link. Approval appends one normal version even when the candidate
+body matches the base body. Repeating approval after a winner returns that winner's stored version
+result; rejecting an applied proposal returns `proposal-closed`.
+
+Any administrator or matching `write` credential may approve. Required approvers, roles, review
+comments, and other policy belong to consumers rather than this minimal platform flow.
+
+The review diff is permanently `base -> candidate`: a missing base or base tombstone is empty
+text, and the candidate comes from the proposal's referenced blob. `current` reports the live path
+head (or `null` when absent), while `stale` compares that moving head version with `baseVersion`.
+Moving the head never changes the displayed diff. An applied proposal normally reports
+`stale: true` afterward because approval advanced the head; consumers should read `status` before
+interpreting that flag.
+
 ## Diff results
 
 Stored and candidate diffs return one of three states:
@@ -601,9 +707,9 @@ comparison. The client exposes the response tag as `value.etag` and represents `
 
 ## Idempotent writes
 
-`PUT`, delete, and rollback accept `Idempotency-Key` values from 1 to 200 characters. The ledger
-binds a key to the canonical operation, path, expected version, body hash, target version,
-metadata, and normalized defaults.
+`PUT`, delete, and rollback accept `Idempotency-Key` values from 1 to 200 characters. Their
+seven-day ledger binds a key to the canonical operation, path, expected version, body hash, target
+version, metadata, and normalized defaults.
 
 - Repeating the same request within the seven-day ledger window rebuilds the original response,
   preserves its original HTTP status, and sets `Idempotent-Replayed: true`.
@@ -614,12 +720,20 @@ metadata, and normalized defaults.
 The client mints a key for each mutation. Pass `{ idempotencyKey: "stable-job-key" }` when a retry
 must replay the same operation across process restarts.
 
+Proposal creation accepts the same header but stores the key and canonical request hash on the
+proposal row rather than in the version ledger. Repeating the same stash/key/body returns the
+existing proposal with `201` and `Idempotent-Replayed: true`; reusing the key with any different
+canonical body returns `422 idempotency-key-reused`. Proposal approval is idempotent by stored
+state instead: repeated approval returns the applied version result and does not append again.
+
 ## Pagination and change polling
 
 Every `limit` defaults to 50 and has a maximum of 200. Values above 200 return `400 validation`;
 they are never silently clamped.
 
 - Stash and file lists use `after` and return `nextAfter`.
+- Proposal lists use an opaque `after` cursor over `createdAt DESC, id DESC` and return
+  `nextAfter`; `total` is the count for the full applied filter.
 - History uses `before=<version>` and returns `nextBefore`.
 - Change feeds use `since=<changeId>` for ascending polling or `before=<changeId>` for descending
   UI pagination. They are mutually exclusive.
@@ -696,3 +810,5 @@ The v1 HTTP contract intentionally defers:
 - binary request bodies and additional content types beyond UTF-8 text;
 - byte-range reads and dedicated download endpoints;
 - multi-file atomic commits; v1 history and CAS are per path.
+- proposal approval policy (required approvers, roles, and review comments); any matching `write`
+  credential can approve.

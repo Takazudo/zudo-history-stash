@@ -60,6 +60,12 @@ describe("route contract coverage", () => {
       listChanges: [],
       runGc: [],
       listGcRuns: [],
+      createProposal: [],
+      listProposals: [],
+      getProposal: [],
+      getProposalDiff: [],
+      approveProposal: ["stale"],
+      rejectProposal: [],
       listFiles: [],
       getFile: ["file-deleted"],
       putFile: ["stale", "exists"],
@@ -90,6 +96,14 @@ describe("route contract coverage", () => {
     }
   });
 
+  it("declares proposal-create replay metadata and stale approval current metadata", () => {
+    expect(ROUTE_CONTRACTS.createProposal.requestHeaders).toEqual(["Idempotency-Key"]);
+    expect(ROUTE_CONTRACTS.createProposal.responses[201]?.headers).toEqual(["Idempotent-Replayed"]);
+    expect(
+      ROUTE_CONTRACTS.approveProposal.errors.find(({ code }) => code === "stale"),
+    ).toMatchObject({ current: true });
+  });
+
   it("documents conditional file reads with both representation headers", () => {
     const contract = ROUTE_CONTRACTS.getFile;
     expect(contract.requestHeaders).toEqual(["If-None-Match"]);
@@ -105,6 +119,12 @@ describe("route contract coverage", () => {
     const expected = new Set([
       "me",
       "getStash",
+      "createProposal",
+      "listProposals",
+      "getProposal",
+      "getProposalDiff",
+      "approveProposal",
+      "rejectProposal",
       "listFiles",
       "getFile",
       "putFile",

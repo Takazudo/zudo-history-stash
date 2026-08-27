@@ -2,6 +2,8 @@ import type { ZodType } from "zod";
 import type { ErrorCode } from "../types.js";
 import {
   ChangesQuery,
+  ApproveProposalBody,
+  CreateProposalBody,
   CreateStashBody,
   CreateTokenBody,
   DeleteFileBody,
@@ -11,9 +13,12 @@ import {
   HistoryQuery,
   ImportBody,
   ListGcRunsQuery,
+  ListProposalsQuery,
   ListFilesQuery,
   ListStashesQuery,
   PutFileBody,
+  ProposalDiffQuery,
+  RejectProposalBody,
   RollbackBody,
   RunGcBody,
   RotateTokenBody,
@@ -285,6 +290,134 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       200: response("Recent garbage-collection runs.", "GcRunsResponse", "GcRunsResponse"),
     },
     errors: [error("validation"), error("unauthorized")],
+    wildcardPath: false,
+  },
+  createProposal: {
+    summary: "Create a proposal",
+    description:
+      "Stores an expiring candidate write against an exact base version. An Idempotency-Key can replay the same proposal creation safely.",
+    principalNote: "write; administrator or a matching write stash token.",
+    body: CreateProposalBody,
+    requestHeaders: ["Idempotency-Key"],
+    responses: {
+      201: response("The stored proposal record.", "ProposalRecord", "ProposalRecord", [
+        "Idempotent-Replayed",
+      ]),
+    },
+    errors: [
+      error("validation"),
+      error("body-not-well-formed"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("payload-too-large"),
+      error("idempotency-key-reused"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+  },
+  listProposals: {
+    summary: "List proposals",
+    description:
+      "Returns proposals newest first with an opaque keyset cursor and a total for the selected status and path filters.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    query: ListProposalsQuery,
+    responses: {
+      200: response(
+        "A filtered page of proposals.",
+        "ProposalListResponse",
+        "ProposalListResponse",
+      ),
+    },
+    errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
+    wildcardPath: false,
+  },
+  getProposal: {
+    summary: "Get a proposal",
+    description: "Returns one proposal and its immutable candidate body.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    responses: {
+      200: response(
+        "The proposal record and candidate body.",
+        "ProposalWithBody",
+        "ProposalWithBody",
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("not-found"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+  },
+  getProposalDiff: {
+    summary: "Get a proposal diff",
+    description:
+      "Computes the immutable base-to-candidate diff and separately reports the current head and whether it has moved.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    query: ProposalDiffQuery,
+    responses: {
+      200: response(
+        "The immutable proposal diff and current-head state.",
+        "ProposalDiffResult",
+        "ProposalDiffResult",
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("not-found"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+  },
+  approveProposal: {
+    summary: "Approve a proposal",
+    description:
+      "Applies an open, unexpired proposal only when the current head still equals its exact base. Re-approving an applied proposal returns its stored result.",
+    principalNote: "write; administrator or a matching write stash token.",
+    body: ApproveProposalBody,
+    responses: {
+      200: response(
+        "The applied proposal result.",
+        "ApproveProposalResult",
+        "ApproveProposalResult",
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("stale", true),
+      error("proposal-expired"),
+      error("proposal-closed"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+  },
+  rejectProposal: {
+    summary: "Reject a proposal",
+    description:
+      "Rejects an open proposal with an optional reason. Re-rejecting it is idempotent; applied proposals are closed.",
+    principalNote: "write; administrator or a matching write stash token.",
+    body: RejectProposalBody,
+    responses: {
+      200: response("The rejected proposal record.", "ProposalRecord", "ProposalRecord"),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("proposal-closed"),
+      rateLimited(),
+    ],
     wildcardPath: false,
   },
   listFiles: {

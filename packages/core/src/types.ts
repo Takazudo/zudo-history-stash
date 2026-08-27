@@ -4,6 +4,7 @@ import type { JsonValue } from "./canonical.js";
 export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
 export type GcKind = "r2-orphans" | "ledger";
+export type ProposalStatus = "open" | "applied" | "rejected" | "expired";
 export type ErrorCode =
   | "validation"
   | "invalid-path"
@@ -19,6 +20,8 @@ export type ErrorCode =
   | "gc-busy"
   | "already-rotated"
   | "token-expired"
+  | "proposal-expired"
+  | "proposal-closed"
   | "rate-limited"
   | "payload-too-large"
   | "idempotency-key-reused"
@@ -105,6 +108,44 @@ export interface GcRunResult {
 export interface GcRunsResponse {
   runs: GcRunResult[];
 }
+export interface ProposalRecord {
+  id: string;
+  stash: string;
+  path: string;
+  baseVersion: number | null;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  size: number;
+  hash: string;
+  createdAt: string;
+  expiresAt: string;
+  status: ProposalStatus;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  appliedVersion: number | null;
+  appliedChangeId: number | null;
+}
+export type ProposalWithBody = ProposalRecord & { body: string };
+export interface ProposalListResponse {
+  proposals: ProposalRecord[];
+  nextAfter: string | null;
+  total: number;
+}
+export interface ApproveProposalResult {
+  status: "applied";
+  appliedVersion: number;
+  appliedChangeId: number;
+  hash: string;
+  createdAt: string;
+}
+export type ProposalDiffResult = DiffResult & {
+  base: { version: number | null; hash: string | null; deleted: boolean };
+  candidate: { hash: string; size: number };
+  current: Current | null;
+  stale: boolean;
+};
 export interface TokenRecord {
   id: string;
   label: string;
@@ -234,6 +275,11 @@ export interface DiffSide {
 export type FileDiffResult = DiffResult & { from: DiffSide; to: DiffSide };
 export type GetDiffResult = FileDiffResult;
 export type CandidateDiffResult = DiffResult;
+export type CreateProposalResult = ProposalRecord;
+export type ListProposalsResult = ProposalListResponse;
+export type GetProposalResult = ProposalWithBody;
+export type GetProposalDiffResult = ProposalDiffResult;
+export type RejectProposalResult = ProposalRecord;
 export type ListStashesResult = StashListResponse;
 export type ListTokensResult = TokenListResponse;
 export type ListFilesResult = FileListResponse;
