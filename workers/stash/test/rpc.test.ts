@@ -754,10 +754,24 @@ describe("named-entrypoint RPC boundary", () => {
       token: RPC_READ_TOKEN,
     });
 
-    expect(response.status).toBe(501);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "not-implemented", message: "This route is not implemented yet." },
-    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(response.body).not.toBeNull();
+    const reader = response.body!.getReader();
+    try {
+      let firstFrame = "";
+      const decoder = new TextDecoder();
+      for (let readCount = 0; readCount < 4 && !firstFrame.includes("\n\n"); readCount += 1) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        firstFrame += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(firstFrame).toContain(
+        'event: ready\ndata: {"type":"ready","head":null,"checkpoint":null}',
+      );
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
   });
 });
 
