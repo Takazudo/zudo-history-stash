@@ -9,7 +9,7 @@ exports[`projectRequestSchema > projects PutFileBody deterministically 1`] = `
       "type": "string",
     },
     "body": {
-      "description": "Must be a well-formed Unicode string. Maximum 1000000 UTF-8 bytes.",
+      "description": "Must be a well-formed Unicode string. Maximum 5000000 UTF-8 bytes.",
       "type": "string",
     },
     "contentType": {

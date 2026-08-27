@@ -1,4 +1,4 @@
-export const MAX_BODY_BYTES = 1_000_000;
+export const MAX_BODY_BYTES = 5_000_000;
 export const MAX_PATH_BYTES = 512;
 export const MAX_META_BYTES = 4_096;
 export const MAX_AUTHOR_BYTES = 200;
@@ -13,5 +13,5 @@ export const DIFF_MAX_INTRALINE_LENGTH = 800;
 export const DIFF_MAX_INTRALINE_CHARS = 200_000;
 export const IDEMPOTENCY_KEY_MAX_CHARS = 200;
 export const IDEMPOTENCY_TTL_DAYS = 7;
-export const BODY_LIMIT_BYTES = 8 * 1_024 * 1_024;
+export const BODY_LIMIT_BYTES = 32 * 1_024 * 1_024;
 export const MAX_IMPORT_VERSIONS = 20;

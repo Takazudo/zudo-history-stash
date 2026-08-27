@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { core, ZodType } from "zod";
+import { MAX_BODY_BYTES } from "../limits.js";
 import {
   ChangesQuery,
   CreateStashBody,
@@ -196,7 +197,7 @@ function describeRequestRefinements(source: ZodType, schema: JsonSchema): void {
   const wellFormed = "Must be a well-formed Unicode string.";
   const author = `${wellFormed} Maximum 200 UTF-8 bytes.`;
   const message = `${wellFormed} Maximum 2000 UTF-8 bytes.`;
-  const body = `${wellFormed} Maximum 1000000 UTF-8 bytes.`;
+  const body = `${wellFormed} Maximum ${MAX_BODY_BYTES} UTF-8 bytes.`;
   const meta = "Serialized JSON must be at most 4096 UTF-8 bytes.";
 
   if (source === PutFileBody) {
