@@ -3,7 +3,11 @@ import type {
   GcRunResult,
   JsonValue,
   ProposalStatus,
+  ReconnectReason,
   RouteId,
+  StashChangeEvent,
+  StashEvent,
+  StashProposalEvent,
   TokenScope,
   VersionKind,
 } from "@takazudo/zudo-history-stash-core";
@@ -169,10 +173,28 @@ export interface FakeStashState {
   gcRuns: GcRunResult[];
 }
 
+/** Controllable in-memory source backing the fake's authenticated SSE route. */
+export interface FakeStashEvents {
+  /** Broadcasts a change or proposal using the stash carried by that event. */
+  emit(event: StashChangeEvent | StashProposalEvent): void;
+  /** Broadcasts any valid event to one stash, including ready/reconnect test fixtures. */
+  emit(stash: string, event: StashEvent): void;
+  /** Emits a reconnect frame and closes every current subscriber for the stash. */
+  rotate(stash: string, reason?: ReconnectReason): void;
+  /** Simulates a clean remote EOF without a reconnect frame. */
+  close(stash: string): void;
+  /** Simulates a body/network failure for current subscribers. */
+  error(stash: string, error?: unknown): void;
+  /** Returns the current number of open response bodies for one stash. */
+  subscriberCount(stash: string): number;
+}
+
 export interface FakeStash {
-  /** Fetch-compatible surface; the fetch-only events route deliberately returns 501 until #148. */
+  /** Fetch-compatible surface, including the authenticated fetch-only events route. */
   fetch: StashFetch;
   state: FakeStashState;
+  /** Stable controller for live-event fixtures, rotations, clean closes, and network errors. */
+  events: FakeStashEvents;
   /** Creates a stash directly for fixture setup and returns its public name. */
   createStash(name: string): string;
   /** Mints a fixture token through the same hash-only storage path as the HTTP route. */

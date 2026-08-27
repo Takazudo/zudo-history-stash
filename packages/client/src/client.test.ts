@@ -170,6 +170,150 @@ describe("transport options", () => {
   });
 });
 
+describe("live transport and client identity", () => {
+  it("validates clientId once when constructing either transport", () => {
+    const binding = { request: vi.fn(async () => new Response(null, { status: 204 })) };
+    for (const clientId of ["", "x".repeat(65), "line\nbreak"]) {
+      expect(() => createStashClient({ baseUrl: "https://stash.example", clientId })).toThrow(
+        "clientId must contain between 1 and 64 characters",
+      );
+    }
+    expect(() =>
+      createStashClient({
+        transport: { kind: "rpc", binding, token: "rpc-token" },
+        clientId: "x".repeat(65),
+      }),
+    ).toThrow("clientId must contain between 1 and 64 characters");
+    expect(() =>
+      createStashClient({ baseUrl: "https://stash.example", clientId: "🙂".repeat(64) }),
+    ).not.toThrow();
+    expect(binding.request).not.toHaveBeenCalled();
+  });
+
+  it("adds the stable identity to every fetch mutation route and no read route", async () => {
+    mock.mockImplementation(async (input) => {
+      if (String(input).includes("/events")) {
+        return new Response(
+          `event: ready\ndata: ${JSON.stringify({
+            type: "ready",
+            head: 7,
+            checkpoint: 7,
+          })}\n\n`,
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return jsonResponse({});
+    });
+    const clientOptions = {
+      baseUrl: "https://stash.example/",
+      token: "read-token",
+      clientId: "tab-a",
+      fetch: mock,
+      idempotencyKey: () => "key",
+    };
+    const c = createStashClient(clientOptions);
+    clientOptions.clientId = "changed-after-construction";
+    clientOptions.baseUrl = "https://changed.invalid";
+    clientOptions.token = "changed-token";
+    const tokens = c.stashes.tokens("demo");
+    const proposals = c.proposals("demo");
+    const files = c.files("demo");
+    const proposalId = "prp_1787702400000deadbeef";
+
+    await c.stashes.create({ name: "new-stash" });
+    await c.stashes.delete("demo");
+    await c.stashes.restore("demo");
+    await tokens.create({ label: "ci", scope: "write" });
+    await tokens.rotate("tok_old", {});
+    await tokens.revoke("tok_old");
+    await c.stashes.import("demo", {
+      path: "a.md",
+      expectedVersion: null,
+      versions: [{ kind: "put", body: "a", createdAt: 0 }],
+    });
+    await c.admin.gc.run({ kind: "ledger", dryRun: true });
+    await proposals.create({ path: "a.md", body: "a", baseVersion: null });
+    await proposals.approve(proposalId);
+    await proposals.reject(proposalId);
+    await files.put("a.md", { body: "a", expectedVersion: null });
+    await files.delete("a.md", { expectedVersion: 1 });
+    await files.rollback("a.md", { toVersion: 1, expectedVersion: 2 });
+
+    expect(mock).toHaveBeenCalledTimes(14);
+    for (const [, init] of mock.mock.calls) {
+      expect(init?.headers).toMatchObject({ "X-Stash-Client-Id": "tab-a" });
+    }
+
+    mock.mockClear();
+    await c.health();
+    await c.me();
+    await c.stashes.list();
+    await c.stashes.get("demo");
+    await tokens.list();
+    await c.changes();
+    await c.admin.gc.runs();
+    await proposals.list();
+    await proposals.get(proposalId);
+    await proposals.diff(proposalId);
+    await files.list();
+    await files.get("a.md");
+    await files.history("a.md");
+    await files.diff("a.md", { from: 1, to: "head" });
+    await files.diffCandidate("a.md", { from: "head", body: "candidate" });
+    await files.changes();
+    const events = files.events({ since: 7 });
+    await expect(events[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { type: "ready", checkpoint: 7 },
+    });
+    events.close();
+
+    expect(mock).toHaveBeenCalledTimes(17);
+    for (const [, init] of mock.mock.calls) {
+      expect(init?.headers).not.toHaveProperty("X-Stash-Client-Id");
+    }
+    expect(requestAt(14)).toMatchObject({
+      init: { method: "POST", headers: { "Content-Type": "application/json" } },
+    });
+    expect(requestAt(16)).toMatchObject({
+      url: "https://stash.example/v1/stashes/demo/events?since=7",
+      init: {
+        method: "GET",
+        headers: { Authorization: "Bearer read-token" },
+        signal: expect.any(AbortSignal),
+      },
+    });
+  });
+
+  it("passes mutation identity through generic RPC but rejects events before dispatch", async () => {
+    const binding = {
+      request: vi.fn<StashRpcBinding["request"]>(async () => jsonResponse({})),
+    };
+    const c = createStashClient({
+      transport: { kind: "rpc", binding, token: "rpc-token" },
+      clientId: "worker-a",
+    });
+
+    await c.stashes.delete("demo");
+    await c.files("demo").put("a.md", { body: "a", expectedVersion: null });
+    await c.files("demo").diffCandidate("a.md", { from: "head", body: "candidate" });
+
+    expect(binding.request.mock.calls[0]?.[0]).toMatchObject({
+      method: "DELETE",
+      headers: { "X-Stash-Client-Id": "worker-a" },
+    });
+    expect(binding.request.mock.calls[1]?.[0]).toMatchObject({
+      method: "PUT",
+      headers: { "X-Stash-Client-Id": "worker-a" },
+    });
+    expect(binding.request.mock.calls[2]?.[0].headers).not.toHaveProperty("X-Stash-Client-Id");
+    expect(() => c.files("demo").events()).toThrow(
+      new TypeError("unsupported-transport: events are fetch-only"),
+    );
+    expect(binding.request).toHaveBeenCalledTimes(3);
+    expect(mock).not.toHaveBeenCalled();
+  });
+});
+
 describe("golden requests", () => {
   it("covers every public route with exact URL, method, headers, and body", async () => {
     const c = client();

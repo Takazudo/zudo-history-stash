@@ -67,6 +67,7 @@ describe("shared conformance trace", () => {
         "read scope cannot write",
         "foreign stash is concealed",
         "create file",
+        "events replay the committed change through ready",
         "idempotency key reuse is rejected",
         "CAS precedes skip-if-unchanged",
         "weak comma-list ETag returns 304",
