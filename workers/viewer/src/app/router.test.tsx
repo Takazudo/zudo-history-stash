@@ -53,7 +53,10 @@ const deniedWriteRoutes = [
   ],
 ] as const;
 
+let requests: URL[] = [];
+
 beforeEach(() => {
+  requests = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -61,6 +64,10 @@ beforeEach(() => {
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
         "http://localhost",
       );
+      requests.push(url);
+      if (url.pathname.endsWith("/v1/admin/gc/runs")) {
+        return Response.json({ runs: [] });
+      }
       return Response.json(
         url.pathname.endsWith("/tokens") ? { tokens: [] } : { principal: "admin" },
       );
@@ -96,6 +103,12 @@ describe("viewer routes", () => {
     );
     expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
     await waitFor(() => expect(screen.getByText("admin")).toBeTruthy());
+    if (path === "/") {
+      expect(await screen.findByText("No recent runs for this kind.")).toBeTruthy();
+      const historyRequest = requests.find((url) => url.pathname.endsWith("/v1/admin/gc/runs"));
+      expect(historyRequest?.searchParams.get("kind")).toBe("r2-orphans");
+      expect(historyRequest?.searchParams.get("limit")).toBe("10");
+    }
   });
 
   it("preserves a deep link when redirecting to login", async () => {
