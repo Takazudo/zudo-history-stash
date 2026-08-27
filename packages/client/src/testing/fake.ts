@@ -245,12 +245,12 @@ function routeMatch(request: Request): MatchedRoute | undefined {
     return { routeId: "getHistory", stash: decode(match[1]), path: decode(match[2]) };
   }
 
-  match = /^\/v1\/stashes\/([^/]+)\/diff\/(.+)$/.exec(pathname);
-  if ((method === "GET" || method === "POST") && match?.[1] && match[2]) {
+  match = /^\/v1\/stashes\/([^/]+)\/diff(?:\/(.*))?$/.exec(pathname);
+  if ((method === "GET" || method === "POST") && match?.[1] !== undefined) {
     return {
       routeId: method === "GET" ? "getDiff" : "diffCandidate",
       stash: decode(match[1]),
-      path: decode(match[2]),
+      path: decode(match[2] ?? ""),
     };
   }
 

@@ -39,6 +39,13 @@ const UNSUPPORTED_SAMPLES: Record<
   listChanges: { method: "GET", path: "/v1/changes" },
 };
 
+const EMPTY_DIFF_ROUTES = [
+  { method: "GET", path: "/v1/stashes/demo/diff", routeId: "getDiff" },
+  { method: "GET", path: "/v1/stashes/demo/diff/", routeId: "getDiff" },
+  { method: "POST", path: "/v1/stashes/demo/diff", routeId: "diffCandidate" },
+  { method: "POST", path: "/v1/stashes/demo/diff/", routeId: "diffCandidate" },
+] as const;
+
 describe("fake route boundary", () => {
   it("pins the implementation and trace to the exact supported route set", () => {
     expect(new Set(FAKE_SUPPORTED_ROUTE_IDS)).toEqual(new Set(CONFORMANCE_SUPPORTED_ROUTE_IDS));
@@ -672,6 +679,73 @@ describe("rate-limit injection", () => {
     );
     expect(diffLimited.status).toBe(429);
     expect(calls).toEqual([{ capability: "diff", key: `p:${reader.id}`, routeId: "getDiff" }]);
+  });
+
+  it.each(EMPTY_DIFF_ROUTES)(
+    "runs $method $path through the diff limiter before empty-path validation",
+    async ({ method, path, routeId }) => {
+      const calls: Array<{ capability: string; key: string; routeId: RouteId }> = [];
+      let denied = true;
+      const fake = createFakeStash({
+        adminToken: ADMIN,
+        rateLimit(input) {
+          calls.push(input);
+          return { success: !denied };
+        },
+      });
+      fake.createStash("demo");
+      const secret = await fake.mintToken("demo", "read");
+      const token = [...fake.state.tokens.values()][0];
+      if (token === undefined) throw new Error("missing empty-diff fixture");
+
+      const send = () =>
+        fake.fetch(`https://fake.invalid${path}`, {
+          method,
+          headers: { Authorization: `Bearer ${secret}` },
+        });
+
+      const limited = await send();
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("Retry-After")).toBe("60");
+      expect(await errorCode(limited)).toBe("rate-limited");
+      expect(calls).toEqual([{ capability: "diff", key: `p:${token.id}`, routeId }]);
+
+      denied = false;
+      calls.length = 0;
+      const invalidPath = await send();
+      expect(invalidPath.status).toBe(400);
+      expect(await errorCode(invalidPath)).toBe("invalid-path");
+      expect(calls).toEqual([
+        { capability: "diff", key: `p:${token.id}`, routeId },
+        { capability: "diff", key: "s:demo", routeId },
+      ]);
+    },
+  );
+
+  it("preserves nonempty stored-diff routing after accepting empty wildcard paths", async () => {
+    const calls: Array<{ capability: string; key: string; routeId: RouteId }> = [];
+    const fake = createFakeStash({
+      adminToken: ADMIN,
+      rateLimit(input) {
+        calls.push(input);
+        return { success: true };
+      },
+    });
+    fake.createStash("demo");
+    const secret = await fake.mintToken("demo", "read");
+    const token = [...fake.state.tokens.values()][0];
+    if (token === undefined) throw new Error("missing nonempty-diff fixture");
+
+    const response = await fake.fetch(
+      "https://fake.invalid/v1/stashes/demo/diff/missing.txt?from=1&to=head",
+      { headers: { Authorization: `Bearer ${secret}` } },
+    );
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("not-found");
+    expect(calls).toEqual([
+      { capability: "diff", key: `p:${token.id}`, routeId: "getDiff" },
+      { capability: "diff", key: "s:demo", routeId: "getDiff" },
+    ]);
   });
 });
 
