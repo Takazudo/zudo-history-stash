@@ -143,12 +143,6 @@ export function insertLedger(
     );
 }
 
-export const sweepLedger = `
-  DELETE FROM idempotency WHERE rowid IN (
-    SELECT rowid FROM idempotency WHERE created_at < ? ORDER BY created_at LIMIT 200
-  )
-`;
-
 function ledgerStatement(
   db: Preparer,
   input: PutBatchInput | DeleteBatchInput | RollbackBatchInput,

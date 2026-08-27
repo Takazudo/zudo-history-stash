@@ -29,7 +29,6 @@ import {
   selectHeadForWrite,
   selectLedger,
   selectVersionMeta,
-  sweepLedger as sweepLedgerSql,
   type LedgerInsert,
 } from "./sql/writes.js";
 import type { StoreDependencies } from "./store.js";
@@ -76,7 +75,6 @@ export interface StashWrites {
     input: RollbackBody,
     options?: WriteOptions,
   ): Promise<StoreWriteResult<RollbackResult>>;
-  sweepLedger(olderThanMs: number): Promise<number>;
 }
 
 export interface WriteDependencies extends StoreDependencies {
@@ -551,12 +549,5 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     put,
     delete: deleteFile,
     rollback,
-    async sweepLedger(olderThanMs: number): Promise<number> {
-      const result = await env.DB.withSession("first-primary")
-        .prepare(sweepLedgerSql)
-        .bind(olderThanMs)
-        .run();
-      return result.meta.changes;
-    },
   };
 }
