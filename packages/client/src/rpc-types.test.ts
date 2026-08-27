@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type { RouteId } from "@takazudo/zudo-history-stash-core";
+import type { ListGcRunsOptions, ListStashesOptions } from "./client.js";
 import type { StashRpcMethods } from "./rpc-types.js";
 
 const rpcMethodsByRoute = {
@@ -8,12 +9,16 @@ const rpcMethodsByRoute = {
   listStashes: "listStashes",
   createStash: "createStash",
   getStash: "getStash",
+  deleteStash: "deleteStash",
+  restoreStash: "restoreStash",
   createToken: "createToken",
   listTokens: "listTokens",
   rotateToken: "rotateToken",
   revokeToken: "revokeToken",
   importHistory: "importHistory",
   listChanges: "listChanges",
+  runGc: "runGc",
+  listGcRuns: "listGcRuns",
   listFiles: "listFiles",
   getFile: "getFile",
   putFile: "putFile",
@@ -35,5 +40,31 @@ describe("StashRpcMethods route pin", () => {
   it("accepts an omitted rotation grace period at the public RPC boundary", () => {
     const input: Parameters<StashRpcMethods["rotateToken"]>[3] = {};
     expect(input).toEqual({});
+  });
+
+  it("keeps GC RPC inputs caller-optional where schemas supply defaults", () => {
+    const runInput: Parameters<StashRpcMethods["runGc"]>[1] = {
+      kind: "ledger",
+    };
+    const listInput: Parameters<StashRpcMethods["listGcRuns"]>[1] = {
+      kind: "r2-orphans",
+    };
+    expect(runInput).toEqual({ kind: "ledger" });
+    expect(listInput).toEqual({ kind: "r2-orphans" });
+  });
+
+  it("exposes includeDeleted on the raw stash-list RPC query", () => {
+    const input: Parameters<StashRpcMethods["listStashes"]>[1] = {
+      includeDeleted: true,
+    };
+    expect(input).toEqual({ includeDeleted: true });
+  });
+
+  it("keeps high-level list options strict after schema preprocessing", () => {
+    expectTypeOf<ListStashesOptions["includeDeleted"]>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<ListStashesOptions["limit"]>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<ListStashesOptions["after"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<ListGcRunsOptions["kind"]>().toEqualTypeOf<"r2-orphans" | "ledger" | undefined>();
+    expectTypeOf<ListGcRunsOptions["limit"]>().toEqualTypeOf<number | undefined>();
   });
 });

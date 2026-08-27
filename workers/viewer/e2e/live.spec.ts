@@ -1,6 +1,7 @@
-import type { APIRequestContext, APIResponse, Page } from "@playwright/test";
+import type { APIRequestContext, APIResponse, Page, Response } from "@playwright/test";
 import { sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { expect, test } from "./fixtures/console-errors.js";
+import { requireLoopbackViewerUrl } from "./live-safety.js";
 
 const ADMIN_TOKEN = process.env.STASH_ADMIN_TOKEN ?? "dev-admin-token";
 const ADMIN_AUTHORIZATION = { Authorization: `Bearer ${ADMIN_TOKEN}` };
@@ -9,6 +10,10 @@ const LARGE_FILE_BYTES = 1_500_000;
 const LARGE_FILE_PREFIX = "History Stash R2 large-file fixture\n";
 const LARGE_FILE_SUFFIX = "\nHistory Stash R2 large-file fixture end\n";
 const LARGE_FILE_LINE = `${"x".repeat(4_095)}\n`;
+
+test.beforeAll(({ baseURL }) => {
+  requireLoopbackViewerUrl(baseURL ?? "");
+});
 
 interface HistoryResponse {
   total: number;
@@ -50,6 +55,13 @@ interface ListedToken {
   revokedAt: string | null;
 }
 
+interface StashLifecycleRecord {
+  name: string;
+  deletedAt: string | null;
+  restoreUntil: string | null;
+  restorable: boolean;
+}
+
 function authorization(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` };
 }
@@ -76,7 +88,7 @@ function liveHistoryUrl(path: string): string {
 }
 
 async function requireStatus(
-  response: APIResponse,
+  response: APIResponse | Response,
   expected: number,
   operation: string,
 ): Promise<void> {
@@ -277,6 +289,26 @@ async function cleanupUniqueResources(
   }
 
   return failures;
+}
+
+async function cleanupLifecycleStash(request: APIRequestContext, stash: string): Promise<Error[]> {
+  try {
+    const existing = await request.get(`/api/v1/stashes/${stash}`, {
+      headers: ADMIN_AUTHORIZATION,
+    });
+    if (existing.status() === 404) return [];
+    await requireStatus(existing, 200, `read lifecycle cleanup stash ${stash}`);
+    const record = (await existing.json()) as StashLifecycleRecord;
+    if (record.deletedAt !== null) return [];
+
+    const deleted = await request.delete(`/api/v1/stashes/${stash}`, {
+      headers: ADMIN_AUTHORIZATION,
+    });
+    await requireStatus(deleted, 200, `delete lifecycle cleanup stash ${stash}`);
+    return [];
+  } catch (error: unknown) {
+    return [errorFrom(error)];
+  }
 }
 
 test("@live viewer renders the seeded v2 to v3 CJK and CRLF diff", async ({ page, request }) => {
@@ -542,4 +574,136 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
       "isolated live viewer flow or its verified cleanup failed",
     );
   }
+});
+
+test("@live admin deletes and restores a unique stash through the viewer", async ({
+  page,
+  request,
+}) => {
+  const pageErrors = capturePageErrors(page);
+  await waitForDemo(request);
+  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const stash = `a-e2e-lifecycle-${runId}`;
+  const browserMutations: string[] = [];
+  page.on("request", (browserRequest) => {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(browserRequest.method())) return;
+    browserMutations.push(`${browserRequest.method()} ${new URL(browserRequest.url()).pathname}`);
+  });
+
+  let primaryFailure: unknown = null;
+  let cleanupFailures: Error[] = [];
+  try {
+    const created = await request.post("/api/v1/stashes", {
+      headers: ADMIN_AUTHORIZATION,
+      data: {
+        name: stash,
+        description: "Unique viewer lifecycle proof",
+        meta: { fixture: "viewer-live-lifecycle" },
+      },
+    });
+    await requireStatus(created, 201, `create lifecycle stash ${stash}`);
+
+    await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
+      token: ADMIN_TOKEN,
+    });
+    await page.goto(`/s/${stash}`);
+    await expect(page.getByRole("heading", { name: stash, exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Delete stash" }).click();
+
+    const dialog = page.getByRole("dialog", { name: `Delete ${stash}` });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("All current tokens will be revoked")).toBeVisible();
+    await dialog.getByRole("button", { name: "Delete stash" }).click();
+    await expect(dialog.getByText("Stash deleted and hidden.", { exact: true })).toBeVisible();
+    const deadline = dialog.locator("time");
+    await expect(deadline).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/u);
+    await expect(dialog.getByText("former tokens remain revoked", { exact: false })).toBeVisible();
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect(page).toHaveURL((url) => url.pathname === "/");
+
+    await page.getByRole("checkbox", { name: "Show deleted" }).check();
+    const deletedRow = page.getByRole("row").filter({ hasText: stash });
+    await expect(deletedRow).toContainText("deleted");
+    await deletedRow.getByRole("button", { name: `Restore ${stash}` }).click();
+    await expect(deletedRow).toContainText("live");
+    await expect(deletedRow.getByRole("link", { name: stash, exact: true })).toBeVisible();
+
+    const restoredResponse = await request.get(`/api/v1/stashes/${stash}`, {
+      headers: ADMIN_AUTHORIZATION,
+    });
+    await requireStatus(restoredResponse, 200, `read restored lifecycle stash ${stash}`);
+    const restored = (await restoredResponse.json()) as StashLifecycleRecord;
+    expect(restored).toMatchObject({
+      name: stash,
+      deletedAt: null,
+      restoreUntil: null,
+      restorable: false,
+    });
+    expect(browserMutations).toEqual([
+      `DELETE /api/v1/stashes/${stash}`,
+      `POST /api/v1/stashes/${stash}/restore`,
+    ]);
+    expect(pageErrors).toEqual([]);
+  } catch (error: unknown) {
+    primaryFailure = error;
+  } finally {
+    cleanupFailures = await cleanupLifecycleStash(request, stash);
+  }
+
+  if (primaryFailure !== null || cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
+      "viewer stash lifecycle flow or its verified cleanup failed",
+    );
+  }
+});
+
+test("@live admin runs an R2 garbage-collection dry page through the viewer", async ({
+  page,
+  request,
+}) => {
+  const pageErrors = capturePageErrors(page);
+  await waitForDemo(request);
+  await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
+    token: ADMIN_TOKEN,
+  });
+  await page.goto("/");
+
+  const maintenance = page.getByRole("region", { name: "Maintenance" });
+  await expect(maintenance).toBeVisible();
+  await expect(maintenance.getByRole("checkbox", { name: /Dry run/u })).toBeChecked();
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/admin/gc",
+  );
+  await maintenance.getByRole("button", { name: "Run", exact: true }).click();
+  const response = await responsePromise;
+  await requireStatus(response, 200, "run viewer R2 GC dry page");
+  expect(response.request().postDataJSON()).toEqual({
+    kind: "r2-orphans",
+    dryRun: true,
+    maxObjects: 100,
+  });
+  const result = (await response.json()) as {
+    runId: string;
+    jobId: string;
+    kind: string;
+    dryRun: boolean;
+    deleted: number;
+  };
+  expect(result).toMatchObject({
+    runId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+    jobId: "r2-orphans",
+    kind: "r2-orphans",
+    dryRun: true,
+    deleted: 0,
+  });
+
+  const currentRun = maintenance.getByRole("region", { name: "Current run" });
+  await expect(currentRun).toContainText("Dry run");
+  await expect(currentRun).toContainText(result.runId);
+  await expect(currentRun).toContainText("r2-orphans");
+  await expect(currentRun).toContainText("none");
+  expect(pageErrors).toEqual([]);
 });

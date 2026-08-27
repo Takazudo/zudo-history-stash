@@ -26,8 +26,11 @@ test("@smoke login returns to the protected deep link", async ({ page }) => {
 
 test("@smoke admin stash list shows counts and recent changes newest-first", async ({ page }) => {
   await page.addInitScript(tokenScript);
+  const gcRunQueries: string[] = [];
   await page.route("**/api/v1/**", async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
+    const pathname = url.pathname;
+    if (pathname === "/api/v1/admin/gc/runs") gcRunQueries.push(url.search);
     const value =
       pathname === "/api/v1/me"
         ? { principal: "admin" }
@@ -75,7 +78,9 @@ test("@smoke admin stash list shows counts and recent changes newest-first", asy
                 hasMore: false,
                 nextBefore: null,
               }
-            : { error: { code: "not-found", message: "Not found" } };
+            : pathname === "/api/v1/admin/gc/runs"
+              ? { runs: [] }
+              : { error: { code: "not-found", message: "Not found" } };
     await route.fulfill({ status: "error" in value ? 404 : 200, json: value });
   });
 
@@ -87,6 +92,8 @@ test("@smoke admin stash list shows counts and recent changes newest-first", asy
   await expect(changes).toHaveCount(2);
   await expect(changes.nth(0)).toHaveAttribute("data-change-id", "9");
   await expect(changes.nth(1)).toHaveAttribute("data-change-id", "3");
+  await expect.poll(() => gcRunQueries.length).toBeGreaterThan(0);
+  expect(new Set(gcRunQueries)).toEqual(new Set(["?kind=r2-orphans&limit=10"]));
 });
 
 test("@smoke file list appends without duplicates and re-queries deleted files", async ({

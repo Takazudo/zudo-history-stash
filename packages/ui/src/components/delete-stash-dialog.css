@@ -1,0 +1,50 @@
+@layer zhs-components {
+  .zhs-delete-stash-dialog__content {
+    display: grid;
+  }
+
+  .zhs-delete-stash-dialog__header,
+  .zhs-delete-stash-dialog__body,
+  .zhs-delete-stash-dialog__actions {
+    padding-block: var(--vsp-lg);
+    padding-inline: var(--hsp-lg);
+  }
+
+  .zhs-delete-stash-dialog__header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: var(--hsp-lg);
+    border-block-end: var(--border-hairline) solid var(--theme-border);
+  }
+
+  .zhs-delete-stash-dialog__body {
+    display: grid;
+    gap: var(--vsp-lg);
+  }
+
+  .zhs-delete-stash-dialog__eyebrow,
+  .zhs-delete-stash-dialog__title,
+  .zhs-delete-stash-dialog__body p {
+    margin: 0;
+  }
+
+  .zhs-delete-stash-dialog__eyebrow {
+    color: var(--theme-error);
+    font-size: var(--text-xs);
+    font-weight: 680;
+  }
+
+  .zhs-delete-stash-dialog__title {
+    color: var(--theme-ink-strong);
+    font-size: var(--text-lg);
+    line-height: var(--line-tight);
+  }
+
+  .zhs-delete-stash-dialog__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--hsp-sm);
+    border-block-start: var(--border-hairline) solid var(--theme-border);
+  }
+}

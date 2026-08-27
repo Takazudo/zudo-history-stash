@@ -2,12 +2,13 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { R2_SPILL_BYTES, sha256Hex, type ImportBody } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../../src/env.js";
-import { blobKey } from "../../src/d1/blobs.js";
+import { blobKey, parseBlobKey, type BlobGenerationFactory } from "../../src/d1/blobs.js";
 import { createImport } from "../../src/d1/import.js";
 import { importBatch, type PreparedImportVersion } from "../../src/d1/sql/import.js";
 import { createWrites } from "../../src/d1/writes.js";
 import { resetDatabase } from "../helpers/app.js";
 import { wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
+import { generation, generationFactory } from "../helpers/blob-generations.js";
 
 const workerEnv = env as Env;
 
@@ -23,10 +24,13 @@ function importer(
   now = 10_000,
   bindings: Env = workerEnv,
   onBeforeCommit?: () => void | Promise<void>,
+  createBlobGeneration?: BlobGenerationFactory,
 ) {
+  let generationSequence = 0;
   return createImport(bindings, {
     now: () => now,
     createId: () => "unused",
+    createBlobGeneration: createBlobGeneration ?? (() => generation((generationSequence += 1))),
     ...(onBeforeCommit ? { onBeforeCommit } : {}),
   });
 }
@@ -196,8 +200,8 @@ describe("history import store", () => {
     const bodyB = spilledBody("DISTINCT_B", "b");
     const hashA = await sha256Hex(bodyA);
     const hashB = await sha256Hex(bodyB);
-    const keyA = blobKey(stash, hashA);
-    const keyB = blobKey(stash, hashB);
+    const keyA = blobKey(stash, hashA, generation(1));
+    const keyB = blobKey(stash, hashB, generation(2));
     const calls: BlobCallCounts = { get: -1, put: -1 };
     const attempts: { call: number; key: string }[] = [];
     const bindings = wrapBlobs(workerEnv, {
@@ -210,7 +214,7 @@ describe("history import store", () => {
     const objectsAtCommit: string[][] = [];
     const store = importer(10_000, bindings, async () => {
       objectsAtCommit.push(
-        (await env.BLOBS.list({ prefix: `${stash}/` })).objects.map(({ key }) => key).sort(),
+        (await env.BLOBS.list({ prefix: `v2/${stash}/` })).objects.map(({ key }) => key).sort(),
       );
     });
 
@@ -270,8 +274,8 @@ describe("history import store", () => {
     const bodyB = spilledBody("FAILURE_B", "b");
     const hashA = await sha256Hex(bodyA);
     const hashB = await sha256Hex(bodyB);
-    const keyA = blobKey(stash, hashA);
-    const keyB = blobKey(stash, hashB);
+    const keyA = blobKey(stash, hashA, generation(1));
+    const keyB = blobKey(stash, hashB, generation(2));
     const calls: BlobCallCounts = { get: -1, put: -1 };
     const attempts: { call: number; key: string }[] = [];
     let hookCalls = 0;
@@ -304,9 +308,9 @@ describe("history import store", () => {
     ]);
     expect(hookCalls).toBe(0);
     expect(await counts(stash)).toEqual({ blobs: 0, versions: 0, files: 0, idempotency: 0 });
-    expect((await env.BLOBS.list({ prefix: `${stash}/` })).objects.map(({ key }) => key)).toEqual([
-      keyA,
-    ]);
+    expect(
+      (await env.BLOBS.list({ prefix: `v2/${stash}/` })).objects.map(({ key }) => key),
+    ).toEqual([keyA]);
     await expect(env.BLOBS.head(keyB)).resolves.toBeNull();
   });
 
@@ -319,8 +323,9 @@ describe("history import store", () => {
       versions: [{ kind: "put", body: "base", createdAt: 1_000 }],
     });
 
-    const bodiesA = [spilledBody("RACE_A1", "a"), spilledBody("RACE_A2", "b")] as const;
-    const bodiesB = [spilledBody("RACE_B1", "c"), spilledBody("RACE_B2", "d")] as const;
+    const sharedBody = spilledBody("RACE_SHARED", "s");
+    const bodiesA = [sharedBody, spilledBody("RACE_A2", "a")] as const;
+    const bodiesB = [sharedBody, spilledBody("RACE_B2", "b")] as const;
     const hashesA = await Promise.all([sha256Hex(bodiesA[0]), sha256Hex(bodiesA[1])]);
     const hashesB = await Promise.all([sha256Hex(bodiesB[0]), sha256Hex(bodiesB[1])]);
     const calls: BlobCallCounts = { get: -1, put: -1 };
@@ -335,7 +340,8 @@ describe("history import store", () => {
       if (arrivals === 2) release();
       return barrier;
     };
-    const store = importer(10_000, bindings, onBeforeCommit);
+    const raceGenerations = [generation(10), generation(11), generation(12), generation(13)];
+    const store = importer(10_000, bindings, onBeforeCommit, generationFactory(...raceGenerations));
     const importInput = (bodies: readonly string[]): ImportBody => ({
       path: "history.txt",
       expectedVersion: 1,
@@ -372,20 +378,36 @@ describe("history import store", () => {
       { version: 3, blob_hash: winnerHashes[1] },
     ]);
     const committedHashes = new Set(versions.results.map(({ blob_hash }) => blob_hash));
-    expect(committedHashes.has(loserHashes[0])).toBe(false);
+    expect(loserHashes[0]).toBe(winnerHashes[0]);
+    expect(committedHashes.has(loserHashes[0])).toBe(true);
     expect(committedHashes.has(loserHashes[1])).toBe(false);
-    for (const hash of loserHashes) {
-      await expect(
-        env.DB.prepare("SELECT 1 FROM blobs WHERE stash_name = ? AND hash = ?")
-          .bind(stash, hash)
-          .first(),
-      ).resolves.toBeNull();
-    }
+    await expect(
+      env.DB.prepare("SELECT 1 FROM blobs WHERE stash_name = ? AND hash = ?")
+        .bind(stash, loserHashes[1])
+        .first(),
+    ).resolves.toBeNull();
     expect(await counts(stash)).toEqual({ blobs: 3, versions: 3, files: 1, idempotency: 0 });
-    const objectKeys = (await env.BLOBS.list({ prefix: `${stash}/` })).objects
+    const objectKeys = (await env.BLOBS.list({ prefix: `v2/${stash}/` })).objects
       .map(({ key }) => key)
       .sort();
-    expect(objectKeys).toEqual([...hashesA, ...hashesB].map((hash) => blobKey(stash, hash)).sort());
+    expect(objectKeys).toHaveLength(4);
+    expect(new Set(objectKeys).size).toBe(4);
+    expect(objectKeys.map((key) => parseBlobKey(key))).toEqual(
+      expect.arrayContaining(
+        [...hashesA, ...hashesB].map((hash) =>
+          expect.objectContaining({ format: "v2", stash, hash }),
+        ),
+      ),
+    );
+    const committed = await env.DB.prepare(
+      "SELECT r2_key FROM blobs WHERE stash_name = ? AND hash IN (?, ?)",
+    )
+      .bind(stash, winnerHashes[0], winnerHashes[1])
+      .all<{ r2_key: string }>();
+    expect(committed.results.every(({ r2_key }) => objectKeys.includes(r2_key))).toBe(true);
+    expect(
+      objectKeys.filter((key) => !committed.results.some((row) => row.r2_key === key)),
+    ).toHaveLength(2);
   });
 
   it("copies imported and stored spilled rollback targets without another R2 operation", async () => {
@@ -431,9 +453,14 @@ describe("history import store", () => {
       { version: 2, kind: "rollback", blob_hash: hash, rollback_of: 1 },
       { version: 3, kind: "rollback", blob_hash: hash, rollback_of: 1 },
     ]);
-    expect((await env.BLOBS.list({ prefix: `${stash}/` })).objects.map(({ key }) => key)).toEqual([
-      blobKey(stash, hash),
-    ]);
+    const [row] = (
+      await env.DB.prepare("SELECT r2_key FROM blobs WHERE stash_name = ? AND hash = ?")
+        .bind(stash, hash)
+        .all<{ r2_key: string }>()
+    ).results;
+    expect(
+      (await env.BLOBS.list({ prefix: `v2/${stash}/` })).objects.map(({ key }) => key),
+    ).toEqual([row?.r2_key]);
   });
 
   it("refuses duplicate create and appends a contiguous continuation through stored rollback", async () => {
@@ -529,7 +556,7 @@ describe("history import store", () => {
         .bind("stale-import", staleHash)
         .first(),
     ).toBeNull();
-    expect((await env.BLOBS.list({ prefix: "stale-import/" })).objects).toEqual([]);
+    expect((await env.BLOBS.list({ prefix: "v2/stale-import/" })).objects).toEqual([]);
   });
 
   it("finishes missing-stash and missing-file CAS preflight before any upload", async () => {
@@ -542,7 +569,7 @@ describe("history import store", () => {
     });
     expect(missingStash).toMatchObject({
       ok: false,
-      error: { code: "internal", status: 500 },
+      error: { code: "not-found", status: 404 },
     });
     expect(calls).toEqual({ get: 0, put: 0 });
     expect(await counts("missing-import-stash")).toEqual({
@@ -636,7 +663,7 @@ describe("history import store", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "validation", status: 400 } });
     expect(tombstoneCalls).toEqual({ get: 0, put: 0 });
     expect(await counts("stored-tombstone")).toEqual(before);
-    expect((await env.BLOBS.list({ prefix: "stored-tombstone/" })).objects).toEqual([]);
+    expect((await env.BLOBS.list({ prefix: "v2/stored-tombstone/" })).objects).toEqual([]);
   });
 
   it("keeps the SQL batch fenced and writes the final tombstone head last", async () => {

@@ -139,6 +139,33 @@ To preserve the fixture while exercising a reset,
 `node scripts/seed-dev.mjs --base-url http://localhost:8787/api --reset` uses a fresh
 `demo-reset-...` stash because stash deletion is deferred.
 
+## Lifecycle and GC confirmation
+
+The final local proof is split deliberately: `pnpm b4push` covers the ordinary workspace, the
+focused Worker test exercises isolated real D1/R2 storage with an injected clock, and the
+server-backed lanes exercise `dev:full` without making a production mutation:
+
+```bash
+pnpm --filter zudo-history-stash exec vitest run \
+  --config vitest.config.ts test/final-evidence.test.ts
+pnpm b4push
+
+# With dev:full running and demo seeded:
+TEST_TIER=local API_BASE_URL=http://localhost:8787/api STASH_ADMIN_TOKEN=dev-admin-token \
+  pnpm --filter zudo-history-stash test:contract
+API_BASE_URL=http://localhost:8787/api STASH_ADMIN_TOKEN=dev-admin-token \
+  node packages/client/scripts/conformance-live.mjs
+
+# Stop the manual server first; Playwright owns a fresh dev:full lifecycle.
+pnpm --filter zudo-history-stash-viewer e2e:live
+```
+
+The HTTP contract includes the complete spill → soft-delete → revoked-token → admin visibility →
+restore → exact read → new-token lifecycle on a uniquely suffixed stash. The focused storage proof
+covers R2 dry/live collection, ledger continuation, leases, run identity, history order, and
+restart-after-completion. The browser GC smoke is always a dry run. See [TESTING.md](TESTING.md) for
+the production-tier skip audit and exact safety boundaries.
+
 See [docs/api.md](docs/api.md) for the API reference and
 [docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning. Operators should
 also read [docs/viewer-operations.md](docs/viewer-operations.md) before deploying the Viewer.

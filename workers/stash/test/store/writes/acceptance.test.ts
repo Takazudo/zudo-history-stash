@@ -339,35 +339,4 @@ describe("stash writes", () => {
     if (!deleted.ok || !deleteReplay.ok) throw new Error("delete replay failed");
     expect(deleteReplay.value).toEqual(deleted.value);
   });
-
-  it("sweeps at most 200 ledger rows strictly older than the cutoff", async () => {
-    const { stash, writes } = await setup();
-    const statements = Array.from({ length: 205 }, (_, index) =>
-      env.DB.prepare(
-        `INSERT INTO idempotency
-          (stash_name, key, request_hash, path, version, status_code, created_at)
-         VALUES (?, ?, 'hash', 'path', 1, 201, ?)`,
-      ).bind(stash, `old-${index}`, index),
-    );
-    statements.push(
-      env.DB.prepare(
-        `INSERT INTO idempotency
-          (stash_name, key, request_hash, path, version, status_code, created_at)
-         VALUES (?, 'cutoff', 'hash', 'path', 1, 201, 500)`,
-      ).bind(stash),
-    );
-    await env.DB.batch(statements);
-    expect(await writes.sweepLedger(500)).toBe(200);
-    const remaining = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM idempotency WHERE stash_name = ?",
-    )
-      .bind(stash)
-      .first<{ count: number }>();
-    expect(remaining?.count).toBe(6);
-    expect(
-      await env.DB.prepare("SELECT 1 FROM idempotency WHERE stash_name = ? AND key = 'cutoff'")
-        .bind(stash)
-        .first(),
-    ).not.toBeNull();
-  });
 });

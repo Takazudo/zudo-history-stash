@@ -11,6 +11,7 @@ import type {
   Current,
   CreatedToken,
   DeleteResult,
+  DeleteStashResult,
   DiffSide,
   ErrorDetail,
   ErrorResponse,
@@ -23,6 +24,8 @@ import type {
   GetFileResult,
   GetHistoryResult,
   GetStashResult,
+  GcRunResult,
+  GcRunsResponse,
   HealthResponse,
   HistoryPage,
   ImportResult,
@@ -35,6 +38,7 @@ import type {
   PutUnchangedResult,
   RotateTokenResult,
   RollbackResult,
+  RestoreStashResult,
   StashListResponse,
   StashRecord,
   StashSummary,
@@ -59,6 +63,14 @@ describe("response schema type locks", () => {
       z.infer<typeof RESPONSE_SCHEMAS.CreateStashResult>
     >().toEqualTypeOf<CreateStashResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.GetStashResult>>().toEqualTypeOf<GetStashResult>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.DeleteStashResult>
+    >().toEqualTypeOf<DeleteStashResult>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.RestoreStashResult>
+    >().toEqualTypeOf<RestoreStashResult>();
+    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.GcRunResult>>().toEqualTypeOf<GcRunResult>();
+    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.GcRunsResponse>>().toEqualTypeOf<GcRunsResponse>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.TokenRecord>>().toEqualTypeOf<TokenRecord>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.CreatedToken>>().toEqualTypeOf<CreatedToken>();
     expectTypeOf<
@@ -154,6 +166,18 @@ describe("response schema samples", () => {
         },
       }).success,
     ).toBe(true);
+    expect(
+      RESPONSE_SCHEMAS.GcRunResult.safeParse({
+        ...SAMPLES.GcRunResult,
+        runId: "not-a-uuid",
+      }).success,
+    ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.GcRunResult.safeParse({
+        ...SAMPLES.GcRunResult,
+        jobId: "ledger",
+      }).success,
+    ).toBe(false);
   });
 });
 

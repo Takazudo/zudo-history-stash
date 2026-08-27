@@ -3,6 +3,7 @@ export interface StashRow {
   description: string;
   meta_json: string;
   created_at: number;
+  deleted_at: number | null;
 }
 
 export interface TokenRow {
@@ -64,6 +65,32 @@ export interface IdempotencyRow {
   created_at: number;
 }
 
+export type GcJobKind = "r2-orphans" | "ledger";
+
+export interface GcJobRow {
+  kind: GcJobKind;
+  next_cursor: string | null;
+  lease_owner: string | null;
+  lease_generation: number;
+  lease_until: number | null;
+  updated_at: number;
+}
+
+export interface GcRunRow {
+  id: string;
+  job_kind: GcJobKind;
+  lease_generation: number;
+  dry_run: 0 | 1;
+  input_cursor: string | null;
+  next_cursor: string | null;
+  scanned: number;
+  eligible: number;
+  deleted: number;
+  error: string | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
 export const TABLE_NAMES = [
   "stashes",
   "tokens",
@@ -71,10 +98,12 @@ export const TABLE_NAMES = [
   "files",
   "versions",
   "idempotency",
+  "gc_jobs",
+  "gc_runs",
 ] as const;
 
 export const TABLE_COLUMNS = {
-  stashes: ["name", "description", "meta_json", "created_at"],
+  stashes: ["name", "description", "meta_json", "created_at", "deleted_at"],
   tokens: [
     "id",
     "stash_name",
@@ -114,6 +143,21 @@ export const TABLE_COLUMNS = {
     "status_code",
     "created_at",
   ],
+  gc_jobs: ["kind", "next_cursor", "lease_owner", "lease_generation", "lease_until", "updated_at"],
+  gc_runs: [
+    "id",
+    "job_kind",
+    "lease_generation",
+    "dry_run",
+    "input_cursor",
+    "next_cursor",
+    "scanned",
+    "eligible",
+    "deleted",
+    "error",
+    "started_at",
+    "finished_at",
+  ],
 } as const satisfies Record<(typeof TABLE_NAMES)[number], readonly string[]>;
 
 export interface DatabaseSchema {
@@ -123,4 +167,6 @@ export interface DatabaseSchema {
   files: FileRow;
   versions: VersionRow;
   idempotency: IdempotencyRow;
+  gc_jobs: GcJobRow;
+  gc_runs: GcRunRow;
 }

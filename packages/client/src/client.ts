@@ -13,21 +13,25 @@ import type {
   CreateTokenBody,
   CreateTokenResult,
   Current,
+  DeleteStashResult,
   DeleteFileBody,
   DeleteResult,
   DiffCandidateBody,
   FileListResponse,
   FileRecord,
   FileGetQuery,
+  GcRunResult,
+  GcRunsResponse,
   GetDiffResult,
   GetHistoryResult,
   HealthResponse,
   HistoryQuery,
   ImportBody,
   ImportResult,
+  ParsedListGcRunsQuery,
   ListChangesResult,
   ListFilesQuery,
-  ListQuery,
+  ParsedListStashesQuery,
   ListStashesResult,
   ListTokensResult,
   MeResponse,
@@ -35,6 +39,8 @@ import type {
   PutResult,
   RollbackBody,
   RollbackResult,
+  RestoreStashResult,
+  RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
   RouteId,
@@ -101,7 +107,9 @@ export type FileRecordWithEtag = FileRecord & { etag: string };
 export type FileGetResult = ClientResult<FileRecordWithEtag> | NotModifiedResult;
 
 /** Options for listing stashes. */
-export type ListStashesOptions = Partial<ListQuery>;
+export type ListStashesOptions = Partial<ParsedListStashesQuery>;
+/** Options for listing garbage-collection run history. */
+export type ListGcRunsOptions = Partial<ParsedListGcRunsQuery>;
 /** Options for listing files. */
 export type ListFilesOptions = Partial<ListFilesQuery>;
 /** Options for a change feed. */
@@ -274,6 +282,17 @@ export interface StashFilesClient {
   changes(options?: ChangesOptions): Promise<ClientResult<ListChangesResult>>;
 }
 
+/** Administrative garbage-collection operations. */
+export interface StashGcClient {
+  run(input: RunGcBody): Promise<ClientResult<GcRunResult>>;
+  runs(options?: ListGcRunsOptions): Promise<ClientResult<GcRunsResponse>>;
+}
+
+/** Administrative operations that are not scoped to one stash. */
+export interface StashAdminClient {
+  gc: StashGcClient;
+}
+
 /** The complete typed client returned by {@link createStashClient}. */
 export interface StashClient {
   health(): Promise<ClientResult<HealthResponse>>;
@@ -282,9 +301,12 @@ export interface StashClient {
     list(options?: ListStashesOptions): Promise<ClientResult<ListStashesResult>>;
     create(input: CreateStashBody): Promise<ClientResult<CreateStashResult>>;
     get(stash: string): Promise<ClientResult<StashRecord>>;
+    delete(stash: string): Promise<ClientResult<DeleteStashResult>>;
+    restore(stash: string): Promise<ClientResult<RestoreStashResult>>;
     tokens(stash: string): StashTokensClient;
     import(stash: string, input: ImportBody): Promise<ClientResult<ImportResult>>;
   };
+  admin: StashAdminClient;
   changes(options?: ChangesOptions): Promise<ClientResult<ChangesPage>>;
   files(stash: string): StashFilesClient;
   putLatest(
@@ -481,6 +503,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
         target(route("listStashes"), [
           ["limit", listOptions.limit],
           ["after", listOptions.after],
+          ["includeDeleted", listOptions.includeDeleted],
         ]),
       )) as ClientResult<ListStashesResult>;
     },
@@ -502,6 +525,24 @@ export function createStashClient(options: StashClientOptions): StashClient {
         "GET",
         target(route("getStash", stash)),
       )) as ClientResult<StashRecord>;
+    },
+    async delete(stash: string) {
+      const invalid = stashError<DeleteStashResult>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<DeleteStashResult>(
+        "deleteStash",
+        "DELETE",
+        target(route("deleteStash", stash)),
+      )) as ClientResult<DeleteStashResult>;
+    },
+    async restore(stash: string) {
+      const invalid = stashError<RestoreStashResult>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<RestoreStashResult>(
+        "restoreStash",
+        "POST",
+        target(route("restoreStash", stash)),
+      )) as ClientResult<RestoreStashResult>;
     },
     tokens(stash: string): StashTokensClient {
       return {
@@ -574,6 +615,29 @@ export function createStashClient(options: StashClientOptions): StashClient {
     )) as ClientResult<ChangesPage>;
   };
 
+  const admin: StashAdminClient = {
+    gc: {
+      async run(input) {
+        return (await call<GcRunResult>(
+          "runGc",
+          "POST",
+          target(route("runGc")),
+          input,
+        )) as ClientResult<GcRunResult>;
+      },
+      async runs(listOptions: ListGcRunsOptions = {}) {
+        return (await call<GcRunsResponse>(
+          "listGcRuns",
+          "GET",
+          target(route("listGcRuns"), [
+            ["kind", listOptions.kind],
+            ["limit", listOptions.limit],
+          ]),
+        )) as ClientResult<GcRunsResponse>;
+      },
+    },
+  };
+
   const client: StashClient = {
     async health() {
       return (await call<HealthResponse>(
@@ -586,6 +650,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       return (await call<MeResponse>("me", "GET", target(route("me")))) as ClientResult<MeResponse>;
     },
     stashes,
+    admin,
     changes,
     files: getFileClient,
     async putLatest(stash, path, body, putOptions = {}) {

@@ -16,6 +16,9 @@ const stashRecord = {
   lastChangeId: 7,
   lastChangeAt: UPDATED_AT,
   createdAt: CREATED_AT,
+  deletedAt: null,
+  restoreUntil: null,
+  restorable: false,
 } as const;
 
 const stashSummary = {
@@ -26,6 +29,9 @@ const stashSummary = {
   lastChangeId: stashRecord.lastChangeId,
   lastChangeAt: stashRecord.lastChangeAt,
   createdAt: stashRecord.createdAt,
+  deletedAt: stashRecord.deletedAt,
+  restoreUntil: stashRecord.restoreUntil,
+  restorable: stashRecord.restorable,
 } as const;
 
 const tokenRecord = {
@@ -124,6 +130,19 @@ const oneFile = [fileSummary];
 const oneVersion = [versionRecord];
 const oneChange = [changeItem];
 const oneHunk = [diffHunk];
+const gcRun = {
+  runId: "00000000-0000-4000-8000-000000000001",
+  jobId: "r2-orphans",
+  kind: "r2-orphans",
+  dryRun: false,
+  scanned: 100,
+  eligible: 3,
+  deleted: 3,
+  cursor: null,
+  startedAt: UPDATED_AT,
+  finishedAt: UPDATED_AT,
+  error: null,
+} as const;
 
 const readyDiff = {
   state: "ready",
@@ -151,6 +170,15 @@ const responseSamples = {
   StashListResponse: { stashes: oneStash, nextAfter: null },
   CreateStashResult: stashRecord,
   GetStashResult: stashRecord,
+  DeleteStashResult: {
+    name: "demo",
+    deletedAt: UPDATED_AT,
+    revokedTokens: 2,
+    restoreUntil: "2026-09-02T01:00:00.000Z",
+  },
+  RestoreStashResult: stashRecord,
+  GcRunResult: gcRun,
+  GcRunsResponse: { runs: [gcRun] },
   TokenRecord: tokenRecord,
   CreatedToken: createdToken,
   TokenListResponse: { tokens: oneToken },

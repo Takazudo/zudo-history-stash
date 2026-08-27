@@ -3,7 +3,7 @@ import { StashHttpError, createStashClient } from "../../src/index.js";
 import type { StashClient, StashFetch, StashRpcBinding } from "../../src/index.js";
 import type { RpcRequest } from "@takazudo/zudo-history-stash-core";
 import { createFakeStash } from "../../src/testing/index.js";
-import { GOLDEN_NOW, GOLDEN_RESPONSES } from "./fixtures/golden-responses.js";
+import { GOLDEN_CREATED_AT, GOLDEN_NOW, GOLDEN_RESPONSES } from "./fixtures/golden-responses.js";
 
 const globalFetch = vi.fn<StashFetch>();
 
@@ -401,6 +401,32 @@ const transportMatrix: TransportMatrixCase[] = [
     expectedRpcQuery: { limit: "2", after: "docs/readme.md" },
   },
   {
+    name: "gc-busy 409 remains a client result",
+    dispatch: async () =>
+      jsonResponse(
+        {
+          error: {
+            code: GOLDEN_RESPONSES.gcBusy.error.code,
+            message: GOLDEN_RESPONSES.gcBusy.error.message,
+          },
+        },
+        409,
+      ),
+    invoke: (client) => client.admin.gc.run({ kind: "r2-orphans", dryRun: true }),
+    expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.gcBusy },
+    expectedFetchUrl: "https://stash.example/v1/admin/gc",
+  },
+  {
+    name: "unfinished GC run preserves nullable completion and opaque cursor",
+    dispatch: async () => jsonResponse({ runs: [GOLDEN_RESPONSES.gcUnfinishedRun] }),
+    invoke: (client) => client.admin.gc.runs({ kind: "ledger" }),
+    expected: {
+      settled: "fulfilled",
+      value: { ok: true, value: { runs: [GOLDEN_RESPONSES.gcUnfinishedRun] } },
+    },
+    expectedFetchUrl: "https://stash.example/v1/admin/gc/runs?kind=ledger",
+  },
+  {
     name: "500 throws StashHttpError",
     dispatch: async () => jsonResponse({ error: { code: "internal", message: "down" } }, 500),
     invoke: (client) => client.me(),
@@ -559,6 +585,47 @@ describe("client golden response parity", () => {
     await expect(files.get("docs/readme.md", { version: 2 })).resolves.toEqual({
       ok: true,
       value: GOLDEN_RESPONSES.tombstone,
+    });
+  });
+
+  it("returns lifecycle and GC golden responses without changing cursor values", async () => {
+    const fake = createFakeStash({ adminToken: "golden-admin", now: () => GOLDEN_NOW });
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: "golden-admin",
+      fetch: fake.fetch,
+    });
+    await expect(
+      client.stashes.create({
+        name: "golden-admin",
+        description: "Golden admin fixture",
+        meta: { owner: "viewer" },
+      }),
+    ).resolves.toEqual({ ok: true, value: GOLDEN_RESPONSES.stash });
+    const read = await fake.mintToken("golden-admin", "read");
+    await fake.mintToken("golden-admin", "write");
+    expect(read).toMatch(/^zhs_/);
+
+    await expect(client.stashes.delete("golden-admin")).resolves.toEqual({
+      ok: true,
+      value: GOLDEN_RESPONSES.deletedStash,
+    });
+    await expect(client.stashes.list({ includeDeleted: true })).resolves.toMatchObject({
+      ok: true,
+      value: { stashes: [{ name: "golden-admin", deletedAt: GOLDEN_CREATED_AT }] },
+    });
+    await expect(client.stashes.restore("golden-admin")).resolves.toEqual({
+      ok: true,
+      value: GOLDEN_RESPONSES.restoredStash,
+    });
+
+    await expect(client.admin.gc.run({ kind: "r2-orphans", dryRun: true })).resolves.toEqual({
+      ok: true,
+      value: GOLDEN_RESPONSES.gcRun,
+    });
+    await expect(client.admin.gc.runs({ kind: "r2-orphans" })).resolves.toEqual({
+      ok: true,
+      value: GOLDEN_RESPONSES.gcRuns,
     });
   });
 });

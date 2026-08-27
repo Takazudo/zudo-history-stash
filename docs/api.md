@@ -68,17 +68,17 @@ An expected failure is JSON. Conflicts can also include the current head at the 
 }
 ```
 
-| HTTP  | Codes                                                                    |
-| ----- | ------------------------------------------------------------------------ |
-| `400` | `validation`, `invalid-path`, `body-not-well-formed`                     |
-| `401` | `unauthorized`                                                           |
-| `403` | `scope`                                                                  |
-| `404` | `not-found`, `file-deleted`, `version-not-found`                         |
-| `409` | `stale`, `exists`, `already-deleted`, `already-rotated`, `token-expired` |
-| `413` | `payload-too-large`                                                      |
-| `422` | `idempotency-key-reused`, `rollback-target-tombstone`                    |
-| `429` | `rate-limited`                                                           |
-| `500` | `internal`                                                               |
+| HTTP  | Codes                                                                               |
+| ----- | ----------------------------------------------------------------------------------- |
+| `400` | `validation`, `invalid-path`, `body-not-well-formed`                                |
+| `401` | `unauthorized`                                                                      |
+| `403` | `scope`                                                                             |
+| `404` | `not-found`, `file-deleted`, `version-not-found`                                    |
+| `409` | `stale`, `exists`, `already-deleted`, `gc-busy`, `already-rotated`, `token-expired` |
+| `413` | `payload-too-large`                                                                 |
+| `422` | `idempotency-key-reused`, `rollback-target-tombstone`                               |
+| `429` | `rate-limited`                                                                      |
+| `500` | `internal`                                                                          |
 
 Unknown JSON keys are rejected. Request bodies are never echoed in errors. All timestamps in
 responses are ISO-8601 UTC strings; imported `createdAt` values are epoch milliseconds.
@@ -114,7 +114,8 @@ Routes reachable by stash principals use three Cloudflare rate-limit buckets. `R
 `RL_WRITE`; `/v1/me`, stash metadata, file reads/lists/history, and the per-stash change feed use
 `RL_READ`.
 
-Each request checks `p:<tokenId>` first and then `s:<principal-stash>`. A failed principal check
+Each request checks `p:<tokenId>` first and then `s:<principal-stash>`. Lifecycle routes and
+`POST /v1/admin/gc` use the write class; `GET /v1/admin/gc/runs` uses the read class. A failed principal check
 short-circuits before the stash bucket is consulted. The administrator is exempt, so
 administrator-only token-management routes are intentionally not rate-limited. Cloudflare limits
 are per location and eventually consistent; the contract does not promise an exact global cutoff.
@@ -276,11 +277,13 @@ HTTP-compatible consumers.
 ### `GET /v1/stashes`
 
 - **Principal/capability:** `admin`; administrator only.
-- **Request:** Optional `limit` (default `50`, maximum `200`) and `after=<stash-name>` keyset
-  cursor.
+- **Request:** Optional `limit` (default `50`, maximum `200`), `after=<stash-name>` keyset
+  cursor, and `includeDeleted=true|false` (default `false`).
 - **Response:** `200 { stashes, nextAfter }`. Each summary contains `name`, `description`, live
-  `fileCount`, `deletedFileCount`, `lastChangeId`, `lastChangeAt`, and `createdAt`. `nextAfter` is
-  the last returned name when another page exists, otherwise `null`.
+  `fileCount`, `deletedFileCount`, `lastChangeId`, `lastChangeAt`, `createdAt`, `deletedAt`,
+  `restoreUntil`, and `restorable`. `nextAfter` is the last returned name when another page exists,
+  otherwise `null`. Deleted rows are included only when `includeDeleted=true`; `restorable` is true
+  only while the restoration window is open.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a stash credential.
 
 ### `POST /v1/stashes`
@@ -289,7 +292,7 @@ HTTP-compatible consumers.
 - **Request:** JSON `{ name, description?, meta? }`. Names match
   `^[a-z0-9][a-z0-9-]{0,62}$`.
 - **Response:** `201` with the new stash record. Counts and last-change fields initially contain
-  zeroes and `null` values.
+  zeroes and `null` values; `deletedAt` and `restoreUntil` are `null`, and `restorable` is `false`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a stash credential,
   `409 exists`, `413 payload-too-large`.
 
@@ -298,9 +301,28 @@ HTTP-compatible consumers.
 - **Principal/capability:** `admin-or-stash`; administrator or a token belonging to `:stash`.
 - **Request:** No body or query.
 - **Response:** `200` with `name`, `description`, `meta`, live `fileCount`, `deletedFileCount`,
-  `lastChangeId`, `lastChangeAt`, and `createdAt`.
+  `lastChangeId`, `lastChangeAt`, `createdAt`, `deletedAt`, `restoreUntil`, and `restorable`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for an unknown or foreign
   stash, `429 rate-limited` with `Retry-After: 60`.
+
+### `DELETE /v1/stashes/:stash`
+
+- **Principal/capability:** `admin`; administrator only (lifecycle write class).
+- **Request:** No body or query.
+- **Response:** `200 { name, deletedAt, revokedTokens, restoreUntil }`. Deletion is soft: file,
+  version, blob, and change rows remain untouched, active stash tokens are revoked, and the
+  returned timestamps are captured from one operation. A stash name is never recycled, including
+  after the restoration window expires.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `409 already-deleted`.
+
+### `POST /v1/stashes/:stash/restore`
+
+- **Principal/capability:** `admin`; administrator only (lifecycle write class).
+- **Request:** No body or query.
+- **Response:** `200` with the restored `StashRecord`. Restoring does not un-revoke tokens and
+  leaves file, version, blob, and change rows unchanged.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for an unknown stash, a live
+  stash, or a restoration window that has expired. These cases are intentionally indistinguishable.
 
 ### `POST /v1/stashes/:stash/tokens`
 
@@ -374,6 +396,64 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
   `changeId`, `stash`, `path`, `version`, `kind`, `author`, `message`, `size`, and `createdAt`.
   `since` pages are ascending for polling; `before` and initial pages are descending for UIs.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a stash credential.
+
+### `POST /v1/admin/gc`
+
+- **Principal/capability:** `admin`; administrator only (lifecycle/write class).
+- **Request:** Strict JSON `{ kind, dryRun?, maxObjects?, cursor? }`. `kind` is `r2-orphans` or
+  `ledger`; `dryRun` defaults to `false`; `maxObjects` defaults to `100` and accepts integers from
+  `1` through `500`; `cursor` is an opaque, kind-bound v1 base64url cursor envelope. An explicit
+  cursor overrides the stored job cursor for this page.
+- **Response:** `200` with one synchronously completed `GcRunResult` page. `jobId` is the stable
+  logical job ID and always equals `kind`; `runId` is a per-page UUID. `scanned`, `eligible`, and
+  `deleted` are bounded by the requested page, although an invocation safety budget may stop a
+  page below the requested `maxObjects`. `cursor: null` means this pass is complete; a later
+  invocation starts a fresh pass.
+- **Errors:** `400 validation`, `401 unauthorized`, `409 gc-busy` when the same kind has a live
+  fenced lease.
+
+Dry runs acquire the same five-minute fenced lease and record a run, but never delete objects or
+persist a job cursor. A non-dry page persists only after its lease owner/generation is verified;
+stale runners cannot heartbeat, finalize, or release a successor lease. R2 orphan scans treat
+private R2 keys as opaque implementation details: keys never appear in responses or logs. Run
+history retains the newest five hundred records per kind.
+
+### `GET /v1/admin/gc/runs`
+
+- **Principal/capability:** `admin`; administrator only (read class).
+- **Request:** Optional `kind=r2-orphans|ledger` and `limit` (default `50`, maximum `200`). Results
+  are newest-first and deterministic.
+- **Response:** `200 { runs: GcRunResult[] }`. Each run has its UUID `runId`, stable `jobId` equal to
+  its `kind`, dry-run flag, counters, opaque cursor or `null`, timestamps, and nullable error.
+  The engine's invocation safety budget may stop a page below the requested `maxObjects`.
+- **Errors:** `400 validation`, `401 unauthorized`.
+
+#### Operating garbage collection
+
+Start a manual operation with a dry run, then repeat the same `kind` without `dryRun` after
+reviewing the counters:
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer $STASH_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"kind":"r2-orphans","dryRun":true,"maxObjects":80}' \
+  https://stash.example.com/v1/admin/gc
+```
+
+The R2 engine caps every page at 24 objects; the ledger accepts up to 500 rows per request. The
+scheduled handler requests 80 objects, alternates R2 and ledger pages, shares one 45-operation
+budget across the whole invocation, and stops after ten pages per kind or before the next page
+would exceed that budget. Pass returned cursors unchanged when continuing an explicit page;
+omitting `cursor` uses the stored progress. `cursor: null` restarts a later pass from the beginning.
+If a lease expires or a worker is interrupted, retry the same kind after the five-minute lease
+window; a `409 gc-busy` response means another page currently owns the fenced lease. Dry runs
+never delete data or persist progress, and no response, run record, or log exposes an R2 key or
+generation.
+
+The production cron invokes this bounded round-robin at `17 3 * * *` UTC. Preview has no cron and
+must be run manually. Deploy generation-aware v2 writers and the migration before the API, verify
+the API's dry-run and recovery behavior, and deploy/enable the production schedule last.
 
 ### `GET /v1/stashes/:stash/files`
 

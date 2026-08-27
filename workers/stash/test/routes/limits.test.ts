@@ -7,7 +7,7 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { app } from "../../src/app.js";
-import { blobKey } from "../../src/d1/blobs.js";
+import { parseBlobKey } from "../../src/d1/blobs.js";
 import type { Env } from "../../src/env.js";
 import { request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
@@ -112,7 +112,6 @@ describe.sequential("raised request and text limits", () => {
   it("stores a 4.9 MB text body through the route as an R2 pointer", async () => {
     const body = "s".repeat(4_900_000);
     const hash = await sha256Hex(body);
-    const key = blobKey(STASH, hash);
     const calls: BlobCallCounts = { get: -1, put: -1 };
     const bindings = wrapBlobs(createTestEnv().env, { count: calls });
     const payload = JSON.stringify({ body, expectedVersion: null });
@@ -140,14 +139,18 @@ describe.sequential("raised request and text limits", () => {
     await expect(env.DB.prepare("SELECT COUNT(*) AS count FROM versions").first()).resolves.toEqual(
       { count: 1 },
     );
-    await expect(
-      env.DB.prepare(
-        "SELECT hash, body, r2_key, size_bytes FROM blobs WHERE stash_name = ? AND hash = ?",
-      )
-        .bind(STASH, hash)
-        .first(),
-    ).resolves.toEqual({ hash, body: null, r2_key: key, size_bytes: 4_900_000 });
-    await expect(bindings.BLOBS.head(key)).resolves.toMatchObject({ key, size: 4_900_000 });
+    const row = await env.DB.prepare(
+      "SELECT hash, body, r2_key, size_bytes FROM blobs WHERE stash_name = ? AND hash = ?",
+    )
+      .bind(STASH, hash)
+      .first<{ hash: string; body: string | null; r2_key: string | null; size_bytes: number }>();
+    expect(row).toMatchObject({ hash, body: null, size_bytes: 4_900_000 });
+    if (row?.r2_key === null || row?.r2_key === undefined) throw new Error("Expected R2 pointer");
+    expect(parseBlobKey(row.r2_key)).toMatchObject({ format: "v2", stash: STASH, hash });
+    await expect(bindings.BLOBS.head(row.r2_key)).resolves.toMatchObject({
+      key: row.r2_key,
+      size: 4_900_000,
+    });
   }, 60_000);
 
   it("imports several individually valid spilled bodies below the aggregate limit", async () => {
@@ -173,7 +176,7 @@ describe.sequential("raised request and text limits", () => {
     expect(blobs.results).toHaveLength(5);
     for (const blob of blobs.results) {
       expect(blob).toMatchObject({ body: null, size_bytes: 800_001 });
-      expect(blob.r2_key).toMatch(new RegExp(`^${STASH}/sha256-[a-f0-9]{64}$`));
+      expect(parseBlobKey(blob.r2_key ?? "")).toMatchObject({ format: "v2", stash: STASH });
     }
     const versions = await env.DB.prepare(
       `SELECT version, size_bytes FROM versions
@@ -189,7 +192,7 @@ describe.sequential("raised request and text limits", () => {
         .bind(STASH, "history.txt")
         .first(),
     ).resolves.toEqual({ head_version: 5, deleted: 0 });
-    const objects = await bindings.BLOBS.list({ prefix: `${STASH}/` });
+    const objects = await bindings.BLOBS.list({ prefix: `v2/${STASH}/` });
     expect(objects.objects).toHaveLength(5);
     expect(objects.objects.every(({ size }) => size === 800_001)).toBe(true);
   }, 60_000);
@@ -217,7 +220,7 @@ describe.sequential("raised request and text limits", () => {
     expect(d1Calls.value).toBe(0);
     expect(blobCalls).toEqual({ get: 0, put: 0 });
     await expect(databaseSnapshot(realBindings.DB)).resolves.toEqual(before);
-    await expect(realBindings.BLOBS.list({ prefix: `${STASH}/` })).resolves.toMatchObject({
+    await expect(realBindings.BLOBS.list({ prefix: `v2/${STASH}/` })).resolves.toMatchObject({
       objects: [],
     });
   }, 60_000);

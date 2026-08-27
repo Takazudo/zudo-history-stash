@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   assertBlobRowShape,
   blobKey,
+  legacyBlobKey,
+  parseBlobKey,
   prepareBlob,
   readBlob,
   type BlobCodecRow,
@@ -13,6 +15,8 @@ import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js
 
 const STASH = "blob-codec";
 const HASH_PREFIX_LENGTH = "sha256-".length;
+const GENERATION_A = "00000000-0000-4000-8000-00000000000a";
+const GENERATION_B = "00000000-0000-4000-8000-00000000000b";
 
 function checksumHex(bytes: ArrayBuffer | undefined): string {
   if (bytes === undefined) throw new Error("Expected an R2 SHA-256 checksum");
@@ -50,9 +54,49 @@ async function spill(body: string, bindings = createTestEnv().env) {
 beforeEach(resetDatabase);
 
 describe("blob codec writes", () => {
-  it("uses the pinned content-addressed key format", () => {
+  it("uses exact legacy and generation-scoped key formats", () => {
     const hash = `sha256-${"a".repeat(64)}`;
-    expect(blobKey("alpha", hash)).toBe(`alpha/${hash}`);
+    expect(legacyBlobKey("alpha", hash)).toBe(`alpha/${hash}`);
+    expect(blobKey("alpha", hash, GENERATION_A)).toBe(`v2/alpha/${hash}/${GENERATION_A}`);
+  });
+
+  it.each([
+    {
+      key: `alpha/sha256-${"a".repeat(64)}`,
+      parsed: {
+        format: "legacy",
+        stash: "alpha",
+        hash: `sha256-${"a".repeat(64)}`,
+        generation: null,
+      },
+    },
+    {
+      key: `v2/alpha/sha256-${"b".repeat(64)}/${GENERATION_A}`,
+      parsed: {
+        format: "v2",
+        stash: "alpha",
+        hash: `sha256-${"b".repeat(64)}`,
+        generation: GENERATION_A,
+      },
+    },
+  ])("parses the accepted exact key $key", ({ key, parsed }) => {
+    expect(parseBlobKey(key)).toEqual(parsed);
+  });
+
+  it.each([
+    "",
+    `alpha/sha256-${"a".repeat(63)}`,
+    `alpha/sha256-${"A".repeat(64)}`,
+    `Alpha/sha256-${"a".repeat(64)}`,
+    `prefix/alpha/sha256-${"a".repeat(64)}`,
+    `v2/alpha/sha256-${"a".repeat(64)}`,
+    `v2/alpha/sha256-${"a".repeat(64)}/${GENERATION_A}/extra`,
+    `v2/alpha/sha256-${"a".repeat(64)}/${GENERATION_A.toUpperCase()}`,
+    `v2/alpha/sha256-${"a".repeat(64)}/00000000-0000-0000-0000-000000000000`,
+    `v2/alpha/sha256-${"a".repeat(64)}/not-a-uuid`,
+  ])("rejects the invalid key %s without throwing", (key) => {
+    expect(() => parseBlobKey(key)).not.toThrow();
+    expect(parseBlobKey(key)).toBeNull();
   });
 
   it("keeps the exact ASCII boundary inline and spills the next byte with R2 metadata", async () => {
@@ -70,8 +114,10 @@ describe("blob codec writes", () => {
 
     const spilledBody = `${inlineBody}x`;
     const spilledHash = await sha256Hex(spilledBody);
-    const key = blobKey(STASH, spilledHash);
-    await expect(prepareBlob(bindings, STASH, spilledHash, spilledBody)).resolves.toEqual({
+    const key = blobKey(STASH, spilledHash, GENERATION_A);
+    await expect(
+      prepareBlob(bindings, STASH, spilledHash, spilledBody, () => GENERATION_A),
+    ).resolves.toEqual({
       body: null,
       r2_key: key,
     });
@@ -99,8 +145,11 @@ describe("blob codec writes", () => {
       prepareBlob(bindings, STASH, await sha256Hex(inlineBody), inlineBody),
     ).resolves.toEqual({ body: inlineBody, r2_key: null });
     await expect(
-      prepareBlob(bindings, STASH, await sha256Hex(spilledBody), spilledBody),
-    ).resolves.toEqual({ body: null, r2_key: blobKey(STASH, await sha256Hex(spilledBody)) });
+      prepareBlob(bindings, STASH, await sha256Hex(spilledBody), spilledBody, () => GENERATION_A),
+    ).resolves.toEqual({
+      body: null,
+      r2_key: blobKey(STASH, await sha256Hex(spilledBody), GENERATION_A),
+    });
     expect(counts).toEqual({ get: 0, put: 1 });
   });
 
@@ -112,15 +161,51 @@ describe("blob codec writes", () => {
     await expect(env.BLOBS.list()).resolves.toMatchObject({ objects: [] });
   });
 
-  it("converges repeated uploads of the same content-addressed key", async () => {
+  it("uses a distinct generation for repeated uploads of the same stash and hash", async () => {
     const body = "same".repeat(Math.ceil((R2_SPILL_BYTES + 1) / 4));
-    const first = await spill(body);
-    const second = await spill(body);
+    const hash = await sha256Hex(body);
+    const firstPrepared = await prepareBlob(
+      createTestEnv().env,
+      STASH,
+      hash,
+      body,
+      () => GENERATION_A,
+    );
+    const secondPrepared = await prepareBlob(
+      createTestEnv().env,
+      STASH,
+      hash,
+      body,
+      () => GENERATION_B,
+    );
+    if (firstPrepared.r2_key === null || secondPrepared.r2_key === null) {
+      throw new Error("Expected both bodies to spill");
+    }
 
-    expect(second).toEqual(first);
-    const listed = await env.BLOBS.list({ prefix: `${STASH}/` });
-    expect(listed.objects.map(({ key }) => key)).toEqual([first.key]);
-    await expect(readBlob(createTestEnv().env, first.row)).resolves.toBe(body);
+    expect(secondPrepared.r2_key).not.toBe(firstPrepared.r2_key);
+    const listed = await env.BLOBS.list({ prefix: `v2/${STASH}/${hash}/` });
+    expect(listed.objects.map(({ key }) => key).sort()).toEqual(
+      [firstPrepared.r2_key, secondPrepared.r2_key].sort(),
+    );
+    await expect(
+      readBlob(createTestEnv().env, {
+        ...firstPrepared,
+        hash,
+        size_bytes: utf8ByteLength(body),
+      }),
+    ).resolves.toBe(body);
+  });
+
+  it("refuses to overwrite an existing application-generated key", async () => {
+    const firstBody = "first".repeat(Math.ceil((R2_SPILL_BYTES + 1) / 5));
+    const hash = await sha256Hex(firstBody);
+    const key = blobKey(STASH, hash, GENERATION_A);
+
+    await prepareBlob(createTestEnv().env, STASH, hash, firstBody, () => GENERATION_A);
+    await expect(
+      prepareBlob(createTestEnv().env, STASH, hash, firstBody, () => GENERATION_A),
+    ).rejects.toThrow();
+    await expect(env.BLOBS.get(key).then((object) => object?.text())).resolves.toBe(firstBody);
   });
 
   it("supports ordinal put failure injection without replacing real R2", async () => {
@@ -138,21 +223,37 @@ describe("blob codec writes", () => {
     const firstHash = await sha256Hex(firstBody);
     const secondHash = await sha256Hex(secondBody);
 
-    await prepareBlob(bindings, STASH, firstHash, firstBody);
-    await expect(prepareBlob(bindings, STASH, secondHash, secondBody)).rejects.toThrow(
-      "Injected R2 put failure",
-    );
+    await prepareBlob(bindings, STASH, firstHash, firstBody, () => GENERATION_A);
+    await expect(
+      prepareBlob(bindings, STASH, secondHash, secondBody, () => GENERATION_B),
+    ).rejects.toThrow("Injected R2 put failure");
     expect(counts).toEqual({ get: 0, put: 2 });
     expect(attempts).toEqual([
-      { call: 1, key: blobKey(STASH, firstHash) },
-      { call: 2, key: blobKey(STASH, secondHash) },
+      { call: 1, key: blobKey(STASH, firstHash, GENERATION_A) },
+      { call: 2, key: blobKey(STASH, secondHash, GENERATION_B) },
     ]);
-    const listed = await env.BLOBS.list({ prefix: `${STASH}/` });
+    const listed = await env.BLOBS.list({ prefix: `v2/${STASH}/` });
     expect(listed.objects).toHaveLength(1);
   });
 });
 
 describe("blob codec reads", () => {
+  it("reads and checksum-validates an exact legacy R2 key", async () => {
+    const body = "legacy".repeat(Math.ceil((R2_SPILL_BYTES + 1) / 6));
+    const hash = await sha256Hex(body);
+    const key = legacyBlobKey(STASH, hash);
+    await env.BLOBS.put(key, body, { sha256: hash.slice(HASH_PREFIX_LENGTH) });
+
+    await expect(
+      readBlob(createTestEnv().env, {
+        hash,
+        body: null,
+        r2_key: key,
+        size_bytes: utf8ByteLength(body),
+      }),
+    ).resolves.toBe(body);
+  });
+
   it.each([
     {
       label: "a leading BOM",
@@ -234,7 +335,7 @@ describe("blob codec reads", () => {
   it("fatally rejects invalid UTF-8 after matching raw size and hash", async () => {
     const bytes = new Uint8Array([0xc3, 0x28]);
     const hash = await sha256Hex(bytes);
-    const key = blobKey(STASH, hash);
+    const key = legacyBlobKey(STASH, hash);
     await env.BLOBS.put(key, bytes, { sha256: hash.slice(HASH_PREFIX_LENGTH) });
 
     await expectInternal(
@@ -305,7 +406,7 @@ describe("real binding and schema plumbing", () => {
     const inlineBody = "inline";
     const inlineHash = await sha256Hex(inlineBody);
     const spilledHash = await sha256Hex("spilled");
-    const spilledKey = blobKey(STASH, spilledHash);
+    const spilledKey = legacyBlobKey(STASH, spilledHash);
 
     await env.DB.prepare(
       `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)

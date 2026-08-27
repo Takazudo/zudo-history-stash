@@ -9,8 +9,11 @@ import {
   FileGetQuery,
   ImportBody,
   ListFilesQuery,
+  ListGcRunsQuery,
   ListQuery,
+  ListStashesQuery,
   PutFileBody,
+  RunGcBody,
   RotateTokenBody,
 } from "./schemas.js";
 
@@ -27,6 +30,46 @@ describe("strict request and query schemas", () => {
     expect(ListQuery.safeParse({ limit: "201" }).success).toBe(false);
     expect(ListQuery.safeParse({ limit: "", surprise: true }).success).toBe(false);
     expect(ListFilesQuery.parse({ includeDeleted: "true" }).includeDeleted).toBe(true);
+    expect(ListStashesQuery.parse({})).toEqual({ limit: 50, includeDeleted: false });
+    expect(ListStashesQuery.parse({ includeDeleted: "true", limit: "200" })).toEqual({
+      limit: 200,
+      includeDeleted: true,
+    });
+    expect(ListStashesQuery.safeParse({ includeDeleted: "no" }).success).toBe(false);
+    expect(ListStashesQuery.safeParse({ limit: "201" }).success).toBe(false);
+    expect(ListGcRunsQuery.parse({})).toEqual({ limit: 50 });
+    expect(ListGcRunsQuery.parse({ kind: "ledger", limit: "200" })).toEqual({
+      kind: "ledger",
+      limit: 200,
+    });
+    expect(ListGcRunsQuery.safeParse({ kind: "other" }).success).toBe(false);
+    expect(ListGcRunsQuery.safeParse({ limit: "201" }).success).toBe(false);
+  });
+
+  it("defaults and bounds GC run bodies while rejecting unknown keys", () => {
+    const input: RunGcBody = { kind: "r2-orphans" };
+    const parsed = RunGcBody.parse(input);
+    expectTypeOf(input.dryRun).toEqualTypeOf<boolean | undefined>();
+    expectTypeOf(input.maxObjects).toEqualTypeOf<number | undefined>();
+    expectTypeOf(parsed.dryRun).toEqualTypeOf<boolean>();
+    expectTypeOf(parsed.maxObjects).toEqualTypeOf<number>();
+    expect(parsed).toEqual({
+      kind: "r2-orphans",
+      dryRun: false,
+      maxObjects: 100,
+    });
+    expect(
+      RunGcBody.parse({ kind: "ledger", dryRun: true, maxObjects: 500, cursor: "opaque" }),
+    ).toEqual({ kind: "ledger", dryRun: true, maxObjects: 500, cursor: "opaque" });
+    expect(RunGcBody.parse({ kind: "ledger", maxObjects: 1 }).maxObjects).toBe(1);
+    for (const value of [0, 501, 1.5, -1]) {
+      expect(RunGcBody.safeParse({ kind: "ledger", maxObjects: value }).success).toBe(false);
+    }
+    for (const value of ["r2-orphans", "ledger"]) {
+      expect(RunGcBody.safeParse({ kind: value }).success).toBe(true);
+    }
+    expect(RunGcBody.safeParse({ kind: "ledger", unknown: true }).success).toBe(false);
+    expect(RunGcBody.safeParse({ kind: "unknown" }).success).toBe(false);
   });
   it("rejects unknown keys in bodies and queries", () => {
     expect(PutFileBody.safeParse({ body: "", expectedVersion: null, extra: true }).success).toBe(

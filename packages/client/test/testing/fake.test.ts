@@ -4,6 +4,7 @@ import {
   MAX_BODY_BYTES,
   ROUTES,
   sha256Hex,
+  type GcRunResult,
   type RouteId,
 } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
@@ -94,6 +95,7 @@ describe("inspectable state and fixture helpers", () => {
     expect(exposed.stashes.size).toBe(1);
     expect(exposed.tokens.size).toBe(1);
     expect(exposed.blobs.get("demo")?.size).toBe(1);
+    expect(exposed.r2Objects.size).toBe(0);
     expect(exposed.files.get("demo")?.size).toBe(1);
     expect(exposed.versions).toHaveLength(1);
     expect(exposed.idempotency.get("demo")?.size).toBe(1);
@@ -103,9 +105,17 @@ describe("inspectable state and fixture helpers", () => {
     expect(exposed.stashes.size).toBe(0);
     expect(exposed.tokens.size).toBe(0);
     expect(exposed.blobs.size).toBe(0);
+    expect(exposed.r2Objects.size).toBe(0);
     expect(exposed.files.size).toBe(0);
     expect(exposed.versions).toHaveLength(0);
     expect(exposed.idempotency.size).toBe(0);
+    expect(exposed.gcJobs.get("r2-orphans")).toMatchObject({
+      nextCursor: null,
+      leaseOwner: null,
+      leaseGeneration: 0,
+      leaseUntil: null,
+    });
+    expect(exposed.gcRuns).toHaveLength(0);
   });
 });
 
@@ -132,6 +142,9 @@ describe("stash administration routes", () => {
       lastChangeId: null,
       lastChangeAt: null,
       createdAt: "2026-08-26T00:00:00.000Z",
+      deletedAt: null,
+      restoreUntil: null,
+      restorable: false,
     });
     fake.createStash("beta");
     fake.createStash("gamma");
@@ -148,6 +161,9 @@ describe("stash administration routes", () => {
           lastChangeId: null,
           lastChangeAt: null,
           createdAt: "2026-08-26T00:00:00.000Z",
+          deletedAt: null,
+          restoreUntil: null,
+          restorable: false,
         },
       ],
       nextAfter: "alpha",
@@ -188,6 +204,583 @@ describe("stash administration routes", () => {
     const unauthenticated = await fake.fetch("https://fake.invalid/v1/stashes");
     expect(unauthenticated.status).toBe(401);
     expect(await errorCode(unauthenticated)).toBe("unauthorized");
+  });
+
+  it("soft-deletes, conceals, restores at the grace boundary, and never recycles names", async () => {
+    let now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const readToken = await fake.mintToken("demo", "read");
+    const writeToken = await fake.mintToken("demo", "write");
+
+    const deleted = await request(fake, "/v1/stashes/demo", { method: "DELETE" });
+    expect(deleted.status).toBe(200);
+    const deletedBody = (await deleted.json()) as {
+      name: string;
+      deletedAt: string;
+      revokedTokens: number;
+      restoreUntil: string;
+    };
+    expect(deletedBody).toEqual({
+      name: "demo",
+      deletedAt: "2026-08-26T00:00:00.000Z",
+      revokedTokens: 2,
+      restoreUntil: "2026-09-25T00:00:00.000Z",
+    });
+    expect(fake.state.stashes.get("demo")?.deletedAt).toBe(now);
+    expect([...fake.state.tokens.values()].every((token) => token.revokedAt === now)).toBe(true);
+
+    const hiddenList = await request(fake, "/v1/stashes");
+    expect(hiddenList.status).toBe(200);
+    await expect(hiddenList.json()).resolves.toEqual({ stashes: [], nextAfter: null });
+    const included = await request(fake, "/v1/stashes?includeDeleted=true");
+    await expect(included.json()).resolves.toMatchObject({
+      stashes: [{ name: "demo", deletedAt: deletedBody.deletedAt, restorable: true }],
+    });
+    const hiddenDetail = await request(fake, "/v1/stashes/demo");
+    expect(hiddenDetail.status).toBe(200);
+    await expect(hiddenDetail.json()).resolves.toMatchObject({
+      name: "demo",
+      deletedAt: deletedBody.deletedAt,
+      restoreUntil: deletedBody.restoreUntil,
+      restorable: true,
+    });
+
+    for (const path of ["/v1/stashes/demo/files/a.txt", "/v1/stashes/demo/tokens"]) {
+      const concealed = await request(fake, path);
+      expect(concealed.status).toBe(404);
+      expect(await errorCode(concealed)).toBe("not-found");
+    }
+    for (const token of [readToken, writeToken]) {
+      const rejected = await fake.fetch("https://fake.invalid/v1/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(rejected.status).toBe(401);
+      expect(await errorCode(rejected)).toBe("unauthorized");
+    }
+
+    const restored = await request(fake, "/v1/stashes/demo/restore", { method: "POST" });
+    expect(restored.status).toBe(200);
+    await expect(restored.json()).resolves.toMatchObject({
+      name: "demo",
+      deletedAt: null,
+      restoreUntil: null,
+      restorable: false,
+    });
+    const stillRevoked = await fake.fetch("https://fake.invalid/v1/me", {
+      headers: { Authorization: `Bearer ${writeToken}` },
+    });
+    expect(stillRevoked.status).toBe(401);
+    const replacement = await fake.mintToken("demo", "read");
+    expect(replacement).toMatch(/^zhs_/);
+    const duplicate = await request(fake, "/v1/stashes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "demo" }),
+    });
+    expect(duplicate.status).toBe(409);
+    expect(await errorCode(duplicate)).toBe("exists");
+
+    fake.createStash("boundary");
+    now += 1;
+    const boundaryDelete = await request(fake, "/v1/stashes/boundary", { method: "DELETE" });
+    expect(boundaryDelete.status).toBe(200);
+    const restoreUntil = now + 30 * 86_400_000;
+    now = restoreUntil - 1;
+    expect((await request(fake, "/v1/stashes/boundary/restore", { method: "POST" })).status).toBe(
+      200,
+    );
+    const secondDelete = await request(fake, "/v1/stashes/boundary", { method: "DELETE" });
+    expect(secondDelete.status).toBe(200);
+    now = restoreUntil + 30 * 86_400_000;
+    const expiredRestore = await request(fake, "/v1/stashes/boundary/restore", { method: "POST" });
+    expect(expiredRestore.status).toBe(404);
+    expect(await errorCode(expiredRestore)).toBe("not-found");
+  });
+
+  it("runs dry GC pages without mutation, uses UUID page runs, and reports busy leases", async () => {
+    let now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const old = now - 900_001;
+    const hashA = `sha256-${"a".repeat(64)}`;
+    const hashB = `sha256-${"b".repeat(64)}`;
+    fake.state.blobs.set(
+      "demo",
+      new Map([
+        [hashA, { stash: "demo", hash: hashA, body: "a", r2Key: null, size: 1, createdAt: old }],
+        [hashB, { stash: "demo", hash: hashB, body: "b", r2Key: null, size: 1, createdAt: old }],
+      ]),
+    );
+    const keyA = `v2/demo/${hashA}/00000000-0000-4000-8000-000000000001`;
+    const keyB = `v2/demo/${hashB}/00000000-0000-4000-8000-000000000002`;
+    fake.state.r2Objects.set(keyA, {
+      key: keyA,
+      stash: "demo",
+      hash: hashA,
+      size: 1,
+      createdAt: old,
+    });
+    fake.state.r2Objects.set(keyB, {
+      key: keyB,
+      stash: "demo",
+      hash: hashB,
+      size: 1,
+      createdAt: old,
+    });
+    const before = Array.from(fake.state.blobs.get("demo")?.keys() ?? []);
+    const beforeR2 = Array.from(fake.state.r2Objects.keys());
+    const first = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", dryRun: true, maxObjects: 1 }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      runId: string;
+      jobId: string;
+      kind: string;
+      dryRun: boolean;
+      scanned: number;
+      eligible: number;
+      deleted: number;
+      cursor: string | null;
+      finishedAt: string | null;
+    };
+    expect(firstBody).toMatchObject({
+      jobId: "r2-orphans",
+      kind: "r2-orphans",
+      dryRun: true,
+      scanned: 1,
+      eligible: 1,
+      deleted: 0,
+    });
+    expect(firstBody.runId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(firstBody.finishedAt).toBe("2026-08-26T00:00:00.000Z");
+    expect(firstBody.cursor).toEqual(expect.any(String));
+    expect(Array.from(fake.state.blobs.get("demo")?.keys() ?? [])).toEqual(before);
+    expect(Array.from(fake.state.r2Objects.keys())).toEqual(beforeR2);
+    expect(fake.state.gcJobs.get("r2-orphans")?.nextCursor).toBeNull();
+
+    const second = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "r2-orphans",
+        dryRun: true,
+        maxObjects: 1,
+        cursor: firstBody.cursor,
+      }),
+    });
+    const secondBody = (await second.json()) as typeof firstBody;
+    expect(second.status).toBe(200);
+    expect(secondBody.runId).not.toBe(firstBody.runId);
+    expect(secondBody.scanned).toBe(1);
+    expect(secondBody.cursor).toBeNull();
+    expect(Array.from(fake.state.blobs.get("demo")?.keys() ?? [])).toEqual(before);
+    expect(Array.from(fake.state.r2Objects.keys())).toEqual(beforeR2);
+
+    const nonDry = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", maxObjects: 500 }),
+    });
+    expect(nonDry.status).toBe(200);
+    const nonDryBody = (await nonDry.json()) as {
+      runId: string;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(nonDryBody).toMatchObject({
+      jobId: "r2-orphans",
+      kind: "r2-orphans",
+      dryRun: false,
+      deleted: 2,
+      cursor: null,
+    });
+    expect(fake.state.blobs.get("demo")?.size).toBe(2);
+    expect(fake.state.r2Objects.size).toBe(0);
+
+    const job = fake.state.gcJobs.get("ledger");
+    if (job === undefined) throw new Error("missing ledger fake job");
+    job.leaseOwner = "held-by-fixture";
+    job.leaseUntil = now + 1;
+    const busy = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "ledger", dryRun: true }),
+    });
+    expect(busy.status).toBe(409);
+    expect(await errorCode(busy)).toBe("gc-busy");
+    now += 1;
+    const available = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "ledger", dryRun: true }),
+    });
+    expect(available.status).toBe(200);
+    const runs = await request(fake, "/v1/admin/gc/runs?kind=r2-orphans&limit=200");
+    expect(runs.status).toBe(200);
+    const runRows = (await runs.json()) as { runs: Array<{ runId: string; kind: string }> };
+    expect(runRows.runs.length).toBe(3);
+    expect(runRows.runs.every((run) => run.kind === "r2-orphans")).toBe(true);
+    expect(runRows.runs[0]?.runId).toBe(nonDryBody.runId);
+  });
+
+  it("caps R2 pages at 24 and continues without skipping while ledger keeps its limit", async () => {
+    const now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const old = now - 900_001;
+    const objectKeys = Array.from({ length: 25 }, (_, index) => {
+      const hash = `sha256-${String(index).padStart(2, "0")}${"a".repeat(62)}`;
+      return `v2/demo/${hash}/00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
+    });
+    fake.state.blobs.set(
+      "demo",
+      new Map(
+        objectKeys.map((key, index) => {
+          const hash = key.split("/")[2] ?? "";
+          return [
+            hash,
+            {
+              stash: "demo",
+              hash,
+              body: String(index),
+              r2Key: null,
+              size: 1,
+              createdAt: old,
+            },
+          ];
+        }),
+      ),
+    );
+    const ledgerRows = new Map();
+    for (const [index, key] of objectKeys.entries()) {
+      const hash = key.split("/")[2] ?? "";
+      fake.state.r2Objects.set(key, {
+        key,
+        stash: "demo",
+        hash,
+        size: 1,
+        createdAt: old,
+      });
+      const ledgerKey = `ledger-${String(index).padStart(2, "0")}`;
+      ledgerRows.set(ledgerKey, {
+        stash: "demo",
+        key: ledgerKey,
+        requestHash: `request-${String(index)}`,
+        path: `docs/${String(index)}.txt`,
+        version: 1,
+        statusCode: 200,
+        createdAt: old,
+      });
+    }
+    fake.state.idempotency.set("demo", ledgerRows);
+    const logicalBefore = JSON.stringify([...fake.state.blobs.entries()]);
+
+    const dryFirst = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", dryRun: true, maxObjects: 500 }),
+    });
+    expect(dryFirst.status).toBe(200);
+    const dryFirstBody = (await dryFirst.json()) as {
+      runId: string;
+      scanned: number;
+      eligible: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(dryFirstBody).toMatchObject({ scanned: 24, eligible: 24, deleted: 0 });
+    expect(dryFirstBody.cursor).toEqual(expect.any(String));
+    expect(fake.state.gcJobs.get("r2-orphans")?.nextCursor).toBeNull();
+    expect([...fake.state.r2Objects.keys()]).toEqual(objectKeys);
+
+    const dryContinuation = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "r2-orphans",
+        dryRun: true,
+        maxObjects: 500,
+        cursor: dryFirstBody.cursor,
+      }),
+    });
+    expect(dryContinuation.status).toBe(200);
+    await expect(dryContinuation.json()).resolves.toMatchObject({
+      scanned: 1,
+      eligible: 1,
+      deleted: 0,
+      cursor: null,
+    });
+    expect(fake.state.r2Objects.size).toBe(25);
+    expect(JSON.stringify([...fake.state.blobs.entries()])).toBe(logicalBefore);
+
+    const nonDryFirst = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", maxObjects: 500 }),
+    });
+    expect(nonDryFirst.status).toBe(200);
+    const nonDryFirstBody = (await nonDryFirst.json()) as {
+      runId: string;
+      scanned: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(nonDryFirstBody).toMatchObject({ scanned: 24, deleted: 24 });
+    expect(nonDryFirstBody.cursor).toEqual(expect.any(String));
+    expect(nonDryFirstBody.runId).not.toBe(dryFirstBody.runId);
+    expect([...fake.state.r2Objects.keys()]).toEqual([objectKeys[24]]);
+
+    const nonDryContinuation = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "r2-orphans",
+        maxObjects: 500,
+        cursor: nonDryFirstBody.cursor,
+      }),
+    });
+    expect(nonDryContinuation.status).toBe(200);
+    const nonDryContinuationBody = (await nonDryContinuation.json()) as {
+      runId: string;
+      scanned: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(nonDryContinuationBody).toMatchObject({
+      scanned: 1,
+      deleted: 1,
+      cursor: null,
+    });
+    expect(nonDryContinuationBody.runId).not.toBe(nonDryFirstBody.runId);
+    expect(nonDryFirstBody.scanned + nonDryContinuationBody.scanned).toBe(25);
+    expect(nonDryFirstBody.deleted + nonDryContinuationBody.deleted).toBe(25);
+    expect(fake.state.r2Objects.size).toBe(0);
+    expect(JSON.stringify([...fake.state.blobs.entries()])).toBe(logicalBefore);
+
+    const ledger = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "ledger", dryRun: true, maxObjects: 500 }),
+    });
+    expect(ledger.status).toBe(200);
+    await expect(ledger.json()).resolves.toMatchObject({
+      scanned: 25,
+      eligible: 0,
+      deleted: 0,
+      cursor: null,
+    });
+  });
+
+  it("validates opaque cursors, uses a strict age boundary, and preserves logical history", async () => {
+    const now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const minAge = 900_000;
+    const boundary = now - minAge;
+    const old = now - minAge - 1;
+    const boundaryHash = `sha256-${"c".repeat(64)}`;
+    const referencedHash = `sha256-${"d".repeat(64)}`;
+    const orphanHash = `sha256-${"e".repeat(64)}`;
+    const boundaryKey = `v2/demo/${boundaryHash}/00000000-0000-4000-8000-000000000003`;
+    const referencedKey = `v2/demo/${referencedHash}/00000000-0000-4000-8000-000000000004`;
+    const losingGenerationKey = `v2/demo/${referencedHash}/00000000-0000-4000-8000-000000000006`;
+    const orphanKey = `v2/demo/${orphanHash}/00000000-0000-4000-8000-000000000005`;
+    const malformedKey = "third-party/demo/orphan";
+    fake.state.blobs.set(
+      "demo",
+      new Map([
+        [
+          boundaryHash,
+          {
+            stash: "demo",
+            hash: boundaryHash,
+            body: "boundary",
+            r2Key: null,
+            size: 8,
+            createdAt: boundary,
+          },
+        ],
+        [
+          referencedHash,
+          {
+            stash: "demo",
+            hash: referencedHash,
+            body: "referenced",
+            r2Key: referencedKey,
+            size: 10,
+            createdAt: old,
+          },
+        ],
+        [
+          orphanHash,
+          { stash: "demo", hash: orphanHash, body: "orphan", r2Key: null, size: 6, createdAt: old },
+        ],
+      ]),
+    );
+    fake.state.versions.push({
+      changeId: 1,
+      stash: "demo",
+      path: "referenced.txt",
+      version: 1,
+      kind: "put",
+      hash: referencedHash,
+      size: 10,
+      contentType: "text/plain",
+      rollbackOf: null,
+      author: "fixture",
+      message: "fixture",
+      meta: {},
+      createdAt: old,
+    });
+    fake.state.r2Objects.set(boundaryKey, {
+      key: boundaryKey,
+      stash: "demo",
+      hash: boundaryHash,
+      size: 8,
+      createdAt: boundary,
+    });
+    fake.state.r2Objects.set(referencedKey, {
+      key: referencedKey,
+      stash: "demo",
+      hash: referencedHash,
+      size: 10,
+      createdAt: old,
+    });
+    fake.state.r2Objects.set(losingGenerationKey, {
+      key: losingGenerationKey,
+      stash: "demo",
+      hash: referencedHash,
+      size: 10,
+      createdAt: old,
+    });
+    fake.state.r2Objects.set(orphanKey, {
+      key: orphanKey,
+      stash: "demo",
+      hash: orphanHash,
+      size: 6,
+      createdAt: old,
+    });
+    fake.state.r2Objects.set(malformedKey, {
+      key: malformedKey,
+      stash: "demo",
+      hash: orphanHash,
+      size: 6,
+      createdAt: old,
+    });
+    expect(fake.state.blobs.get("demo")?.get(referencedHash)?.r2Key).toBe(referencedKey);
+    expect(fake.state.r2Objects.has(losingGenerationKey)).toBe(true);
+    const logicalBefore = JSON.stringify({
+      blobs: [...(fake.state.blobs.get("demo")?.entries() ?? [])],
+      versions: fake.state.versions,
+    });
+    const r2JobBefore = { ...fake.state.gcJobs.get("r2-orphans") };
+
+    const malformed = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", dryRun: true, cursor: "not-a-fake-cursor" }),
+    });
+    expect(malformed.status).toBe(400);
+    expect(await errorCode(malformed)).toBe("validation");
+    expect(fake.state.gcRuns).toHaveLength(0);
+    expect(fake.state.gcJobs.get("r2-orphans")).toEqual(r2JobBefore);
+
+    const first = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", dryRun: true, maxObjects: 2 }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      cursor: string | null;
+      scanned: number;
+      eligible: number;
+    };
+    expect(firstBody).toMatchObject({ scanned: 2, eligible: 0 });
+    expect(firstBody.cursor).toEqual(expect.any(String));
+    const ledgerJobBefore = { ...fake.state.gcJobs.get("ledger") };
+
+    const mismatch = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "ledger", dryRun: true, cursor: firstBody.cursor }),
+    });
+    expect(mismatch.status).toBe(400);
+    expect(await errorCode(mismatch)).toBe("validation");
+    expect(fake.state.gcRuns).toHaveLength(1);
+    expect(fake.state.gcJobs.get("ledger")).toEqual(ledgerJobBefore);
+
+    const second = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind: "r2-orphans",
+        dryRun: true,
+        maxObjects: 2,
+        cursor: firstBody.cursor,
+      }),
+    });
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({ scanned: 2, eligible: 1, deleted: 0 });
+    expect(
+      JSON.stringify({
+        blobs: [...(fake.state.blobs.get("demo")?.entries() ?? [])],
+        versions: fake.state.versions,
+      }),
+    ).toBe(logicalBefore);
+
+    const nonDry = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", maxObjects: 500 }),
+    });
+    expect(nonDry.status).toBe(200);
+    await expect(nonDry.json()).resolves.toMatchObject({ eligible: 2, deleted: 2, cursor: null });
+    expect(fake.state.r2Objects.has(orphanKey)).toBe(false);
+    expect(fake.state.r2Objects.has(losingGenerationKey)).toBe(false);
+    expect(fake.state.r2Objects.has(boundaryKey)).toBe(true);
+    expect(fake.state.r2Objects.has(referencedKey)).toBe(true);
+    expect(fake.state.r2Objects.has(malformedKey)).toBe(true);
+    expect(
+      JSON.stringify({
+        blobs: [...(fake.state.blobs.get("demo")?.entries() ?? [])],
+        versions: fake.state.versions,
+      }),
+    ).toBe(logicalBefore);
+
+    const historyFake = createFakeStash({ adminToken: ADMIN });
+    const makeRun = (kind: "r2-orphans" | "ledger", index: number): GcRunResult => {
+      const startedAt = new Date(1_700_000_000_000 + index).toISOString();
+      return {
+        runId: `${kind}-${String(index).padStart(3, "0")}`,
+        jobId: kind,
+        kind,
+        dryRun: true,
+        scanned: 0,
+        eligible: 0,
+        deleted: 0,
+        cursor: null,
+        startedAt,
+        finishedAt: startedAt,
+        error: null,
+      };
+    };
+    historyFake.state.gcRuns.push(
+      ...Array.from({ length: 501 }, (_, index) => makeRun("r2-orphans", index)),
+      ...Array.from({ length: 501 }, (_, index) => makeRun("ledger", index)),
+    );
+    const recent = await request(historyFake, "/v1/admin/gc/runs?kind=r2-orphans&limit=200");
+    expect(recent.status).toBe(200);
+    expect(historyFake.state.gcRuns.filter((run) => run.kind === "r2-orphans")).toHaveLength(500);
+    expect(historyFake.state.gcRuns.filter((run) => run.kind === "ledger")).toHaveLength(500);
+    expect(historyFake.state.gcRuns.some((run) => run.runId === "r2-orphans-000")).toBe(false);
+    expect(historyFake.state.gcRuns.some((run) => run.runId === "ledger-000")).toBe(false);
+    const recentRows = (await recent.json()) as { runs: Array<{ runId: string }> };
+    expect(recentRows.runs.some((run) => run.runId === "r2-orphans-500")).toBe(true);
   });
 });
 

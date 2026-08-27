@@ -7,8 +7,9 @@ import {
   type FileGetOptions,
   type FileGetResult,
   type HistoryOptions,
+  type ListGcRunsOptions,
   type ListFilesOptions,
-  type ListStashesOptions,
+  type ListStashesRpcOptions,
   type MutationOptions,
   type StashRpcMethods,
 } from "@takazudo/zudo-history-stash";
@@ -19,6 +20,7 @@ import type {
   CreateStashResult,
   CreateTokenBody,
   CreateTokenResult,
+  DeleteStashResult,
   DeleteFileBody,
   DeleteResult,
   DiffCandidateBody,
@@ -28,6 +30,8 @@ import type {
   HealthResponse,
   ImportBody,
   ImportResult,
+  GcRunResult,
+  GcRunsResponse,
   ListChangesResult,
   ListStashesResult,
   ListTokensResult,
@@ -36,6 +40,8 @@ import type {
   PutResult,
   RollbackBody,
   RollbackResult,
+  RestoreStashResult,
+  RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
   RouteId,
@@ -78,7 +84,7 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
 
   async listStashes(
     token: string,
-    options?: ListStashesOptions,
+    options: ListStashesRpcOptions = {},
   ): Promise<ClientResult<ListStashesResult>> {
     return noThrow(() => rpcClient(this, token).stashes.list(options));
   }
@@ -92,6 +98,14 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
 
   async getStash(token: string, stash: string): Promise<ClientResult<StashRecord>> {
     return noThrow(() => rpcClient(this, token).stashes.get(stash));
+  }
+
+  async deleteStash(token: string, stash: string): Promise<ClientResult<DeleteStashResult>> {
+    return noThrow(() => rpcClient(this, token).stashes.delete(stash));
+  }
+
+  async restoreStash(token: string, stash: string): Promise<ClientResult<RestoreStashResult>> {
+    return noThrow(() => rpcClient(this, token).stashes.restore(stash));
   }
 
   async createToken(
@@ -141,6 +155,17 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
 
   async listChanges(token: string, options?: ChangesOptions): Promise<ClientResult<ChangesPage>> {
     return noThrow(() => rpcClient(this, token).changes(options));
+  }
+
+  async runGc(token: string, input: RunGcBody): Promise<ClientResult<GcRunResult>> {
+    return noThrow(() => rpcClient(this, token).admin.gc.run(input));
+  }
+
+  async listGcRuns(
+    token: string,
+    options: ListGcRunsOptions = {},
+  ): Promise<ClientResult<GcRunsResponse>> {
+    return noThrow(() => rpcClient(this, token).admin.gc.runs(options));
   }
 
   async listFiles(
@@ -263,12 +288,16 @@ const rpcMethodsByRoute = {
   listStashes: "listStashes",
   createStash: "createStash",
   getStash: "getStash",
+  deleteStash: "deleteStash",
+  restoreStash: "restoreStash",
   createToken: "createToken",
   listTokens: "listTokens",
   rotateToken: "rotateToken",
   revokeToken: "revokeToken",
   importHistory: "importHistory",
   listChanges: "listChanges",
+  runGc: "runGc",
+  listGcRuns: "listGcRuns",
   listFiles: "listFiles",
   getFile: "getFile",
   putFile: "putFile",

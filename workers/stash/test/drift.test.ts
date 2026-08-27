@@ -13,6 +13,18 @@ function matches(source: string, pattern: RegExp): Set<string> {
   return new Set(values.filter((value): value is string => value !== undefined));
 }
 
+function sectionVars(source: string, section: string): Record<string, string> {
+  const escapedSection = section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sectionSource =
+    source.match(new RegExp(`\\[${escapedSection}\\]\\n([\\s\\S]*?)(?=\\n\\[|$)`))?.[1] ?? "";
+  return Object.fromEntries(
+    Array.from(sectionSource.matchAll(/^([A-Z][A-Z0-9_]*)\s*=\s*"([^"]*)"$/gm), (match) => [
+      match[1],
+      match[2],
+    ]),
+  );
+}
+
 describe("Wrangler and Env drift", () => {
   it("declares every source binding in Wrangler and Env", () => {
     const source = Object.values(sourceModules).join("\n");
@@ -31,10 +43,13 @@ describe("Wrangler and Env drift", () => {
       "ALLOWED_ORIGINS",
       "BLOBS",
       "DB",
+      "GC_LEASE_TTL_MS",
+      "GC_ORPHAN_MIN_AGE_MS",
       "RL_DIFF",
       "RL_READ",
       "RL_WRITE",
       "STASH_ADMIN_TOKEN",
+      "STASH_DELETE_GRACE_DAYS",
     ]);
     for (const name of references) {
       expect(configured.has(name), `${name} missing from wrangler.toml`).toBe(true);
@@ -78,5 +93,27 @@ describe("Wrangler and Env drift", () => {
     for (const name of required) {
       if (references.has(name)) expect(envKeys.has(name)).toBe(true);
     }
+  });
+
+  it("pins lifecycle variables and production-only scheduling without paid limits", () => {
+    const expected = {
+      STASH_DELETE_GRACE_DAYS: "30",
+      GC_ORPHAN_MIN_AGE_MS: "900000",
+      GC_LEASE_TTL_MS: "300000",
+    };
+    expect(sectionVars(wranglerSource, "vars")).toEqual({
+      ALLOWED_ORIGINS: "",
+      ...expected,
+    });
+    expect(sectionVars(wranglerSource, "env.preview.vars")).toEqual({
+      ALLOWED_ORIGINS: "http://localhost:5173",
+      ...expected,
+    });
+
+    const envKeys = matches(envSource, /^\s*([A-Z][A-Z0-9_]*):/gm);
+    for (const name of Object.keys(expected)) expect(envKeys.has(name)).toBe(true);
+    expect(wranglerSource).toContain('[triggers]\ncrons = ["17 3 * * *"]');
+    expect(wranglerSource).toContain("[env.preview.triggers]\ncrons = []");
+    expect(wranglerSource).not.toMatch(/\bsubrequests\b/i);
   });
 });

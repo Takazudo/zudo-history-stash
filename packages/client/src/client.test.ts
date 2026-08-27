@@ -313,6 +313,45 @@ describe("golden requests", () => {
   });
 });
 
+describe("lifecycle and GC golden requests", () => {
+  it("pins lifecycle paths, includeDeleted, GC body, and nullable cursor query", async () => {
+    mock.mockImplementation(async () => jsonResponse({ ok: true }));
+    const c = client();
+
+    await c.stashes.list({ limit: 2, after: "demo", includeDeleted: true });
+    await c.stashes.delete("demo");
+    await c.stashes.restore("demo");
+    await c.admin.gc.run({ kind: "r2-orphans", dryRun: true, maxObjects: 1, cursor: "opaque" });
+    await c.admin.gc.runs({ kind: "ledger", limit: 3 });
+
+    expect(mock).toHaveBeenCalledTimes(5);
+    expect(requestAt(0)).toMatchObject({
+      url: "https://stash.example/v1/stashes?limit=2&after=demo&includeDeleted=true",
+      init: { method: "GET", headers: { Authorization: "Bearer admin-token" } },
+    });
+    expect(requestAt(1)).toMatchObject({
+      url: "https://stash.example/v1/stashes/demo",
+      init: { method: "DELETE", headers: { Authorization: "Bearer admin-token" } },
+    });
+    expect(requestAt(2)).toMatchObject({
+      url: "https://stash.example/v1/stashes/demo/restore",
+      init: { method: "POST", headers: { Authorization: "Bearer admin-token" } },
+    });
+    expect(requestAt(3)).toMatchObject({
+      url: "https://stash.example/v1/admin/gc",
+      init: {
+        method: "POST",
+        headers: { Authorization: "Bearer admin-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "r2-orphans", dryRun: true, maxObjects: 1, cursor: "opaque" }),
+      },
+    });
+    expect(requestAt(4)).toMatchObject({
+      url: "https://stash.example/v1/admin/gc/runs?kind=ledger&limit=3",
+      init: { method: "GET", headers: { Authorization: "Bearer admin-token" } },
+    });
+  });
+});
+
 describe("response mapping and safety", () => {
   it("maps 409 current without throwing", async () => {
     const c = client();

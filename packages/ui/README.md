@@ -122,6 +122,45 @@ Use `useCanWrite` and `useIsAdmin` to reflect server capabilities; do not infer 
 route. Components still enforce their own capability gates. `useStashClientForSignal` should be
 used for abortable loads, and `useStashHref` keeps component links host-aware.
 
+## Lifecycle and maintenance controls
+
+`DeleteStashDialog` and `GcPanel` are admin-only workflows. Both remain hidden while `/v1/me` is
+unresolved and for non-admin principals, and both recheck that capability before invoking their
+client operation.
+
+```tsx
+import { useState } from "react";
+import { DeleteStashDialog, GcPanel } from "@takazudo/zudo-history-stash-ui";
+
+function Administration({ stash, onDeleted }: { stash: string; onDeleted(): void }) {
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setDeleteOpen(true)}>
+        Delete stash
+      </button>
+      <DeleteStashDialog
+        open={deleteOpen}
+        stash={stash}
+        onClose={() => setDeleteOpen(false)}
+        onDeleted={onDeleted}
+      />
+      <GcPanel />
+    </>
+  );
+}
+```
+
+The delete dialog keeps the completed response visible until the operator acknowledges it. Its
+restore deadline is the server-returned `restoreUntil`; hosts must not recompute the grace window.
+Deletion hides the stash and revokes every former token permanently, while retaining the stash name
+and history. Restoring a stash requires newly minted tokens.
+
+`GcPanel` exposes only the public run contract: job/run IDs, kind, dry-run status, counts, opaque
+cursor, timestamps, and public error text. It intentionally never displays private R2 object keys or
+lease generations. Keep the cursor field behind the advanced disclosure and pass it back unchanged
+only for the same job kind.
+
 ## Credentials and errors
 
 Browser-direct integrations should use read credentials only. A write token can mutate every path

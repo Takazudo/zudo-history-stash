@@ -84,6 +84,9 @@ async function mockViewerApi(page: Page): Promise<void> {
       };
     } else if (pathname === "/api/v1/changes") {
       value = { changes: [], hasMore: false, nextBefore: null };
+    } else if (pathname === "/api/v1/admin/gc/runs") {
+      expect(url.search).toBe("?kind=r2-orphans&limit=10");
+      value = { runs: [] };
     } else if (pathname === "/api/v1/stashes/notes/files") {
       value = {
         files: [
