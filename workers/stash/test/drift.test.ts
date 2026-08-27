@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import envSource from "../src/env.ts?raw";
+import generatedEnvSource from "../worker-configuration.d.ts?raw";
 import wranglerSource from "../wrangler.toml?raw";
 
 const sourceModules = import.meta.glob("../src/**/*.ts", {
@@ -51,6 +52,7 @@ describe("Wrangler and Env drift", () => {
       "RL_WRITE",
       "STASH_ADMIN_TOKEN",
       "STASH_DELETE_GRACE_DAYS",
+      "STASH_EVENTS_MAX_STREAM_MS",
     ]);
     for (const name of references) {
       expect(configured.has(name), `${name} missing from wrangler.toml`).toBe(true);
@@ -102,6 +104,7 @@ describe("Wrangler and Env drift", () => {
       GC_ORPHAN_MIN_AGE_MS: "900000",
       GC_LEASE_TTL_MS: "300000",
       PROPOSAL_TTL_DAYS: "14",
+      STASH_EVENTS_MAX_STREAM_MS: "300000",
     };
     expect(sectionVars(wranglerSource, "vars")).toEqual({
       ALLOWED_ORIGINS: "",
@@ -117,5 +120,36 @@ describe("Wrangler and Env drift", () => {
     expect(wranglerSource).toContain('[triggers]\ncrons = ["17 3 * * *"]');
     expect(wranglerSource).toContain("[env.preview.triggers]\ncrons = []");
     expect(wranglerSource).not.toMatch(/\bsubrequests\b/i);
+  });
+
+  it("pins the StashEvents binding, migration, and generated types in both environments", () => {
+    const bindings = Array.from(
+      wranglerSource.matchAll(
+        /^\[\[((?:env\.preview\.)?durable_objects\.bindings)\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nclass_name\s*=\s*"([^"]+)"/gm,
+      ),
+      (match) => ({ section: match[1], name: match[2], className: match[3] }),
+    );
+    expect(bindings).toEqual([
+      { section: "durable_objects.bindings", name: "STASH_EVENTS", className: "StashEvents" },
+      {
+        section: "env.preview.durable_objects.bindings",
+        name: "STASH_EVENTS",
+        className: "StashEvents",
+      },
+    ]);
+
+    const migrations = Array.from(
+      wranglerSource.matchAll(
+        /^\[\[((?:env\.preview\.)?migrations)\]\]\s*\ntag\s*=\s*"([^"]+)"\s*\nnew_sqlite_classes\s*=\s*\["([^"]+)"\]/gm,
+      ),
+      (match) => ({ section: match[1], tag: match[2], className: match[3] }),
+    );
+    expect(migrations).toEqual([
+      { section: "migrations", tag: "v1", className: "StashEvents" },
+      { section: "env.preview.migrations", tag: "v1", className: "StashEvents" },
+    ]);
+
+    expect(generatedEnvSource).toMatch(/STASH_EVENTS: DurableObjectNamespace<[^>]*StashEvents>/);
+    expect(generatedEnvSource).toContain('STASH_EVENTS_MAX_STREAM_MS: "300000"');
   });
 });

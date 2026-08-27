@@ -23,12 +23,21 @@ database_id = "REPLACE_ME" # wrangler d1 create zudo-history-stash
 binding = "BLOBS"
 bucket_name = "zudo-history-stash-blobs"
 
+[[durable_objects.bindings]]
+name = "STASH_EVENTS"
+class_name = "StashEvents"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StashEvents"]
+
 [vars]
 ALLOWED_ORIGINS = ""
 STASH_DELETE_GRACE_DAYS = "30"
 GC_ORPHAN_MIN_AGE_MS = "900000"
 GC_LEASE_TTL_MS = "300000"
 PROPOSAL_TTL_DAYS = "14"
+STASH_EVENTS_MAX_STREAM_MS = "300000"
 
 [secrets]
 required = ["STASH_ADMIN_TOKEN"]
@@ -69,6 +78,7 @@ STASH_DELETE_GRACE_DAYS = "30"
 GC_ORPHAN_MIN_AGE_MS = "900000"
 GC_LEASE_TTL_MS = "300000"
 PROPOSAL_TTL_DAYS = "14"
+STASH_EVENTS_MAX_STREAM_MS = "300000"
 
 [env.preview.secrets]
 required = ["STASH_ADMIN_TOKEN"]
@@ -81,6 +91,14 @@ database_id = "REPLACE_ME"
 [[env.preview.r2_buckets]]
 binding = "BLOBS"
 bucket_name = "zudo-history-stash-blobs-preview"
+
+[[env.preview.durable_objects.bindings]]
+name = "STASH_EVENTS"
+class_name = "StashEvents"
+
+[[env.preview.migrations]]
+tag = "v1"
+new_sqlite_classes = ["StashEvents"]
 
 [[env.preview.ratelimits]]
 name = "RL_READ"

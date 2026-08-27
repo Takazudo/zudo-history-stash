@@ -37,6 +37,7 @@ export function createTestEnv(
     env: {
       DB: env.DB,
       BLOBS: env.BLOBS,
+      STASH_EVENTS: env.STASH_EVENTS,
       RL_READ: allowAllRateLimiter(),
       RL_WRITE: allowAllRateLimiter(),
       RL_DIFF: allowAllRateLimiter(),
@@ -46,6 +47,7 @@ export function createTestEnv(
       GC_ORPHAN_MIN_AGE_MS: env.GC_ORPHAN_MIN_AGE_MS,
       GC_LEASE_TTL_MS: env.GC_LEASE_TTL_MS,
       PROPOSAL_TTL_DAYS: env.PROPOSAL_TTL_DAYS,
+      STASH_EVENTS_MAX_STREAM_MS: env.STASH_EVENTS_MAX_STREAM_MS,
       ...overrides.env,
     },
     deps: {
