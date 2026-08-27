@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures/console-errors.js";
+import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 const versions = [
   {
@@ -61,6 +62,13 @@ const diff = {
 
 async function mockViewerApi(page: Page): Promise<void> {
   await page.route("**/api/v1/**", async (route) => {
+    if (
+      await fulfillEmptyOpenProposalCount(route, [
+        { stash: "notes" },
+        { stash: "notes", path: "docs/readme.txt" },
+      ])
+    )
+      return;
     const url = new URL(route.request().url());
     const pathname = url.pathname;
     let value: object;
