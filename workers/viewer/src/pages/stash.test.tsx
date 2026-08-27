@@ -5,7 +5,9 @@ import type {
   FileListResponse,
   FileSummary,
   ListChangesResult,
+  ProposalListResponse,
   StashFilesClient,
+  StashProposalsClient,
 } from "@takazudo/zudo-history-stash";
 import { describe, expect, it, vi } from "vitest";
 import { change, createFakeViewerClient } from "../test/fake-viewer-client.js";
@@ -27,6 +29,27 @@ function clientWithFiles(overrides: Partial<StashFilesClient>) {
   const defaults = createFakeViewerClient();
   return createFakeViewerClient({
     files: (stash) => ({ ...defaults.files(stash), ...overrides }),
+  });
+}
+
+function clientWithProposalList(list: StashProposalsClient["list"], readOnly = false) {
+  const base = createFakeViewerClient();
+  return createFakeViewerClient({
+    ...(readOnly
+      ? {
+          me: async () => ({
+            ok: true as const,
+            value: {
+              principal: "stash" as const,
+              stash: "notes",
+              tokenId: "tok_read",
+              scope: "read" as const,
+              expiresAt: null,
+            },
+          }),
+        }
+      : {}),
+    proposals: (stash) => ({ ...base.proposals(stash), list }),
   });
 }
 
@@ -128,6 +151,9 @@ describe("StashPage", () => {
   it("shows New file and Tokens entry points to an admin", async () => {
     renderViewerRoute("/s/notes", createFakeViewerClient());
 
+    expect(
+      (await screen.findByRole("link", { name: "Proposals (0 open)" })).getAttribute("href"),
+    ).toBe("/s/notes/proposals");
     expect((await screen.findByRole("link", { name: "New file" })).getAttribute("href")).toBe(
       "/s/notes/new",
     );
@@ -135,6 +161,35 @@ describe("StashPage", () => {
       "/s/notes/tokens",
     );
     expect(screen.getByRole("button", { name: "Delete stash" })).toBeTruthy();
+  });
+
+  it("shows the exact open total to a read principal outside write and admin gating", async () => {
+    const list = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: true,
+      value: { proposals: [], nextAfter: null, total: 6 },
+    }));
+    renderViewerRoute("/s/notes", clientWithProposalList(list, true));
+
+    const proposals = await screen.findByRole("link", { name: "Proposals (6 open)" });
+    expect(proposals.getAttribute("href")).toBe("/s/notes/proposals");
+    expect(list).toHaveBeenCalledWith({ status: "open", limit: 1 });
+    expect(screen.queryByRole("link", { name: "New file" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Tokens" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete stash" })).toBeNull();
+  });
+
+  it("keeps plain proposal navigation when the auxiliary count fails", async () => {
+    const list = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: false,
+      error: { status: 503, code: "internal", message: "Count unavailable" },
+    }));
+    renderViewerRoute("/s/notes", clientWithProposalList(list, true));
+
+    expect((await screen.findByRole("link", { name: "Proposals" })).getAttribute("href")).toBe(
+      "/s/notes/proposals",
+    );
+    expect(screen.queryByText("Count unavailable")).toBeNull();
+    expect(await screen.findByText("This stash has no live files.")).toBeTruthy();
   });
 
   it("shows only New file to a matching write principal", async () => {

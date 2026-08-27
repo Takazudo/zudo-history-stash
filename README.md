@@ -99,6 +99,8 @@ Bots and other consumers can post stable viewer links without knowing the viewer
 - `/s/:stash/f/*path` opens a file and its history.
 - `/s/:stash/diff/*path?from=N&to=M|head` opens a stored-version diff.
 - `/s/:stash/edit/*path?from=N` opens the write-gated editor, optionally from an older version.
+- `/s/:stash/proposals?status=open|all&path=...` lists proposals, optionally filtered by path.
+- `/s/:stash/proposals/:id` opens the immutable proposal review and decision record.
 - `/s/:stash/new` opens the write-gated new-file form.
 - `/s/:stash/tokens` opens admin-only token management for a stash.
 
