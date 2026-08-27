@@ -4,6 +4,9 @@ compatibility_date = "2026-08-25"
 workers_dev = true
 preview_urls = true
 
+[triggers]
+crons = ["17 3 * * *"]
+
 [observability]
 enabled = true
 
@@ -55,6 +58,9 @@ period = 60
 
 [env.preview]
 routes = []
+
+[env.preview.triggers]
+crons = []
 
 [env.preview.vars]
 ALLOWED_ORIGINS = "http://localhost:5173"

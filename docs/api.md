@@ -428,6 +428,33 @@ history retains the newest five hundred records per kind.
   The engine's invocation safety budget may stop a page below the requested `maxObjects`.
 - **Errors:** `400 validation`, `401 unauthorized`.
 
+#### Operating garbage collection
+
+Start a manual operation with a dry run, then repeat the same `kind` without `dryRun` after
+reviewing the counters:
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer $STASH_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"kind":"r2-orphans","dryRun":true,"maxObjects":80}' \
+  https://stash.example.com/v1/admin/gc
+```
+
+The R2 engine caps every page at 24 objects; the ledger accepts up to 500 rows per request. The
+scheduled handler requests 80 objects, alternates R2 and ledger pages, shares one 45-operation
+budget across the whole invocation, and stops after ten pages per kind or before the next page
+would exceed that budget. Pass returned cursors unchanged when continuing an explicit page;
+omitting `cursor` uses the stored progress. `cursor: null` restarts a later pass from the beginning.
+If a lease expires or a worker is interrupted, retry the same kind after the five-minute lease
+window; a `409 gc-busy` response means another page currently owns the fenced lease. Dry runs
+never delete data or persist progress, and no response, run record, or log exposes an R2 key or
+generation.
+
+The production cron invokes this bounded round-robin at `17 3 * * *` UTC. Preview has no cron and
+must be run manually. Deploy generation-aware v2 writers and the migration before the API, verify
+the API's dry-run and recovery behavior, and deploy/enable the production schedule last.
+
 ### `GET /v1/stashes/:stash/files`
 
 - **Principal/capability:** `read`; administrator or a matching `read`/`write` token.

@@ -34,10 +34,10 @@ pnpm exec wrangler d1 create zudo-history-stash-preview
 
 The deployment remains skipped until the Cloudflare credentials and committed D1 IDs are ready. Apply migrations from `workers/stash` with `pnpm exec wrangler d1 migrations apply zudo-history-stash --remote` before deploying code.
 
-## Stash lifecycle variables
+## Stash lifecycle and garbage collection
 
-The committed Worker variables reserve the lifecycle policy used by the later lifecycle and GC
-implementation in this Worker:
+The committed Worker variables define the lifecycle and garbage-collection policy used by this
+Worker:
 
 Deleted stashes remain retained rows; `STASH_DELETE_GRACE_DAYS` controls their restore window and
 does not authorize hard-purging them.
@@ -49,8 +49,38 @@ does not authorize hard-purging them.
 | `GC_LEASE_TTL_MS`         | `"300000"`                   | Lease duration for a fenced GC run                                   |
 
 Keep the same values in the root `[vars]` and `[env.preview.vars]` sections of
-`workers/stash/wrangler.toml`. This migration only adds the configuration and schema seams; the
-later lifecycle and garbage-collection implementation in this Worker will consume them.
+`workers/stash/wrangler.toml`.
+
+GC is an administrator-only, resumable operation. For a safe inspection, run one dry page first:
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer $STASH_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"kind":"r2-orphans","dryRun":true,"maxObjects":80}' \
+  https://stash.example.com/v1/admin/gc
+```
+
+The R2 orphan engine scans at most 24 objects per page, even when a larger `maxObjects` value is
+requested. Ledger pages accept at most 500 rows. The scheduled invocation requests 80 objects,
+alternates `r2-orphans` and `ledger` for a fair first attempt, shares one 45-operation storage
+budget across both kinds, and stops before an unsafe page. It runs no more than ten pages per kind
+per invocation. A returned cursor is opaque and must be passed unchanged; `cursor: null` means the
+current pass is complete. A live lease returns `409 gc-busy`. If a deployment or operator stops a
+page, resume by invoking the same kind without a cursor (the stored cursor is used), or pass the
+last returned cursor explicitly when recovering a known page. Never copy R2 keys or generations
+from logs or storage into an operator-facing record.
+
+Every page creates a run record with a per-page UUID, stable kind/job ID, counters, timestamps,
+opaque cursor, and nullable error. `GET /v1/admin/gc/runs` lists recent records newest first;
+history retains the newest 500 records per kind. Dry runs acquire a lease and create a run record
+but do not delete R2 objects, delete ledger rows, or persist a cursor.
+
+Production runs at `17 3 * * *` (UTC). Preview explicitly has no cron trigger, so preview cleanup
+must be invoked manually. Deploy v2 writers and the migration first, then the API and its route
+tests, verify a dry run and recovery path, and enable/deploy the production cron last. This order
+prevents a scheduler from interpreting data before the generation-aware writers, schema, and API
+are ready.
 
 ## R2 provisioning
 
