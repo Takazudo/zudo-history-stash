@@ -3,6 +3,7 @@ import {
   CreateStashBody,
   CreateTokenBody,
   ListQuery,
+  RotateTokenBody,
   StashError,
 } from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
@@ -78,6 +79,20 @@ admin.post(
 
 admin.get("/v1/stashes/:stash/tokens", requireRoute("listTokens"), async (c) =>
   c.json(await adminStore(c).listTokens(c.req.param("stash"))),
+);
+
+admin.post(
+  "/v1/stashes/:stash/tokens/:id/rotate",
+  requireRoute("rotateToken"),
+  validateJsonSyntax,
+  zValidator("json", RotateTokenBody, (result) => {
+    if (!result.success) validationError("Invalid token rotation input.");
+  }),
+  async (c) =>
+    c.json(
+      await adminStore(c).rotateToken(c.req.param("stash"), c.req.param("id"), c.req.valid("json")),
+      201,
+    ),
 );
 
 admin.delete("/v1/stashes/:stash/tokens/:id", requireRoute("revokeToken"), async (c) => {
