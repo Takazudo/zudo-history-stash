@@ -125,6 +125,11 @@ describe("deleted stash concealment matrix", () => {
             ? 200
             : 404;
     expect(adminResponse.status).toBe(expected);
+    if (expected === 404) {
+      await expect(adminResponse.json()).resolves.toMatchObject({
+        error: { code: "not-found" },
+      });
+    }
   });
 });
 
