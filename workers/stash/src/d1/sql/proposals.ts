@@ -1,4 +1,5 @@
 import type { PreparedBlob } from "../blobs.js";
+import { combineFences, fence, headWrite, versionInsert, type SqlFragment } from "./writes.js";
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
 
@@ -186,5 +187,125 @@ export const SELECT_PROPOSAL_CURRENT = `
   JOIN versions v ON v.stash_name = f.stash_name AND v.path = f.path
     AND v.version = f.head_version
   WHERE f.stash_name = ? AND f.path = ?
+  LIMIT 1
+`;
+
+export interface ApproveProposalBatchInput {
+  id: string;
+  stash: string;
+  path: string;
+  baseVersion: number | null;
+  hash: string;
+  size: number;
+  contentType: string;
+  author: string;
+  message: string;
+  metaJson: string;
+  attempt: string;
+  decidedAt: number;
+  decidedBy: string;
+}
+
+function proposalAttemptFence(input: ApproveProposalBatchInput): SqlFragment {
+  return {
+    sql: `EXISTS (SELECT 1 FROM proposals
+      WHERE stash_name = ? AND id = ? AND status = 'applied' AND decision_attempt = ?)`,
+    params: [input.stash, input.id, input.attempt],
+  };
+}
+
+export function approveProposalBatch(
+  db: Preparer,
+  input: ApproveProposalBatchInput,
+): D1PreparedStatement[] {
+  const version = (input.baseVersion ?? 0) + 1;
+  const headFence =
+    input.baseVersion === null
+      ? fence.create(input.stash, input.path)
+      : fence.put(input.stash, input.path, input.baseVersion);
+  const attemptFence = proposalAttemptFence(input);
+  const claimedHeadFence = combineFences(headFence, attemptFence);
+  return [
+    db
+      .prepare(
+        `UPDATE proposals
+         SET status = 'applied', decision_attempt = ?, decided_at = ?, decided_by = ?,
+           decision_reason = NULL, applied_version = ?, applied_change_id = NULL
+         WHERE stash_name = ? AND id = ? AND status = 'open' AND expires_at > ?
+           AND ${headFence.sql}`,
+      )
+      .bind(
+        input.attempt,
+        input.decidedAt,
+        input.decidedBy,
+        version,
+        input.stash,
+        input.id,
+        input.decidedAt,
+        ...headFence.params,
+      ),
+    versionInsert(
+      db,
+      {
+        stash: input.stash,
+        path: input.path,
+        version,
+        hash: input.hash,
+        size: input.size,
+        contentType: input.contentType,
+        author: input.author,
+        message: input.message,
+        metaJson: input.metaJson,
+        createdAt: input.decidedAt,
+      },
+      claimedHeadFence,
+    ),
+    headWrite(
+      db,
+      {
+        stash: input.stash,
+        path: input.path,
+        expectedVersion: input.baseVersion,
+        version,
+        hash: input.hash,
+        createdAt: input.decidedAt,
+      },
+      claimedHeadFence,
+    ),
+  ];
+}
+
+export function backfillAppliedChangeId(
+  db: Preparer,
+  input: { stash: string; id: string; attempt: string; changeId: number },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE proposals SET applied_change_id = ?
+       WHERE stash_name = ? AND id = ? AND status = 'applied' AND decision_attempt = ?
+         AND applied_change_id IS NULL`,
+    )
+    .bind(input.changeId, input.stash, input.id, input.attempt);
+}
+
+export function rejectProposalStatement(
+  db: Preparer,
+  input: { stash: string; id: string; decidedAt: number; decidedBy: string; reason: string | null },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE proposals
+       SET status = 'rejected', decision_attempt = NULL, decided_at = ?, decided_by = ?,
+         decision_reason = ?, applied_version = NULL, applied_change_id = NULL
+       WHERE stash_name = ? AND id = ? AND status = 'open'
+         AND ${LIVE_STASH}`,
+    )
+    .bind(input.decidedAt, input.decidedBy, input.reason, input.stash, input.id, input.stash);
+}
+
+export const SELECT_APPLIED_PROPOSAL_VERSION = `
+  SELECT id, version, kind, blob_hash, created_at
+  FROM versions
+  WHERE stash_name = ? AND path = ? AND version = ?
   LIMIT 1
 `;
