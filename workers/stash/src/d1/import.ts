@@ -27,6 +27,7 @@ interface HeadForImportRow {
 interface ImportTargetRow {
   version: number;
   blob_hash: string | null;
+  size_bytes: number;
 }
 
 interface ImportPutFact {
@@ -64,8 +65,21 @@ type LogicalImportVersion =
     });
 
 export type StoreImportResult =
-  | (Extract<Result<ImportResult>, { ok: true }> & { statusCode: 201 })
+  | (Extract<Result<ImportResult>, { ok: true }> & {
+      statusCode: 201;
+      createdVersions: ImportedVersionFact[];
+    })
   | Extract<Result<ImportResult>, { ok: false }>;
+
+export interface ImportedVersionFact {
+  changeId: number;
+  version: number;
+  kind: "put" | "delete" | "rollback";
+  author: string;
+  message: string;
+  size: number;
+  createdAt: string;
+}
 
 export interface StashImport {
   importFile(stash: string, input: ImportBody): Promise<StoreImportResult>;
@@ -114,7 +128,7 @@ async function readExistingTargets(
   const placeholders = versions.map(() => "?").join(", ");
   const rows = await db
     .prepare(
-      `SELECT version, blob_hash FROM versions
+      `SELECT version, blob_hash, size_bytes FROM versions
        WHERE stash_name = ? AND path = ? AND version IN (${placeholders})`,
     )
     .bind(stash, path, ...versions)
@@ -236,8 +250,10 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
         const importedTarget = importedTargetIndex >= 0 ? logical[importedTargetIndex] : undefined;
         const storedTarget = storedTargets.get(entry.rollbackOf);
         const hash = importedTarget?.hash ?? storedTarget?.blob_hash ?? null;
-        const size = importedTarget?.size ?? 0;
-        if (hash === null) return failure("validation", 400, "Invalid import rollback target");
+        const size = importedTarget?.size ?? storedTarget?.size_bytes;
+        if (hash === null || size === undefined) {
+          return failure("validation", 400, "Invalid import rollback target");
+        }
         logical.push({
           version,
           kind: "rollback",
@@ -278,13 +294,34 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
     try {
       const results = await db.batch(batch.statements);
       if (results.at(-1)?.meta.changes === 1) {
-        const firstChangeId = results[batch.firstVersionStatementIndex]?.meta.last_row_id;
-        if (typeof firstChangeId !== "number" || firstChangeId < 1) {
+        const createdVersions = logical.map((entry, index): ImportedVersionFact | null => {
+          const statementIndex = batch.versionStatementIndexes[index];
+          const changeId =
+            statementIndex === undefined ? undefined : results[statementIndex]?.meta.last_row_id;
+          if (typeof changeId !== "number" || changeId < 1) return null;
+          return {
+            changeId,
+            version: entry.version,
+            kind: entry.kind,
+            author: entry.author,
+            message: entry.message,
+            size: entry.size,
+            createdAt: new Date(entry.createdAt).toISOString(),
+          };
+        });
+        if (createdVersions.some((entry) => entry === null)) {
           return failure("internal", 500, "Missing import change id");
         }
+        const exactCreatedVersions = createdVersions.filter(
+          (entry): entry is ImportedVersionFact => entry !== null,
+        );
+        const firstChangeId = exactCreatedVersions[0]?.changeId;
+        if (firstChangeId === undefined)
+          return failure("internal", 500, "Missing import change id");
         return {
           ok: true,
           statusCode: 201,
+          createdVersions: exactCreatedVersions,
           value: {
             path: value.path,
             headVersion: prepared.at(-1)?.version ?? baseVersion,
