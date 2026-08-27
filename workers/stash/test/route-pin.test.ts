@@ -10,7 +10,7 @@ import { createTestEnv } from "./helpers/env.js";
 
 type RouteTuple = readonly [string, string];
 
-const proposalSkeletonRoutes = [
+const proposalRouteProbes = [
   { id: "createProposal", method: "POST", path: "/v1/stashes/route-pin/proposals" },
   { id: "listProposals", method: "GET", path: "/v1/stashes/route-pin/proposals" },
   {
@@ -89,7 +89,7 @@ describe("route contract pin", () => {
     }
   });
 
-  it.each(proposalSkeletonRoutes)("mounts the dedicated 501 handler for $id", async (route) => {
+  it.each(proposalRouteProbes)("mounts the dedicated real handler for $id", async (route) => {
     await seedStash("route-pin");
     const hasBody = route.method === "POST";
     const response = await request(app, `http://stash.test${route.path}`, {
@@ -101,44 +101,33 @@ describe("route contract pin", () => {
       ...(hasBody ? { body: "{}" } : {}),
     });
 
-    expect(response.status).toBe(501);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "not-implemented",
-        message: "Proposal routes are registered but not implemented yet.",
-      },
-    });
+    expect(response.status).not.toBe(501);
+    expect(response.status).toBe(
+      route.id === "listProposals" ? 200 : route.id === "createProposal" ? 400 : 404,
+    );
   });
 
-  it("keeps all six typed proposal RPC methods on the raw 501 skeleton boundary", async () => {
+  it("keeps all six raw proposal RPC methods on generic request transport", async () => {
     await seedStash("route-pin");
     const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
-    const proposalId = "prp_0000000000000deadbeef";
-    const calls = [
-      () =>
-        rpc.createProposal(
-          "test-admin",
-          "route-pin",
-          { path: "docs/proposal.md", body: "candidate", baseVersion: null },
-          "route-pin-create",
-        ),
-      () => rpc.listProposals("test-admin", "route-pin", { status: "all", limit: 1 }),
-      () => rpc.getProposal("test-admin", "route-pin", proposalId),
-      () => rpc.getProposalDiff("test-admin", "route-pin", proposalId, { context: 1 }),
-      () => rpc.approveProposal("test-admin", "route-pin", proposalId, {}),
-      () => rpc.rejectProposal("test-admin", "route-pin", proposalId, {}),
-    ];
+    const createdResponse = await rpc.createProposal(
+      "test-admin",
+      "route-pin",
+      { path: "docs/proposal.md", body: "candidate", baseVersion: null },
+      "route-pin-create",
+    );
+    expect(createdResponse.status).toBe(201);
+    const proposalId = (await createdResponse.json<{ id: string }>()).id;
 
-    for (const call of calls) {
-      const response = await call();
-      expect(response.status).toBe(501);
-      await expect(response.json()).resolves.toEqual({
-        error: {
-          code: "not-implemented",
-          message: "Proposal routes are registered but not implemented yet.",
-        },
-      });
-    }
+    expect(
+      (await rpc.listProposals("test-admin", "route-pin", { status: "all", limit: 1 })).status,
+    ).toBe(200);
+    expect((await rpc.getProposal("test-admin", "route-pin", proposalId)).status).toBe(200);
+    expect(
+      (await rpc.getProposalDiff("test-admin", "route-pin", proposalId, { context: 1 })).status,
+    ).toBe(200);
+    expect((await rpc.approveProposal("test-admin", "route-pin", proposalId, {})).status).toBe(200);
+    expect((await rpc.rejectProposal("test-admin", "route-pin", proposalId, {})).status).toBe(409);
   });
 
   it("exports one parser and transport-error identity from the client package root", async () => {
