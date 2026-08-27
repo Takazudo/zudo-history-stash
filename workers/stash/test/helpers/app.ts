@@ -33,13 +33,18 @@ export async function resetDatabase(): Promise<void> {
   await db.prepare("DELETE FROM sqlite_sequence WHERE name = 'versions'").run();
 }
 
-export async function mintToken(stash: string, scope: "read" | "write") {
+export async function mintToken(
+  stash: string,
+  scope: "read" | "write",
+  { expiresAt = null }: { expiresAt?: number | null } = {},
+) {
   const minted = createToken();
   await createTestEnv()
     .env.DB.prepare(
-      "INSERT INTO tokens (id, stash_name, token_hash, scope, created_at) VALUES (?, ?, ?, ?, ?)",
+      `INSERT INTO tokens (id, stash_name, token_hash, scope, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .bind(minted.id, stash, await sha256Hex(minted.token), scope, Date.now())
+    .bind(minted.id, stash, await sha256Hex(minted.token), scope, Date.now(), expiresAt)
     .run();
   return minted;
 }

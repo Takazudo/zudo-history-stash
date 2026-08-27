@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { app } from "../src/app.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { app, createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "./helpers/app.js";
 import { createTestEnv } from "./helpers/env.js";
@@ -55,6 +55,61 @@ describe("bearer authentication and route capabilities", () => {
       401,
       "unauthorized",
     );
+  });
+
+  it("conceals an expired token at the strict expiry boundary without touching it", async () => {
+    const now = 2_000_000_000_000;
+    await seedStash("expiry-secret");
+    const minted = await mintToken("expiry-secret", "read", { expiresAt: now });
+    const fixedApp = createApp({ now: () => now });
+
+    const expired = await request(fixedApp, "http://stash.test/v1/me", {
+      headers: bearer(minted.token),
+    });
+    const unknown = await request(fixedApp, "http://stash.test/v1/me", {
+      headers: bearer(`zhs_${"x".repeat(43)}`),
+    });
+    expect(expired.status).toBe(401);
+    expect(unknown.status).toBe(401);
+    const expiredBody = await expired.json();
+    expect(expiredBody).toEqual(await unknown.json());
+    expect(JSON.stringify(expiredBody)).not.toContain("expiry-secret");
+
+    const lastUsedAt = await createTestEnv()
+      .env.DB.prepare("SELECT last_used_at FROM tokens WHERE id = ?")
+      .bind(minted.id)
+      .first<number>("last_used_at");
+    expect(lastUsedAt).toBeNull();
+  });
+
+  it("keeps a request valid when its token expires after the auth snapshot", async () => {
+    const authNow = 2_000_000_000_000;
+    let currentTime = authNow;
+    const now = vi.fn(() => {
+      const sampled = currentTime;
+      currentTime = authNow + 2;
+      return sampled;
+    });
+    await seedStash("mid-request");
+    const minted = await mintToken("mid-request", "read", { expiresAt: authNow + 1 });
+
+    const response = await request(createApp({ now }), "http://stash.test/v1/me", {
+      headers: bearer(minted.token),
+    });
+
+    expect(currentTime).toBeGreaterThan(authNow + 1);
+    expect(now).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      principal: "stash",
+      stash: "mid-request",
+      expiresAt: new Date(authNow + 1).toISOString(),
+    });
+    const lastUsedAt = await createTestEnv()
+      .env.DB.prepare("SELECT last_used_at FROM tokens WHERE id = ?")
+      .bind(minted.id)
+      .first<number>("last_used_at");
+    expect(lastUsedAt).toBe(authNow);
   });
 
   it("returns 403 when a read token reaches a write-capability route", async () => {

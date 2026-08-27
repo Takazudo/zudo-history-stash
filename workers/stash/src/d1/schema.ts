@@ -14,6 +14,9 @@ export interface TokenRow {
   created_at: number;
   revoked_at: number | null;
   last_used_at: number | null;
+  expires_at: number | null;
+  rotated_from: string | null;
+  rotated_to: string | null;
 }
 
 export interface BlobRow {
@@ -81,6 +84,9 @@ export const TABLE_COLUMNS = {
     "created_at",
     "revoked_at",
     "last_used_at",
+    "expires_at",
+    "rotated_from",
+    "rotated_to",
   ],
   blobs: ["stash_name", "hash", "body", "r2_key", "size_bytes", "created_at"],
   files: ["stash_name", "path", "head_version", "head_hash", "deleted", "created_at", "updated_at"],

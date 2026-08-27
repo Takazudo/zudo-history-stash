@@ -1,7 +1,17 @@
 import { env } from "cloudflare:workers";
+import { applyD1Migrations } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import migrationSource from "../migrations/0001_init.sql?raw";
+import { mintToken, sha256Hex } from "../src/auth.js";
+import { createApp } from "../src/app.js";
 import { TABLE_COLUMNS, TABLE_NAMES } from "../src/d1/schema.js";
+import { bearer, request } from "./helpers/app.js";
+import { createTestEnv } from "./helpers/env.js";
+
+const migrationSources = import.meta.glob("../migrations/*.sql", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 const sourceModules = import.meta.glob("../src/**/*.ts", {
   query: "?raw",
@@ -15,6 +25,8 @@ describe("D1 migrations", () => {
       const result = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
       expect(result.results.map((column) => column.name)).toEqual([...TABLE_COLUMNS[table]]);
     }
+    const indexes = await env.DB.prepare("PRAGMA index_list(tokens)").all<{ name: string }>();
+    expect(indexes.results.map((index) => index.name)).toContain("tokens_expires");
   });
 
   it("is intentionally not idempotent when 0001 is executed twice", async () => {
@@ -25,15 +37,64 @@ describe("D1 migrations", () => {
   });
 
   it("uses block comments and unique migration numbers", () => {
-    expect(migrationSource).not.toMatch(/--/);
+    for (const source of Object.values(migrationSources)) expect(source).not.toMatch(/--/);
     const numbers = env.TEST_MIGRATIONS.map(({ name }) => name.match(/^\d+/)?.[0]);
     expect(new Set(numbers).size).toBe(numbers.length);
   });
 
   it("keeps append-only versions out of update and delete statements", () => {
-    const guardedSource = [migrationSource, ...Object.values(sourceModules)].join("\n");
+    const guardedSource = [
+      ...Object.values(migrationSources),
+      ...Object.values(sourceModules),
+    ].join("\n");
     expect(guardedSource).not.toMatch(/\bUPDATE\s+versions\b/i);
     expect(guardedSource).not.toMatch(/\bDELETE\s+FROM\s+versions\b/i);
+  });
+
+  it("upgrades a 0001 database without expiring an existing token", async () => {
+    const [initialMigration, ...remainingMigrations] = env.TEST_MIGRATIONS;
+    if (initialMigration === undefined || remainingMigrations.length === 0) {
+      throw new Error("The upgrade smoke requires both the initial and an additive migration.");
+    }
+    expect(initialMigration.name).toMatch(/^0001_/);
+
+    await applyD1Migrations(env.UPGRADE_DB, [initialMigration]);
+    const token = mintToken();
+    await env.UPGRADE_DB.prepare(
+      "INSERT INTO stashes (name, description, meta_json, created_at) VALUES ('upgrade', '', '{}', 1)",
+    ).run();
+    await env.UPGRADE_DB.prepare(
+      `INSERT INTO tokens (id, stash_name, token_hash, label, scope, created_at)
+       VALUES (?, 'upgrade', ?, '', 'read', 1)`,
+    )
+      .bind(token.id, await sha256Hex(token.token))
+      .run();
+
+    await applyD1Migrations(env.UPGRADE_DB, remainingMigrations);
+
+    const upgraded = await env.UPGRADE_DB.prepare(
+      "SELECT expires_at, rotated_from, rotated_to FROM tokens WHERE id = ?",
+    )
+      .bind(token.id)
+      .first<{
+        expires_at: number | null;
+        rotated_from: string | null;
+        rotated_to: string | null;
+      }>();
+    expect(upgraded).toEqual({ expires_at: null, rotated_from: null, rotated_to: null });
+
+    const response = await request(
+      createApp({ now: () => 2 }),
+      "http://stash.test/v1/me",
+      { headers: bearer(token.token) },
+      { ...createTestEnv().env, DB: env.UPGRADE_DB },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      principal: "stash",
+      stash: "upgrade",
+      expiresAt: null,
+    });
   });
 
   it("enforces version and file-state CHECK constraints", async () => {
