@@ -41,12 +41,19 @@ export interface EditWorkbenchSaved {
   record: FileRecord;
 }
 
+export interface EditWorkbenchLiveRefreshOptions {
+  reconcileCurrentHead: boolean;
+}
+
+export type EditWorkbenchLiveRefresh = (options: EditWorkbenchLiveRefreshOptions) => Promise<void>;
+
 export interface EditWorkbenchProps {
   stash: string;
   path: string;
   initialSource?: number;
   onSaved?: (result: EditWorkbenchSaved) => void;
   onProposed?: (record: ProposalRecord) => void;
+  registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
 }
 
 interface WorkbenchFlash {
@@ -104,6 +111,7 @@ function EditWorkbenchAllowed({
   initialSource,
   onSaved,
   onProposed,
+  registerLiveRefresh,
 }: EditWorkbenchProps) {
   const workbench = useWorkbench({ stash, path, initialSource });
 
@@ -129,6 +137,7 @@ function EditWorkbenchAllowed({
       onProposed={onProposed}
       onSaved={onSaved}
       path={path}
+      registerLiveRefresh={registerLiveRefresh}
       stash={stash}
       workbench={workbench}
     />
@@ -255,12 +264,14 @@ function EditWorkbenchReady({
   workbench,
   onSaved,
   onProposed,
+  registerLiveRefresh,
 }: {
   stash: string;
   path: string;
   workbench: WorkbenchState;
   onSaved?: (result: EditWorkbenchSaved) => void;
   onProposed?: (record: ProposalRecord) => void;
+  registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
 }) {
   const client = useStashClient();
   const titleId = useId();
@@ -292,6 +303,27 @@ function EditWorkbenchReady({
     draft: workbench.draft,
     lineEnding: workbench.lineEnding,
   });
+  const liveRefreshRuntimeRef = useRef({ machine, workbench });
+  useLayoutEffect(() => {
+    liveRefreshRuntimeRef.current = { machine, workbench };
+  }, [machine, workbench]);
+
+  useEffect(() => {
+    if (registerLiveRefresh === undefined) return;
+    return registerLiveRefresh(async ({ reconcileCurrentHead }) => {
+      const current = liveRefreshRuntimeRef.current;
+      const results = await Promise.allSettled([
+        current.workbench.reloadHistory(),
+        reconcileCurrentHead
+          ? current.machine.reconcile({ verifyCurrentHead: true })
+          : Promise.resolve(false),
+      ]);
+      const failed = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failed !== undefined) throw failed.reason;
+    });
+  }, [registerLiveRefresh]);
 
   const reloadAndCompare = useCallback(async () => {
     const record = await machine.reloadAndCompare();

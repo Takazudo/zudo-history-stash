@@ -26,6 +26,8 @@ export interface ProposalListProps {
   status?: ProposalListStatus;
   path?: string;
   limit?: number;
+  /** Host-owned revision used to refetch live-only proposal state without remounting the route. */
+  refreshRevision?: number;
 }
 
 interface ProposalListState extends ProposalListResponse {
@@ -95,7 +97,13 @@ function filteredTotalText(total: number, status: ProposalListStatus, path?: str
   return `${total} ${statusText}${noun}${pathText}, newest first.`;
 }
 
-function ProposalListForTarget({ stash, status = "open", path, limit }: ProposalListProps) {
+function ProposalListForTarget({
+  stash,
+  status = "open",
+  path,
+  limit,
+  refreshRevision = 0,
+}: ProposalListProps) {
   const titleId = useId();
   const clientForSignal = useStashClientForSignal();
   const hrefFor = useStashHref();
@@ -145,7 +153,7 @@ function ProposalListForTarget({ stash, status = "open", path, limit }: Proposal
       });
 
     return () => controller.abort();
-  }, [attempt, clientForSignal, limit, path, stash, status]);
+  }, [attempt, clientForSignal, limit, path, refreshRevision, stash, status]);
 
   function retry() {
     setAttempt((current) => current + 1);

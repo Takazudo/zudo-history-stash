@@ -94,6 +94,7 @@ export type {
   SaveMachineOptions,
   SaveMachineState,
   SaveMetadata,
+  SaveReconcileOptions,
 } from "./hooks/use-save-machine.js";
 export type {
   SourceLoadResult,
@@ -109,7 +110,12 @@ export type { DeleteFileDialogProps } from "./components/delete-file-dialog.js";
 export type { DeleteStashDialogProps } from "./components/delete-stash-dialog.js";
 export type { DiffControlsProps } from "./components/diff-controls.js";
 export type { DiffPaneLayout, DiffPaneProps } from "./components/diff-pane.js";
-export type { EditWorkbenchProps, EditWorkbenchSaved } from "./components/edit-workbench.js";
+export type {
+  EditWorkbenchLiveRefresh,
+  EditWorkbenchLiveRefreshOptions,
+  EditWorkbenchProps,
+  EditWorkbenchSaved,
+} from "./components/edit-workbench.js";
 export type { ErrorBannerProps, ErrorDetails } from "./components/error-banner.js";
 export type { HistoryListProps } from "./components/history-list.js";
 export type { HistoryRailProps } from "./components/history-rail.js";

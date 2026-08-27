@@ -2,8 +2,10 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { expect, it, vi } from "vitest";
+import { StashClientProvider } from "../auth/stash-client-provider.js";
 import { TOKEN_STORAGE_KEY } from "../auth/token-store.js";
 import { viewerRoutes } from "../router.js";
+import { Header } from "./header.js";
 
 function stubAdminApi() {
   vi.stubGlobal(
@@ -24,6 +26,26 @@ function stubAdminApi() {
     }),
   );
 }
+
+it("renders the shared live status through the package indicator", () => {
+  const router = createMemoryRouter(
+    [
+      {
+        path: "/",
+        element: (
+          <StashClientProvider>
+            <Header breadcrumb="notes" liveStatus="polling" />
+          </StashClientProvider>
+        ),
+      },
+    ],
+    { initialEntries: ["/"] },
+  );
+
+  render(<RouterProvider router={router} />);
+
+  expect(screen.getByRole("status", { name: "Live updates: polling" })).toBeTruthy();
+});
 
 it("cycles system, light, and dark themes and persists each explicit mode", async () => {
   stubAdminApi();

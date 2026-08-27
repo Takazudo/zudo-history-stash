@@ -1,12 +1,16 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import type { ClientResult, MeResponse } from "@takazudo/zudo-history-stash";
+import { useLayoutEffect, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { createFakeViewerClient } from "../../test/fake-viewer-client.js";
+import { useMe } from "./use-me.js";
 import { TOKEN_STORAGE_KEY } from "./token-store.js";
 import {
   StashClientProvider,
+  VIEWER_CLIENT_ID_STORAGE_KEY,
   createViewerStashClient,
+  type ViewerStashClientFactory,
   useStashClient,
 } from "./stash-client-provider.js";
 
@@ -21,11 +25,12 @@ function LogoutHarness() {
 }
 
 function ProviderState() {
-  const { client, credentialBoundaryWarning, token } = useStashClient();
+  const { client, clientId, credentialBoundaryWarning, token } = useStashClient();
   return (
     <>
       <output aria-label="Provider token">{token ?? "none"}</output>
       <output aria-label="Provider client">{client === null ? "none" : "active"}</output>
+      <output aria-label="Provider client id">{clientId}</output>
       {credentialBoundaryWarning ? <p role="alert">{credentialBoundaryWarning}</p> : null}
     </>
   );
@@ -50,12 +55,43 @@ function AuthenticateHarness() {
   );
 }
 
+function CredentialFenceHarness({ observed }: { observed: string[] }) {
+  const { authenticate, token } = useStashClient();
+  const me = useMe();
+  const [outcome, setOutcome] = useState("idle");
+  const principal =
+    me.status === "ready" ? (me.me.principal === "admin" ? "admin" : me.me.scope) : me.status;
+  useLayoutEffect(() => {
+    observed.push(`${token ?? "none"}:${principal}`);
+  }, [observed, principal, token]);
+
+  return (
+    <>
+      <button
+        onClick={async () => {
+          const result = await authenticate("zhs_replacement");
+          setOutcome(result.ok ? "authenticated" : result.error.message);
+        }}
+      >
+        Replace credential
+      </button>
+      <output>{outcome}</output>
+      <output aria-label="App principal">{principal}</output>
+    </>
+  );
+}
+
 describe("createViewerStashClient", () => {
   it("uses the real SDK against /api with the token and request signal", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json({ principal: "admin" }),
     );
-    const client = createViewerStashClient("zhs_admin", vi.fn(), fetcher);
+    const client = createViewerStashClient({
+      token: "zhs_admin",
+      clientId: "tab-auth-test",
+      onUnauthorized: vi.fn(),
+      fetch: fetcher,
+    });
     const controller = new AbortController();
 
     const result = await client.me({ signal: controller.signal });
@@ -72,7 +108,12 @@ describe("createViewerStashClient", () => {
     const fetcher = vi.fn(async () =>
       Response.json({ error: { code: "unauthorized", message: "Expired" } }, { status: 401 }),
     );
-    const client = createViewerStashClient("zhs_expired", onUnauthorized, fetcher);
+    const client = createViewerStashClient({
+      token: "zhs_expired",
+      clientId: "tab-auth-test",
+      onUnauthorized,
+      fetch: fetcher,
+    });
 
     const result = await client.me();
 
@@ -80,10 +121,57 @@ describe("createViewerStashClient", () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 
+  it("reuses the exact client id for mutations made by base and signal-bound clients", async () => {
+    const requests: Request[] = [];
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestInput =
+        input instanceof Request ? input : new URL(String(input), "https://viewer.test");
+      requests.push(new Request(requestInput, init));
+      signals.push(init?.signal);
+      return Response.json(
+        {
+          version: requests.length,
+          hash: `sha256-${"a".repeat(64)}`,
+          size: 4,
+          changeId: requests.length,
+          createdAt: "2026-08-28T00:00:00.000Z",
+        },
+        { status: 201 },
+      );
+    });
+    const client = createViewerStashClient({
+      token: "zhs_admin",
+      clientId: "tab-mutations",
+      onUnauthorized: vi.fn(),
+      fetch: fetcher,
+    });
+    const signal = new AbortController().signal;
+
+    await client
+      .files("notes")
+      .put("a.txt", { body: "one", expectedVersion: null }, { idempotencyKey: "put-a" });
+    await client
+      .withSignal(signal)
+      .files("notes")
+      .put("b.txt", { body: "two", expectedVersion: null }, { idempotencyKey: "put-b" });
+
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.headers.get("x-stash-client-id"))).toEqual([
+      "tab-mutations",
+      "tab-mutations",
+    ]);
+    expect(signals[1]).toBe(signal);
+  });
+
   it("keeps /me failures in the result channel expected by the app shell", async () => {
-    const client = createViewerStashClient("zhs_admin", vi.fn(), async () =>
-      Response.json({ error: { code: "internal", message: "D1 unavailable" } }, { status: 503 }),
-    );
+    const client = createViewerStashClient({
+      token: "zhs_admin",
+      clientId: "tab-auth-test",
+      onUnauthorized: vi.fn(),
+      fetch: async () =>
+        Response.json({ error: { code: "internal", message: "D1 unavailable" } }, { status: 503 }),
+    });
 
     await expect(client.me()).resolves.toEqual({
       ok: false,
@@ -144,7 +232,7 @@ describe("createViewerStashClient", () => {
   });
 
   it("uses the public package cleanup before installing a replacement credential", async () => {
-    const clientFactory = vi.fn(() => createFakeViewerClient());
+    const clientFactory = vi.fn<ViewerStashClientFactory>(() => createFakeViewerClient());
     sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
     sessionStorage.setItem("zhs.draft.notes.docs/readme.txt", "principal A draft");
     sessionStorage.setItem("viewer.preference", "keep");
@@ -160,6 +248,77 @@ describe("createViewerStashClient", () => {
     expect(sessionStorage.getItem("zhs.draft.notes.docs/readme.txt")).toBeNull();
     expect(sessionStorage.getItem("viewer.preference")).toBe("keep");
     expect(screen.getByText("authenticated")).toBeTruthy();
+  });
+
+  it("keeps one tab-scoped client id across credential replacement and provider remount", async () => {
+    const clientFactory = vi.fn<ViewerStashClientFactory>(() => createFakeViewerClient());
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    const first = render(
+      <StashClientProvider clientFactory={clientFactory}>
+        <AuthenticateHarness />
+      </StashClientProvider>,
+    );
+    const clientId = screen.getByLabelText("Provider client id").textContent;
+    expect(clientId).toBeTruthy();
+    expect(clientId).toBe(sessionStorage.getItem(VIEWER_CLIENT_ID_STORAGE_KEY));
+
+    await userEvent.click(screen.getByRole("button", { name: "Replace credential" }));
+    await waitFor(() => expect(screen.getByText("authenticated")).toBeTruthy());
+    expect(clientFactory.mock.calls.every(([options]) => options.clientId === clientId)).toBe(true);
+
+    first.unmount();
+    render(
+      <StashClientProvider clientFactory={clientFactory}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    expect(screen.getByLabelText("Provider client id").textContent).toBe(clientId);
+    expect(clientFactory.mock.calls.at(-1)?.[0].clientId).toBe(clientId);
+  });
+
+  it("fences the app principal immediately when the credential client changes", async () => {
+    let replacementMeCalls = 0;
+    const pendingActiveMe = new Promise<ClientResult<MeResponse>>(() => {
+      // The active replacement principal remains unresolved for this assertion.
+    });
+    const clientFactory: ViewerStashClientFactory = (options) =>
+      createFakeViewerClient({
+        me: async () => {
+          if (options.token === "zhs_admin") {
+            return { ok: true, value: { principal: "admin" } };
+          }
+          replacementMeCalls += 1;
+          if (replacementMeCalls === 1) {
+            return {
+              ok: true,
+              value: {
+                principal: "stash",
+                stash: "notes",
+                tokenId: "tok_replacement",
+                scope: "read",
+                expiresAt: null,
+              },
+            };
+          }
+          return pendingActiveMe;
+        },
+      });
+    const observed: string[] = [];
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    render(
+      <StashClientProvider clientFactory={clientFactory}>
+        <CredentialFenceHarness observed={observed} />
+      </StashClientProvider>,
+    );
+    expect(await screen.findByText("admin")).toBeTruthy();
+    observed.length = 0;
+
+    await userEvent.click(screen.getByRole("button", { name: "Replace credential" }));
+    expect(await screen.findByText("authenticated")).toBeTruthy();
+
+    expect(observed).toContain("zhs_replacement:idle");
+    expect(observed).not.toContain("zhs_replacement:admin");
+    expect(screen.getByLabelText("App principal").textContent).toBe("loading");
   });
 
   it("keeps the current credential when draft cleanup cannot be confirmed", async () => {

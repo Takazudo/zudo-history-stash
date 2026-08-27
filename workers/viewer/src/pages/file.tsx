@@ -17,9 +17,10 @@ import {
   useFileHistory,
   useStashHref,
 } from "@takazudo/zudo-history-stash-ui";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
 import { proposalListHref } from "../app/proposal-routes.js";
 import { Badge } from "../app/shell/badge.js";
 import { Page } from "../app/shell/page.js";
@@ -361,6 +362,16 @@ function FileRouteContent({
     [client, path, requestedVersion, stash],
   );
   const history = useFileHistory(stash, path);
+  const reloadFile = file.reload;
+  const reloadHistory = history.reload;
+  const reloadOpenProposals = openProposals.reload;
+  useViewerLiveRefresh(
+    useCallback(() => {
+      reloadFile();
+      reloadHistory();
+      reloadOpenProposals();
+    }, [reloadFile, reloadHistory, reloadOpenProposals]),
+  );
   const historyPage = history.state === "ready" ? history.page : null;
   const lastLiveVersion =
     file.state === "ready" && file.value.deleted && historyPage

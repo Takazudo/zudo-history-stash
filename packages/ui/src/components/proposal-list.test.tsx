@@ -34,6 +34,32 @@ async function createProposal(
 }
 
 describe("ProposalList", () => {
+  it("refetches live-only proposal state when the host advances its refresh revision", async () => {
+    const adminToken = "proposal-list-live-admin";
+    const fake = createFakeStash({ adminToken });
+    fake.createStash(STASH);
+    const client = createStashClient({ baseUrl: BASE_URL, token: adminToken, fetch: fake.fetch });
+    const view = (refreshRevision: number) => (
+      <StashUiProvider client={client}>
+        <ProposalList refreshRevision={refreshRevision} stash={STASH} />
+      </StashUiProvider>
+    );
+    const rendered = render(view(0));
+    expect(await screen.findByText("No proposals match this filter.")).toBeTruthy();
+
+    await createProposal(client, {
+      path: PATH,
+      body: "live candidate\n",
+      baseVersion: null,
+      author: "Peer",
+      message: "Live refresh",
+    });
+    rendered.rerender(view(1));
+
+    expect(await screen.findByText("Live refresh")).toBeTruthy();
+    expect(screen.getByText("1 open proposal, newest first.")).toBeTruthy();
+  });
+
   it("renders the server-filtered total and proposal rows through host routing", async () => {
     const adminToken = "proposal-list-admin";
     const fake = createFakeStash({

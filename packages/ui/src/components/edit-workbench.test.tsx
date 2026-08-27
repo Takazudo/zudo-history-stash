@@ -6,14 +6,18 @@ import {
   type StashFetch,
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash, type FakeStash } from "@takazudo/zudo-history-stash/testing";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { workbenchDraftKey } from "../hooks/use-workbench.js";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
-import { EditWorkbench, type EditWorkbenchSaved } from "./edit-workbench.js";
+import {
+  EditWorkbench,
+  type EditWorkbenchLiveRefresh,
+  type EditWorkbenchSaved,
+} from "./edit-workbench.js";
 
 const BASE_URL = "https://stash.test";
 const ADMIN_TOKEN = "workbench-admin";
@@ -141,10 +145,12 @@ function renderWorkbench(
     initialSource,
     onProposed,
     onSaved,
+    registerLiveRefresh,
   }: {
     initialSource?: number;
     onProposed?: (record: ProposalRecord) => void;
     onSaved?: (result: EditWorkbenchSaved) => void;
+    registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
   } = {},
 ) {
   return render(
@@ -152,6 +158,7 @@ function renderWorkbench(
       <EditWorkbench
         initialSource={initialSource}
         path={PATH}
+        registerLiveRefresh={registerLiveRefresh}
         stash={STASH}
         onProposed={onProposed}
         onSaved={onSaved}
@@ -192,6 +199,46 @@ beforeEach(() => {
 });
 
 describe("EditWorkbench", () => {
+  it("refreshes history but marks stale only when the host verifies a foreign same-path change", async () => {
+    const fixture = await createFixture();
+    const liveRefreshRef: { current: EditWorkbenchLiveRefresh | null } = { current: null };
+    renderWorkbench(fixture, {
+      registerLiveRefresh(refresh) {
+        liveRefreshRef.current = refresh;
+        return () => {
+          if (liveRefreshRef.current === refresh) liveRefreshRef.current = null;
+        };
+      },
+    });
+    const editor = await readyEditor();
+    fireEvent.change(editor, { target: { value: "keep this dirty draft\n" } });
+    await waitFor(() => expect(liveRefreshRef.current).not.toBeNull());
+
+    const remote = await put(
+      fixture.remoteClient,
+      "foreign body\n",
+      2,
+      "Peer",
+      "Foreign live update",
+    );
+    const refresh = liveRefreshRef.current;
+    if (refresh === null) throw new Error("Live refresh did not register");
+
+    await act(async () => refresh({ reconcileCurrentHead: false }));
+    expect(editor.value).toBe("keep this dirty draft\n");
+    expect(screen.queryByText(/Head moved to v/u)).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole("complementary", { name: "Version history" }).textContent).toContain(
+        "Foreign live update",
+      ),
+    );
+
+    await act(async () => refresh({ reconcileCurrentHead: true }));
+    expect(await screen.findByText(`Head moved to v${remote.version} by Peer`)).toBeTruthy();
+    expect(editor.value).toBe("keep this dirty draft\n");
+    expect(screen.getByText(/remains fenced to v2/u)).toBeTruthy();
+  });
+
   it("debounces the live marked diff, relabels B, preserves its scroll, and collapses at the rail seam", async () => {
     const fixture = await createFixture();
     const rendered = renderWorkbench(fixture);

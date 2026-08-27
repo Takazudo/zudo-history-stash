@@ -1,6 +1,8 @@
 import { Notice, ProposalList } from "@takazudo/zudo-history-stash-ui";
+import { useCallback, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { proposalListHref, proposalListStatusFrom } from "../app/proposal-routes.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
 import { Page } from "../app/shell/page.js";
 import { ErrorBanner } from "../components/error-banner.js";
 
@@ -10,6 +12,8 @@ export default function ProposalsPage() {
   const status = proposalListStatusFrom(searchParams);
   const pathParam = searchParams.get("path");
   const path = pathParam === null || pathParam.length === 0 ? undefined : pathParam;
+  const [refreshRevision, setRefreshRevision] = useState(0);
+  useViewerLiveRefresh(useCallback(() => setRefreshRevision((revision) => revision + 1), []));
 
   if (!stash) {
     return (
@@ -51,7 +55,7 @@ export default function ProposalsPage() {
             <Link to={proposalListHref(stash, { status })}>Clear path filter</Link>
           </Notice>
         )}
-        <ProposalList path={path} stash={stash} status={status} />
+        <ProposalList path={path} refreshRevision={refreshRevision} stash={stash} status={status} />
       </div>
     </Page>
   );

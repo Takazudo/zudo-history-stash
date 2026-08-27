@@ -15,24 +15,54 @@ export interface ViewerStashClient extends StashClient {
   withSignal(signal: AbortSignal): StashClient;
 }
 
+export interface ViewerStashClientFactoryOptions {
+  token: string;
+  clientId: string;
+  onUnauthorized: () => void;
+}
+
 export type ViewerStashClientFactory = (
-  token: string,
-  onUnauthorized: () => void,
+  options: ViewerStashClientFactoryOptions,
 ) => ViewerStashClient;
 
 interface StashClientContextValue {
   token: string | null;
   client: ViewerStashClient | null;
+  clientId: string;
   credentialBoundaryWarning: string | null;
   authenticate(token: string): Promise<ClientResult<MeResponse>>;
   logOut(): void;
 }
 
 const StashClientContext = createContext<StashClientContextValue | null>(null);
+export const VIEWER_CLIENT_ID_STORAGE_KEY = "zhs.clientId";
 const PERSISTED_TOKEN_WARNING =
   "Signed out in this page, but browser storage could not be fully cleared. The saved token may become active again after reload. Close this tab and clear its site data before continuing.";
 const PERSISTED_DRAFT_WARNING =
   "Signed out, but workbench drafts could not be cleared. Close this tab and clear its site data before signing in as another principal.";
+
+function validClientId(value: string | null): value is string {
+  return (
+    value !== null && [...value].length >= 1 && [...value].length <= 64 && !/[\r\n]/u.test(value)
+  );
+}
+
+function tabClientId(): string {
+  try {
+    const stored = sessionStorage.getItem(VIEWER_CLIENT_ID_STORAGE_KEY);
+    if (validClientId(stored)) return stored;
+  } catch {
+    // The in-memory fallback below remains stable for this provider lifetime.
+  }
+
+  const generated = globalThis.crypto.randomUUID();
+  try {
+    sessionStorage.setItem(VIEWER_CLIENT_ID_STORAGE_KEY, generated);
+  } catch {
+    // A blocked session store must not prevent authentication or live updates.
+  }
+  return generated;
+}
 
 function warningAfterLogout(draftsCleared: boolean, tokenCleared: boolean): string | null {
   if (!tokenCleared) return PERSISTED_TOKEN_WARNING;
@@ -67,15 +97,17 @@ async function readMe(client: StashClient): Promise<ClientResult<MeResponse>> {
   }
 }
 
-export function createViewerStashClient(
-  token: string,
-  onUnauthorized: () => void,
-  fetchImplementation: StashFetch = globalThis.fetch.bind(globalThis),
-): ViewerStashClient {
+export function createViewerStashClient({
+  token,
+  clientId,
+  onUnauthorized,
+  fetch: fetchImplementation = globalThis.fetch.bind(globalThis),
+}: ViewerStashClientFactoryOptions & { fetch?: StashFetch }): ViewerStashClient {
   const createClient = (signal?: AbortSignal): StashClient =>
     createStashClient({
       baseUrl: "/api",
       token,
+      clientId,
       fetch: async (input, init) => {
         const response = await fetchImplementation(
           input,
@@ -102,6 +134,7 @@ export function StashClientProvider({
   clientFactory?: ViewerStashClientFactory;
 }) {
   const [token, setCurrentToken] = useState(getToken);
+  const [clientId] = useState(tabClientId);
   const [credentialBoundaryWarning, setCredentialBoundaryWarning] = useState<string | null>(null);
 
   const logOut = useCallback(() => {
@@ -125,13 +158,17 @@ export function StashClientProvider({
   }, []);
 
   const client = useMemo(
-    () => (token ? clientFactory(token, logOut) : null),
-    [clientFactory, logOut, token],
+    () => (token ? clientFactory({ token, clientId, onUnauthorized: logOut }) : null),
+    [clientFactory, clientId, logOut, token],
   );
 
   const authenticate = useCallback(
     async (candidate: string): Promise<ClientResult<MeResponse>> => {
-      const candidateClient = clientFactory(candidate, logOut);
+      const candidateClient = clientFactory({
+        token: candidate,
+        clientId,
+        onUnauthorized: logOut,
+      });
       const result = await candidateClient.me();
       if (result.ok) {
         if (!clearWorkbenchDraftsForCredentialChange()) {
@@ -160,12 +197,12 @@ export function StashClientProvider({
       }
       return result;
     },
-    [clientFactory, logOut],
+    [clientFactory, clientId, logOut],
   );
 
   const value = useMemo(
-    () => ({ token, client, credentialBoundaryWarning, authenticate, logOut }),
-    [authenticate, client, credentialBoundaryWarning, logOut, token],
+    () => ({ token, client, clientId, credentialBoundaryWarning, authenticate, logOut }),
+    [authenticate, client, clientId, credentialBoundaryWarning, logOut, token],
   );
 
   return <StashClientContext.Provider value={value}>{children}</StashClientContext.Provider>;

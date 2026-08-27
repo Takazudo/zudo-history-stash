@@ -412,6 +412,42 @@ describe("useSaveMachine", () => {
     expect(fixture.puts[2]?.body.expectedVersion).toBe(internallySavedVersion);
   });
 
+  it("verifies a foreign head as stale without advancing the effective CAS fence", async () => {
+    const fixture = await makeFixture();
+    const advanced = await fixture.client.files(STASH).put(
+      PATH,
+      {
+        body: "foreign live body\n",
+        expectedVersion: fixture.head.version,
+        author: "peer",
+        message: "foreign live update",
+      },
+      { idempotencyKey: "fixture-live-foreign" },
+    );
+    if (!advanced.ok || "unchanged" in advanced.value) throw new Error("Fixture did not advance");
+    fixture.puts.length = 0;
+    const { result } = renderHook(() => useSaveMachine(options(fixture)));
+
+    let unchanged = true;
+    await act(async () => {
+      unchanged = await result.current.reconcile({ verifyCurrentHead: true });
+    });
+
+    expect(unchanged).toBe(false);
+    expect(result.current.state).toBe("stale");
+    if (result.current.state === "stale") {
+      expect(result.current.current.version).toBe(advanced.value.version);
+    }
+    expect(fixture.puts).toHaveLength(0);
+
+    await act(async () => {
+      await result.current.save({ author: "alice", message: "still fenced" });
+    });
+    expect(result.current.state).toBe("stale");
+    expect(fixture.puts).toHaveLength(1);
+    expect(fixture.puts[0]?.body.expectedVersion).toBe(fixture.head.version);
+  });
+
   it("invalidates a failed target's retry when the hook changes targets", async () => {
     const fixture = await makeFixture();
     fixture.failNextPutBeforeSend();

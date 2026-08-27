@@ -11,9 +11,10 @@ import {
   useIsAdmin,
   useStashHref,
 } from "@takazudo/zudo-history-stash-ui";
-import { useState, type ChangeEvent } from "react";
+import { useCallback, useState, type ChangeEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
 import { proposalListHref } from "../app/proposal-routes.js";
 import { Page } from "../app/shell/page.js";
 import { Table } from "../app/shell/table.js";
@@ -108,6 +109,16 @@ export default function StashPage() {
     },
     [client, stash],
     changeKey,
+  );
+  const resetFiles = files.reset;
+  const resetChanges = changes.reset;
+  const reloadOpenProposals = openProposals.reload;
+  useViewerLiveRefresh(
+    useCallback(() => {
+      resetFiles();
+      resetChanges();
+      reloadOpenProposals();
+    }, [reloadOpenProposals, resetChanges, resetFiles]),
   );
 
   function handleIncludeDeleted(event: ChangeEvent<HTMLInputElement>) {

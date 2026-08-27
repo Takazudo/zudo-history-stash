@@ -3,10 +3,13 @@ import {
   EditWorkbench,
   ErrorBanner,
   useStashHref,
+  type EditWorkbenchLiveRefresh,
   type EditWorkbenchSaved,
 } from "@takazudo/zudo-history-stash-ui";
 import type { ProposalRecord } from "@takazudo/zudo-history-stash";
+import { useCallback, useRef } from "react";
 import { proposalCreatedLocationState } from "../app/proposal-routes.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
 import { Page } from "../app/shell/page.js";
 
 function positiveVersion(value: string | null): number | undefined | null {
@@ -22,6 +25,26 @@ export default function EditPage() {
   const navigate = useNavigate();
   const hrefFor = useStashHref();
   const initialSource = positiveVersion(searchParams.get("from"));
+  const liveRefreshRef = useRef<EditWorkbenchLiveRefresh | null>(null);
+  const registerLiveRefresh = useCallback((refresh: EditWorkbenchLiveRefresh) => {
+    liveRefreshRef.current = refresh;
+    return () => {
+      if (liveRefreshRef.current === refresh) liveRefreshRef.current = null;
+    };
+  }, []);
+  useViewerLiveRefresh(
+    useCallback(
+      async (batch) => {
+        const refresh = liveRefreshRef.current;
+        if (refresh === null) return;
+        await refresh({
+          reconcileCurrentHead:
+            path !== undefined && batch.changes.some((change) => change.path === path),
+        });
+      },
+      [path],
+    ),
+  );
 
   if (!stash || !path) {
     return (
@@ -61,6 +84,7 @@ export default function EditPage() {
     <EditWorkbench
       initialSource={initialSource}
       path={path}
+      registerLiveRefresh={registerLiveRefresh}
       stash={stash}
       onProposed={handleProposed}
       onSaved={handleSaved}

@@ -23,6 +23,11 @@ export interface SaveMetadata {
   message: string;
 }
 
+export interface SaveReconcileOptions {
+  /** Verify only the server head and surface a moved foreign head without changing the CAS fence. */
+  verifyCurrentHead?: boolean;
+}
+
 export type SaveMachineState =
   | { state: "idle" }
   | { state: "saving" }
@@ -38,7 +43,7 @@ export type SaveMachine = SaveMachineState & {
   save: (metadata: SaveMetadata) => Promise<void>;
   retry: () => Promise<void>;
   reloadAndCompare: () => Promise<FileRecordWithEtag>;
-  reconcile: () => Promise<boolean>;
+  reconcile: (options?: SaveReconcileOptions) => Promise<boolean>;
   /** Clears terminal state and a frozen retry when no operation is pending. */
   resetSession: () => boolean;
 };
@@ -103,6 +108,17 @@ export function applyLineEnding(text: string, lineEnding: LineEnding): string {
 
 function errorFrom(value: unknown): Error {
   return value instanceof Error ? value : new Error("History Stash request failed");
+}
+
+function currentFromRecord(record: FileRecordWithEtag): Current {
+  return {
+    version: record.version,
+    hash: record.hash,
+    deleted: record.deleted,
+    kind: record.kind,
+    author: record.author,
+    createdAt: record.createdAt,
+  };
 }
 
 /** Owns one editor's compare-and-swap save lifecycle. */
@@ -332,43 +348,76 @@ export function useSaveMachine({
     }
   }, [target, transition]);
 
-  const reconcile = useCallback(async (): Promise<boolean> => {
-    const runtime = runtimeRef.current;
-    if (runtime.target !== target || runtime.committedSnapshot !== renderSnapshot) return false;
+  const reconcile = useCallback(
+    async (options: SaveReconcileOptions = {}): Promise<boolean> => {
+      const runtime = runtimeRef.current;
+      if (runtime.target !== target || runtime.committedSnapshot !== renderSnapshot) return false;
 
-    if (
-      inFlightTargetsRef.current.has(target) ||
-      reloadingTargetsRef.current.has(target) ||
-      reconcilingTargetsRef.current.has(target)
-    ) {
-      return false;
-    }
-
-    const generation = ++runtime.generation;
-    const expectedHead = { ...runtime.effectiveHead };
-    reconcilingTargetsRef.current.add(target);
-    try {
-      const hash = await sha256Hex(
-        applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding),
-      );
       if (
-        runtimeRef.current !== runtime ||
-        runtime.committedSnapshot !== renderSnapshot ||
-        runtime.generation !== generation ||
         inFlightTargetsRef.current.has(target) ||
         reloadingTargetsRef.current.has(target) ||
-        hash !== expectedHead.hash
+        reconcilingTargetsRef.current.has(target)
       ) {
         return false;
       }
 
-      if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
-      transition(target, { state: "unchanged", version: expectedHead.version });
-      return true;
-    } finally {
-      reconcilingTargetsRef.current.delete(target);
-    }
-  }, [renderSnapshot, target, transition]);
+      const generation = ++runtime.generation;
+      const expectedHead = { ...runtime.effectiveHead };
+      reconcilingTargetsRef.current.add(target);
+      try {
+        if (options.verifyCurrentHead) {
+          const result = await target.client.files(target.stash).get(target.path);
+          if (
+            runtimeRef.current !== runtime ||
+            runtime.committedSnapshot !== renderSnapshot ||
+            runtime.generation !== generation ||
+            inFlightTargetsRef.current.has(target) ||
+            reloadingTargetsRef.current.has(target)
+          ) {
+            return false;
+          }
+
+          const current =
+            result.ok && !("notModified" in result)
+              ? currentFromRecord(result.value)
+              : !result.ok && result.current !== undefined
+                ? result.current
+                : null;
+          if (current === null) {
+            if (!result.ok) throw new Error(result.error.message);
+            return false;
+          }
+          if (current.version !== expectedHead.version || current.hash !== expectedHead.hash) {
+            if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
+            transition(target, { state: "stale", current });
+            return false;
+          }
+          return false;
+        }
+
+        const hash = await sha256Hex(
+          applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding),
+        );
+        if (
+          runtimeRef.current !== runtime ||
+          runtime.committedSnapshot !== renderSnapshot ||
+          runtime.generation !== generation ||
+          inFlightTargetsRef.current.has(target) ||
+          reloadingTargetsRef.current.has(target) ||
+          hash !== expectedHead.hash
+        ) {
+          return false;
+        }
+
+        if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
+        transition(target, { state: "unchanged", version: expectedHead.version });
+        return true;
+      } finally {
+        reconcilingTargetsRef.current.delete(target);
+      }
+    },
+    [renderSnapshot, target, transition],
+  );
 
   const resetSession = useCallback((): boolean => {
     const runtime = runtimeRef.current;
