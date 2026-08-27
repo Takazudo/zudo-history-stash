@@ -1,5 +1,5 @@
 import type { HistoryPage, StashClient, VersionRecord } from "@takazudo/zudo-history-stash";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { clientValue } from "../components/error-banner.js";
 import { useStashClientForSignal } from "../provider/hooks.js";
 
@@ -10,7 +10,7 @@ export interface UseFileHistoryOptions {
 }
 
 interface FileHistoryCommon {
-  reload: () => void;
+  reload: (signal?: AbortSignal) => Promise<void>;
   loadMore: () => void;
 }
 
@@ -43,13 +43,19 @@ type WithoutHistoryActions<T> = T extends FileHistoryCommon
 type FileHistorySnapshot = WithoutHistoryActions<FileHistoryState>;
 
 interface FileHistoryTarget {
+  active: boolean;
   clientForSignal: (signal: AbortSignal) => StashClient;
-  stash: string;
+  firstPagePending: number;
+  intent: number;
+  lifecycle: AbortController;
+  limit: number | undefined;
   path: string;
-  reloadVersion: number;
+  stash: string;
+  tail: Promise<void>;
 }
 
-interface FileHistoryEntry extends FileHistoryTarget {
+interface FileHistoryEntry {
+  target: FileHistoryTarget;
   snapshot: FileHistorySnapshot;
 }
 
@@ -61,15 +67,6 @@ function loadingSnapshot(): FileHistorySnapshot {
     loadingMore: false,
     loadMoreError: null,
   };
-}
-
-function matchesTarget(entry: FileHistoryEntry, target: FileHistoryTarget): boolean {
-  return (
-    entry.clientForSignal === target.clientForSignal &&
-    entry.stash === target.stash &&
-    entry.path === target.path &&
-    entry.reloadVersion === target.reloadVersion
-  );
 }
 
 function newestFirst(versions: readonly VersionRecord[]): VersionRecord[] {
@@ -99,7 +96,7 @@ function readySnapshot(page: HistoryPage): FileHistorySnapshot {
   };
 }
 
-/** Load file history with abort-aware keyset pagination and a sequence fallback for signal-less hosts. */
+/** Load file history with abort-aware, serialized first-page refresh and keyset pagination. */
 export function useFileHistory(
   stash: string,
   path: string,
@@ -107,17 +104,28 @@ export function useFileHistory(
 ): FileHistoryState {
   const { initialPage, limit } = options;
   const clientForSignal = useStashClientForSignal();
-  const [reloadVersion, setReloadVersion] = useState(0);
+  const target = useMemo<FileHistoryTarget>(
+    () => ({
+      active: false,
+      clientForSignal,
+      firstPagePending: 0,
+      intent: 0,
+      lifecycle: new AbortController(),
+      limit,
+      path,
+      stash,
+      tail: Promise.resolve(),
+    }),
+    [clientForSignal, limit, path, stash],
+  );
   const initialLifecycleRef = useRef({ clientForSignal, stash, path, page: initialPage, limit });
   const initialLifecycleActiveRef = useRef(true);
-  const currentTarget = { clientForSignal, stash, path, reloadVersion };
   const [entry, setEntry] = useState<FileHistoryEntry>(() => ({
-    ...currentTarget,
+    target,
     snapshot: initialPage ? readySnapshot(initialPage) : loadingSnapshot(),
   }));
-  const snapshot = matchesTarget(entry, currentTarget) ? entry.snapshot : loadingSnapshot();
+  const snapshot = entry.target === target ? entry.snapshot : loadingSnapshot();
   const snapshotRef = useRef(snapshot);
-  const requestSequenceRef = useRef(0);
   const pagingControllerRef = useRef<AbortController | null>(null);
   const pagingPendingRef = useRef(false);
 
@@ -137,86 +145,121 @@ export function useFileHistory(
     snapshotRef.current = snapshot;
   }, [snapshot]);
 
-  const reload = useCallback(() => setReloadVersion((version) => version + 1), []);
+  const reload = useCallback(
+    (externalSignal?: AbortSignal): Promise<void> => {
+      const intent = ++target.intent;
+      const lifecycleSignal = target.lifecycle.signal;
+      target.firstPagePending += 1;
+      pagingControllerRef.current?.abort();
+      pagingControllerRef.current = null;
+      pagingPendingRef.current = false;
+      setEntry({ target, snapshot: loadingSnapshot() });
+
+      const execute = async (): Promise<void> => {
+        const signal =
+          externalSignal === undefined
+            ? lifecycleSignal
+            : AbortSignal.any([lifecycleSignal, externalSignal]);
+        signal.throwIfAborted();
+        if (!target.active) {
+          throw new DOMException("The history target is inactive.", "AbortError");
+        }
+        try {
+          const requestOptions = target.limit === undefined ? undefined : { limit: target.limit };
+          const page = await clientValue(
+            target.clientForSignal(signal).files(target.stash).history(target.path, requestOptions),
+          );
+          signal.throwIfAborted();
+          if (!target.active) {
+            throw new DOMException("The history target is inactive.", "AbortError");
+          }
+          if (target.intent === intent) setEntry({ target, snapshot: readySnapshot(page) });
+        } catch (error: unknown) {
+          if (!signal.aborted && target.active && target.intent === intent) {
+            setEntry({
+              target,
+              snapshot: {
+                state: "error",
+                page: null,
+                error,
+                loadingMore: false,
+                loadMoreError: null,
+              },
+            });
+          }
+          throw error;
+        }
+      };
+
+      const request = target.tail.then(execute, execute);
+      const settled = request.finally(() => {
+        target.firstPagePending -= 1;
+      });
+      target.tail = settled.catch(() => undefined);
+      return settled;
+    },
+    [target],
+  );
 
   useEffect(() => {
-    pagingControllerRef.current?.abort();
-    pagingPendingRef.current = false;
-    const sequence = ++requestSequenceRef.current;
-    const target = { clientForSignal, stash, path, reloadVersion };
-
+    if (target.lifecycle.signal.aborted) target.lifecycle = new AbortController();
+    target.active = true;
     const initial = initialLifecycleRef.current;
-    if (initialLifecycleActiveRef.current && initial.page && reloadVersion === 0) {
-      setEntry({ ...target, snapshot: readySnapshot(initial.page) });
-      return;
-    }
-
-    const controller = new AbortController();
-    setEntry({ ...target, snapshot: loadingSnapshot() });
-    const requestOptions = limit === undefined ? undefined : { limit };
-
-    void clientValue(clientForSignal(controller.signal).files(stash).history(path, requestOptions))
-      .then((page) => {
-        if (!controller.signal.aborted && requestSequenceRef.current === sequence) {
-          setEntry({ ...target, snapshot: readySnapshot(page) });
-        }
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted && requestSequenceRef.current === sequence) {
-          setEntry({
-            ...target,
-            snapshot: {
-              state: "error",
-              page: null,
-              error,
-              loadingMore: false,
-              loadMoreError: null,
-            },
-          });
-        }
+    if (initialLifecycleActiveRef.current && initial.page) {
+      setEntry({ target, snapshot: readySnapshot(initial.page) });
+    } else {
+      void reload().catch(() => {
+        // The state channel owns initial-load failures; command callers receive their rejection.
       });
-
-    return () => controller.abort();
-  }, [clientForSignal, limit, path, reloadVersion, stash]);
-
-  useEffect(
-    () => () => {
-      requestSequenceRef.current += 1;
+    }
+    return () => {
+      target.active = false;
+      target.lifecycle.abort();
       pagingControllerRef.current?.abort();
-    },
-    [],
-  );
+      pagingControllerRef.current = null;
+      pagingPendingRef.current = false;
+    };
+  }, [reload, target]);
 
   const loadMore = useCallback(() => {
     const current = snapshotRef.current;
-    if (current.state !== "ready" || current.page.nextBefore === null || pagingPendingRef.current) {
+    if (
+      current.state !== "ready" ||
+      current.page.nextBefore === null ||
+      pagingPendingRef.current ||
+      target.firstPagePending > 0
+    ) {
       return;
     }
 
-    pagingControllerRef.current?.abort();
-    const controller = new AbortController();
-    pagingControllerRef.current = controller;
     pagingPendingRef.current = true;
-    const sequence = ++requestSequenceRef.current;
     const before = current.page.nextBefore;
-    const requestOptions = limit === undefined ? { before } : { before, limit };
-    const target = { clientForSignal, stash, path, reloadVersion };
     setEntry((latest) =>
-      matchesTarget(latest, target) && latest.snapshot.state === "ready"
+      latest.target === target && latest.snapshot.state === "ready"
         ? {
-            ...latest,
+            target,
             snapshot: { ...latest.snapshot, loadingMore: true, loadMoreError: null },
           }
         : latest,
     );
 
-    void clientValue(clientForSignal(controller.signal).files(stash).history(path, requestOptions))
-      .then((nextPage) => {
-        if (controller.signal.aborted || requestSequenceRef.current !== sequence) return;
+    const execute = async (): Promise<void> => {
+      const controller = new AbortController();
+      pagingControllerRef.current = controller;
+      const signal = AbortSignal.any([target.lifecycle.signal, controller.signal]);
+      try {
+        signal.throwIfAborted();
+        const requestOptions =
+          target.limit === undefined ? { before } : { before, limit: target.limit };
+        const nextPage = await clientValue(
+          target.clientForSignal(signal).files(target.stash).history(target.path, requestOptions),
+        );
+        signal.throwIfAborted();
+        if (!target.active) return;
         setEntry((latest) =>
-          matchesTarget(latest, target) && latest.snapshot.state === "ready"
+          latest.target === target && latest.snapshot.state === "ready"
             ? {
-                ...latest,
+                target,
                 snapshot: {
                   ...latest.snapshot,
                   page: mergeHistoryPage(latest.snapshot.page, nextPage),
@@ -226,22 +269,26 @@ export function useFileHistory(
               }
             : latest,
         );
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted || requestSequenceRef.current !== sequence) return;
-        setEntry((latest) =>
-          matchesTarget(latest, target) && latest.snapshot.state === "ready"
-            ? {
-                ...latest,
-                snapshot: { ...latest.snapshot, loadingMore: false, loadMoreError: error },
-              }
-            : latest,
-        );
-      })
-      .finally(() => {
-        if (requestSequenceRef.current === sequence) pagingPendingRef.current = false;
-      });
-  }, [clientForSignal, limit, path, reloadVersion, stash]);
+      } catch (error: unknown) {
+        if (!signal.aborted && target.active) {
+          setEntry((latest) =>
+            latest.target === target && latest.snapshot.state === "ready"
+              ? {
+                  target,
+                  snapshot: { ...latest.snapshot, loadingMore: false, loadMoreError: error },
+                }
+              : latest,
+          );
+        }
+      } finally {
+        if (pagingControllerRef.current === controller) pagingControllerRef.current = null;
+        pagingPendingRef.current = false;
+      }
+    };
+
+    const request = target.tail.then(execute, execute);
+    target.tail = request.catch(() => undefined);
+  }, [target]);
 
   return { ...snapshot, reload, loadMore } as FileHistoryState;
 }

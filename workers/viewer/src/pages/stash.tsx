@@ -114,16 +114,24 @@ export default function StashPage() {
   const resetChanges = changes.reset;
   const reloadOpenProposals = openProposals.reload;
   useViewerLiveRefresh(
-    useCallback(() => {
-      resetFiles();
-      resetChanges();
-      reloadOpenProposals();
-    }, [reloadOpenProposals, resetChanges, resetFiles]),
+    useCallback(
+      async ({ signal }) => {
+        const results = await Promise.allSettled([
+          resetFiles(signal),
+          resetChanges(signal),
+          reloadOpenProposals(signal),
+        ]);
+        const failed = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failed !== undefined) throw failed.reason;
+      },
+      [reloadOpenProposals, resetChanges, resetFiles],
+    ),
   );
 
   function handleIncludeDeleted(event: ChangeEvent<HTMLInputElement>) {
     setIncludeDeleted(event.currentTarget.checked);
-    files.reset();
   }
 
   const newestChanges = [...changes.items].sort((left, right) => right.changeId - left.changeId);
@@ -182,7 +190,12 @@ export default function StashPage() {
                 </label>
               </div>
               {files.initialLoading ? <p className="loading-copy">Loading files…</p> : null}
-              {files.error ? <ErrorBanner error={files.error} onRetry={files.retry} /> : null}
+              {files.error ? (
+                <ErrorBanner
+                  error={files.error}
+                  onRetry={() => void files.retry().catch(() => undefined)}
+                />
+              ) : null}
               {!files.initialLoading && !files.error && files.items.length === 0 ? (
                 <p className="empty-copy">
                   {includeDeleted ? "This stash has no files." : "This stash has no live files."}
@@ -207,7 +220,12 @@ export default function StashPage() {
                 </div>
               </div>
               {changes.initialLoading ? <p className="loading-copy">Loading changes…</p> : null}
-              {changes.error ? <ErrorBanner error={changes.error} onRetry={changes.retry} /> : null}
+              {changes.error ? (
+                <ErrorBanner
+                  error={changes.error}
+                  onRetry={() => void changes.retry().catch(() => undefined)}
+                />
+              ) : null}
               {!changes.initialLoading && !changes.error && newestChanges.length === 0 ? (
                 <p className="empty-copy">No changes have been recorded.</p>
               ) : null}

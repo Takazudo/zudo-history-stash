@@ -4,7 +4,7 @@ import type {
   ProposalRecord,
   ProposalStatus,
 } from "@takazudo/zudo-history-stash";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Anchor, useStashClientForSignal, useStashHref } from "../provider/hooks.js";
 import {
   Table,
@@ -28,6 +28,8 @@ export interface ProposalListProps {
   limit?: number;
   /** Host-owned revision used to refetch live-only proposal state without remounting the route. */
   refreshRevision?: number;
+  /** Registers an awaited, abort-aware first-page refresh with a live host. */
+  registerLiveRefresh?: (refresh: (signal: AbortSignal) => Promise<void>) => () => void;
 }
 
 interface ProposalListState extends ProposalListResponse {
@@ -103,99 +105,158 @@ function ProposalListForTarget({
   path,
   limit,
   refreshRevision = 0,
+  registerLiveRefresh,
 }: ProposalListProps) {
   const titleId = useId();
   const clientForSignal = useStashClientForSignal();
   const hrefFor = useStashHref();
   const mountedRef = useRef(true);
+  const firstPageIntentRef = useRef(0);
+  const firstPagePendingRef = useRef(0);
+  const lifecycleRef = useRef(new AbortController());
   const loadingMoreRef = useRef(false);
   const loadMoreControllerRef = useRef<AbortController | null>(null);
-  const [attempt, setAttempt] = useState(0);
+  const requestTailRef = useRef<Promise<void>>(Promise.resolve());
   const [state, setState] = useState<ProposalListState>(INITIAL_STATE);
 
   useEffect(() => {
+    if (lifecycleRef.current.signal.aborted) lifecycleRef.current = new AbortController();
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      lifecycleRef.current.abort();
       loadMoreControllerRef.current?.abort();
       loadMoreControllerRef.current = null;
     };
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    loadMoreControllerRef.current?.abort();
-    loadMoreControllerRef.current = null;
-    loadingMoreRef.current = false;
-    setState(INITIAL_STATE);
+  const refresh = useCallback(
+    (externalSignal?: AbortSignal): Promise<void> => {
+      const intent = ++firstPageIntentRef.current;
+      const lifecycleSignal = lifecycleRef.current.signal;
+      firstPagePendingRef.current += 1;
+      setState(INITIAL_STATE);
+      loadMoreControllerRef.current?.abort();
+      loadMoreControllerRef.current = null;
+      loadingMoreRef.current = false;
 
-    void clientForSignal(controller.signal)
-      .proposals(stash)
-      .list(listOptions({ status, path, limit }))
-      .then((result) => {
-        if (controller.signal.aborted || !mountedRef.current) return;
-        if (!result.ok) throw result;
-        setState({
-          ...result.value,
-          error: null,
-          loading: false,
-          loadingMore: false,
-          loadMoreError: null,
-        });
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted || !mountedRef.current) return;
-        setState({
-          ...INITIAL_STATE,
-          error,
-          loading: false,
-        });
+      const execute = async (): Promise<void> => {
+        const signal =
+          externalSignal === undefined
+            ? lifecycleSignal
+            : AbortSignal.any([lifecycleSignal, externalSignal]);
+        signal.throwIfAborted();
+        if (!mountedRef.current) {
+          throw new DOMException("The proposal list target is inactive.", "AbortError");
+        }
+        try {
+          const result = await clientForSignal(signal)
+            .proposals(stash)
+            .list(listOptions({ status, path, limit }));
+          signal.throwIfAborted();
+          if (!mountedRef.current) {
+            throw new DOMException("The proposal list target is inactive.", "AbortError");
+          }
+          if (!result.ok) throw result;
+          if (firstPageIntentRef.current === intent) {
+            setState({
+              ...result.value,
+              error: null,
+              loading: false,
+              loadingMore: false,
+              loadMoreError: null,
+            });
+          }
+        } catch (error: unknown) {
+          if (!signal.aborted && mountedRef.current && firstPageIntentRef.current === intent) {
+            setState({
+              ...INITIAL_STATE,
+              error,
+              loading: false,
+            });
+          }
+          throw error;
+        }
+      };
+
+      const request = requestTailRef.current.then(execute, execute);
+      const settled = request.finally(() => {
+        firstPagePendingRef.current -= 1;
       });
+      requestTailRef.current = settled.catch(() => undefined);
+      return settled;
+    },
+    [clientForSignal, limit, path, stash, status],
+  );
 
-    return () => controller.abort();
-  }, [attempt, clientForSignal, limit, path, refreshRevision, stash, status]);
+  useLayoutEffect(() => {
+    if (registerLiveRefresh === undefined) return;
+    return registerLiveRefresh((signal) => refresh(signal));
+  }, [refresh, registerLiveRefresh]);
+
+  useEffect(() => {
+    void refresh().catch(() => {
+      // The state channel owns initial-load failures; command callers receive their rejection.
+    });
+  }, [refresh, refreshRevision]);
 
   function retry() {
-    setAttempt((current) => current + 1);
+    void refresh().catch(() => undefined);
   }
 
   async function loadMore() {
-    if (state.nextAfter === null || loadingMoreRef.current) return;
+    if (state.nextAfter === null || loadingMoreRef.current || firstPagePendingRef.current > 0) {
+      return;
+    }
     loadingMoreRef.current = true;
     setState((current) => ({ ...current, loadingMore: true, loadMoreError: null }));
-    const controller = new AbortController();
-    loadMoreControllerRef.current?.abort();
-    loadMoreControllerRef.current = controller;
+    const intent = firstPageIntentRef.current;
 
-    try {
-      const result = await clientForSignal(controller.signal)
-        .proposals(stash)
-        .list(listOptions({ status, path, limit, after: state.nextAfter }));
-      if (controller.signal.aborted || !mountedRef.current) return;
-      if (!result.ok) throw result;
-      setState((current) => ({
-        ...current,
-        proposals: mergeProposals(current.proposals, result.value.proposals),
-        nextAfter: result.value.nextAfter,
-        total: result.value.total,
-        loadingMore: false,
-        loadMoreError: null,
-      }));
-    } catch (error: unknown) {
-      if (!controller.signal.aborted && mountedRef.current) {
+    const execute = async (): Promise<void> => {
+      const controller = new AbortController();
+      const signal = AbortSignal.any([lifecycleRef.current.signal, controller.signal]);
+      loadMoreControllerRef.current = controller;
+      try {
+        signal.throwIfAborted();
+        const result = await clientForSignal(signal)
+          .proposals(stash)
+          .list(listOptions({ status, path, limit, after: state.nextAfter ?? undefined }));
+        signal.throwIfAborted();
+        if (!mountedRef.current || firstPageIntentRef.current !== intent) return;
+        if (!result.ok) throw result;
         setState((current) => ({
           ...current,
+          proposals: mergeProposals(current.proposals, result.value.proposals),
+          nextAfter: result.value.nextAfter,
+          total: result.value.total,
           loadingMore: false,
-          loadMoreError: error,
+          loadMoreError: null,
         }));
+      } catch (error: unknown) {
+        if (!signal.aborted && mountedRef.current && firstPageIntentRef.current === intent) {
+          setState((current) => ({
+            ...current,
+            loadingMore: false,
+            loadMoreError: error,
+          }));
+        }
+      } finally {
+        if (loadMoreControllerRef.current === controller) {
+          loadMoreControllerRef.current = null;
+          loadingMoreRef.current = false;
+        }
       }
-    } finally {
-      if (loadMoreControllerRef.current === controller) {
-        loadMoreControllerRef.current = null;
-        loadingMoreRef.current = false;
-      }
-    }
+    };
+
+    const request = requestTailRef.current.then(execute, execute);
+    requestTailRef.current = request.catch(() => undefined);
+    await request;
   }
+
+  /*
+   * The request functions above intentionally serialize first-page and load-more work. A live
+   * refresh invalidates the old pagination intent before it enters this shared queue.
+   */
 
   return (
     <section className="zhs-section-card zhs-proposal-list" aria-labelledby={titleId}>

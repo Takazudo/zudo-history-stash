@@ -17,7 +17,7 @@ import {
 } from "react";
 import { useParams } from "react-router-dom";
 import { clientValue } from "../components/error-banner.js";
-import { useStashClient } from "./auth/stash-client-provider.js";
+import { useStashClient, type ViewerStashClient } from "./auth/stash-client-provider.js";
 
 export const VIEWER_LIVE_POLL_INTERVAL_MS = 30_000;
 const CHANGE_PAGE_LIMIT = 200;
@@ -33,6 +33,8 @@ export interface ViewerLiveRefreshBatch {
   changes: readonly ChangeItem[];
   /** Advisory event path retained for diagnostics and optional prefetch only. */
   hintedPath?: string;
+  /** Aborts when the active stash, credential client, tab identity, or visibility changes. */
+  signal: AbortSignal;
 }
 
 export type ViewerLiveRefreshHandler = (batch: ViewerLiveRefreshBatch) => void | Promise<void>;
@@ -45,6 +47,12 @@ interface ViewerLiveContextValue {
 
 interface AuthoritativeRefreshRequest extends Omit<LiveRefreshRequest, "reason"> {
   reason: ViewerLiveRefreshReason;
+}
+
+interface RefreshQueue {
+  controller: AbortController;
+  key: readonly [ViewerStashClient | null, string, string | undefined];
+  tail: Promise<void>;
 }
 
 const OFF_LIVE_STATE = { status: "off", checkpoint: null } as const;
@@ -64,7 +72,19 @@ export function ViewerLiveUpdatesProvider({
   const { stash } = useParams();
   const { client, clientId } = useStashClient();
   const handlersRef = useRef(new Set<ViewerLiveRefreshHandler>());
-  const refreshQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const refreshQueue = useMemo<RefreshQueue>(
+    () => ({
+      controller: new AbortController(),
+      key: [client, clientId, stash],
+      tail: Promise.resolve(),
+    }),
+    [client, clientId, stash],
+  );
+
+  useEffect(() => {
+    if (refreshQueue.controller.signal.aborted) refreshQueue.controller = new AbortController();
+    return () => refreshQueue.controller.abort();
+  }, [refreshQueue]);
 
   const register = useCallback((handler: ViewerLiveRefreshHandler) => {
     handlersRef.current.add(handler);
@@ -73,14 +93,18 @@ export function ViewerLiveUpdatesProvider({
 
   const performAuthoritativeRefresh = useCallback(
     async (request: AuthoritativeRefreshRequest): Promise<void> => {
-      if (client === null || stash === undefined || request.signal.aborted) return;
+      request.signal.throwIfAborted();
+      if (client === null || stash === undefined) {
+        throw new Error("The live refresh target is no longer active.");
+      }
 
       const full = request.checkpoint === null;
       let since = request.checkpoint ?? 0;
       const changes = new Map<number, ChangeItem>();
       const files = client.withSignal(request.signal).files(stash);
 
-      while (!request.signal.aborted) {
+      while (true) {
+        request.signal.throwIfAborted();
         const page = await clientValue(files.changes({ since, limit: CHANGE_PAGE_LIMIT }));
         for (const change of page.changes) changes.set(change.changeId, change);
         if (!page.hasMore) break;
@@ -91,13 +115,14 @@ export function ViewerLiveUpdatesProvider({
         since = nextSince;
       }
 
-      if (request.signal.aborted) return;
+      request.signal.throwIfAborted();
       const batch: ViewerLiveRefreshBatch = {
         reason: request.reason,
         full,
         checkpoint: request.checkpoint,
         changes: [...changes.values()].sort((left, right) => left.changeId - right.changeId),
         ...(request.path === undefined ? {} : { hintedPath: request.path }),
+        signal: request.signal,
       };
       const results = await Promise.allSettled(
         [...handlersRef.current].map((handler) => handler(batch)),
@@ -106,19 +131,25 @@ export function ViewerLiveUpdatesProvider({
         (result): result is PromiseRejectedResult => result.status === "rejected",
       );
       if (failed !== undefined) throw failed.reason;
+      request.signal.throwIfAborted();
     },
     [client, stash],
   );
 
   const refreshAuthoritative = useCallback(
     (request: AuthoritativeRefreshRequest): Promise<void> => {
-      const run = () => performAuthoritativeRefresh(request);
-      const refresh = refreshQueueRef.current.then(run, run);
+      const queueSignal = refreshQueue.controller.signal;
+      const run = async () => {
+        const signal = AbortSignal.any([request.signal, queueSignal]);
+        signal.throwIfAborted();
+        await performAuthoritativeRefresh({ ...request, signal });
+      };
+      const refresh = refreshQueue.tail.then(run, run);
       // Keep one active authoritative fetch across stream, focus/visibility, and polling triggers.
-      refreshQueueRef.current = refresh.catch(() => undefined);
+      refreshQueue.tail = refresh.catch(() => undefined);
       return refresh;
     },
-    [performAuthoritativeRefresh],
+    [performAuthoritativeRefresh, refreshQueue],
   );
 
   const live = useLiveChanges(stash ?? "", {
@@ -145,7 +176,9 @@ export function ViewerLiveUpdatesProvider({
       pending = true;
       void refreshAuthoritative({
         reason: "polling",
-        checkpoint: live.checkpoint,
+        // The public checkpoint is server-advertised and can be newer than the last successfully
+        // reconciled consumer cursor. A full reconciliation is the conservative polling fallback.
+        checkpoint: null,
         signal: lifecycle.signal,
       })
         .catch(() => {
@@ -161,7 +194,7 @@ export function ViewerLiveUpdatesProvider({
       window.clearInterval(timer);
       lifecycle.abort();
     };
-  }, [client, enabled, live.checkpoint, live.status, refreshAuthoritative, stash]);
+  }, [client, enabled, live.status, refreshAuthoritative, stash]);
 
   const value = useMemo<ViewerLiveContextValue>(
     () => ({ status: live.status, checkpoint: live.checkpoint, register }),

@@ -36,10 +36,11 @@ export default function EditPage() {
     useCallback(
       async (batch) => {
         const refresh = liveRefreshRef.current;
-        if (refresh === null) return;
+        if (refresh === null) throw new Error("The edit workbench is not ready to refresh.");
         await refresh({
           reconcileCurrentHead:
             path !== undefined && batch.changes.some((change) => change.path === path),
+          signal: batch.signal,
         });
       },
       [path],

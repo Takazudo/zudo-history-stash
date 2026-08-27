@@ -78,6 +78,30 @@ describe("proposal list routes", () => {
 
     expect(await screen.findByRole("link", { name: "docs/live.txt" })).toBeTruthy();
     expect(screen.getByText("1 open proposal, newest first.")).toBeTruthy();
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(0));
+    try {
+      const missed = await peer.proposals("notes").create({
+        path: "docs/missed-while-hidden.txt",
+        body: "second candidate",
+        baseVersion: null,
+        author: "Peer",
+        message: "Visibility recovery proposal",
+      });
+      if (!missed.ok) throw new Error(missed.error.message);
+      expect(screen.queryByRole("link", { name: "docs/missed-while-hidden.txt" })).toBeNull();
+    } finally {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+
+    expect(await screen.findByRole("link", { name: "docs/missed-while-hidden.txt" })).toBeTruthy();
+    expect(screen.getByText("2 open proposals, newest first.")).toBeTruthy();
   });
 
   it("serializes canonical collection URLs and parses only the supported views", () => {

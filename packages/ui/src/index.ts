@@ -92,9 +92,9 @@ export type {
   LineEnding,
   SaveMachine,
   SaveMachineOptions,
+  SaveHeadVerificationOutcome,
   SaveMachineState,
   SaveMetadata,
-  SaveReconcileOptions,
 } from "./hooks/use-save-machine.js";
 export type {
   SourceLoadResult,

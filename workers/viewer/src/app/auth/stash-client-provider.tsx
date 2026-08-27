@@ -25,6 +25,11 @@ export type ViewerStashClientFactory = (
   options: ViewerStashClientFactoryOptions,
 ) => ViewerStashClient;
 
+export interface ViewerClientIdStore {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
 interface StashClientContextValue {
   token: string | null;
   client: ViewerStashClient | null;
@@ -40,6 +45,8 @@ const PERSISTED_TOKEN_WARNING =
   "Signed out in this page, but browser storage could not be fully cleared. The saved token may become active again after reload. Close this tab and clear its site data before continuing.";
 const PERSISTED_DRAFT_WARNING =
   "Signed out, but workbench drafts could not be cleared. Close this tab and clear its site data before signing in as another principal.";
+const fallbackClientIds = new WeakMap<object, string>();
+let inaccessibleStoreClientId: string | null = null;
 
 function validClientId(value: string | null): value is string {
   return (
@@ -47,19 +54,25 @@ function validClientId(value: string | null): value is string {
   );
 }
 
-function tabClientId(): string {
+function tabClientId(injectedStore?: ViewerClientIdStore): string {
+  let store: ViewerClientIdStore | null = null;
   try {
-    const stored = sessionStorage.getItem(VIEWER_CLIENT_ID_STORAGE_KEY);
+    store = injectedStore ?? sessionStorage;
+    const stored = store.getItem(VIEWER_CLIENT_ID_STORAGE_KEY);
     if (validClientId(stored)) return stored;
   } catch {
-    // The in-memory fallback below remains stable for this provider lifetime.
+    // The stable in-memory fallback below keeps authentication usable when storage is denied.
   }
 
-  const generated = globalThis.crypto.randomUUID();
+  const generated =
+    (store === null ? inaccessibleStoreClientId : fallbackClientIds.get(store as object)) ??
+    globalThis.crypto.randomUUID();
+  if (store === null) inaccessibleStoreClientId = generated;
+  else fallbackClientIds.set(store as object, generated);
   try {
-    sessionStorage.setItem(VIEWER_CLIENT_ID_STORAGE_KEY, generated);
+    store?.setItem(VIEWER_CLIENT_ID_STORAGE_KEY, generated);
   } catch {
-    // A blocked session store must not prevent authentication or live updates.
+    // The per-store in-memory value above remains available across provider remounts.
   }
   return generated;
 }
@@ -129,12 +142,14 @@ export function createViewerStashClient({
 export function StashClientProvider({
   children,
   clientFactory = createViewerStashClient,
+  clientIdStore,
 }: {
   children: ReactNode;
   clientFactory?: ViewerStashClientFactory;
+  clientIdStore?: ViewerClientIdStore;
 }) {
   const [token, setCurrentToken] = useState(getToken);
-  const [clientId] = useState(tabClientId);
+  const [clientId] = useState(() => tabClientId(clientIdStore));
   const [credentialBoundaryWarning, setCredentialBoundaryWarning] = useState<string | null>(null);
 
   const logOut = useCallback(() => {

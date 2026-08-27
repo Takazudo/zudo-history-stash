@@ -10,9 +10,21 @@ import {
   StashClientProvider,
   VIEWER_CLIENT_ID_STORAGE_KEY,
   createViewerStashClient,
+  type ViewerClientIdStore,
   type ViewerStashClientFactory,
   useStashClient,
 } from "./stash-client-provider.js";
+
+function clientIdStore(initial?: string): ViewerClientIdStore & { value: string | null } {
+  const store = {
+    value: initial ?? null,
+    getItem: vi.fn(() => store.value),
+    setItem: vi.fn((_key: string, value: string) => {
+      store.value = value;
+    }),
+  };
+  return store;
+}
 
 function LogoutHarness() {
   const { logOut } = useStashClient();
@@ -274,6 +286,71 @@ describe("createViewerStashClient", () => {
     );
     expect(screen.getByLabelText("Provider client id").textContent).toBe(clientId);
     expect(clientFactory.mock.calls.at(-1)?.[0].clientId).toBe(clientId);
+  });
+
+  it("uses distinct identities for independent tab stores and replaces an invalid stored value", () => {
+    const clientFactory = vi.fn<ViewerStashClientFactory>(() => createFakeViewerClient());
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    const firstStore = clientIdStore("invalid\nvalue");
+    const first = render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={firstStore}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    const firstId = screen.getByLabelText("Provider client id").textContent;
+    expect(firstId).toBeTruthy();
+    expect(firstId).not.toBe("invalid\nvalue");
+    expect(firstStore.value).toBe(firstId);
+    first.unmount();
+
+    const secondStore = clientIdStore();
+    const second = render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={secondStore}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    const secondId = screen.getByLabelText("Provider client id").textContent;
+    expect(secondId).toBeTruthy();
+    expect(secondId).not.toBe(firstId);
+    second.unmount();
+
+    render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={firstStore}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    expect(screen.getByLabelText("Provider client id").textContent).toBe(firstId);
+  });
+
+  it("keeps a denied tab store identity in memory across remounts without disabling auth", () => {
+    const clientFactory = vi.fn<ViewerStashClientFactory>(() => createFakeViewerClient());
+    const deniedStore: ViewerClientIdStore = {
+      getItem() {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      setItem() {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    };
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+    const first = render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={deniedStore}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    const firstId = screen.getByLabelText("Provider client id").textContent;
+    expect(firstId).toBeTruthy();
+    expect(screen.getByLabelText("Provider client").textContent).toBe("active");
+    first.unmount();
+
+    render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={deniedStore}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    expect(screen.getByLabelText("Provider client id").textContent).toBe(firstId);
+    expect(screen.getByLabelText("Provider client").textContent).toBe("active");
+    expect(clientFactory.mock.calls.every(([options]) => options.clientId === firstId)).toBe(true);
   });
 
   it("fences the app principal immediately when the credential client changes", async () => {

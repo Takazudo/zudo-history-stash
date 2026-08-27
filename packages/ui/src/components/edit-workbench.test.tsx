@@ -224,7 +224,9 @@ describe("EditWorkbench", () => {
     const refresh = liveRefreshRef.current;
     if (refresh === null) throw new Error("Live refresh did not register");
 
-    await act(async () => refresh({ reconcileCurrentHead: false }));
+    await act(async () =>
+      refresh({ reconcileCurrentHead: false, signal: new AbortController().signal }),
+    );
     expect(editor.value).toBe("keep this dirty draft\n");
     expect(screen.queryByText(/Head moved to v/u)).toBeNull();
     await waitFor(() =>
@@ -233,10 +235,63 @@ describe("EditWorkbench", () => {
       ),
     );
 
-    await act(async () => refresh({ reconcileCurrentHead: true }));
+    await act(async () =>
+      refresh({ reconcileCurrentHead: true, signal: new AbortController().signal }),
+    );
     expect(await screen.findByText(`Head moved to v${remote.version} by Peer`)).toBeTruthy();
     expect(editor.value).toBe("keep this dirty draft\n");
     expect(screen.getByText(/remains fenced to v2/u)).toBeTruthy();
+  });
+
+  it("rejects the host refresh when the authoritative history reload fails", async () => {
+    const fixture = await createFixture();
+    const originalClientForSignal = fixture.clientForSignal;
+    let failHistory = false;
+    fixture.clientForSignal = (signal) => {
+      const client = originalClientForSignal(signal);
+      return {
+        ...client,
+        files(stash) {
+          const files = client.files(stash);
+          return {
+            ...files,
+            history(path, options) {
+              if (failHistory) {
+                failHistory = false;
+                return Promise.resolve({
+                  ok: false as const,
+                  error: {
+                    status: 503,
+                    code: "internal" as const,
+                    message: "history refresh failed",
+                  },
+                });
+              }
+              return files.history(path, options);
+            },
+          };
+        },
+      };
+    };
+    const liveRefreshRef: { current: EditWorkbenchLiveRefresh | null } = { current: null };
+    renderWorkbench(fixture, {
+      registerLiveRefresh(refresh) {
+        liveRefreshRef.current = refresh;
+        return () => {
+          if (liveRefreshRef.current === refresh) liveRefreshRef.current = null;
+        };
+      },
+    });
+    await readyEditor();
+    await waitFor(() => expect(liveRefreshRef.current).not.toBeNull());
+    failHistory = true;
+    const refresh = liveRefreshRef.current;
+    if (refresh === null) throw new Error("Live refresh did not register");
+
+    await expect(
+      refresh({ reconcileCurrentHead: false, signal: new AbortController().signal }),
+    ).rejects.toThrow("The edit history refresh did not complete.");
+    expect(await screen.findByText("history refresh failed")).toBeTruthy();
   });
 
   it("debounces the live marked diff, relabels B, preserves its scroll, and collapses at the rail seam", async () => {

@@ -23,7 +23,7 @@ import {
   type SourceLoadResult,
   type WorkbenchState,
 } from "../hooks/use-workbench.js";
-import { useCanWrite, useMe, useStashClient } from "../provider/hooks.js";
+import { useCanWrite, useMe, useStashClient, useStashClientForSignal } from "../provider/hooks.js";
 import { Button } from "../primitives/button.js";
 import { Notice, type NoticeVariant } from "../primitives/notice.js";
 import { Textarea } from "../primitives/textarea.js";
@@ -43,6 +43,7 @@ export interface EditWorkbenchSaved {
 
 export interface EditWorkbenchLiveRefreshOptions {
   reconcileCurrentHead: boolean;
+  signal: AbortSignal;
 }
 
 export type EditWorkbenchLiveRefresh = (options: EditWorkbenchLiveRefreshOptions) => Promise<void>;
@@ -274,6 +275,7 @@ function EditWorkbenchReady({
   registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
 }) {
   const client = useStashClient();
+  const clientForSignal = useStashClientForSignal();
   const titleId = useId();
   const preferences = useDiffViewPreferences();
   const [railOpen, setRailOpen] = useState(true);
@@ -297,6 +299,7 @@ function EditWorkbenchReady({
 
   const machine = useSaveMachine({
     client,
+    clientForSignal,
     stash,
     path,
     head,
@@ -310,13 +313,13 @@ function EditWorkbenchReady({
 
   useEffect(() => {
     if (registerLiveRefresh === undefined) return;
-    return registerLiveRefresh(async ({ reconcileCurrentHead }) => {
+    return registerLiveRefresh(async ({ reconcileCurrentHead, signal }) => {
       const current = liveRefreshRuntimeRef.current;
       const results = await Promise.allSettled([
-        current.workbench.reloadHistory(),
-        reconcileCurrentHead
-          ? current.machine.reconcile({ verifyCurrentHead: true })
-          : Promise.resolve(false),
+        current.workbench.reloadHistory(signal).then((reloaded) => {
+          if (!reloaded) throw new Error("The edit history refresh did not complete.");
+        }),
+        reconcileCurrentHead ? current.machine.verifyCurrentHead(signal) : Promise.resolve(),
       ]);
       const failed = results.find(
         (result): result is PromiseRejectedResult => result.status === "rejected",

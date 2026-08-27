@@ -198,4 +198,74 @@ describe("ProposalList", () => {
     expect(screen.queryByText("Ada")).toBeNull();
     expect(screen.queryByText("Grace")).toBeNull();
   });
+
+  it("registers an awaited refresh that serializes requests and rejects failures", async () => {
+    const firstRelease = deferred<void>();
+    const secondRelease = deferred<void>();
+    let calls = 0;
+    let commandCalls = 0;
+    let gateCommands = false;
+    let active = 0;
+    let maxActive = 0;
+    const client = createStashClient({
+      baseUrl: BASE_URL,
+      token: "proposal-list-command",
+      fetch: async () => {
+        calls += 1;
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          if (gateCommands) commandCalls += 1;
+          if (commandCalls === 1) await firstRelease.promise;
+          if (commandCalls === 2) await secondRelease.promise;
+          if (commandCalls === 2) {
+            return Response.json(
+              { error: { code: "internal", message: "proposal refresh failed" } },
+              { status: 503 },
+            );
+          }
+          return Response.json({ proposals: [], nextAfter: null, total: 0 });
+        } finally {
+          active -= 1;
+        }
+      },
+    });
+    let refresh: ((signal: AbortSignal) => Promise<void>) | null = null;
+    render(
+      <StashUiProvider client={client} clientForSignal={() => client}>
+        <ProposalList
+          registerLiveRefresh={(registered) => {
+            refresh = registered;
+            return () => {
+              if (refresh === registered) refresh = null;
+            };
+          }}
+          stash={STASH}
+        />
+      </StashUiProvider>,
+    );
+    expect(await screen.findByText("No proposals match this filter.")).toBeTruthy();
+    if (refresh === null) throw new Error("Proposal refresh did not register");
+    const initialCalls = calls;
+    gateCommands = true;
+
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      first = refresh?.(new AbortController().signal) ?? Promise.resolve();
+      second = refresh?.(new AbortController().signal) ?? Promise.resolve();
+    });
+    const secondFailure = second.catch((error: unknown) => error);
+    await waitFor(() => expect(calls).toBe(initialCalls + 1));
+
+    await act(async () => firstRelease.resolve());
+    await first;
+    await waitFor(() => expect(calls).toBe(initialCalls + 2));
+    await act(async () => secondRelease.resolve());
+    const failure = await secondFailure;
+
+    expect(failure).toBeTruthy();
+    expect(maxActive).toBe(1);
+    expect((await screen.findByRole("alert")).textContent).toContain("proposal refresh failed");
+  });
 });

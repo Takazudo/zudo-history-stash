@@ -3,9 +3,13 @@ import {
   type ClientResult,
   type ListChangesResult,
   type StashClient,
+  type StashEvent,
+  type StashEventStream,
+  type StashLiveStatus,
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash, type FakeStash } from "@takazudo/zudo-history-stash/testing";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -23,7 +27,7 @@ import {
   type ViewerLiveRefreshHandler,
 } from "./live-updates.js";
 import { ViewerStashUiProvider } from "./viewer-stash-ui-provider.js";
-import { createFakeViewerClient } from "../test/fake-viewer-client.js";
+import { change, createFakeViewerClient } from "../test/fake-viewer-client.js";
 
 const ADMIN_TOKEN = "viewer-live-admin";
 const BASE_URL = "https://stash.test";
@@ -62,6 +66,7 @@ function LiveProbe({ onRefresh }: { onRefresh: ViewerLiveRefreshHandler }) {
 function renderLiveRoute(
   clientFactory: ViewerStashClientFactory,
   onRefresh: ViewerLiveRefreshHandler,
+  { strict = false }: { strict?: boolean } = {},
 ) {
   sessionStorage.setItem(TOKEN_STORAGE_KEY, ADMIN_TOKEN);
   const router = createMemoryRouter(
@@ -82,13 +87,77 @@ function renderLiveRoute(
     ],
     { initialEntries: ["/s/notes/one"] },
   );
-  return { router, ...render(<RouterProvider router={router} />) };
+  const provider = <RouterProvider router={router} />;
+  return { router, ...render(strict ? <StrictMode>{provider}</StrictMode> : provider) };
 }
 
 async function flushMicrotasks(rounds = 8): Promise<void> {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) await Promise.resolve();
   });
+}
+
+interface ManualStream {
+  stream: StashEventStream;
+  emit(event: StashEvent): void;
+  setStatus(status: StashLiveStatus, failureCount?: number): void;
+}
+
+function manualStream(): ManualStream {
+  const listeners = new Set<(status: StashLiveStatus) => void>();
+  const values: StashEvent[] = [];
+  const waiters: Array<(result: IteratorResult<StashEvent>) => void> = [];
+  let status: StashLiveStatus = "connecting";
+  let failureCount = 0;
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    status = "closed";
+    for (const waiter of waiters.splice(0)) waiter({ done: true, value: undefined });
+    for (const listener of listeners) listener(status);
+  };
+  const stream: StashEventStream = {
+    get status() {
+      return status;
+    },
+    get failureCount() {
+      return failureCount;
+    },
+    onStatus(listener) {
+      listeners.add(listener);
+      listener(status);
+      return () => listeners.delete(listener);
+    },
+    close: finish,
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => {
+          const value = values.shift();
+          if (value !== undefined) return Promise.resolve({ done: false as const, value });
+          if (closed) return Promise.resolve({ done: true as const, value: undefined });
+          return new Promise<IteratorResult<StashEvent>>((resolve) => waiters.push(resolve));
+        },
+        return: async () => {
+          finish();
+          return { done: true as const, value: undefined };
+        },
+      };
+    },
+  };
+  return {
+    stream,
+    emit(event) {
+      const waiter = waiters.shift();
+      if (waiter === undefined) values.push(event);
+      else waiter({ done: false, value: event });
+    },
+    setStatus(nextStatus, nextFailureCount = failureCount) {
+      status = nextStatus;
+      failureCount = nextFailureCount;
+      for (const listener of listeners) listener(status);
+    },
+  };
 }
 
 describe("ViewerLiveUpdatesProvider", () => {
@@ -114,7 +183,7 @@ describe("ViewerLiveUpdatesProvider", () => {
       return viewerClient(fake, options);
     };
     const onRefresh = vi.fn<ViewerLiveRefreshHandler>();
-    const rendered = renderLiveRoute(clientFactory, onRefresh);
+    const rendered = renderLiveRoute(clientFactory, onRefresh, { strict: true });
 
     await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(1));
     await waitFor(() => expect(screen.getByLabelText("Live status").textContent).toBe("live"));
@@ -218,6 +287,7 @@ describe("ViewerLiveUpdatesProvider", () => {
       rendered.unmount();
       await act(async () => vi.advanceTimersByTimeAsync(VIEWER_LIVE_POLL_INTERVAL_MS));
       expect(changes).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
@@ -271,5 +341,269 @@ describe("ViewerLiveUpdatesProvider", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("recovers a rejected ready interval through a full polling reconciliation", async () => {
+    vi.useFakeTimers();
+    try {
+      const source = manualStream();
+      const feed = [
+        change({ changeId: 1, path: "docs/readme.txt", version: 1 }),
+        change({ changeId: 5, path: "docs/readme.txt", version: 2 }),
+      ];
+      let serverHead = 1;
+      const changes = vi.fn(
+        async (options?: { since?: number }): Promise<ClientResult<ListChangesResult>> => ({
+          ok: true,
+          value: {
+            changes: feed.filter(
+              (item) => item.changeId > (options?.since ?? 0) && item.changeId <= serverHead,
+            ),
+            hasMore: false,
+            nextSince: null,
+          },
+        }),
+      );
+      const base = createFakeViewerClient();
+      const files = (stash: string) => ({
+        ...base.files(stash),
+        changes,
+        events: () => source.stream,
+      });
+      const client = createFakeViewerClient({ files });
+      client.withSignal = () => client;
+      let rejectNextReady = false;
+      const onRefresh = vi.fn<ViewerLiveRefreshHandler>(async (batch) => {
+        if (batch.reason === "ready" && rejectNextReady) {
+          rejectNextReady = false;
+          throw new Error("visible consumer failed");
+        }
+      });
+      const rendered = renderLiveRoute(() => client, onRefresh);
+
+      source.emit({ type: "ready", head: 1, checkpoint: 1 });
+      source.setStatus("live");
+      await vi.waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+      expect(changes).toHaveBeenLastCalledWith({ since: 0, limit: 200 });
+
+      rejectNextReady = true;
+      serverHead = 5;
+      source.emit({ type: "ready", head: 5, checkpoint: 5 });
+      await vi.waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(2));
+      expect(changes).toHaveBeenLastCalledWith({ since: 1, limit: 200 });
+
+      source.setStatus("reconnecting", 3);
+      await act(async () => vi.advanceTimersByTimeAsync(0));
+      await vi.waitFor(() =>
+        expect(
+          onRefresh.mock.calls.some(
+            ([batch]) =>
+              batch.reason === "polling" &&
+              batch.full &&
+              batch.changes.some((item) => item.changeId === 5),
+          ),
+        ).toBe(true),
+      );
+      expect(changes).toHaveBeenLastCalledWith({ since: 0, limit: 200 });
+
+      source.setStatus("live", 0);
+      await flushMicrotasks();
+      expect(screen.getByLabelText("Live status").textContent).toBe("live");
+      expect(vi.getTimerCount()).toBe(0);
+      rendered.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drains every authoritative change page before acknowledging a late-page update", async () => {
+    const source = manualStream();
+    const changes = vi.fn(
+      async (options?: { since?: number }): Promise<ClientResult<ListChangesResult>> => {
+        if ((options?.since ?? 0) === 0) {
+          return {
+            ok: true,
+            value: {
+              changes: [change({ changeId: 1, path: "docs/seed.txt" })],
+              hasMore: false,
+              nextSince: null,
+            },
+          };
+        }
+        if (options?.since === 1) {
+          return {
+            ok: true,
+            value: {
+              changes: [change({ changeId: 2, path: "docs/early-page.txt" })],
+              hasMore: true,
+              nextSince: 2,
+            },
+          };
+        }
+        return {
+          ok: true,
+          value: {
+            changes: [change({ changeId: 3, path: "docs/visible-late-page.txt" })],
+            hasMore: false,
+            nextSince: null,
+          },
+        };
+      },
+    );
+    const base = createFakeViewerClient();
+    const client = createFakeViewerClient({
+      files: (stash) => ({
+        ...base.files(stash),
+        changes,
+        events: () => source.stream,
+      }),
+    });
+    client.withSignal = () => client;
+    let visiblePath = "";
+    const onRefresh = vi.fn<ViewerLiveRefreshHandler>(async (batch) => {
+      const visible = batch.changes.find((item) => item.path === "docs/visible-late-page.txt");
+      if (visible !== undefined) visiblePath = visible.path;
+    });
+    const rendered = renderLiveRoute(() => client, onRefresh);
+
+    source.emit({ type: "ready", head: 1, checkpoint: 1 });
+    source.setStatus("live");
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    changes.mockClear();
+
+    source.emit({ type: "ready", head: 3, checkpoint: 3 });
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(2));
+
+    expect(changes.mock.calls).toEqual([[{ since: 1, limit: 200 }], [{ since: 2, limit: 200 }]]);
+    expect(onRefresh.mock.calls[1]?.[0].changes.map((item) => item.changeId)).toEqual([2, 3]);
+    expect(visiblePath).toBe("docs/visible-late-page.txt");
+    rendered.unmount();
+  });
+
+  it("treats an event path as a hint when the authoritative feed names another path", async () => {
+    const source = manualStream();
+    const base = createFakeViewerClient();
+    let serverHead = 1;
+    const changes = vi.fn(
+      async (options?: { since?: number }): Promise<ClientResult<ListChangesResult>> => ({
+        ok: true,
+        value: {
+          changes:
+            (options?.since ?? 0) < 2 && serverHead >= 2
+              ? [change({ changeId: 2, path: "docs/authoritative.txt" })]
+              : [],
+          hasMore: false,
+          nextSince: null,
+        },
+      }),
+    );
+    const client = createFakeViewerClient({
+      files: (stash) => ({
+        ...base.files(stash),
+        changes,
+        events: () => source.stream,
+      }),
+    });
+    client.withSignal = () => client;
+    const onRefresh = vi.fn<ViewerLiveRefreshHandler>();
+    const rendered = renderLiveRoute(() => client, onRefresh);
+
+    source.emit({ type: "ready", head: 1, checkpoint: 1 });
+    source.setStatus("live");
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    changes.mockClear();
+
+    serverHead = 2;
+    source.emit({
+      type: "change",
+      changeId: 2,
+      stash: "notes",
+      path: "docs/misleading-hint.txt",
+      version: 1,
+      kind: "put",
+      origin: "peer-tab",
+      createdAt: "2026-08-28T00:00:00.000Z",
+    });
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(2));
+
+    expect(changes).toHaveBeenCalledWith({ since: 1, limit: 200 });
+    expect(onRefresh.mock.calls[1]?.[0]).toMatchObject({
+      hintedPath: "docs/misleading-hint.txt",
+      changes: [{ changeId: 2, path: "docs/authoritative.txt" }],
+    });
+    rendered.unmount();
+  });
+
+  it("aborts blocked old fanout and starts a new stash queue immediately", async () => {
+    const notes = manualStream();
+    const archive = manualStream();
+    const changes = vi.fn(async (stash: string): Promise<ClientResult<ListChangesResult>> => ({
+      ok: true,
+      value: {
+        changes: [change({ stash, path: `${stash}.txt` })],
+        hasMore: false,
+        nextSince: null,
+      },
+    }));
+    const base = createFakeViewerClient();
+    const files = (stash: string) => ({
+      ...base.files(stash),
+      changes: () => changes(stash),
+      events: () => (stash === "notes" ? notes.stream : archive.stream),
+    });
+    const client = createFakeViewerClient({ files });
+    client.withSignal = () => client;
+    let oldSignal: AbortSignal | null = null;
+    const never = new Promise<void>(() => {});
+    const onRefresh = vi.fn<ViewerLiveRefreshHandler>((batch) => {
+      if (batch.changes.some((item) => item.path === "notes.txt")) {
+        oldSignal = batch.signal;
+        return never;
+      }
+    });
+    const rendered = renderLiveRoute(() => client, onRefresh);
+
+    notes.emit({ type: "ready", head: 1, checkpoint: 1 });
+    notes.setStatus("live");
+    await waitFor(() => expect(oldSignal).not.toBeNull());
+
+    await act(async () => rendered.router.navigate("/s/archive/one"));
+    expect((oldSignal as AbortSignal | null)?.aborted).toBe(true);
+    archive.emit({ type: "ready", head: 1, checkpoint: 1 });
+    archive.setStatus("live");
+    await waitFor(() =>
+      expect(
+        onRefresh.mock.calls.some(([batch]) =>
+          batch.changes.some((item) => item.path === "archive.txt"),
+        ),
+      ).toBe(true),
+    );
+    expect(changes.mock.calls.map(([stash]) => stash)).toEqual(["notes", "archive"]);
+    rendered.unmount();
+  });
+
+  it("closes and restores exactly one subscription across visibility and focus", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN_TOKEN });
+    fake.createStash("notes");
+    const rendered = renderLiveRoute(
+      (options) => viewerClient(fake, options),
+      vi.fn<ViewerLiveRefreshHandler>(),
+      { strict: true },
+    );
+
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(1));
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(0));
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(1));
+    act(() => window.dispatchEvent(new Event("focus")));
+    await flushMicrotasks();
+    expect(fake.events.subscriberCount("notes")).toBe(1);
+
+    rendered.unmount();
+    expect(fake.events.subscriberCount("notes")).toBe(0);
   });
 });

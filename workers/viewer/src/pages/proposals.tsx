@@ -1,5 +1,5 @@
 import { Notice, ProposalList } from "@takazudo/zudo-history-stash-ui";
-import { useCallback, useState } from "react";
+import { useCallback, useRef } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { proposalListHref, proposalListStatusFrom } from "../app/proposal-routes.js";
 import { useViewerLiveRefresh } from "../app/live-updates.js";
@@ -12,8 +12,20 @@ export default function ProposalsPage() {
   const status = proposalListStatusFrom(searchParams);
   const pathParam = searchParams.get("path");
   const path = pathParam === null || pathParam.length === 0 ? undefined : pathParam;
-  const [refreshRevision, setRefreshRevision] = useState(0);
-  useViewerLiveRefresh(useCallback(() => setRefreshRevision((revision) => revision + 1), []));
+  const refreshRef = useRef<((signal: AbortSignal) => Promise<void>) | null>(null);
+  const registerLiveRefresh = useCallback((refresh: (signal: AbortSignal) => Promise<void>) => {
+    refreshRef.current = refresh;
+    return () => {
+      if (refreshRef.current === refresh) refreshRef.current = null;
+    };
+  }, []);
+  useViewerLiveRefresh(
+    useCallback(async ({ signal }) => {
+      const refresh = refreshRef.current;
+      if (refresh === null) throw new Error("The proposal list is not ready to refresh.");
+      await refresh(signal);
+    }, []),
+  );
 
   if (!stash) {
     return (
@@ -55,7 +67,12 @@ export default function ProposalsPage() {
             <Link to={proposalListHref(stash, { status })}>Clear path filter</Link>
           </Notice>
         )}
-        <ProposalList path={path} refreshRevision={refreshRevision} stash={stash} status={status} />
+        <ProposalList
+          path={path}
+          registerLiveRefresh={registerLiveRefresh}
+          stash={stash}
+          status={status}
+        />
       </div>
     </Page>
   );

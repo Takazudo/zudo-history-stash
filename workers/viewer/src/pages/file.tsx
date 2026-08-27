@@ -366,11 +366,20 @@ function FileRouteContent({
   const reloadHistory = history.reload;
   const reloadOpenProposals = openProposals.reload;
   useViewerLiveRefresh(
-    useCallback(() => {
-      reloadFile();
-      reloadHistory();
-      reloadOpenProposals();
-    }, [reloadFile, reloadHistory, reloadOpenProposals]),
+    useCallback(
+      async ({ signal }) => {
+        const results = await Promise.allSettled([
+          reloadFile(signal),
+          reloadHistory(signal),
+          reloadOpenProposals(signal),
+        ]);
+        const failed = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failed !== undefined) throw failed.reason;
+      },
+      [reloadFile, reloadHistory, reloadOpenProposals],
+    ),
   );
   const historyPage = history.state === "ready" ? history.page : null;
   const lastLiveVersion =
@@ -381,15 +390,15 @@ function FileRouteContent({
       : undefined;
 
   function refreshAfterChange() {
-    file.reload();
-    history.reload();
+    void file.reload().catch(() => undefined);
+    void history.reload().catch(() => undefined);
   }
 
   function refreshAfterRollback() {
     // HistoryList has already appended the successful rollback and its toast. Reload only the
     // representation here so that local confirmation remains visible while the new head arrives.
     if (requestedVersion === null) {
-      file.reload();
+      void file.reload().catch(() => undefined);
       return;
     }
     navigate(hrefFor({ kind: "file", stash, path }), { replace: true });
@@ -413,7 +422,11 @@ function FileRouteContent({
       ) : null}
       {file.state === "loading" ? <p className="loading-copy">Loading file…</p> : null}
       {file.state === "error" ? (
-        <ErrorBanner error={file.error} onRetry={file.reload} title="Could not load file" />
+        <ErrorBanner
+          error={file.error}
+          onRetry={() => void file.reload().catch(() => undefined)}
+          title="Could not load file"
+        />
       ) : null}
       {file.state === "ready" ? (
         <FileDetails
@@ -436,7 +449,7 @@ function FileRouteContent({
       {history.state === "error" ? (
         <ErrorBanner
           error={history.error}
-          onRetry={history.reload}
+          onRetry={() => void history.reload().catch(() => undefined)}
           title="Could not load history"
         />
       ) : null}

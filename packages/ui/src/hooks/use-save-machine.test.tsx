@@ -25,6 +25,7 @@ interface RecordedPut {
 
 interface Fixture {
   client: StashClient;
+  clientForSignal: (signal: AbortSignal) => StashClient;
   head: FileRecordWithEtag;
   otherHead: FileRecordWithEtag;
   puts: RecordedPut[];
@@ -133,6 +134,12 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
 
   return {
     client,
+    clientForSignal: (signal) =>
+      createStashClient({
+        baseUrl: BASE_URL,
+        token: ADMIN_TOKEN,
+        fetch: (input, init) => fetch(input, init?.signal ? init : { ...init, signal }),
+      }),
     head: loaded.value,
     otherHead: otherLoaded.value,
     puts,
@@ -162,6 +169,7 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
 function options(fixture: Fixture, overrides: Partial<HookProps> = {}): HookProps {
   return {
     client: fixture.client,
+    clientForSignal: fixture.clientForSignal,
     stash: STASH,
     path: PATH,
     head: fixture.head,
@@ -428,12 +436,15 @@ describe("useSaveMachine", () => {
     fixture.puts.length = 0;
     const { result } = renderHook(() => useSaveMachine(options(fixture)));
 
-    let unchanged = true;
+    let outcome: Awaited<ReturnType<typeof result.current.verifyCurrentHead>> | null = null;
     await act(async () => {
-      unchanged = await result.current.reconcile({ verifyCurrentHead: true });
+      outcome = await result.current.verifyCurrentHead(new AbortController().signal);
     });
 
-    expect(unchanged).toBe(false);
+    expect(outcome).toMatchObject({
+      status: "stale",
+      current: { version: advanced.value.version },
+    });
     expect(result.current.state).toBe("stale");
     if (result.current.state === "stale") {
       expect(result.current.current.version).toBe(advanced.value.version);
@@ -446,6 +457,117 @@ describe("useSaveMachine", () => {
     expect(result.current.state).toBe("stale");
     expect(fixture.puts).toHaveLength(1);
     expect(fixture.puts[0]?.body.expectedVersion).toBe(fixture.head.version);
+  });
+
+  it("returns an explicit same outcome for a verified unchanged head", async () => {
+    const fixture = await makeFixture();
+    const { result } = renderHook(() => useSaveMachine(options(fixture)));
+
+    let outcome: Awaited<ReturnType<typeof result.current.verifyCurrentHead>> | null = null;
+    await act(async () => {
+      outcome = await result.current.verifyCurrentHead(new AbortController().signal);
+    });
+
+    expect(outcome).toMatchObject({ status: "same", current: { version: fixture.head.version } });
+    expect(result.current.state).toBe("idle");
+  });
+
+  it("rejects a generation-superseded head verification instead of acknowledging it", async () => {
+    const fixture = await makeFixture();
+    const release = fixture.deferNextGet();
+    const rendered = renderHook((props: HookProps) => useSaveMachine(props), {
+      initialProps: options(fixture),
+    });
+    let verification!: Promise<unknown>;
+    act(() => {
+      verification = rendered.result.current.verifyCurrentHead(new AbortController().signal);
+    });
+    const rejected = verification.catch((error: unknown) => error);
+    await act(async () => Promise.resolve());
+
+    rendered.rerender(options(fixture, { draft: "newer local edit\n" }));
+    await act(async () => release());
+
+    await expect(rejected).resolves.toMatchObject({
+      message: "The save head verification was superseded",
+    });
+    expect(rendered.result.current.state).toBe("idle");
+  });
+
+  it("rejects an aborted verification and uses the supplied signal-bound client", async () => {
+    const fixture = await makeFixture();
+    const release = fixture.deferNextGet();
+    const clientForSignal = vi.fn(fixture.clientForSignal);
+    const { result } = renderHook(() => useSaveMachine(options(fixture, { clientForSignal })));
+    const controller = new AbortController();
+    let verification!: Promise<unknown>;
+    act(() => {
+      verification = result.current.verifyCurrentHead(controller.signal);
+    });
+    const rejected = verification.catch((error: unknown) => error);
+    await act(async () => Promise.resolve());
+    controller.abort();
+    await act(async () => release());
+
+    await expect(rejected).resolves.toMatchObject({ name: "AbortError" });
+    expect(clientForSignal).toHaveBeenCalledWith(controller.signal);
+    expect(result.current.state).toBe("idle");
+  });
+
+  it("rejects and surfaces a failed current-head read without altering the draft fence", async () => {
+    const fixture = await makeFixture();
+    const failureClient = (signal: AbortSignal) =>
+      createStashClient({
+        baseUrl: BASE_URL,
+        token: ADMIN_TOKEN,
+        fetch: async () => {
+          expect(signal.aborted).toBe(false);
+          return Response.json(
+            { error: { code: "internal", message: "head lookup failed" } },
+            { status: 503 },
+          );
+        },
+      });
+    const { result } = renderHook(() =>
+      useSaveMachine(options(fixture, { clientForSignal: failureClient })),
+    );
+
+    let failure: unknown;
+    await act(async () => {
+      failure = await result.current
+        .verifyCurrentHead(new AbortController().signal)
+        .catch((error: unknown) => error);
+    });
+
+    expect(failure).toMatchObject({ message: expect.stringContaining("head lookup failed") });
+    expect(result.current.state).toBe("error");
+    if (result.current.state === "error") {
+      expect(result.current.message).toContain("head lookup failed");
+    }
+    expect(fixture.puts).toHaveLength(0);
+  });
+
+  it("returns a stale outcome for an authoritative tombstone", async () => {
+    const fixture = await makeFixture();
+    const deleted = await fixture.client.files(STASH).delete(
+      PATH,
+      {
+        expectedVersion: fixture.head.version,
+        author: "peer",
+        message: "foreign delete",
+      },
+      { idempotencyKey: "fixture-delete" },
+    );
+    if (!deleted.ok) throw new Error(deleted.error.message);
+    const { result } = renderHook(() => useSaveMachine(options(fixture)));
+
+    let outcome: Awaited<ReturnType<typeof result.current.verifyCurrentHead>> | null = null;
+    await act(async () => {
+      outcome = await result.current.verifyCurrentHead(new AbortController().signal);
+    });
+
+    expect(outcome).toMatchObject({ status: "stale", current: { deleted: true } });
+    expect(result.current.state).toBe("stale");
   });
 
   it("invalidates a failed target's retry when the hook changes targets", async () => {
