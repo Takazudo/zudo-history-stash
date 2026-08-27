@@ -154,6 +154,15 @@ describe("proposal store", () => {
       expiresAt: explicit,
     });
     expect(second.value.expiresAt).toBe(explicit);
+
+    const precise = explicit.replace(".000Z", ".0000Z");
+    const third = await proposals.createProposal(STASH, {
+      path: "docs/precise.md",
+      body: "precise",
+      baseVersion: null,
+      expiresAt: precise,
+    });
+    expect(third.value.expiresAt).toBe(explicit);
   });
 
   it("rejects caller-owned proposalId and meta that only exceeds the limit after stamping", async () => {
@@ -184,7 +193,7 @@ describe("proposal store", () => {
     expect(await rowCount("blobs")).toBe(0);
   });
 
-  it("validates body boundaries before persistence", async () => {
+  it("validates body and timestamp boundaries before persistence", async () => {
     const { proposals } = await setup();
     await expectRejectedCode(
       proposals.createProposal(STASH, {
@@ -201,6 +210,15 @@ describe("proposal store", () => {
         baseVersion: null,
       }),
       "payload-too-large",
+    );
+    await expectRejectedCode(
+      proposals.createProposal(STASH, {
+        path: "invalid-calendar.md",
+        body: "candidate",
+        baseVersion: null,
+        expiresAt: "2027-02-29T00:00:00.000Z",
+      }),
+      "validation",
     );
     expect(await rowCount("proposals")).toBe(0);
     expect(await rowCount("blobs")).toBe(0);

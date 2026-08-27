@@ -23,6 +23,7 @@ import {
   type ProposalStatus,
   type ProposalWithBody,
 } from "@takazudo/zudo-history-stash-core";
+import { z } from "zod";
 import type { Env } from "../env.js";
 import { assertBlobRowShape, prepareBlob, readBlob, type BlobCodecRow } from "./blobs.js";
 import type { ProposalRow } from "./schema.js";
@@ -41,7 +42,7 @@ const DAY_MS = 86_400_000;
 const DEFAULT_PROPOSAL_TTL_DAYS = 14;
 const PROPOSAL_ID = /^prp_\d{13}[0-9a-f]{8}$/;
 const HEX = /^[0-9a-f]{8}$/;
-const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+const IsoTimestamp = z.iso.datetime();
 
 interface ProposalReadRow extends ProposalRow {
   blob_body: string | null;
@@ -239,7 +240,7 @@ function validateCreateInput(input: CreateProposalInput, now: number): number | 
     return validation("Invalid proposal input");
   }
   if (input.expiresAt === undefined) return null;
-  if (typeof input.expiresAt !== "string" || !ISO_UTC.test(input.expiresAt)) {
+  if (typeof input.expiresAt !== "string" || !IsoTimestamp.safeParse(input.expiresAt).success) {
     return validation("expiresAt must be an ISO timestamp");
   }
   const expiresAt = Date.parse(input.expiresAt);
