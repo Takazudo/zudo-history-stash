@@ -119,7 +119,7 @@ async function storageCounts(bindings: Env): Promise<{
     bindings.DB.prepare("SELECT COUNT(*) AS count FROM files").first<{ count: number }>(),
     bindings.DB.prepare("SELECT COUNT(*) AS count FROM versions").first<{ count: number }>(),
     bindings.DB.prepare("SELECT COUNT(*) AS count FROM blobs").first<{ count: number }>(),
-    bindings.BLOBS.list({ prefix: `${RPC_STASH}/` }),
+    bindings.BLOBS.list({ prefix: `v2/${RPC_STASH}/` }),
   ]);
   return {
     files: files?.count ?? -1,

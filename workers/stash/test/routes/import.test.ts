@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { R2_SPILL_BYTES, sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { app } from "../../src/app.js";
-import { blobKey } from "../../src/d1/blobs.js";
+import { parseBlobKey } from "../../src/d1/blobs.js";
 import type { Env } from "../../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
@@ -79,8 +79,6 @@ describe("POST stash import", () => {
     const bodyB = spilledBody("ROUTE_SPILL_B", "b");
     const hashA = await sha256Hex(bodyA);
     const hashB = await sha256Hex(bodyB);
-    const keyA = blobKey("route-import", hashA);
-    const keyB = blobKey("route-import", hashB);
     const calls: BlobCallCounts = { get: -1, put: -1 };
     const attempts: { call: number; key: string }[] = [];
     const bindings = wrapBlobs(createTestEnv().env, {
@@ -113,10 +111,17 @@ describe("POST stash import", () => {
     expect(JSON.stringify(json)).not.toContain("ROUTE_SPILL");
     expect(JSON.stringify(json)).not.toContain("r2_key");
     expect(calls).toEqual({ get: 0, put: 2 });
-    expect(attempts).toEqual([
-      { call: 1, key: keyA },
-      { call: 2, key: keyB },
+    expect(attempts.map(({ call }) => call)).toEqual([1, 2]);
+    expect(attempts.map(({ key }) => parseBlobKey(key))).toEqual([
+      expect.objectContaining({ format: "v2", stash: "route-import", hash: hashA }),
+      expect.objectContaining({ format: "v2", stash: "route-import", hash: hashB }),
     ]);
+    for (const { key } of attempts) {
+      const parsedKey = parseBlobKey(key);
+      if (parsedKey?.format !== "v2") throw new Error("Expected v2 R2 pointer");
+      expect(JSON.stringify(json)).not.toContain(key);
+      expect(JSON.stringify(json)).not.toContain(parsedKey.generation);
+    }
     expect(await importCounts()).toEqual({ blobs: 2, versions: 3, files: 1 });
     const versions = await createTestEnv()
       .env.DB.prepare(
@@ -137,8 +142,6 @@ describe("POST stash import", () => {
     const bodyB = spilledBody("ROUTE_FAILURE_B", "b");
     const hashA = await sha256Hex(bodyA);
     const hashB = await sha256Hex(bodyB);
-    const keyA = blobKey("route-import", hashA);
-    const keyB = blobKey("route-import", hashB);
     const calls: BlobCallCounts = { get: -1, put: -1 };
     const attempts: { call: number; key: string }[] = [];
     const bindings = wrapBlobs(createTestEnv().env, {
@@ -168,20 +171,20 @@ describe("POST stash import", () => {
     });
     expect(text).not.toContain("Injected R2 put failure");
     expect(text).not.toContain("ROUTE_FAILURE");
-    expect(text).not.toContain(keyA);
-    expect(text).not.toContain(keyB);
+    for (const { key } of attempts) expect(text).not.toContain(key);
     expect(calls).toEqual({ get: 0, put: 2 });
-    expect(attempts).toEqual([
-      { call: 1, key: keyA },
-      { call: 2, key: keyB },
+    expect(attempts.map(({ call }) => call)).toEqual([1, 2]);
+    expect(attempts.map(({ key }) => parseBlobKey(key))).toEqual([
+      expect.objectContaining({ format: "v2", stash: "route-import", hash: hashA }),
+      expect.objectContaining({ format: "v2", stash: "route-import", hash: hashB }),
     ]);
     expect(await importCounts()).toEqual({ blobs: 0, versions: 0, files: 0 });
     expect(
-      (await createTestEnv().env.BLOBS.list({ prefix: "route-import/" })).objects.map(
+      (await createTestEnv().env.BLOBS.list({ prefix: "v2/route-import/" })).objects.map(
         ({ key }) => key,
       ),
-    ).toEqual([keyA]);
-    await expect(createTestEnv().env.BLOBS.head(keyB)).resolves.toBeNull();
+    ).toEqual([attempts[0]?.key]);
+    await expect(createTestEnv().env.BLOBS.head(attempts[1]!.key)).resolves.toBeNull();
   });
 
   it("conceals the admin route from stash tokens", async () => {
