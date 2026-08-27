@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { R2_SPILL_BYTES, sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { app } from "../../src/app.js";
+import { blobKey } from "../../src/d1/blobs.js";
+import type { Env } from "../../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
+import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
 
 const url = "http://example.test/v1/stashes/route-import/import";
 
@@ -22,12 +26,33 @@ function body(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function post(payload: unknown, token = "test-admin") {
-  return request(app, url, {
-    method: "POST",
-    headers: { ...bearer(token), "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+async function post(payload: unknown, token = "test-admin", bindings: Env = createTestEnv().env) {
+  return request(
+    app,
+    url,
+    {
+      method: "POST",
+      headers: { ...bearer(token), "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    bindings,
+  );
+}
+
+function spilledBody(marker: string, fill: string): string {
+  return `${marker}:${fill.repeat(R2_SPILL_BYTES + 1)}`;
+}
+
+async function importCounts(): Promise<{ blobs: number; versions: number; files: number }> {
+  const result = { blobs: 0, versions: 0, files: 0 };
+  for (const table of Object.keys(result) as (keyof typeof result)[]) {
+    const row = await createTestEnv()
+      .env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE stash_name = ?`)
+      .bind("route-import")
+      .first<{ count: number }>();
+    result[table] = row?.count ?? -1;
+  }
+  return result;
 }
 
 beforeEach(async () => {
@@ -47,6 +72,116 @@ describe("POST stash import", () => {
     });
     expect(json).not.toHaveProperty("versions");
     expect(JSON.stringify(json)).not.toContain("route body");
+  });
+
+  it("imports A, B, A through two R2 uploads and keeps pointers out of the response", async () => {
+    const bodyA = spilledBody("ROUTE_SPILL_A", "a");
+    const bodyB = spilledBody("ROUTE_SPILL_B", "b");
+    const hashA = await sha256Hex(bodyA);
+    const hashB = await sha256Hex(bodyB);
+    const keyA = blobKey("route-import", hashA);
+    const keyB = blobKey("route-import", hashB);
+    const calls: BlobCallCounts = { get: -1, put: -1 };
+    const attempts: { call: number; key: string }[] = [];
+    const bindings = wrapBlobs(createTestEnv().env, {
+      count: calls,
+      failPut: (call, key) => {
+        attempts.push({ call, key });
+        return false;
+      },
+    });
+
+    const response = await post(
+      body({
+        versions: [
+          { kind: "put", body: bodyA, createdAt: 1_000 },
+          { kind: "put", body: bodyB, createdAt: 1_001 },
+          { kind: "put", body: bodyA, createdAt: 1_002 },
+        ],
+      }),
+      "test-admin",
+      bindings,
+    );
+
+    expect(response.status).toBe(201);
+    const json = await response.json<Record<string, unknown>>();
+    expect(json).toEqual({
+      path: "history.txt",
+      headVersion: 3,
+      firstChangeId: expect.any(Number),
+    });
+    expect(JSON.stringify(json)).not.toContain("ROUTE_SPILL");
+    expect(JSON.stringify(json)).not.toContain("r2_key");
+    expect(calls).toEqual({ get: 0, put: 2 });
+    expect(attempts).toEqual([
+      { call: 1, key: keyA },
+      { call: 2, key: keyB },
+    ]);
+    expect(await importCounts()).toEqual({ blobs: 2, versions: 3, files: 1 });
+    const versions = await createTestEnv()
+      .env.DB.prepare(
+        `SELECT version, blob_hash FROM versions
+         WHERE stash_name = ? AND path = ? ORDER BY version`,
+      )
+      .bind("route-import", "history.txt")
+      .all<{ version: number; blob_hash: string }>();
+    expect(versions.results).toEqual([
+      { version: 1, blob_hash: hashA },
+      { version: 2, blob_hash: hashB },
+      { version: 3, blob_hash: hashA },
+    ]);
+  });
+
+  it("maps a second-upload failure to generic 500 after leaving only the first orphan", async () => {
+    const bodyA = spilledBody("ROUTE_FAILURE_A", "a");
+    const bodyB = spilledBody("ROUTE_FAILURE_B", "b");
+    const hashA = await sha256Hex(bodyA);
+    const hashB = await sha256Hex(bodyB);
+    const keyA = blobKey("route-import", hashA);
+    const keyB = blobKey("route-import", hashB);
+    const calls: BlobCallCounts = { get: -1, put: -1 };
+    const attempts: { call: number; key: string }[] = [];
+    const bindings = wrapBlobs(createTestEnv().env, {
+      count: calls,
+      failPut: (call, key) => {
+        attempts.push({ call, key });
+        return call === 2;
+      },
+    });
+
+    const response = await post(
+      body({
+        versions: [
+          { kind: "put", body: bodyA, createdAt: 1_000 },
+          { kind: "put", body: bodyB, createdAt: 1_001 },
+          { kind: "put", body: bodyA, createdAt: 1_002 },
+        ],
+      }),
+      "test-admin",
+      bindings,
+    );
+
+    expect(response.status).toBe(500);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({
+      error: { code: "internal", message: "An internal error occurred." },
+    });
+    expect(text).not.toContain("Injected R2 put failure");
+    expect(text).not.toContain("ROUTE_FAILURE");
+    expect(text).not.toContain(keyA);
+    expect(text).not.toContain(keyB);
+    expect(calls).toEqual({ get: 0, put: 2 });
+    expect(attempts).toEqual([
+      { call: 1, key: keyA },
+      { call: 2, key: keyB },
+    ]);
+    expect(await importCounts()).toEqual({ blobs: 0, versions: 0, files: 0 });
+    expect(
+      (await createTestEnv().env.BLOBS.list({ prefix: "route-import/" })).objects.map(
+        ({ key }) => key,
+      ),
+    ).toEqual([keyA]);
+    await expect(createTestEnv().env.BLOBS.head(keyB)).resolves.toBeNull();
   });
 
   it("conceals the admin route from stash tokens", async () => {
