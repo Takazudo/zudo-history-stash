@@ -2,9 +2,12 @@ import {
   BODY_LIMIT_BYTES,
   IDEMPOTENCY_KEY_MAX_CHARS,
   MAX_BODY_BYTES,
+  MAX_META_BYTES,
+  R2_SPILL_BYTES,
   ROUTES,
   sha256Hex,
   type GcRunResult,
+  type ProposalRecord,
   type RouteId,
 } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
@@ -38,21 +41,6 @@ const UNSUPPORTED_SAMPLES: Record<
   health: { method: "GET", path: "/v1/health" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
-  createProposal: { method: "POST", path: "/v1/stashes/demo/proposals" },
-  listProposals: { method: "GET", path: "/v1/stashes/demo/proposals" },
-  getProposal: { method: "GET", path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef" },
-  getProposalDiff: {
-    method: "GET",
-    path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef/diff",
-  },
-  approveProposal: {
-    method: "POST",
-    path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef/approve",
-  },
-  rejectProposal: {
-    method: "POST",
-    path: "/v1/stashes/demo/proposals/prp_0000000000000deadbeef/reject",
-  },
 };
 
 const EMPTY_DIFF_ROUTES = [
@@ -113,6 +101,7 @@ describe("inspectable state and fixture helpers", () => {
     expect(exposed.r2Objects.size).toBe(0);
     expect(exposed.files.get("demo")?.size).toBe(1);
     expect(exposed.versions).toHaveLength(1);
+    expect(exposed.proposals.size).toBe(0);
     expect(exposed.idempotency.get("demo")?.size).toBe(1);
 
     fake.reset();
@@ -123,6 +112,7 @@ describe("inspectable state and fixture helpers", () => {
     expect(exposed.r2Objects.size).toBe(0);
     expect(exposed.files.size).toBe(0);
     expect(exposed.versions).toHaveLength(0);
+    expect(exposed.proposals.size).toBe(0);
     expect(exposed.idempotency.size).toBe(0);
     expect(exposed.gcJobs.get("r2-orphans")).toMatchObject({
       nextCursor: null,
@@ -131,6 +121,455 @@ describe("inspectable state and fixture helpers", () => {
       leaseUntil: null,
     });
     expect(exposed.gcRuns).toHaveLength(0);
+  });
+});
+
+describe("proposal lifecycle", () => {
+  it("creates idempotently, computes expiry, and keyset-paginates equal timestamps", async () => {
+    const now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const createBody = {
+      path: "docs/proposal.md",
+      body: "candidate one\n",
+      baseVersion: null,
+      author: "bot",
+      message: "first",
+      meta: { nested: { b: 2, a: 1 } },
+    };
+    const create = () =>
+      request(fake, "/v1/stashes/demo/proposals", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "proposal-create",
+        },
+        body: JSON.stringify(createBody),
+      });
+    const concurrent = await Promise.all([create(), create()]);
+    expect(concurrent.map(({ status }) => status)).toEqual([201, 201]);
+    const created = await Promise.all(
+      concurrent.map((response) => response.json() as Promise<ProposalRecord>),
+    );
+    expect(created[0]).toEqual(created[1]);
+    expect(created[0]?.id).toMatch(/^prp_\d{13}[0-9a-f]{8}$/);
+    expect(created[0]?.expiresAt).toBe("2026-09-09T00:00:00.000Z");
+    expect(created[0]?.meta).toEqual({
+      ...createBody.meta,
+      proposalId: created[0]?.id,
+    });
+    expect(
+      concurrent.map((response) => response.headers.get("Idempotent-Replayed")).sort(),
+    ).toEqual([null, "true"]);
+    expect(fake.state.proposals.get("demo")?.size).toBe(1);
+    expect(fake.state.blobs.get("demo")?.size).toBe(1);
+
+    const reused = await request(fake, "/v1/stashes/demo/proposals", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "proposal-create",
+      },
+      body: JSON.stringify({ ...createBody, body: "different\n" }),
+    });
+    expect(reused.status).toBe(422);
+    expect(await errorCode(reused)).toBe("idempotency-key-reused");
+
+    for (const body of ["candidate two\n", "candidate three\n"]) {
+      const response = await request(fake, "/v1/stashes/demo/proposals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...createBody, body }),
+      });
+      expect(response.status).toBe(201);
+    }
+
+    const firstPage = await request(
+      fake,
+      "/v1/stashes/demo/proposals?status=open&path=docs%2Fproposal.md&limit=1",
+    );
+    expect(firstPage.status).toBe(200);
+    const firstPageBody = (await firstPage.json()) as {
+      proposals: Array<{ id: string; meta: Record<string, unknown>; body?: string }>;
+      nextAfter: string | null;
+      total: number;
+    };
+    expect(firstPageBody).toMatchObject({ total: 3 });
+    expect(firstPageBody.proposals).toHaveLength(1);
+    expect(firstPageBody.proposals[0]?.id).toBe(
+      [...(fake.state.proposals.get("demo")?.keys() ?? [])].at(-1),
+    );
+    expect(firstPageBody.proposals[0]?.meta).toMatchObject({
+      proposalId: firstPageBody.proposals[0]?.id,
+    });
+    expect(firstPageBody.proposals[0]).not.toHaveProperty("body");
+    expect(firstPageBody.nextAfter).toEqual(expect.any(String));
+
+    const secondPage = await request(
+      fake,
+      `/v1/stashes/demo/proposals?status=open&path=docs%2Fproposal.md&limit=1&after=${encodeURIComponent(firstPageBody.nextAfter ?? "")}`,
+    );
+    expect(secondPage.status).toBe(200);
+    const secondPageBody = (await secondPage.json()) as typeof firstPageBody;
+    expect(secondPageBody.total).toBe(3);
+    expect(secondPageBody.proposals[0]?.id).not.toBe(firstPageBody.proposals[0]?.id);
+
+    const invalidCursor = await request(fake, "/v1/stashes/demo/proposals?after=not-base64");
+    expect(invalidCursor.status).toBe(400);
+    expect(await errorCode(invalidCursor)).toBe("validation");
+
+    const forgedCursor = btoa(`${now}:prp_${String(now + 1).padStart(13, "0")}deadbeef`);
+    const forged = await request(
+      fake,
+      `/v1/stashes/demo/proposals?after=${encodeURIComponent(forgedCursor)}`,
+    );
+    expect(forged.status).toBe(400);
+    expect(await errorCode(forged)).toBe("validation");
+
+    const detail = await request(fake, `/v1/stashes/demo/proposals/${created[0]?.id ?? "missing"}`);
+    expect(detail.status).toBe(200);
+    await expect(detail.json()).resolves.toMatchObject({
+      ...createBody,
+      id: created[0]?.id,
+      meta: { ...createBody.meta, proposalId: created[0]?.id },
+      status: "open",
+      body: createBody.body,
+      decidedAt: null,
+      decidedBy: null,
+    });
+  });
+
+  it("replays an explicitly expired create without allocating another candidate", async () => {
+    let now = Date.parse("2026-08-26T00:30:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const input = {
+      path: "docs/expiring-replay.md",
+      body: "x".repeat(R2_SPILL_BYTES + 1),
+      baseVersion: null,
+      expiresAt: new Date(now + 1).toISOString(),
+    };
+    const create = () =>
+      request(fake, "/v1/stashes/demo/proposals", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "expiring-replay",
+        },
+        body: JSON.stringify(input),
+      });
+
+    const initial = await create();
+    expect(initial.status).toBe(201);
+    const initialBody = (await initial.json()) as ProposalRecord;
+    expect(initialBody).toMatchObject({
+      status: "open",
+      meta: { proposalId: initialBody.id },
+    });
+    expect(fake.state.proposals.get("demo")?.size).toBe(1);
+    expect(fake.state.blobs.get("demo")?.size).toBe(1);
+    expect(fake.state.r2Objects.size).toBe(1);
+
+    now += 1;
+    const equalityReplay = await create();
+    expect(equalityReplay.status).toBe(201);
+    expect(equalityReplay.headers.get("Idempotent-Replayed")).toBe("true");
+    await expect(equalityReplay.json()).resolves.toEqual({ ...initialBody, status: "expired" });
+
+    now += 1_000;
+    const laterReplay = await create();
+    expect(laterReplay.status).toBe(201);
+    expect(laterReplay.headers.get("Idempotent-Replayed")).toBe("true");
+    await expect(laterReplay.json()).resolves.toEqual({ ...initialBody, status: "expired" });
+    expect(fake.state.proposals.get("demo")?.size).toBe(1);
+    expect(fake.state.blobs.get("demo")?.size).toBe(1);
+    expect(fake.state.r2Objects.size).toBe(1);
+
+    const next = await request(fake, "/v1/stashes/demo/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "docs/next.md", body: "next", baseVersion: null }),
+    });
+    expect(next.status).toBe(201);
+    const nextBody = (await next.json()) as ProposalRecord;
+    expect(nextBody.id).toMatch(/^prp_\d{13}00000002$/);
+  });
+
+  it("keeps diffs immutable and allows exactly one fenced approval to append", async () => {
+    let now = Date.parse("2026-08-26T01:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const writerSecret = await fake.mintToken("demo", "write");
+    const writer = [...fake.state.tokens.values()][0];
+    if (writer === undefined) throw new Error("missing proposal writer fixture");
+
+    const base = await request(fake, "/v1/stashes/demo/files/docs/proposal.md", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "base\n", expectedVersion: null }),
+    });
+    expect(base.status).toBe(201);
+
+    const createProposal = async (body: string, baseVersion: number) => {
+      const response = await fake.fetch("https://fake.invalid/v1/stashes/demo/proposals", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${writerSecret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          path: "docs/proposal.md",
+          body,
+          baseVersion,
+          author: "proposal-author",
+          message: "proposal-message",
+          meta: { source: "fake" },
+        }),
+      });
+      expect(response.status).toBe(201);
+      return response.json() as Promise<ProposalRecord>;
+    };
+
+    const candidate = await createProposal("candidate\n", 1);
+    expect(candidate.meta).toEqual({ source: "fake", proposalId: candidate.id });
+    const staleCandidate = await createProposal("stale candidate\n", 1);
+    const beforeDiff = await request(
+      fake,
+      `/v1/stashes/demo/proposals/${candidate.id}/diff?context=1`,
+    );
+    expect(beforeDiff.status).toBe(200);
+    const beforeDiffBody = (await beforeDiff.json()) as {
+      unified: string;
+      current: { version: number };
+      stale: boolean;
+    };
+    expect(beforeDiffBody).toMatchObject({
+      state: "ready",
+      base: { version: 1, deleted: false },
+      candidate: { hash: candidate.hash, size: 10 },
+      current: { version: 1 },
+      stale: false,
+    });
+
+    const approve = () =>
+      fake.fetch(`https://fake.invalid/v1/stashes/demo/proposals/${candidate.id}/approve`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${writerSecret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ author: "approver", message: "approved" }),
+      });
+    const approvals = await Promise.all([approve(), approve()]);
+    expect(approvals.map(({ status }) => status)).toEqual([200, 200]);
+    const approvalBodies = await Promise.all(approvals.map((response) => response.json()));
+    expect(approvalBodies[0]).toEqual(approvalBodies[1]);
+    expect(approvalBodies[0]).toMatchObject({
+      status: "applied",
+      appliedVersion: 2,
+      appliedChangeId: 2,
+      hash: candidate.hash,
+    });
+    expect(fake.state.versions).toHaveLength(2);
+    expect(fake.state.versions[1]).toMatchObject({
+      kind: "put",
+      author: "approver",
+      message: "approved",
+      meta: { source: "fake", proposalId: candidate.id },
+    });
+    expect(fake.state.proposals.get("demo")?.get(candidate.id)).toMatchObject({
+      status: "applied",
+      meta: { source: "fake", proposalId: candidate.id },
+      decidedBy: writer.id,
+      appliedVersion: 2,
+      appliedChangeId: 2,
+    });
+    expect(fake.state.versions[1]?.meta).toEqual(
+      fake.state.proposals.get("demo")?.get(candidate.id)?.meta,
+    );
+
+    const afterDiff = await request(
+      fake,
+      `/v1/stashes/demo/proposals/${candidate.id}/diff?context=1`,
+    );
+    const afterDiffBody = (await afterDiff.json()) as typeof beforeDiffBody;
+    expect(afterDiffBody.unified).toBe(beforeDiffBody.unified);
+    expect(afterDiffBody).toMatchObject({ current: { version: 2 }, stale: true });
+
+    const sameBody = await createProposal("candidate\n", 2);
+    const sameBodyApproval = await request(
+      fake,
+      `/v1/stashes/demo/proposals/${sameBody.id}/approve`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    );
+    expect(sameBodyApproval.status).toBe(200);
+    await expect(sameBodyApproval.json()).resolves.toMatchObject({
+      status: "applied",
+      appliedVersion: 3,
+      appliedChangeId: 3,
+      hash: candidate.hash,
+    });
+    expect(fake.state.versions).toHaveLength(3);
+    expect(fake.state.versions[2]?.meta).toMatchObject({ proposalId: sameBody.id });
+
+    now += 15 * 86_400_000;
+    const reapplied = await approve();
+    expect(reapplied.status).toBe(200);
+    await expect(reapplied.json()).resolves.toEqual(approvalBodies[0]);
+    expect(fake.state.versions).toHaveLength(3);
+
+    const stale = await fake.fetch(
+      `https://fake.invalid/v1/stashes/demo/proposals/${staleCandidate.id}/approve`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${writerSecret}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      error: { code: "proposal-expired" },
+    });
+    expect(fake.state.versions).toHaveLength(3);
+  });
+
+  it("reports stale, expired, and closed decisions while expired rejection remains allowed", async () => {
+    let now = Date.parse("2026-08-26T02:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const put = async (body: string, expectedVersion: number | null) =>
+      request(fake, "/v1/stashes/demo/files/docs/decision.md", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body, expectedVersion }),
+      });
+    expect((await put("base\n", null)).status).toBe(201);
+
+    const create = async (expiresAt?: string) => {
+      const response = await request(fake, "/v1/stashes/demo/proposals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "docs/decision.md",
+          body: "candidate\n",
+          baseVersion: 1,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        }),
+      });
+      expect(response.status).toBe(201);
+      return response.json() as Promise<{ id: string }>;
+    };
+    const staleProposal = await create();
+    expect((await put("moved\n", 1)).status).toBe(201);
+
+    const stale = await request(fake, `/v1/stashes/demo/proposals/${staleProposal.id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      error: { code: "stale" },
+      current: { version: 2 },
+    });
+    expect(fake.state.versions).toHaveLength(2);
+
+    const expiring = await create(new Date(now + 1_000).toISOString());
+    now += 1_000;
+    const expiredList = await request(fake, "/v1/stashes/demo/proposals?status=expired");
+    await expect(expiredList.json()).resolves.toMatchObject({
+      proposals: [{ id: expiring.id, status: "expired" }],
+      total: 1,
+    });
+    const expiredApprove = await request(
+      fake,
+      `/v1/stashes/demo/proposals/${expiring.id}/approve`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+    );
+    expect(expiredApprove.status).toBe(409);
+    expect(await errorCode(expiredApprove)).toBe("proposal-expired");
+
+    const reject = () =>
+      request(fake, `/v1/stashes/demo/proposals/${expiring.id}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "superseded" }),
+      });
+    const rejected = await reject();
+    expect(rejected.status).toBe(200);
+    const rejectedBody = await rejected.json();
+    expect(rejectedBody).toMatchObject({
+      id: expiring.id,
+      status: "rejected",
+      decidedBy: "admin",
+      decisionReason: "superseded",
+    });
+    const rerejected = await reject();
+    await expect(rerejected.json()).resolves.toEqual(rejectedBody);
+
+    const closed = await request(fake, `/v1/stashes/demo/proposals/${expiring.id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(closed.status).toBe(409);
+    expect(await errorCode(closed)).toBe("proposal-closed");
+  });
+
+  it("keeps a spilled proposal candidate referenced through orphan collection", async () => {
+    let now = Date.parse("2026-08-26T03:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const candidate = "x".repeat(R2_SPILL_BYTES + 1);
+    const created = await request(fake, "/v1/stashes/demo/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "docs/spilled-proposal.md",
+        body: candidate,
+        baseVersion: null,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const proposal = (await created.json()) as { hash: string };
+    const blob = fake.state.blobs.get("demo")?.get(proposal.hash);
+    expect(blob?.r2Key).toEqual(expect.any(String));
+    expect(fake.state.r2Objects.has(blob?.r2Key ?? "missing")).toBe(true);
+
+    now += 900_001;
+    const gc = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "r2-orphans", maxObjects: 24 }),
+    });
+    expect(gc.status).toBe(200);
+    await expect(gc.json()).resolves.toMatchObject({ scanned: 1, eligible: 0, deleted: 0 });
+    expect(fake.state.r2Objects.has(blob?.r2Key ?? "missing")).toBe(true);
+  });
+
+  it("uses one clock snapshot for the approval decision and applied version", async () => {
+    let now = Date.parse("2026-08-26T04:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now++ });
+    fake.createStash("demo");
+    const created = await request(fake, "/v1/stashes/demo/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "docs/clock.md", body: "candidate", baseVersion: null }),
+    });
+    const proposal = (await created.json()) as { id: string };
+
+    const approved = await request(fake, `/v1/stashes/demo/proposals/${proposal.id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(approved.status).toBe(200);
+    const row = fake.state.proposals.get("demo")?.get(proposal.id);
+    const version = fake.state.versions[0];
+    expect(row?.decidedAt).toBe(version?.createdAt);
   });
 });
 
@@ -261,7 +700,11 @@ describe("stash administration routes", () => {
       restorable: true,
     });
 
-    for (const path of ["/v1/stashes/demo/files/a.txt", "/v1/stashes/demo/tokens"]) {
+    for (const path of [
+      "/v1/stashes/demo/files/a.txt",
+      "/v1/stashes/demo/tokens",
+      "/v1/stashes/demo/proposals",
+    ]) {
       const concealed = await request(fake, path);
       expect(concealed.status).toBe(404);
       expect(await errorCode(concealed)).toBe("not-found");
@@ -1377,7 +1820,10 @@ describe("bearer parsing", () => {
 
 describe("validation and limits", () => {
   it("reuses strict core schemas for unknown fields and query limits", async () => {
-    const fake = createFakeStash({ adminToken: ADMIN });
+    const fake = createFakeStash({
+      adminToken: ADMIN,
+      now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+    });
     fake.createStash("demo");
     const unknown = await request(fake, "/v1/stashes/demo/files/a.txt", {
       method: "PUT",
@@ -1390,6 +1836,40 @@ describe("validation and limits", () => {
     const excessiveLimit = await request(fake, "/v1/stashes/demo/files?limit=201");
     expect(excessiveLimit.status).toBe(400);
     expect(await errorCode(excessiveLimit)).toBe("validation");
+
+    const proposal = async (body: unknown) =>
+      request(fake, "/v1/stashes/demo/proposals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const platformMeta = await proposal({
+      path: "docs/proposal.md",
+      body: "candidate",
+      baseVersion: null,
+      meta: { proposalId: "caller-owned" },
+    });
+    expect(platformMeta.status).toBe(400);
+    expect(await errorCode(platformMeta)).toBe("validation");
+
+    const metaShellBytes = JSON.stringify({ padding: "" }).length;
+    const stampedTooLarge = await proposal({
+      path: "docs/proposal.md",
+      body: "candidate",
+      baseVersion: null,
+      meta: { padding: "x".repeat(MAX_META_BYTES - metaShellBytes) },
+    });
+    expect(stampedTooLarge.status).toBe(400);
+    expect(await errorCode(stampedTooLarge)).toBe("validation");
+
+    const invalidExpiry = await proposal({
+      path: "docs/proposal.md",
+      body: "candidate",
+      baseVersion: null,
+      expiresAt: "2027-02-30T00:00:00.000Z",
+    });
+    expect(invalidExpiry.status).toBe(400);
+    expect(await errorCode(invalidExpiry)).toBe("validation");
   });
 
   it("distinguishes Unicode, body-byte, request-byte, and key limits", async () => {

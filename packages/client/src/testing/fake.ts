@@ -1,6 +1,8 @@
 import {
+  ApproveProposalBody,
   BODY_LIMIT_BYTES,
   ChangesQuery,
+  CreateProposalBody,
   CreateStashBody,
   CreateTokenBody,
   DeleteFileBody,
@@ -10,13 +12,17 @@ import {
   ListGcRunsQuery,
   HistoryQuery,
   IDEMPOTENCY_KEY_MAX_CHARS,
+  ListProposalsQuery,
   ListFilesQuery,
   ListStashesQuery,
   MAX_BODY_BYTES,
+  MAX_META_BYTES,
+  ProposalDiffQuery,
   PutFileBody,
   R2_SPILL_BYTES,
   ROUTES,
   RotateTokenBody,
+  RejectProposalBody,
   RollbackBody,
   RunGcBody,
   canonicalJson,
@@ -47,6 +53,7 @@ import type {
   FakeGcJobRow,
   FakeIdempotencyRow,
   FakeMintTokenOptions,
+  FakeProposalRow,
   FakeR2ObjectRow,
   FakeRateLimitInput,
   FakeStash,
@@ -63,6 +70,7 @@ const LAST_USED_INTERVAL_MS = 60_000;
 const MAX_TOKEN_TTL_MS = 315_360_000 * 1_000;
 const DEFAULT_DELETE_GRACE_DAYS = 30;
 const DEFAULT_GC_ORPHAN_MIN_AGE_MS = 900_000;
+const DEFAULT_PROPOSAL_TTL_DAYS = 14;
 const GC_LEASE_TTL_MS = 300_000;
 const MAX_R2_GC_PAGE_OBJECTS = 24;
 const SHA256_HASH = /^sha256-[0-9a-f]{64}$/;
@@ -91,6 +99,12 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "getStashChanges",
   "runGc",
   "listGcRuns",
+  "createProposal",
+  "listProposals",
+  "getProposal",
+  "getProposalDiff",
+  "approveProposal",
+  "rejectProposal",
 ]);
 
 const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
@@ -107,6 +121,12 @@ const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
   "getDiff",
   "diffCandidate",
   "getStashChanges",
+  "createProposal",
+  "listProposals",
+  "getProposal",
+  "getProposalDiff",
+  "approveProposal",
+  "rejectProposal",
 ]);
 
 const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
@@ -157,6 +177,7 @@ interface MatchedRoute {
   stash?: string;
   path?: string;
   tokenId?: string;
+  proposalId?: string;
 }
 
 class FakeHttpError extends Error {
@@ -230,7 +251,42 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   if (method === "POST" && pathname === "/v1/admin/gc") return { routeId: "runGc" };
   if (method === "GET" && pathname === "/v1/admin/gc/runs") return { routeId: "listGcRuns" };
 
-  let match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)\/rotate$/.exec(pathname);
+  let match = /^\/v1\/stashes\/([^/]+)\/proposals\/([^/]+)\/diff$/.exec(pathname);
+  if (method === "GET" && match?.[1] !== undefined && match[2] !== undefined) {
+    return {
+      routeId: "getProposalDiff",
+      stash: decode(match[1]),
+      proposalId: decode(match[2]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/proposals\/([^/]+)\/(approve|reject)$/.exec(pathname);
+  if (method === "POST" && match?.[1] !== undefined && match[2] !== undefined) {
+    return {
+      routeId: match[3] === "approve" ? "approveProposal" : "rejectProposal",
+      stash: decode(match[1]),
+      proposalId: decode(match[2]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/proposals\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && match?.[1] !== undefined && match[2] !== undefined) {
+    return {
+      routeId: "getProposal",
+      stash: decode(match[1]),
+      proposalId: decode(match[2]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/proposals$/.exec(pathname);
+  if ((method === "GET" || method === "POST") && match?.[1] !== undefined) {
+    return {
+      routeId: method === "GET" ? "listProposals" : "createProposal",
+      stash: decode(match[1]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)\/rotate$/.exec(pathname);
   if (method === "POST" && match?.[1] !== undefined && match[2] !== undefined) {
     return {
       routeId: "rotateToken",
@@ -320,6 +376,27 @@ function cloneMeta(meta: Record<string, JsonValue> | undefined): Record<string, 
 
 function iso(value: number): string {
   return new Date(value).toISOString();
+}
+
+function parseIsoDateTime(value: string): number | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/.exec(value);
+  if (match === null) return undefined;
+  const parsed = Date.parse(value);
+  if (!Number.isSafeInteger(parsed)) return undefined;
+  const date = new Date(parsed);
+  const expectedMilliseconds = Number((match[7] ?? "").padEnd(3, "0").slice(0, 3));
+  if (
+    date.getUTCFullYear() !== Number(match[1]) ||
+    date.getUTCMonth() + 1 !== Number(match[2]) ||
+    date.getUTCDate() !== Number(match[3]) ||
+    date.getUTCHours() !== Number(match[4]) ||
+    date.getUTCMinutes() !== Number(match[5]) ||
+    date.getUTCSeconds() !== Number(match[6]) ||
+    date.getUTCMilliseconds() !== expectedMilliseconds
+  ) {
+    return undefined;
+  }
+  return parsed;
 }
 
 function resolveTokenExpiry(input: FakeMintTokenOptions, now: number): number | null {
@@ -431,11 +508,15 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const limiter = options.rateLimit ?? (() => ({ success: true }));
   const deleteGraceDays = options.deleteGraceDays ?? DEFAULT_DELETE_GRACE_DAYS;
   const gcOrphanMinAgeMs = options.gcOrphanMinAgeMs ?? DEFAULT_GC_ORPHAN_MIN_AGE_MS;
+  const proposalTtlDays = options.proposalTtlDays ?? DEFAULT_PROPOSAL_TTL_DAYS;
   if (!Number.isSafeInteger(deleteGraceDays) || deleteGraceDays < 1) {
     throw new TypeError("deleteGraceDays must be a positive safe integer");
   }
   if (!Number.isSafeInteger(gcOrphanMinAgeMs) || gcOrphanMinAgeMs < 0) {
     throw new TypeError("gcOrphanMinAgeMs must be a non-negative safe integer");
+  }
+  if (!Number.isSafeInteger(proposalTtlDays) || proposalTtlDays < 1) {
+    throw new TypeError("proposalTtlDays must be a positive safe integer");
   }
   const state: FakeStashState = {
     stashes: new Map(),
@@ -444,6 +525,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     r2Objects: new Map(),
     files: new Map(),
     versions: [],
+    proposals: new Map(),
     idempotency: new Map(),
     gcJobs: new Map<GcKind, FakeGcJobRow>([
       [
@@ -474,6 +556,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   let nextToken = 1;
   let nextChangeId = 1;
   let nextR2ObjectSerial = 1;
+  let nextProposalSerial = 1;
   let nextGcRun = 1;
   let nextGcCursorSerial = 1;
   const gcCursorPositions = new Map<string, { kind: GcKind; afterKey: string }>();
@@ -506,6 +589,22 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const body = state.blobs.get(version.stash)?.get(version.hash)?.body;
     if (body === undefined) return fail("internal", "The fake version points at a missing blob.");
     return body;
+  };
+  const storeBlob = (stash: string, hash: string, body: string, createdAt: number): FakeBlobRow => {
+    const rows = nested(state.blobs, stash);
+    const existing = rows.get(hash);
+    if (existing !== undefined) return existing;
+    const size = utf8ByteLength(body);
+    let r2Key: string | null = null;
+    if (size > R2_SPILL_BYTES) {
+      const generation = `00000000-0000-4000-8000-${String(nextR2ObjectSerial).padStart(12, "0")}`;
+      r2Key = `v2/${stash}/${hash}/${generation}`;
+      nextR2ObjectSerial += 1;
+      state.r2Objects.set(r2Key, { key: r2Key, stash, hash, size, createdAt });
+    }
+    const row: FakeBlobRow = { stash, hash, body, r2Key, size, createdAt };
+    rows.set(hash, row);
+    return row;
   };
   const requireStash = (stash: string): FakeStashRow => {
     const row = state.stashes.get(stash);
@@ -761,9 +860,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     stash: string,
     path: string,
     input: Omit<FakeVersionRow, "changeId" | "stash" | "path" | "version" | "createdAt">,
+    createdAt = now(),
   ): FakeVersionRow => {
     const file = getFile(stash, path);
-    const createdAt = now();
     const row: FakeVersionRow = {
       ...input,
       changeId: nextChangeId,
@@ -1181,6 +1280,340 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return new Response(null, { status: 204 });
   };
 
+  const proposalsFor = (stash: string): Map<string, FakeProposalRow> =>
+    nested(state.proposals, stash);
+
+  const requireProposal = (stash: string, id: string): FakeProposalRow => {
+    const row = state.proposals.get(stash)?.get(id);
+    if (row === undefined) return fail("not-found", "The requested proposal was not found.");
+    return row;
+  };
+
+  const proposalStatus = (row: FakeProposalRow, readAt = now()) =>
+    row.status === "open" && row.expiresAt <= readAt ? ("expired" as const) : row.status;
+
+  const proposalRecord = (row: FakeProposalRow, readAt = now()) => ({
+    id: row.id,
+    stash: row.stash,
+    path: row.path,
+    baseVersion: row.baseVersion,
+    author: row.author,
+    message: row.message,
+    meta: cloneMeta(row.meta),
+    size: row.size,
+    hash: row.blobHash,
+    createdAt: iso(row.createdAt),
+    expiresAt: iso(row.expiresAt),
+    status: proposalStatus(row, readAt),
+    decidedAt: row.decidedAt === null ? null : iso(row.decidedAt),
+    decidedBy: row.decidedBy,
+    decisionReason: row.decisionReason,
+    appliedVersion: row.appliedVersion,
+    appliedChangeId: row.appliedChangeId,
+  });
+
+  const proposalBody = (row: FakeProposalRow): string => {
+    const body = state.blobs.get(row.stash)?.get(row.blobHash)?.body;
+    if (body === undefined) return fail("internal", "The fake proposal points at a missing blob.");
+    return body;
+  };
+
+  const proposalCursor = (row: FakeProposalRow): string => btoa(`${row.createdAt}:${row.id}`);
+
+  const decodeProposalCursor = (cursor: string): { createdAt: number; id: string } => {
+    let decoded: string;
+    try {
+      decoded = atob(cursor);
+    } catch {
+      return fail("validation", "Invalid proposal cursor.");
+    }
+    const match = /^(\d+):(prp_(\d{13})[0-9a-f]{8})$/.exec(decoded);
+    if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) {
+      return fail("validation", "Invalid proposal cursor.");
+    }
+    const createdAt = Number(match[1]);
+    const idCreatedAt = Number(match[3]);
+    if (!Number.isSafeInteger(createdAt) || idCreatedAt !== createdAt || btoa(decoded) !== cursor) {
+      return fail("validation", "Invalid proposal cursor.");
+    }
+    return { createdAt, id: match[2] };
+  };
+
+  const principalId = (principal: Principal): string =>
+    principal.kind === "admin" ? "admin" : principal.tokenId;
+
+  const handleCreateProposal = async (request: Request, stash: string): Promise<Response> => {
+    const key = idempotencyKey(request);
+    const candidate = await requestJson(request);
+    const candidateRecord =
+      candidate !== null && typeof candidate === "object" && !Array.isArray(candidate)
+        ? (candidate as Record<string, unknown>)
+        : undefined;
+    if (candidateRecord !== undefined && "body" in candidateRecord) {
+      const body = candidateRecord.body;
+      if (typeof body === "string" && !isWellFormedString(body)) {
+        return fail("body-not-well-formed", "Body is not well-formed Unicode.");
+      }
+      if (typeof body === "string" && utf8ByteLength(body) > MAX_BODY_BYTES) {
+        return fail("payload-too-large", "The proposal body is too large.");
+      }
+    }
+
+    // The core schema validates expiry against wall-clock Date.now(). The fake has an injected
+    // clock, so retain all structural schema checks with a temporary future value and enforce
+    // the actual supplied boundary against the fake clock below.
+    const suppliedExpiresAt = candidateRecord?.expiresAt;
+    const schemaCandidate =
+      candidateRecord !== undefined && Object.hasOwn(candidateRecord, "expiresAt")
+        ? {
+            ...candidateRecord,
+            expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+          }
+        : candidate;
+    const parsed = CreateProposalBody.safeParse(schemaCandidate);
+    if (!parsed.success) return fail("validation", "Invalid proposal input.");
+    let suppliedExpiry: number | undefined;
+    if (suppliedExpiresAt !== undefined) {
+      if (typeof suppliedExpiresAt !== "string") {
+        return fail("validation", "Invalid proposal expiry.");
+      }
+      suppliedExpiry = parseIsoDateTime(suppliedExpiresAt);
+      if (suppliedExpiry === undefined) {
+        return fail("validation", "Invalid proposal expiry.");
+      }
+    }
+
+    const requestHash = await sha256Hex(canonicalJson(candidate as JsonValue));
+    requireLiveStash(stash);
+    const replayForKey = (): Response | undefined => {
+      if (key === undefined) return undefined;
+      const existing = [...proposalsFor(stash).values()].find((row) => row.idempotencyKey === key);
+      if (existing === undefined) return undefined;
+      if (existing.requestHash !== requestHash) {
+        return fail("idempotency-key-reused", "Idempotency key was used for another request");
+      }
+      return json(proposalRecord(existing, now()), 201, { "Idempotent-Replayed": "true" });
+    };
+    const replay = replayForKey();
+    if (replay !== undefined) return replay;
+
+    const createdAt = now();
+    const expiresAt = suppliedExpiry ?? createdAt + proposalTtlDays * 86_400_000;
+    if (expiresAt <= createdAt) {
+      return fail("validation", "Proposal expiry must be in the future.");
+    }
+
+    const bodyHash = await sha256Hex(parsed.data.body);
+    requireLiveStash(stash);
+    const racedReplay = replayForKey();
+    if (racedReplay !== undefined) return racedReplay;
+
+    const id = `prp_${String(createdAt).padStart(13, "0")}${nextProposalSerial
+      .toString(16)
+      .padStart(8, "0")}`;
+    nextProposalSerial += 1;
+    const meta = { ...cloneMeta(parsed.data.meta), proposalId: id };
+    if (utf8ByteLength(JSON.stringify(meta)) > MAX_META_BYTES) {
+      return fail("validation", "Proposal metadata is too large after stamping.");
+    }
+    const blob = storeBlob(stash, bodyHash, parsed.data.body, createdAt);
+    const row: FakeProposalRow = {
+      id,
+      stash,
+      path: parsed.data.path,
+      baseVersion: parsed.data.baseVersion,
+      blobHash: bodyHash,
+      size: blob.size,
+      author: parsed.data.author ?? "",
+      message: parsed.data.message ?? "",
+      meta,
+      status: "open",
+      expiresAt,
+      createdAt,
+      idempotencyKey: key ?? null,
+      requestHash: key === undefined ? null : requestHash,
+      decidedAt: null,
+      decidedBy: null,
+      decisionReason: null,
+      appliedVersion: null,
+      appliedChangeId: null,
+    };
+    proposalsFor(stash).set(id, row);
+    return json(proposalRecord(row, createdAt), 201);
+  };
+
+  const handleListProposals = (stash: string, url: URL): Response => {
+    const parsed = ListProposalsQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid proposal list query.");
+    const readAt = now();
+    const filtered = [...proposalsFor(stash).values()]
+      .filter(
+        (row) => parsed.data.status === "all" || proposalStatus(row, readAt) === parsed.data.status,
+      )
+      .filter((row) => parsed.data.path === undefined || row.path === parsed.data.path)
+      .sort(
+        (left, right) =>
+          right.createdAt - left.createdAt ||
+          (left.id < right.id ? 1 : left.id > right.id ? -1 : 0),
+      );
+    const cursor =
+      parsed.data.after === undefined ? undefined : decodeProposalCursor(parsed.data.after);
+    const candidates = filtered.filter(
+      (row) =>
+        cursor === undefined ||
+        row.createdAt < cursor.createdAt ||
+        (row.createdAt === cursor.createdAt && row.id < cursor.id),
+    );
+    const hasMore = candidates.length > parsed.data.limit;
+    const page = candidates.slice(0, parsed.data.limit);
+    const last = page.at(-1);
+    return json({
+      proposals: page.map((row) => proposalRecord(row, readAt)),
+      nextAfter: hasMore && last !== undefined ? proposalCursor(last) : null,
+      total: filtered.length,
+    });
+  };
+
+  const handleGetProposal = (stash: string, id: string): Response => {
+    const row = requireProposal(stash, id);
+    return json({ ...proposalRecord(row, now()), body: proposalBody(row) });
+  };
+
+  const currentForPath = (stash: string, path: string): Current | null => {
+    const file = getFile(stash, path);
+    return file === undefined ? null : current(file, getHeadVersion(file));
+  };
+
+  const handleGetProposalDiff = (stash: string, id: string, url: URL): Response => {
+    const parsed = ProposalDiffQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid proposal diff query.");
+    ensureSafeInteger(parsed.data.context, "context");
+    const row = requireProposal(stash, id);
+    const baseVersion =
+      row.baseVersion === null ? undefined : getVersion(stash, row.path, row.baseVersion);
+    if (row.baseVersion !== null && baseVersion === undefined) {
+      return fail("not-found", "The proposal base version was not found.");
+    }
+    const base = {
+      version: row.baseVersion,
+      hash: baseVersion?.hash ?? null,
+      deleted: baseVersion?.kind === "delete",
+    };
+    const candidate = { hash: row.blobHash, size: row.size };
+    const currentHead = currentForPath(stash, row.path);
+    const stale = (currentHead?.version ?? null) !== row.baseVersion;
+    const result =
+      base.hash === row.blobHash
+        ? { state: "same" as const }
+        : computeDiff({
+            fromText:
+              baseVersion === undefined || baseVersion.kind === "delete"
+                ? ""
+                : bodyFor(baseVersion),
+            toText: proposalBody(row),
+            fromLabel:
+              row.baseVersion === null
+                ? `a/${row.path}@empty`
+                : `a/${row.path}@v${row.baseVersion}`,
+            toLabel: `b/${row.path}@${row.id}`,
+            context: parsed.data.context,
+          });
+    return json({ ...result, base, candidate, current: currentHead, stale });
+  };
+
+  const approvalResult = (row: FakeProposalRow) => {
+    if (row.appliedVersion === null || row.appliedChangeId === null) {
+      return fail("internal", "The applied fake proposal has no applied version.");
+    }
+    const version = getVersion(row.stash, row.path, row.appliedVersion);
+    if (
+      version === undefined ||
+      version.changeId !== row.appliedChangeId ||
+      version.hash === null
+    ) {
+      return fail("internal", "The applied fake proposal points at a missing version.");
+    }
+    return {
+      status: "applied" as const,
+      appliedVersion: version.version,
+      appliedChangeId: version.changeId,
+      hash: version.hash,
+      createdAt: iso(version.createdAt),
+    };
+  };
+
+  const handleApproveProposal = async (
+    request: Request,
+    principal: Principal,
+    stash: string,
+    id: string,
+  ): Promise<Response> => {
+    const parsed = ApproveProposalBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid proposal approval input.");
+    requireLiveStash(stash);
+    const row = requireProposal(stash, id);
+    if (row.status === "applied") return json(approvalResult(row));
+    if (row.status === "rejected") return fail("proposal-closed", "The proposal is closed.");
+    const decidedAt = now();
+    if (row.expiresAt <= decidedAt) {
+      return fail("proposal-expired", "The proposal has expired.");
+    }
+    const file = getFile(stash, row.path);
+    const exactHead =
+      row.baseVersion === null ? file === undefined : file?.headVersion === row.baseVersion;
+    if (!exactHead) {
+      return fail(
+        "stale",
+        "The proposal base no longer matches the current head.",
+        file === undefined ? undefined : current(file, getHeadVersion(file)),
+      );
+    }
+
+    // From this claim through the head append there are no awaits. Concurrent approvals may
+    // parse together, but only one can observe open and publish the ordinary version.
+    row.status = "applied";
+    row.decidedAt = decidedAt;
+    row.decidedBy = principalId(principal);
+    row.decisionReason = null;
+    const version = append(
+      stash,
+      row.path,
+      {
+        kind: "put",
+        hash: row.blobHash,
+        size: row.size,
+        contentType: DEFAULT_CONTENT_TYPE,
+        rollbackOf: null,
+        author: parsed.data.author ?? row.author,
+        message: parsed.data.message ?? row.message,
+        meta: cloneMeta(row.meta),
+      },
+      decidedAt,
+    );
+    row.appliedVersion = version.version;
+    row.appliedChangeId = version.changeId;
+    return json(approvalResult(row));
+  };
+
+  const handleRejectProposal = async (
+    request: Request,
+    principal: Principal,
+    stash: string,
+    id: string,
+  ): Promise<Response> => {
+    const parsed = RejectProposalBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid proposal rejection input.");
+    requireLiveStash(stash);
+    const row = requireProposal(stash, id);
+    if (row.status === "applied") return fail("proposal-closed", "The proposal is closed.");
+    if (row.status === "rejected") return json(proposalRecord(row, now()));
+    row.status = "rejected";
+    row.decidedAt = now();
+    row.decidedBy = principalId(principal);
+    row.decisionReason = parsed.data.reason ?? null;
+    return json(proposalRecord(row, row.decidedAt));
+  };
+
   const handleListFiles = (stash: string, url: URL): Response => {
     const parsed = ListFilesQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid file list query.");
@@ -1311,7 +1744,6 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       return json({ unchanged: true, version: file.headVersion });
     }
     const size = utf8ByteLength(parsed.data.body);
-    const blobRows = nested(state.blobs, stash);
     const version = append(stash, path, {
       kind: "put",
       hash: bodyHash,
@@ -1322,30 +1754,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       message: parsed.data.message ?? "",
       meta: cloneMeta(parsed.data.meta),
     });
-    let objectKey: string | null = null;
-    if (size > R2_SPILL_BYTES) {
-      const generation = `00000000-0000-4000-8000-${String(nextR2ObjectSerial).padStart(12, "0")}`;
-      objectKey = `v2/${stash}/${bodyHash}/${generation}`;
-      nextR2ObjectSerial += 1;
-      state.r2Objects.set(objectKey, {
-        key: objectKey,
-        stash,
-        hash: bodyHash,
-        size,
-        createdAt: version.createdAt,
-      });
-    }
-    if (!blobRows.has(bodyHash)) {
-      const blob: FakeBlobRow = {
-        stash,
-        hash: bodyHash,
-        body: parsed.data.body,
-        r2Key: objectKey,
-        size,
-        createdAt: version.createdAt,
-      };
-      blobRows.set(bodyHash, blob);
-    }
+    storeBlob(stash, bodyHash, parsed.data.body, version.createdAt);
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
@@ -1660,6 +2069,28 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           return await handleRunGc(request);
         case "listGcRuns":
           return handleListGcRuns(url);
+        case "createProposal":
+          return await handleCreateProposal(request, stash ?? "");
+        case "listProposals":
+          return handleListProposals(stash ?? "", url);
+        case "getProposal":
+          return handleGetProposal(stash ?? "", match.proposalId ?? "");
+        case "getProposalDiff":
+          return handleGetProposalDiff(stash ?? "", match.proposalId ?? "", url);
+        case "approveProposal":
+          return await handleApproveProposal(
+            request,
+            principal,
+            stash ?? "",
+            match.proposalId ?? "",
+          );
+        case "rejectProposal":
+          return await handleRejectProposal(
+            request,
+            principal,
+            stash ?? "",
+            match.proposalId ?? "",
+          );
         default:
           return unsupported();
       }
@@ -1681,6 +2112,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       return (await mintStoredToken(stash, parsed.data.scope, parsed.data)).token;
     },
     reset() {
+      state.proposals.clear();
       state.stashes.clear();
       state.tokens.clear();
       state.blobs.clear();
@@ -1700,6 +2132,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       nextToken = 1;
       nextChangeId = 1;
       nextR2ObjectSerial = 1;
+      nextProposalSerial = 1;
       nextGcRun = 1;
       nextGcCursorSerial = 1;
     },
