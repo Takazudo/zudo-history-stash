@@ -47,6 +47,7 @@ describe("Wrangler and Env drift", () => {
       "RL_READ",
       "RL_WRITE",
       "STASH_ADMIN_TOKEN",
+      "STASH_DELETE_GRACE_DAYS",
     ]);
     for (const name of references) {
       expect(configured.has(name), `${name} missing from wrangler.toml`).toBe(true);
