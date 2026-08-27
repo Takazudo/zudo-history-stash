@@ -354,12 +354,17 @@ export default function DiffPage() {
         {history.state === "error" ? (
           <ErrorBanner
             error={history.error}
-            onRetry={history.reload}
+            onRetry={() => void history.reload().catch(() => undefined)}
             title="Could not load version history"
           />
         ) : null}
         {diff.state === "loading" ? <p className="loading-copy">Loading comparison…</p> : null}
-        {diff.state === "error" ? <ErrorBanner error={diff.error} onRetry={diff.reload} /> : null}
+        {diff.state === "error" ? (
+          <ErrorBanner
+            error={diff.error}
+            onRetry={() => void diff.reload().catch(() => undefined)}
+          />
+        ) : null}
 
         {diff.state === "ready" && diff.value.state === "same" ? (
           <section className="diff-state-card" role="status">

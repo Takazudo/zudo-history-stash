@@ -280,6 +280,9 @@ function stubMachine(
       .fn<SaveMachine["reloadAndCompare"]>()
       .mockRejectedValue(new Error("Unused reload")),
     reconcile: vi.fn<SaveMachine["reconcile"]>().mockResolvedValue(false),
+    verifyCurrentHead: vi
+      .fn<SaveMachine["verifyCurrentHead"]>()
+      .mockRejectedValue(new Error("Unused head verification")),
     resetSession: vi.fn<SaveMachine["resetSession"]>().mockReturnValue(true),
     ...overrides,
   } as SaveMachine;
@@ -966,7 +969,7 @@ describe("SaveReviewDialog", () => {
       await callbackFailure.promise;
 
       expect(onProposed).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole("button", { name: "Proposal saved" })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Proposal saved" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Retry proposal" })).toBeNull();
       expect(screen.queryByText("The proposal response was interrupted")).toBeNull();
       const proposals = await fixture.client.proposals(STASH).list({ status: "all" });

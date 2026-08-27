@@ -1,16 +1,21 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type {
-  ClientResult,
-  ListProposalsOptions,
-  ProposalListResponse,
-  ProposalRecord,
-  StashClient,
-  StashProposalsClient,
+import {
+  createStashClient,
+  type ClientResult,
+  type ListProposalsOptions,
+  type ProposalListResponse,
+  type ProposalRecord,
+  type StashClient,
+  type StashProposalsClient,
 } from "@takazudo/zudo-history-stash";
+import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { describe, expect, it, vi } from "vitest";
 import { proposalListHref, proposalListStatusFrom } from "../app/proposal-routes.js";
-import { createFakeViewerClient } from "../test/fake-viewer-client.js";
+import {
+  createFakeBackedViewerClient,
+  createFakeViewerClient,
+} from "../test/fake-viewer-client.js";
 import { renderViewerRoute } from "../test/render-viewer-route.js";
 
 function proposal(overrides: Partial<ProposalRecord> = {}): ProposalRecord {
@@ -45,6 +50,60 @@ function clientWithProposalList(list: StashProposalsClient["list"]) {
 }
 
 describe("proposal list routes", () => {
+  it("refreshes live-only proposal state through the shared provider", async () => {
+    const token = "viewer-proposals-live";
+    const fake = createFakeStash({ adminToken: token });
+    fake.createStash("notes");
+    renderViewerRoute(
+      "/s/notes/proposals",
+      createFakeBackedViewerClient(fake, token, "viewer-live-tab"),
+    );
+    expect(await screen.findByText("No proposals match this filter.")).toBeTruthy();
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(1));
+
+    const peer = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "peer-tab",
+      fetch: fake.fetch,
+    });
+    const created = await peer.proposals("notes").create({
+      path: "docs/live.txt",
+      body: "candidate",
+      baseVersion: null,
+      author: "Peer",
+      message: "Live proposal",
+    });
+    if (!created.ok) throw new Error(created.error.message);
+
+    expect(await screen.findByRole("link", { name: "docs/live.txt" })).toBeTruthy();
+    expect(screen.getByText("1 open proposal, newest first.")).toBeTruthy();
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(0));
+    try {
+      const missed = await peer.proposals("notes").create({
+        path: "docs/missed-while-hidden.txt",
+        body: "second candidate",
+        baseVersion: null,
+        author: "Peer",
+        message: "Visibility recovery proposal",
+      });
+      if (!missed.ok) throw new Error(missed.error.message);
+      expect(screen.queryByRole("link", { name: "docs/missed-while-hidden.txt" })).toBeNull();
+    } finally {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+
+    expect(await screen.findByRole("link", { name: "docs/missed-while-hidden.txt" })).toBeTruthy();
+    expect(screen.getByText("2 open proposals, newest first.")).toBeTruthy();
+  });
+
   it("serializes canonical collection URLs and parses only the supported views", () => {
     expect(proposalListHref("team / docs")).toBe("/s/team%20%2F%20docs/proposals");
     expect(

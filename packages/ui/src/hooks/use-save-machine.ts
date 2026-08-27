@@ -1,8 +1,9 @@
-import type {
-  Current,
-  FileRecord,
-  FileRecordWithEtag,
-  StashClient,
+import {
+  StashHttpError,
+  type Current,
+  type FileRecord,
+  type FileRecordWithEtag,
+  type StashClient,
 } from "@takazudo/zudo-history-stash";
 import { sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -11,6 +12,8 @@ export type LineEnding = "lf" | "crlf";
 
 export interface SaveMachineOptions {
   client: StashClient;
+  /** Supplies an abort-bound client for passive authoritative head verification. */
+  clientForSignal?: (signal: AbortSignal) => StashClient;
   stash: string;
   path: string;
   head: Pick<FileRecord, "version" | "hash">;
@@ -23,13 +26,16 @@ export interface SaveMetadata {
   message: string;
 }
 
+export type SaveHeadVerificationOutcome =
+  { status: "same"; current: Current } | { status: "stale"; current: Current };
+
 export type SaveMachineState =
   | { state: "idle" }
   | { state: "saving" }
   | { state: "saved"; version: number; changeId: number }
   | { state: "unchanged"; version: number }
   | { state: "stale"; current: Current }
-  | { state: "error"; message: string };
+  | { state: "error"; message: string; verification?: true };
 
 export type SaveMachine = SaveMachineState & {
   /** Opaque identity for the active client/stash/path lifecycle. */
@@ -39,6 +45,8 @@ export type SaveMachine = SaveMachineState & {
   retry: () => Promise<void>;
   reloadAndCompare: () => Promise<FileRecordWithEtag>;
   reconcile: () => Promise<boolean>;
+  /** Verifies the server head without advancing the effective CAS fence. */
+  verifyCurrentHead: (signal: AbortSignal) => Promise<SaveHeadVerificationOutcome>;
   /** Clears terminal state and a frozen retry when no operation is pending. */
   resetSession: () => boolean;
 };
@@ -57,6 +65,7 @@ interface FrozenSaveAttempt {
 
 interface SaveTarget {
   client: StashClient;
+  clientForSignal: (signal: AbortSignal) => StashClient;
   stash: string;
   path: string;
 }
@@ -92,7 +101,12 @@ function createTargetRuntime(snapshot: RenderSnapshot): TargetRuntime {
 }
 
 function sameTarget(left: SaveTarget, right: SaveTarget): boolean {
-  return left.client === right.client && left.stash === right.stash && left.path === right.path;
+  return (
+    left.client === right.client &&
+    left.clientForSignal === right.clientForSignal &&
+    left.stash === right.stash &&
+    left.path === right.path
+  );
 }
 
 /** Reapplies the source file's line-ending policy to a textarea-normalized draft. */
@@ -102,21 +116,47 @@ export function applyLineEnding(text: string, lineEnding: LineEnding): string {
 }
 
 function errorFrom(value: unknown): Error {
+  if (value instanceof StashHttpError) {
+    const body = value.body;
+    if (body !== null && typeof body === "object" && "error" in body) {
+      const detail = body.error;
+      if (detail !== null && typeof detail === "object" && "message" in detail) {
+        const message = detail.message;
+        if (typeof message === "string") return new Error(message, { cause: value });
+      }
+    }
+  }
   return value instanceof Error ? value : new Error("History Stash request failed");
+}
+
+function currentFromRecord(record: FileRecordWithEtag): Current {
+  return {
+    version: record.version,
+    hash: record.hash,
+    deleted: record.deleted,
+    kind: record.kind,
+    author: record.author,
+    createdAt: record.createdAt,
+  };
 }
 
 /** Owns one editor's compare-and-swap save lifecycle. */
 export function useSaveMachine({
   client,
+  clientForSignal,
   stash,
   path,
   head,
   draft,
   lineEnding,
 }: SaveMachineOptions): SaveMachine {
+  const signalClient = useMemo(
+    () => clientForSignal ?? ((_signal: AbortSignal) => client),
+    [client, clientForSignal],
+  );
   const renderedTarget = useMemo<SaveTarget>(
-    () => ({ client, stash, path }),
-    [client, path, stash],
+    () => ({ client, clientForSignal: signalClient, stash, path }),
+    [client, path, signalClient, stash],
   );
   const [, setMachineRevision] = useState(0);
   const machineStatesRef = useRef(new WeakMap<SaveTarget, SaveMachineState>());
@@ -332,43 +372,126 @@ export function useSaveMachine({
     }
   }, [target, transition]);
 
-  const reconcile = useCallback(async (): Promise<boolean> => {
-    const runtime = runtimeRef.current;
-    if (runtime.target !== target || runtime.committedSnapshot !== renderSnapshot) return false;
-
-    if (
-      inFlightTargetsRef.current.has(target) ||
-      reloadingTargetsRef.current.has(target) ||
-      reconcilingTargetsRef.current.has(target)
-    ) {
-      return false;
-    }
-
-    const generation = ++runtime.generation;
-    const expectedHead = { ...runtime.effectiveHead };
-    reconcilingTargetsRef.current.add(target);
-    try {
-      const hash = await sha256Hex(
-        applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding),
-      );
-      if (
-        runtimeRef.current !== runtime ||
-        runtime.committedSnapshot !== renderSnapshot ||
-        runtime.generation !== generation ||
-        inFlightTargetsRef.current.has(target) ||
-        reloadingTargetsRef.current.has(target) ||
-        hash !== expectedHead.hash
-      ) {
+  const reconcileInternal = useCallback(
+    async (
+      options: { verifyCurrentHead: true; signal: AbortSignal } | undefined,
+    ): Promise<boolean | SaveHeadVerificationOutcome> => {
+      const runtime = runtimeRef.current;
+      const verifiesCurrentHead = options !== undefined;
+      if (runtime.target !== target || runtime.committedSnapshot !== renderSnapshot) {
+        if (verifiesCurrentHead) throw new Error("The save target is no longer active");
         return false;
       }
 
-      if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
-      transition(target, { state: "unchanged", version: expectedHead.version });
-      return true;
-    } finally {
-      reconcilingTargetsRef.current.delete(target);
-    }
-  }, [renderSnapshot, target, transition]);
+      if (
+        inFlightTargetsRef.current.has(target) ||
+        reloadingTargetsRef.current.has(target) ||
+        reconcilingTargetsRef.current.has(target)
+      ) {
+        if (verifiesCurrentHead)
+          throw new Error("A save, reload, or reconciliation is in progress");
+        return false;
+      }
+
+      const generation = ++runtime.generation;
+      const expectedHead = { ...runtime.effectiveHead };
+      reconcilingTargetsRef.current.add(target);
+      try {
+        if (options !== undefined) {
+          const signal = options.signal;
+          try {
+            signal.throwIfAborted();
+            const result = await target
+              .clientForSignal(signal)
+              .files(target.stash)
+              .get(target.path);
+            signal.throwIfAborted();
+            if (
+              runtimeRef.current !== runtime ||
+              runtime.committedSnapshot !== renderSnapshot ||
+              runtime.generation !== generation ||
+              inFlightTargetsRef.current.has(target) ||
+              reloadingTargetsRef.current.has(target)
+            ) {
+              throw new Error("The save head verification was superseded");
+            }
+
+            const current =
+              result.ok && !("notModified" in result)
+                ? currentFromRecord(result.value)
+                : !result.ok && result.current !== undefined
+                  ? result.current
+                  : null;
+            if (current === null) {
+              throw new Error(
+                result.ok ? "The current file head was not returned" : result.error.message,
+              );
+            }
+            if (current.version !== expectedHead.version || current.hash !== expectedHead.hash) {
+              if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
+              transition(target, { state: "stale", current });
+              return { status: "stale", current };
+            }
+            const currentState = machineStatesRef.current.get(target);
+            if (currentState?.state === "error" && currentState.verification === true) {
+              transition(target, IDLE_STATE);
+            }
+            return { status: "same", current };
+          } catch (error: unknown) {
+            const failure = errorFrom(error);
+            if (
+              !signal.aborted &&
+              runtimeRef.current === runtime &&
+              runtime.committedSnapshot === renderSnapshot &&
+              runtime.generation === generation &&
+              !inFlightTargetsRef.current.has(target) &&
+              !reloadingTargetsRef.current.has(target)
+            ) {
+              transition(target, { state: "error", message: failure.message, verification: true });
+            }
+            throw failure;
+          }
+        }
+
+        const hash = await sha256Hex(
+          applyLineEnding(renderSnapshot.draft, renderSnapshot.lineEnding),
+        );
+        if (
+          runtimeRef.current !== runtime ||
+          runtime.committedSnapshot !== renderSnapshot ||
+          runtime.generation !== generation ||
+          inFlightTargetsRef.current.has(target) ||
+          reloadingTargetsRef.current.has(target) ||
+          hash !== expectedHead.hash
+        ) {
+          return false;
+        }
+
+        if (retryAttemptRef.current?.target === target) retryAttemptRef.current = null;
+        transition(target, { state: "unchanged", version: expectedHead.version });
+        return true;
+      } finally {
+        reconcilingTargetsRef.current.delete(target);
+      }
+    },
+    [renderSnapshot, target, transition],
+  );
+
+  const reconcile = useCallback(async (): Promise<boolean> => {
+    const result = await reconcileInternal(undefined);
+    return typeof result === "boolean" ? result : false;
+  }, [reconcileInternal]);
+
+  const verifyCurrentHead = useCallback(
+    async (signal: AbortSignal): Promise<SaveHeadVerificationOutcome> => {
+      const result = await reconcileInternal({ verifyCurrentHead: true, signal });
+      if (typeof result === "boolean") {
+        throw new Error("The save head verification did not produce an outcome");
+      }
+      return result;
+    },
+    [reconcileInternal],
+  );
 
   const resetSession = useCallback((): boolean => {
     const runtime = runtimeRef.current;
@@ -396,6 +519,7 @@ export function useSaveMachine({
     retry,
     reloadAndCompare,
     reconcile,
+    verifyCurrentHead,
     resetSession,
   } as SaveMachine;
 }

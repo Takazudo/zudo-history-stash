@@ -1,3 +1,4 @@
+import { LiveIndicator, type LiveChangesStatus } from "@takazudo/zudo-history-stash-ui";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useStashClient } from "../auth/stash-client-provider.js";
@@ -22,7 +23,15 @@ function nextTheme(theme: Theme): Theme {
   return "system";
 }
 
-export function Header({ breadcrumb, status }: { breadcrumb?: ReactNode; status?: ReactNode }) {
+export function Header({
+  breadcrumb,
+  liveStatus,
+  status,
+}: {
+  breadcrumb?: ReactNode;
+  liveStatus?: LiveChangesStatus;
+  status?: ReactNode;
+}) {
   const { logOut } = useStashClient();
   const [theme, setTheme] = useState<Theme>(initialTheme);
 
@@ -44,6 +53,7 @@ export function Header({ breadcrumb, status }: { breadcrumb?: ReactNode; status?
         {breadcrumb ? <span className="app-header__breadcrumb">/ {breadcrumb}</span> : null}
       </div>
       <div className="app-header__actions">
+        {liveStatus ? <LiveIndicator className="app-header__live" status={liveStatus} /> : null}
         {status ? <span className="app-header__status">{status}</span> : null}
         <Button
           aria-live="polite"

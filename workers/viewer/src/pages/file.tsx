@@ -17,9 +17,10 @@ import {
   useFileHistory,
   useStashHref,
 } from "@takazudo/zudo-history-stash-ui";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
 import { proposalListHref } from "../app/proposal-routes.js";
 import { Badge } from "../app/shell/badge.js";
 import { Page } from "../app/shell/page.js";
@@ -361,6 +362,25 @@ function FileRouteContent({
     [client, path, requestedVersion, stash],
   );
   const history = useFileHistory(stash, path);
+  const reloadFile = file.reload;
+  const reloadHistory = history.reload;
+  const reloadOpenProposals = openProposals.reload;
+  useViewerLiveRefresh(
+    useCallback(
+      async ({ signal }) => {
+        const results = await Promise.allSettled([
+          reloadFile(signal),
+          reloadHistory(signal),
+          reloadOpenProposals(signal),
+        ]);
+        const failed = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failed !== undefined) throw failed.reason;
+      },
+      [reloadFile, reloadHistory, reloadOpenProposals],
+    ),
+  );
   const historyPage = history.state === "ready" ? history.page : null;
   const lastLiveVersion =
     file.state === "ready" && file.value.deleted && historyPage
@@ -370,15 +390,15 @@ function FileRouteContent({
       : undefined;
 
   function refreshAfterChange() {
-    file.reload();
-    history.reload();
+    void file.reload().catch(() => undefined);
+    void history.reload().catch(() => undefined);
   }
 
   function refreshAfterRollback() {
     // HistoryList has already appended the successful rollback and its toast. Reload only the
     // representation here so that local confirmation remains visible while the new head arrives.
     if (requestedVersion === null) {
-      file.reload();
+      void file.reload().catch(() => undefined);
       return;
     }
     navigate(hrefFor({ kind: "file", stash, path }), { replace: true });
@@ -402,7 +422,11 @@ function FileRouteContent({
       ) : null}
       {file.state === "loading" ? <p className="loading-copy">Loading file…</p> : null}
       {file.state === "error" ? (
-        <ErrorBanner error={file.error} onRetry={file.reload} title="Could not load file" />
+        <ErrorBanner
+          error={file.error}
+          onRetry={() => void file.reload().catch(() => undefined)}
+          title="Could not load file"
+        />
       ) : null}
       {file.state === "ready" ? (
         <FileDetails
@@ -425,7 +449,7 @@ function FileRouteContent({
       {history.state === "error" ? (
         <ErrorBanner
           error={history.error}
-          onRetry={history.reload}
+          onRetry={() => void history.reload().catch(() => undefined)}
           title="Could not load history"
         />
       ) : null}

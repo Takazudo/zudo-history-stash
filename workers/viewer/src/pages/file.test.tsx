@@ -1,17 +1,19 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type {
-  ClientResult,
-  FileGetResult,
-  FileRecordWithEtag,
-  GetDiffResult,
-  HistoryPage,
-  ProposalListResponse,
-  StashClient,
-  StashFilesClient,
-  StashProposalsClient,
-  VersionRecord,
+import {
+  createStashClient,
+  type ClientResult,
+  type FileGetResult,
+  type FileRecordWithEtag,
+  type GetDiffResult,
+  type HistoryPage,
+  type ProposalListResponse,
+  type StashClient,
+  type StashFilesClient,
+  type StashProposalsClient,
+  type VersionRecord,
 } from "@takazudo/zudo-history-stash";
+import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { createMemoryRouter, type InitialEntry, Outlet, RouterProvider } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -20,9 +22,13 @@ import {
   type ViewerStashClientFactory,
 } from "../app/auth/stash-client-provider.js";
 import { RequireToken } from "../app/auth/require-token.js";
+import { ViewerLiveUpdatesProvider } from "../app/live-updates.js";
 import { TOKEN_STORAGE_KEY } from "../app/auth/token-store.js";
 import { ViewerStashUiProvider } from "../app/viewer-stash-ui-provider.js";
-import { createFakeViewerClient } from "../test/fake-viewer-client.js";
+import {
+  createFakeBackedViewerClient,
+  createFakeViewerClient,
+} from "../test/fake-viewer-client.js";
 import FilePage from "./file.js";
 
 function fileRecord(overrides: Partial<FileRecordWithEtag> = {}): FileRecordWithEtag {
@@ -129,7 +135,9 @@ function renderFileRoute(initialEntry: InitialEntry, client: ViewerStashClient) 
             element: (
               <RequireToken>
                 <ViewerStashUiProvider>
-                  <Outlet />
+                  <ViewerLiveUpdatesProvider>
+                    <Outlet />
+                  </ViewerLiveUpdatesProvider>
                 </ViewerStashUiProvider>
               </RequireToken>
             ),
@@ -147,6 +155,63 @@ function renderFileRoute(initialEntry: InitialEntry, client: ViewerStashClient) 
 }
 
 describe("FilePage", () => {
+  it("refreshes the current head, history, and proposal count from shared live events", async () => {
+    const token = "viewer-file-live";
+    const fake = createFakeStash({ adminToken: token });
+    fake.createStash("notes");
+    const seed = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "fixture",
+      fetch: fake.fetch,
+    });
+    const first = await seed.files("notes").put("docs/readme.txt", {
+      body: "first body",
+      expectedVersion: null,
+      author: "Fixture",
+      message: "First",
+    });
+    if (!first.ok) throw new Error(first.error.message);
+    renderFileRoute(
+      "/s/notes/f/docs/readme.txt",
+      createFakeBackedViewerClient(fake, token, "viewer-live-tab"),
+    );
+    expect(await screen.findByText("first body")).toBeTruthy();
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(1));
+
+    const peer = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "peer-tab",
+      fetch: fake.fetch,
+    });
+    const second = await peer.files("notes").put("docs/readme.txt", {
+      body: "peer body",
+      expectedVersion: first.value.version,
+      author: "Peer",
+      message: "Peer update",
+    });
+    if (!second.ok) throw new Error(second.error.message);
+    expect(await screen.findByText("peer body")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "History" }).textContent).toContain("Peer update"),
+    );
+
+    const proposal = await peer.proposals("notes").create({
+      path: "docs/readme.txt",
+      body: "candidate",
+      baseVersion: second.value.version,
+    });
+    if (!proposal.ok) throw new Error(proposal.error.message);
+    expect(
+      await screen.findByRole(
+        "link",
+        { name: "1 open proposal for docs/readme.txt" },
+        { timeout: 5_000 },
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows loading states for the representation and history", () => {
     const pendingFile = new Promise<FileGetResult>(() => {
       // Intentionally pending.
