@@ -10,6 +10,7 @@ import type {
   Current,
   CreatedToken,
   DeleteResult,
+  DeleteStashResult,
   DiffSide,
   ErrorDetail,
   ErrorResponse,
@@ -21,6 +22,8 @@ import type {
   GetFileResult,
   GetHistoryResult,
   GetStashResult,
+  GcRunResult,
+  GcRunsResponse,
   HealthResponse,
   HistoryPage,
   ImportResult,
@@ -33,6 +36,7 @@ import type {
   PutUnchangedResult,
   RotateTokenResult,
   RollbackResult,
+  RestoreStashResult,
   StashListResponse,
   StashRecord,
   StashSummary,
@@ -44,6 +48,7 @@ import type {
 const TimestampSchema = z.iso.datetime();
 const HashSchema = z.string().regex(/^sha256-[0-9a-f]{64}$/);
 const VersionKindSchema = z.enum(["put", "delete", "rollback"]);
+const GcKindSchema = z.enum(["r2-orphans", "ledger"]);
 const TokenScopeSchema = z.enum(["read", "write"]);
 const MetaSchema = z.record(z.string(), z.json());
 const IntegerSchema = z.number().int();
@@ -76,6 +81,9 @@ export const StashRecordSchema = z.strictObject({
   lastChangeId: NonNegativeIntegerSchema.nullable(),
   lastChangeAt: TimestampSchema.nullable(),
   createdAt: TimestampSchema,
+  deletedAt: TimestampSchema.nullable(),
+  restoreUntil: TimestampSchema.nullable(),
+  restorable: z.boolean(),
 });
 
 export const StashSummarySchema = z.strictObject({
@@ -86,6 +94,9 @@ export const StashSummarySchema = z.strictObject({
   lastChangeId: NonNegativeIntegerSchema.nullable(),
   lastChangeAt: TimestampSchema.nullable(),
   createdAt: TimestampSchema,
+  deletedAt: TimestampSchema.nullable(),
+  restoreUntil: TimestampSchema.nullable(),
+  restorable: z.boolean(),
 });
 
 export const StashListResponseSchema = z.strictObject({
@@ -236,6 +247,36 @@ export const ImportResultSchema = z.strictObject({
   firstChangeId: NonNegativeIntegerSchema,
 });
 
+export const DeleteStashResultSchema: z.ZodType<DeleteStashResult> = z.strictObject({
+  name: z.string(),
+  deletedAt: TimestampSchema,
+  revokedTokens: NonNegativeIntegerSchema,
+  restoreUntil: TimestampSchema,
+});
+
+export const GcRunResultSchema: z.ZodType<GcRunResult> = z
+  .strictObject({
+    runId: z.uuid(),
+    jobId: GcKindSchema,
+    kind: GcKindSchema,
+    dryRun: z.boolean(),
+    scanned: NonNegativeIntegerSchema,
+    eligible: NonNegativeIntegerSchema,
+    deleted: NonNegativeIntegerSchema,
+    cursor: z.string().nullable(),
+    startedAt: TimestampSchema,
+    finishedAt: TimestampSchema.nullable(),
+    error: z.string().nullable(),
+  })
+  .refine((value) => value.jobId === value.kind, {
+    path: ["jobId"],
+    message: "jobId must equal kind.",
+  });
+
+export const GcRunsResponseSchema: z.ZodType<GcRunsResponse> = z.strictObject({
+  runs: z.array(GcRunResultSchema),
+});
+
 export const DiffSideSchema = z.strictObject({
   version: NonNegativeIntegerSchema,
   hash: NullableHashSchema,
@@ -320,6 +361,10 @@ interface ResponseTypeMap {
   StashListResponse: StashListResponse;
   CreateStashResult: CreateStashResult;
   GetStashResult: GetStashResult;
+  DeleteStashResult: DeleteStashResult;
+  RestoreStashResult: RestoreStashResult;
+  GcRunResult: GcRunResult;
+  GcRunsResponse: GcRunsResponse;
   TokenRecord: TokenRecord;
   CreatedToken: CreatedToken;
   TokenListResponse: TokenListResponse;
@@ -363,6 +408,10 @@ export const RESPONSE_SCHEMAS = {
   StashListResponse: StashListResponseSchema,
   CreateStashResult: StashRecordSchema,
   GetStashResult: StashRecordSchema,
+  DeleteStashResult: DeleteStashResultSchema,
+  RestoreStashResult: StashRecordSchema,
+  GcRunResult: GcRunResultSchema,
+  GcRunsResponse: GcRunsResponseSchema,
   TokenRecord: TokenRecordSchema,
   CreatedToken: CreatedTokenSchema,
   TokenListResponse: TokenListResponseSchema,

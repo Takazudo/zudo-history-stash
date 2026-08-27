@@ -5,6 +5,7 @@ import type {
   CreateStashResult,
   CreateTokenBody,
   CreateTokenResult,
+  DeleteStashResult,
   DeleteFileBody,
   DeleteResult,
   DiffCandidateBody,
@@ -14,7 +15,11 @@ import type {
   HealthResponse,
   ImportBody,
   ImportResult,
+  GcRunResult,
+  GcRunsResponse,
   ListChangesResult,
+  ListGcRunsQuery,
+  ListStashesQuery,
   ListStashesResult,
   ListTokensResult,
   MeResponse,
@@ -22,6 +27,8 @@ import type {
   PutResult,
   RollbackBody,
   RollbackResult,
+  RestoreStashResult,
+  RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
   RpcRequest,
@@ -35,9 +42,14 @@ import type {
   FileGetResult,
   HistoryOptions,
   ListFilesOptions,
-  ListStashesOptions,
   MutationOptions,
 } from "./client.js";
+
+/** Optional raw query values for the GC run history RPC. */
+export type ListGcRunsOptions = Partial<ListGcRunsQuery>;
+
+/** Optional raw query values for the stash list RPC, including deleted-row visibility. */
+export type ListStashesRpcOptions = Partial<ListStashesQuery>;
 
 /** The minimal named RPC binding exposed by the stash Worker. */
 export interface StashRpcBinding {
@@ -50,10 +62,12 @@ export interface StashRpcMethods {
   me(token: string): Promise<ClientResult<MeResponse>>;
   listStashes(
     token: string,
-    options?: ListStashesOptions,
+    options?: ListStashesRpcOptions,
   ): Promise<ClientResult<ListStashesResult>>;
   createStash(token: string, input: CreateStashBody): Promise<ClientResult<CreateStashResult>>;
   getStash(token: string, stash: string): Promise<ClientResult<StashRecord>>;
+  deleteStash(token: string, stash: string): Promise<ClientResult<DeleteStashResult>>;
+  restoreStash(token: string, stash: string): Promise<ClientResult<RestoreStashResult>>;
   createToken(
     token: string,
     stash: string,
@@ -73,6 +87,8 @@ export interface StashRpcMethods {
     input: ImportBody,
   ): Promise<ClientResult<ImportResult>>;
   listChanges(token: string, options?: ChangesOptions): Promise<ClientResult<ChangesPage>>;
+  runGc(token: string, input: RunGcBody): Promise<ClientResult<GcRunResult>>;
+  listGcRuns(token: string, options?: ListGcRunsOptions): Promise<ClientResult<GcRunsResponse>>;
   listFiles(
     token: string,
     stash: string,

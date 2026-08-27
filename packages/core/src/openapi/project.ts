@@ -8,8 +8,11 @@ import {
   DeleteFileBody,
   DiffCandidateBody,
   ImportBody,
+  ListGcRunsQuery,
+  ListStashesQuery,
   PutFileBody,
   RollbackBody,
+  RunGcBody,
   RotateTokenBody,
 } from "../schemas.js";
 import { RESPONSE_SCHEMAS } from "./responses.js";
@@ -253,6 +256,31 @@ function describeRequestRefinements(source: ZodType, schema: JsonSchema): void {
       appendDescriptionsInBranches(item, "message", message);
       appendDescriptionsInBranches(item, "meta", meta);
     }
+  } else if (source === ListStashesQuery) {
+    schema.description = "includeDeleted defaults to false.";
+    appendDescription(schema, "includeDeleted", "Whether soft-deleted stashes are included.");
+  } else if (source === RunGcBody) {
+    schema.description =
+      "kind selects the R2-orphan or ledger job. dryRun and maxObjects default to false and 100; maxObjects is an integer from 1 through 500. cursor is an opaque v1 base64url kind-bound envelope.";
+    appendDescription(schema, "kind", "Selects the garbage-collection job kind.");
+    appendDescription(
+      schema,
+      "dryRun",
+      "Defaults to false; dry runs never delete or persist progress.",
+    );
+    appendDescription(
+      schema,
+      "maxObjects",
+      "Defaults to 100; accepts integers from 1 through 500.",
+    );
+    appendDescription(
+      schema,
+      "cursor",
+      "Opaque v1 base64url kind-bound cursor; explicit input overrides stored progress.",
+    );
+  } else if (source === ListGcRunsQuery) {
+    schema.description = "Results are newest first; limit defaults to 50 and has a maximum of 200.";
+    appendDescription(schema, "kind", "Optional garbage-collection job-kind filter.");
   }
 }
 

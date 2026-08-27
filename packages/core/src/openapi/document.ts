@@ -30,6 +30,8 @@ const DOCUMENT_DESCRIPTION = [
   "Lists and change feeds use keyset cursors (after, before, or since); limit defaults to 50 and has a maximum of 200.",
   "File reads use ETags, If-None-Match, and 304 responses for conditional requests.",
   "Mutation idempotency keys are retained in a 7-day ledger; reusing a key for a different request returns 422 idempotency-key-reused.",
+  "Stash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.",
+  "GC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.",
 ].join("\n\n");
 
 const WILDCARD_WARNING =

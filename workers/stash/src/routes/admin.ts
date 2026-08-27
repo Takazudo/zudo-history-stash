@@ -2,7 +2,7 @@ import {
   ChangesQuery,
   CreateStashBody,
   CreateTokenBody,
-  ListQuery,
+  ListStashesQuery,
   RotateTokenBody,
   StashError,
 } from "@takazudo/zudo-history-stash-core";
@@ -44,7 +44,7 @@ const validateJsonSyntax: MiddlewareHandler<AppEnv> = async (c, next) => {
 admin.get(
   "/v1/stashes",
   requireRoute("listStashes"),
-  zValidator("query", ListQuery, (result) => {
+  zValidator("query", ListStashesQuery, (result) => {
     if (!result.success) validationError("Invalid stash list query.");
   }),
   async (c) => c.json(await adminStore(c).listStashes(c.req.valid("query"))),

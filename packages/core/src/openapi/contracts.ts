@@ -10,10 +10,12 @@ import {
   FileGetQuery,
   HistoryQuery,
   ImportBody,
+  ListGcRunsQuery,
   ListFilesQuery,
-  ListQuery,
+  ListStashesQuery,
   PutFileBody,
   RollbackBody,
+  RunGcBody,
   RotateTokenBody,
 } from "../schemas.js";
 import type { RouteId } from "../routes.js";
@@ -98,7 +100,7 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
     summary: "List stashes",
     description: "Returns a keyset-paginated list of stashes.",
     principalNote: "admin; administrator only.",
-    query: ListQuery,
+    query: ListStashesQuery,
     responses: {
       200: response("A page of stash summaries.", "ListStashesResult", "ListStashesResult"),
     },
@@ -130,6 +132,36 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       200: response("The stash record.", "GetStashResult", "GetStashResult"),
     },
     errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
+    wildcardPath: false,
+  },
+  deleteStash: {
+    summary: "Delete a stash",
+    description:
+      "Soft-deletes a stash, revokes its tokens, and returns the end of its restoration window.",
+    principalNote: "admin; administrator only.",
+    responses: {
+      200: response(
+        "The soft-deleted stash and its restoration deadline.",
+        "DeleteStashResult",
+        "DeleteStashResult",
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("not-found"),
+      error("already-deleted"),
+    ],
+    wildcardPath: false,
+  },
+  restoreStash: {
+    summary: "Restore a stash",
+    description: "Restores a soft-deleted stash during its restoration window.",
+    principalNote: "admin; administrator only.",
+    responses: {
+      200: response("The restored stash record.", "RestoreStashResult", "RestoreStashResult"),
+    },
+    errors: [error("validation"), error("unauthorized"), error("not-found")],
     wildcardPath: false,
   },
   createToken: {
@@ -230,6 +262,29 @@ export const ROUTE_CONTRACTS: Record<RouteId, RouteContract> = {
       ),
     },
     errors: [error("validation"), error("unauthorized"), error("not-found")],
+    wildcardPath: false,
+  },
+  runGc: {
+    summary: "Run garbage collection",
+    description:
+      "Runs one bounded garbage-collection page synchronously for either private R2 orphans or the idempotency ledger. An invocation safety budget may stop a page below maxObjects.",
+    principalNote: "admin; administrator only.",
+    body: RunGcBody,
+    responses: {
+      200: response("The completed garbage-collection run page.", "GcRunResult", "GcRunResult"),
+    },
+    errors: [error("validation"), error("unauthorized"), error("gc-busy")],
+    wildcardPath: false,
+  },
+  listGcRuns: {
+    summary: "List garbage-collection runs",
+    description: "Returns recent garbage-collection run records, optionally filtered by kind.",
+    principalNote: "admin; administrator only.",
+    query: ListGcRunsQuery,
+    responses: {
+      200: response("Recent garbage-collection runs.", "GcRunsResponse", "GcRunsResponse"),
+    },
+    errors: [error("validation"), error("unauthorized")],
     wildcardPath: false,
   },
   listFiles: {

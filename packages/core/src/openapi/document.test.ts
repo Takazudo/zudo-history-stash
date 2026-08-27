@@ -36,7 +36,7 @@ describe("buildOpenApiDocument", () => {
   it("contains every operation with the route identity and short principal", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
-    expect(all).toHaveLength(20);
+    expect(all).toHaveLength(24);
     expect(all.map((operation) => operation.operationId)).toEqual(ROUTES.map((route) => route.id));
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);

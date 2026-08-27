@@ -35,8 +35,12 @@ const UNSUPPORTED_SAMPLES: Record<
   { method: string; path: string }
 > = {
   health: { method: "GET", path: "/v1/health" },
+  deleteStash: { method: "DELETE", path: "/v1/stashes/demo" },
+  restoreStash: { method: "POST", path: "/v1/stashes/demo/restore" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
+  runGc: { method: "POST", path: "/v1/admin/gc" },
+  listGcRuns: { method: "GET", path: "/v1/admin/gc/runs" },
 };
 
 const EMPTY_DIFF_ROUTES = [
@@ -132,6 +136,9 @@ describe("stash administration routes", () => {
       lastChangeId: null,
       lastChangeAt: null,
       createdAt: "2026-08-26T00:00:00.000Z",
+      deletedAt: null,
+      restoreUntil: null,
+      restorable: false,
     });
     fake.createStash("beta");
     fake.createStash("gamma");
@@ -148,6 +155,9 @@ describe("stash administration routes", () => {
           lastChangeId: null,
           lastChangeAt: null,
           createdAt: "2026-08-26T00:00:00.000Z",
+          deletedAt: null,
+          restoreUntil: null,
+          restorable: false,
         },
       ],
       nextAfter: "alpha",

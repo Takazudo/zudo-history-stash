@@ -163,6 +163,14 @@ export const ImportBody = z
   });
 
 export const ListQuery = z.strictObject({ limit, after: z.string().optional() });
+export const ListStashesQuery = z.strictObject({
+  limit,
+  after: z.string().optional(),
+  includeDeleted: z.preprocess(
+    (value) => (value === "true" ? true : value === "false" ? false : value),
+    z.boolean().default(false),
+  ),
+});
 export const ListFilesQuery = z.strictObject({
   includeDeleted: z.preprocess(
     (value) => (value === "true" ? true : value === "false" ? false : value),
@@ -189,6 +197,16 @@ export const DiffCandidateBody = z.strictObject({
   body,
   context: z.number().int().nonnegative().optional(),
 });
+export const RunGcBody = z.strictObject({
+  kind: z.enum(["r2-orphans", "ledger"]),
+  dryRun: z.boolean().default(false),
+  maxObjects: z.number().int().min(1).max(500).default(100),
+  cursor: z.string().optional(),
+});
+export const ListGcRunsQuery = z.strictObject({
+  kind: z.enum(["r2-orphans", "ledger"]).optional(),
+  limit,
+});
 
 export type PutFileBody = z.infer<typeof PutFileBody>;
 export type DeleteFileBody = z.infer<typeof DeleteFileBody>;
@@ -201,7 +219,13 @@ export type RotateTokenBody = z.input<typeof RotateTokenBody>;
 export type DiffQuery = z.infer<typeof DiffQuery>;
 export type DiffCandidateBody = z.infer<typeof DiffCandidateBody>;
 export type ListQuery = z.infer<typeof ListQuery>;
+export type ListStashesQuery = z.input<typeof ListStashesQuery>;
+export type ParsedListStashesQuery = z.output<typeof ListStashesQuery>;
 export type ListFilesQuery = z.infer<typeof ListFilesQuery>;
 export type ChangesQuery = z.infer<typeof ChangesQuery>;
 export type FileGetQuery = z.infer<typeof FileGetQuery>;
 export type HistoryQuery = z.infer<typeof HistoryQuery>;
+export type RunGcBody = z.input<typeof RunGcBody>;
+export type ListGcRunsQuery = z.input<typeof ListGcRunsQuery>;
+export type ParsedRunGcBody = z.output<typeof RunGcBody>;
+export type ParsedListGcRunsQuery = z.output<typeof ListGcRunsQuery>;

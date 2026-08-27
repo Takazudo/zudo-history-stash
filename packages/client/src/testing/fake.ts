@@ -83,12 +83,16 @@ const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
   listStashes: null,
   createStash: null,
   getStash: "read",
+  deleteStash: "write",
+  restoreStash: "write",
   createToken: null,
   listTokens: null,
   rotateToken: null,
   revokeToken: null,
   importHistory: null,
   listChanges: null,
+  runGc: "write",
+  listGcRuns: "read",
   listFiles: "read",
   getFile: "read",
   putFile: "write",
@@ -445,6 +449,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       lastChangeId: last?.changeId ?? null,
       lastChangeAt: last === undefined ? null : iso(last.createdAt),
       createdAt: iso(row.createdAt),
+      deletedAt: null,
+      restoreUntil: null,
+      restorable: false,
     };
   };
 

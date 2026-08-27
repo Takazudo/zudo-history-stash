@@ -2,7 +2,7 @@ import {
   ChangesQuery,
   CreateStashBody,
   CreateTokenBody,
-  ListQuery,
+  ListStashesQuery,
   RotateTokenBody,
   StashError,
   canonicalJson,
@@ -11,6 +11,7 @@ import {
   type ChangesPage,
   type CreatedToken,
   type JsonValue,
+  type ParsedListStashesQuery,
   type RotateTokenResult,
   type StashListResponse,
   type StashRecord,
@@ -227,7 +228,7 @@ export interface AdminStoreDependencies {
 }
 
 export interface AdminStore {
-  listStashes(query: ListQuery): Promise<StashListResponse>;
+  listStashes(query: ParsedListStashesQuery): Promise<StashListResponse>;
   createStash(input: CreateStashBody): Promise<StashRecord>;
   getStash(stash: string): Promise<StashRecord | null>;
   createToken(stash: string, input: CreateTokenBody): Promise<CreatedToken>;
@@ -337,6 +338,9 @@ function mapStashSummary(row: StashAggregateRow): StashSummary {
     lastChangeId: row.last_change_id,
     lastChangeAt: row.last_change_at === null ? null : toIso(row.last_change_at),
     createdAt: toIso(row.created_at),
+    deletedAt: null,
+    restoreUntil: null,
+    restorable: false,
   };
 }
 
@@ -389,7 +393,7 @@ export function createAdminStore(
 
   return {
     async listStashes(query) {
-      const parsed = ListQuery.safeParse(query);
+      const parsed = ListStashesQuery.safeParse(query);
       if (!parsed.success) validation("Invalid stash list query.");
       const { after, limit } = parsed.data;
       const db = env.DB.withSession("first-primary");
@@ -434,6 +438,9 @@ export function createAdminStore(
         lastChangeId: null,
         lastChangeAt: null,
         createdAt: toIso(createdAt),
+        deletedAt: null,
+        restoreUntil: null,
+        restorable: false,
       };
     },
 

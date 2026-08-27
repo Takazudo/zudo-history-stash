@@ -19,6 +19,9 @@ export const GOLDEN_RESPONSES = {
     lastChangeId: null,
     lastChangeAt: null,
     createdAt: GOLDEN_CREATED_AT,
+    deletedAt: null,
+    restoreUntil: null,
+    restorable: false,
   },
   stashList: {
     stashes: [
@@ -30,6 +33,9 @@ export const GOLDEN_RESPONSES = {
         lastChangeId: null,
         lastChangeAt: null,
         createdAt: GOLDEN_CREATED_AT,
+        deletedAt: null,
+        restoreUntil: null,
+        restorable: false,
       },
     ],
     nextAfter: null,

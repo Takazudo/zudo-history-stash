@@ -7,6 +7,13 @@ export const ROUTES = [
   { id: "listStashes", method: "GET", template: "/v1/stashes", principal: "admin" },
   { id: "createStash", method: "POST", template: "/v1/stashes", principal: "admin" },
   { id: "getStash", method: "GET", template: "/v1/stashes/:stash", principal: "admin-or-stash" },
+  { id: "deleteStash", method: "DELETE", template: "/v1/stashes/:stash", principal: "admin" },
+  {
+    id: "restoreStash",
+    method: "POST",
+    template: "/v1/stashes/:stash/restore",
+    principal: "admin",
+  },
   { id: "createToken", method: "POST", template: "/v1/stashes/:stash/tokens", principal: "admin" },
   { id: "listTokens", method: "GET", template: "/v1/stashes/:stash/tokens", principal: "admin" },
   {
@@ -28,6 +35,8 @@ export const ROUTES = [
     principal: "admin",
   },
   { id: "listChanges", method: "GET", template: "/v1/changes", principal: "admin" },
+  { id: "runGc", method: "POST", template: "/v1/admin/gc", principal: "admin" },
+  { id: "listGcRuns", method: "GET", template: "/v1/admin/gc/runs", principal: "admin" },
   { id: "listFiles", method: "GET", template: "/v1/stashes/:stash/files", principal: "read" },
   { id: "getFile", method: "GET", template: "/v1/stashes/:stash/files/*path", principal: "read" },
   { id: "putFile", method: "PUT", template: "/v1/stashes/:stash/files/*path", principal: "write" },

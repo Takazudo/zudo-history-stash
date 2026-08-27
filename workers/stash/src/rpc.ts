@@ -7,8 +7,9 @@ import {
   type FileGetOptions,
   type FileGetResult,
   type HistoryOptions,
+  type ListGcRunsOptions,
   type ListFilesOptions,
-  type ListStashesOptions,
+  type ListStashesRpcOptions,
   type MutationOptions,
   type StashRpcMethods,
 } from "@takazudo/zudo-history-stash";
@@ -19,6 +20,7 @@ import type {
   CreateStashResult,
   CreateTokenBody,
   CreateTokenResult,
+  DeleteStashResult,
   DeleteFileBody,
   DeleteResult,
   DiffCandidateBody,
@@ -28,6 +30,8 @@ import type {
   HealthResponse,
   ImportBody,
   ImportResult,
+  GcRunResult,
+  GcRunsResponse,
   ListChangesResult,
   ListStashesResult,
   ListTokensResult,
@@ -36,6 +40,8 @@ import type {
   PutResult,
   RollbackBody,
   RollbackResult,
+  RestoreStashResult,
+  RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
   RouteId,
@@ -78,9 +84,18 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
 
   async listStashes(
     token: string,
-    options?: ListStashesOptions,
+    options: ListStashesRpcOptions = {},
   ): Promise<ClientResult<ListStashesResult>> {
-    return noThrow(() => rpcClient(this, token).stashes.list(options));
+    const query: Record<string, string> = {};
+    if (options.limit !== undefined) query.limit = String(options.limit);
+    if (options.after !== undefined) query.after = options.after;
+    if (options.includeDeleted !== undefined) query.includeDeleted = String(options.includeDeleted);
+    return rpcRequest(this, "listStashes", {
+      method: "GET",
+      path: "/v1/stashes",
+      ...(Object.keys(query).length === 0 ? {} : { query }),
+      token,
+    });
   }
 
   async createStash(
@@ -92,6 +107,22 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
 
   async getStash(token: string, stash: string): Promise<ClientResult<StashRecord>> {
     return noThrow(() => rpcClient(this, token).stashes.get(stash));
+  }
+
+  async deleteStash(token: string, stash: string): Promise<ClientResult<DeleteStashResult>> {
+    return rpcRequest(this, "deleteStash", {
+      method: "DELETE",
+      path: `/v1/stashes/${stash}`,
+      token,
+    });
+  }
+
+  async restoreStash(token: string, stash: string): Promise<ClientResult<RestoreStashResult>> {
+    return rpcRequest(this, "restoreStash", {
+      method: "POST",
+      path: `/v1/stashes/${stash}/restore`,
+      token,
+    });
   }
 
   async createToken(
@@ -141,6 +172,31 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
 
   async listChanges(token: string, options?: ChangesOptions): Promise<ClientResult<ChangesPage>> {
     return noThrow(() => rpcClient(this, token).changes(options));
+  }
+
+  async runGc(token: string, input: RunGcBody): Promise<ClientResult<GcRunResult>> {
+    return rpcRequest(this, "runGc", {
+      method: "POST",
+      path: "/v1/admin/gc",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      token,
+    });
+  }
+
+  async listGcRuns(
+    token: string,
+    options: ListGcRunsOptions = {},
+  ): Promise<ClientResult<GcRunsResponse>> {
+    const query: Record<string, string> = {};
+    if (options.kind !== undefined) query.kind = options.kind;
+    if (options.limit !== undefined) query.limit = String(options.limit);
+    return rpcRequest(this, "listGcRuns", {
+      method: "GET",
+      path: "/v1/admin/gc/runs",
+      ...(Object.keys(query).length === 0 ? {} : { query }),
+      token,
+    });
   }
 
   async listFiles(
@@ -257,18 +313,32 @@ async function noThrowFile(run: () => Promise<FileGetResult>): Promise<FileGetRe
   }
 }
 
+async function rpcRequest<T>(
+  binding: StashRpc,
+  routeId: RouteId,
+  init: RpcRequest,
+): Promise<ClientResult<T>> {
+  return noThrow(async () => {
+    return (await parseClientResponse<T>(await binding.request(init), routeId)) as ClientResult<T>;
+  });
+}
+
 const rpcMethodsByRoute = {
   health: "health",
   me: "me",
   listStashes: "listStashes",
   createStash: "createStash",
   getStash: "getStash",
+  deleteStash: "deleteStash",
+  restoreStash: "restoreStash",
   createToken: "createToken",
   listTokens: "listTokens",
   rotateToken: "rotateToken",
   revokeToken: "revokeToken",
   importHistory: "importHistory",
   listChanges: "listChanges",
+  runGc: "runGc",
+  listGcRuns: "listGcRuns",
   listFiles: "listFiles",
   getFile: "getFile",
   putFile: "putFile",
