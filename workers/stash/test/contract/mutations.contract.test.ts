@@ -5,6 +5,19 @@ import { createAdminClient, uniqueStash, unwrap } from "./helpers.js";
 
 const EXPIRY_MARGIN_MS = 100;
 const MAX_BOUNDARY_WAIT_MS = 15_000;
+const LARGE_FILE_BYTES = 1_500_000;
+const LARGE_FILE_PREFIX = "History Stash R2 large-file fixture\n";
+const LARGE_FILE_SUFFIX = "\nHistory Stash R2 large-file fixture end\n";
+const LARGE_FILE_LINE = `${"x".repeat(4_095)}\n`;
+
+function largeFileBody(): string {
+  const fillBytes = LARGE_FILE_BYTES - LARGE_FILE_PREFIX.length - LARGE_FILE_SUFFIX.length;
+  const body = `${LARGE_FILE_PREFIX}${LARGE_FILE_LINE.repeat(
+    Math.floor(fillBytes / LARGE_FILE_LINE.length),
+  )}${"x".repeat(fillBytes % LARGE_FILE_LINE.length)}${LARGE_FILE_SUFFIX}`;
+  if (body.length !== LARGE_FILE_BYTES) throw new Error("Large-file fixture size drifted");
+  return body;
+}
 
 async function waitUntilAfter(expiresAt: string): Promise<void> {
   const expiresAtMs = Date.parse(expiresAt);
@@ -170,6 +183,108 @@ describe("local-only HTTP mutation contract", () => {
       });
 
       unwrap(await admin.stashes.tokens(stash).revoke(successor.id), "revoke rotation successor");
+    },
+  );
+
+  it.runIf(MUTATION_ALLOWED)(
+    "round-trips, histories, diffs, rolls back, and conditionally reads a 1.5 MB file",
+    async () => {
+      const admin = createAdminClient();
+      const stash = uniqueStash("large-r2");
+      unwrap(await admin.stashes.create({ name: stash }), "create large-file fixture stash");
+
+      const files = admin.files(stash);
+      const path = "contract/large-r2.txt";
+      const body = largeFileBody();
+      expect(new TextEncoder().encode(body).byteLength).toBe(LARGE_FILE_BYTES);
+
+      const first = unwrap(
+        await files.put(path, {
+          body,
+          expectedVersion: null,
+          author: "contract-suite",
+          message: "Create spilled fixture",
+        }),
+        "create large spilled file",
+      );
+      if ("unchanged" in first) throw new Error("large-file create unexpectedly skipped a write");
+      expect(first).toMatchObject({
+        version: 1,
+        hash: expect.stringMatching(/^sha256-[0-9a-f]{64}$/u),
+        size: LARGE_FILE_BYTES,
+      });
+
+      const second = unwrap(
+        await files.put(path, {
+          body: "small successor\n",
+          expectedVersion: 1,
+          author: "contract-suite",
+          message: "Create small successor",
+        }),
+        "create small successor",
+      );
+      if ("unchanged" in second) {
+        throw new Error("large-file successor unexpectedly skipped a write");
+      }
+      expect(second).toMatchObject({ version: 2, size: 16 });
+
+      const history = unwrap(await files.history(path), "read large-file history");
+      expect(history).toMatchObject({ path, headVersion: 2, deleted: false, total: 2 });
+      expect(
+        history.versions.map(({ version, kind, hash, size }) => ({
+          version,
+          kind,
+          hash,
+          size,
+        })),
+      ).toEqual([
+        { version: 2, kind: "put", hash: second.hash, size: 16 },
+        { version: 1, kind: "put", hash: first.hash, size: LARGE_FILE_BYTES },
+      ]);
+
+      const diff = unwrap(
+        await files.diff(path, { from: 1, to: 2 }),
+        "diff large file against small successor",
+      );
+      expect(diff).toEqual({
+        state: "oversized",
+        reason: "bytes",
+        from: { version: 1, hash: first.hash, deleted: false },
+        to: { version: 2, hash: second.hash, deleted: false },
+      });
+
+      const rollback = unwrap(
+        await files.rollback(path, {
+          toVersion: 1,
+          expectedVersion: 2,
+          author: "contract-suite",
+          message: "Restore spilled fixture",
+        }),
+        "roll back to large spilled file",
+      );
+      expect(rollback).toMatchObject({
+        version: 3,
+        rollbackOf: 1,
+        hash: first.hash,
+      });
+
+      const restored = await files.get(path);
+      if (!restored.ok || "notModified" in restored) {
+        throw new Error("rolled-back large-file head was not readable");
+      }
+      expect(restored.value).toMatchObject({
+        path,
+        version: 3,
+        kind: "rollback",
+        hash: first.hash,
+        size: LARGE_FILE_BYTES,
+        deleted: false,
+        body,
+      });
+      expect(restored.value.etag).toBe(`"v3-${first.hash}"`);
+
+      const cached = await files.get(path, { ifNoneMatch: restored.value.etag });
+      expect(cached).toEqual({ ok: true, notModified: true });
     },
   );
 

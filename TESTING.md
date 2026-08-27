@@ -31,6 +31,14 @@ Use a stash principal because administrators are exempt, and use a rejecting fak
 prove limiter failures fail open. `createTestEnv()` supplies fresh allow-all bindings for
 unspecified limiters, so denial state is never shared between transports or tests.
 
+The raised payload contract is pinned in two places. Worker route tests use streamed ASCII JSON
+fixtures to prove the raw 32 MiB request boundary without materializing a second decoded copy. RPC
+parity uses one ASCII request string at a time and dispatches HTTP then RPC sequentially: an exact
+5,000,000-byte file round-trips through R2, 5,000,001 bytes is `413 payload-too-large`, and a valid
+aggregate import above 32 MiB is the same `413` on both transports. Every transport starts with a
+fresh database and real workerd R2 bucket; rejection cases prove zero file/version/blob rows and
+zero R2 reads or writes.
+
 ### `@cloudflare/vitest-plugin` 1.0 D1 isolation
 
 Verified with two tests in the same test file inserting the same primary-key row: D1 storage is isolated per test file, not per individual test. The second test observes the first test's row and receives a UNIQUE-constraint failure. Stateful suites must call the shared `resetDatabase()` helper from `beforeEach`; migrations are applied once from `test/setup.ts` with `applyD1Migrations`.
@@ -68,6 +76,11 @@ grace period, the second `409 already-rotated` response, and predecessor expiry 
 remains usable. These cases intentionally use the running Worker's real clock and bindings plus
 unique stash/token keys. Every boundary wait is derived from the expiry timestamp returned by the
 Worker, with a small post-boundary margin, rather than from a guessed fixed delay.
+
+The same local-only lane creates a unique 1.5 MB ASCII file and drives the full spilled-body
+lifecycle: PUT, a small successor, metadata-only history, byte-oversized diff, rollback to the
+original hash, exact GET body, and conditional `304`. Because the stash name is unique, rerunning
+the contract against persisted local D1/R2 state does not depend on or overwrite an earlier run.
 
 The injected-clock Worker/RPC tests and fake conformance trace run inside the ordinary workspace
 test lane. The server-backed HTTP contract, checked-in live conformance runner, and Playwright live
@@ -156,11 +169,26 @@ The local convention is always:
 
 `pnpm dev:full` builds the libraries and viewer assets, applies local D1 migrations, and passes the
 viewer config first to Wrangler. `pnpm wait:full` polls `/api/v1/health` until it sees the
-`ZHS_HEALTH_OK` marker. `pnpm seed:dev` then creates the `demo` fixture. The seed is idempotent: it
-skips an existing `demo`; `--reset` creates a fresh suffixed stash because deletion is deferred. A
-successful new seed prints its write token exactly once, but no test or follow-up command consumes
-that output. The bare script's `http://localhost:8787` default is for `dev:stash`; always use the
-`/api` base URL above with `dev:full`.
+`ZHS_HEALTH_OK` marker. `pnpm seed:dev` then creates the `demo` fixture. The base seed is idempotent:
+it skips an existing `demo`; `--reset` creates a fresh suffixed stash because deletion is deferred.
+A successful new seed prints its write token exactly once, but no test or follow-up command
+consumes that output. The bare script's `http://localhost:8787` default is for `dev:stash`; always
+use the `/api` base URL above with `dev:full`.
+
+Add the deterministic 1.5 MB R2-backed fixture independently of whether `demo` already exists:
+
+```bash
+STASH_ADMIN_TOKEN=dev-admin-token \
+  API_BASE_URL=http://localhost:8787/api \
+  node scripts/seed-dev.mjs --base-url http://localhost:8787/api --large
+```
+
+`--large` reserves `fixtures/r2-large.txt`. It creates the file when absent, skips only when the
+existing body, byte count, and SHA-256 hash match exactly, and fails instead of overwriting a
+mismatched or tombstoned history. `--reset --large` creates both fixtures in a fresh suffixed stash.
+`dev:full` passes `--persist-to .wrangler/state`, so stopping it and starting it again with the same
+working tree preserves both local D1 pointers and R2 objects; do not remove that state between the
+two halves of a persistence proof.
 
 The one-command browser lane lets Playwright own this same start → marker wait → seed lifecycle:
 
@@ -178,11 +206,27 @@ STASH_ADMIN_TOKEN=dev-admin-token pnpm dev:full
 HEALTH_URL=http://localhost:8787/api/v1/health node scripts/wait-for.mjs
 STASH_ADMIN_TOKEN=dev-admin-token \
   API_BASE_URL=http://localhost:8787/api \
-  node scripts/seed-dev.mjs --base-url http://localhost:8787/api
+  node scripts/seed-dev.mjs --base-url http://localhost:8787/api --large
 PW_BASE_URL=http://localhost:8787 \
   STASH_ADMIN_TOKEN=dev-admin-token \
   pnpm --filter zudo-history-stash-viewer e2e:live
 ```
+
+The Chromium mock lane verifies the 1.5 MB body without copying it back through Playwright: browser
+code reports its UTF-8 length and SHA-256 digest. At mobile, tablet, and desktop widths it requires
+`html`, `body`, and `.page__scroll` to remain horizontally contained while `.file-body-pane` owns
+the long-line overflow; it also renders the byte-oversized diff card and both resolved raw-version
+links. Run only that deterministic browser case with:
+
+```bash
+pnpm --filter zudo-history-stash-viewer e2e --project=chromium --grep "1.5 MB file"
+```
+
+The guarded `chromium-live` lane separately writes the same fixed body through the viewer's
+relative `/api` proxy using a uniquely labelled write token and unique file path, reads the exact
+body back, then tombstones the file and revokes the token in `finally`. That cleanup is deliberately
+described as **logical**: immutable D1 history and content-addressed R2 bytes may remain. Run the
+full live lane only with its managed `dev:full` lifecycle or the two-terminal command above.
 
 The live rollback replay proof deliberately retries **without closing the dialog**. The first
 request commits in the real stash Worker, while Playwright aborts its browser-facing response.
