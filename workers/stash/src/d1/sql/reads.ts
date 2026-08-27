@@ -18,7 +18,10 @@ export const SELECT_FILE_HEAD = `
     v.created_at AS created_at,
     v.content_type AS content_type,
     CASE WHEN v.kind = 'delete' THEN 1 ELSE 0 END AS deleted,
-    b.body AS body
+    b.hash AS blob_hash,
+    b.body AS blob_body,
+    b.r2_key AS blob_r2_key,
+    b.size_bytes AS blob_size
   FROM files AS f
   JOIN versions AS v
     ON v.stash_name = f.stash_name
@@ -46,7 +49,10 @@ export const SELECT_FILE_VERSION = `
     v.created_at AS created_at,
     v.content_type AS content_type,
     CASE WHEN v.kind = 'delete' THEN 1 ELSE 0 END AS deleted,
-    b.body AS body
+    b.hash AS blob_hash,
+    b.body AS blob_body,
+    b.r2_key AS blob_r2_key,
+    b.size_bytes AS blob_size
   FROM files AS f
   JOIN versions AS v
     ON v.stash_name = f.stash_name
@@ -180,7 +186,10 @@ export interface FileReadRow {
   created_at: number;
   content_type: string;
   deleted: number;
-  body: string | null;
+  blob_hash: string | null;
+  blob_body: string | null;
+  blob_r2_key: string | null;
+  blob_size: number | null;
 }
 
 export interface FileSummaryRow {
