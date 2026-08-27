@@ -27,9 +27,27 @@ export async function seedStash(name: string): Promise<void> {
 
 export async function resetDatabase(): Promise<void> {
   const { DB: db, BLOBS: blobs } = createTestEnv().env;
-  for (const table of ["idempotency", "versions", "files", "blobs", "tokens", "stashes"]) {
+  for (const table of [
+    "gc_runs",
+    "idempotency",
+    "versions",
+    "files",
+    "blobs",
+    "tokens",
+    "stashes",
+  ]) {
     await db.prepare(`DELETE FROM ${table}`).run();
   }
+  await db
+    .prepare(
+      `UPDATE gc_jobs
+       SET next_cursor = NULL,
+           lease_owner = NULL,
+           lease_generation = 0,
+           lease_until = NULL,
+           updated_at = 0`,
+    )
+    .run();
   await db.prepare("DELETE FROM sqlite_sequence WHERE name = 'versions'").run();
 
   for (;;) {

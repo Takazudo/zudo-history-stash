@@ -10,4 +10,7 @@ export interface Env {
   RL_DIFF: RateLimiter;
   STASH_ADMIN_TOKEN: string;
   ALLOWED_ORIGINS: string;
+  STASH_DELETE_GRACE_DAYS: string;
+  GC_ORPHAN_MIN_AGE_MS: string;
+  GC_LEASE_TTL_MS: string;
 }
