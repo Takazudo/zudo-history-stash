@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 
 import { createStashClient } from "@takazudo/zudo-history-stash";
+import { sha256Hex } from "@takazudo/zudo-history-stash-core";
 
 const DEFAULT_BASE_URL = "http://localhost:8787";
 const DEFAULT_STASH_NAME = "demo";
+const LARGE_FILE_BYTES = 1_500_000;
+const LARGE_FILE_PATH = "fixtures/r2-large.txt";
+const LARGE_FILE_PREFIX = "History Stash R2 large-file fixture\n";
+const LARGE_FILE_SUFFIX = "\nHistory Stash R2 large-file fixture end\n";
+const LARGE_FILE_LINE = `${"x".repeat(4_095)}\n`;
 
 const GUIDE_VERSIONS = [
   {
@@ -21,17 +27,22 @@ const GUIDE_VERSIONS = [
 ];
 
 function usage() {
-  return "Usage: node scripts/seed-dev.mjs [--base-url URL] [--reset]";
+  return "Usage: node scripts/seed-dev.mjs [--base-url URL] [--reset] [--large]";
 }
 
 function readOptions(argv) {
   let baseUrl = process.env.API_BASE_URL || DEFAULT_BASE_URL;
   let reset = false;
+  let large = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--reset") {
       reset = true;
+      continue;
+    }
+    if (argument === "--large") {
+      large = true;
       continue;
     }
     if (argument === "--base-url") {
@@ -58,7 +69,7 @@ function readOptions(argv) {
     throw new Error(`--base-url must use http or https: ${baseUrl}`);
   }
 
-  return { baseUrl: baseUrl.replace(/\/+$/u, ""), reset };
+  return { baseUrl: baseUrl.replace(/\/+$/u, ""), large, reset };
 }
 
 function isMissingFileError(error) {
@@ -94,6 +105,80 @@ function freshResetName() {
 
 function resultError(label, result) {
   return new Error(`${label} failed (${result.error.code}): ${result.error.message}`);
+}
+
+function largeFileBody() {
+  const fillBytes = LARGE_FILE_BYTES - LARGE_FILE_PREFIX.length - LARGE_FILE_SUFFIX.length;
+  const body = `${LARGE_FILE_PREFIX}${LARGE_FILE_LINE.repeat(
+    Math.floor(fillBytes / LARGE_FILE_LINE.length),
+  )}${"x".repeat(fillBytes % LARGE_FILE_LINE.length)}${LARGE_FILE_SUFFIX}`;
+  if (body.length !== LARGE_FILE_BYTES) throw new Error("Large-file fixture size drifted");
+  return body;
+}
+
+async function seedLargeFile(client, stashName) {
+  const files = client.files(stashName);
+  const body = largeFileBody();
+  const expectedHash = await sha256Hex(body);
+  const existing = await files.get(LARGE_FILE_PATH);
+  if (existing.ok) {
+    if ("notModified" in existing) {
+      throw new Error(`Reading ${LARGE_FILE_PATH} unexpectedly returned not-modified`);
+    }
+    const record = existing.value;
+    if (
+      record.body !== body ||
+      record.size !== LARGE_FILE_BYTES ||
+      record.hash !== expectedHash ||
+      record.deleted
+    ) {
+      throw new Error(
+        `Existing ${LARGE_FILE_PATH} does not match the reserved large fixture; refusing to overwrite it.`,
+      );
+    }
+    return "existing";
+  }
+  if (existing.error.code === "file-deleted") {
+    throw new Error(
+      `${LARGE_FILE_PATH} is tombstoned; use --reset for a fresh stash instead of rewriting history.`,
+    );
+  }
+  if (existing.error.code !== "not-found") {
+    throw resultError(`Checking ${LARGE_FILE_PATH}`, existing);
+  }
+
+  const put = await files.put(LARGE_FILE_PATH, {
+    body,
+    expectedVersion: null,
+    author: "seed-dev",
+    message: "Seed deterministic 1.5 MB R2 fixture",
+    meta: { fixture: "seed-dev-large" },
+  });
+  if (!put.ok) throw resultError(`Writing ${LARGE_FILE_PATH}`, put);
+  if (
+    "unchanged" in put.value ||
+    put.value.version !== 1 ||
+    put.value.size !== LARGE_FILE_BYTES ||
+    put.value.hash !== expectedHash
+  ) {
+    throw new Error(`Writing ${LARGE_FILE_PATH} returned an unexpected mutation result`);
+  }
+  return "created";
+}
+
+async function reportExistingStash(admin, stashName, baseUrl, large) {
+  if (!large) {
+    console.log(`Stash "${stashName}" already exists; seed skipped.`);
+    return;
+  }
+
+  const largeResult = await seedLargeFile(admin, stashName);
+  console.log(`Stash "${stashName}" already exists; base seed skipped.`);
+  console.log(
+    largeResult === "created"
+      ? `Seeded ${LARGE_FILE_PATH} (${String(LARGE_FILE_BYTES)} bytes) through ${baseUrl}.`
+      : `${LARGE_FILE_PATH} already matches; large seed skipped.`,
+  );
 }
 
 async function seedGuideVersions(client, stashName) {
@@ -140,7 +225,7 @@ async function seedDeletedNote(client, stashName) {
 }
 
 async function main() {
-  const { baseUrl, reset } = readOptions(process.argv.slice(2));
+  const { baseUrl, large, reset } = readOptions(process.argv.slice(2));
   const adminToken = loadLocalAdminToken();
   const stashName = reset ? freshResetName() : DEFAULT_STASH_NAME;
   const admin = createStashClient({ baseUrl, token: adminToken });
@@ -148,7 +233,7 @@ async function main() {
   if (!reset) {
     const existing = await admin.stashes.get(stashName);
     if (existing.ok) {
-      console.log(`Stash "${stashName}" already exists; seed skipped.`);
+      await reportExistingStash(admin, stashName, baseUrl, large);
       return;
     }
     if (existing.error.code !== "not-found") {
@@ -163,7 +248,7 @@ async function main() {
   });
   if (!created.ok) {
     if (!reset && created.error.code === "exists") {
-      console.log(`Stash "${stashName}" already exists; seed skipped.`);
+      await reportExistingStash(admin, stashName, baseUrl, large);
       return;
     }
     throw resultError(`Creating stash "${stashName}"`, created);
@@ -179,8 +264,12 @@ async function main() {
   await seedGuideVersions(writer, stashName);
   await seedDeletedNote(writer, stashName);
   await rollbackGuide(writer, stashName);
+  const largeResult = large ? await seedLargeFile(writer, stashName) : null;
 
   console.log(`Seeded stash "${stashName}" through ${baseUrl}.`);
+  if (largeResult === "created") {
+    console.log(`Seeded ${LARGE_FILE_PATH} (${String(LARGE_FILE_BYTES)} bytes).`);
+  }
   console.log(`Write token (shown once): ${tokenResult.value.token}`);
 }
 

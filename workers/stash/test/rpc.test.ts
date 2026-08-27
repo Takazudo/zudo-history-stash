@@ -1,4 +1,9 @@
-import type { RpcRequest } from "@takazudo/zudo-history-stash-core";
+import {
+  BODY_LIMIT_BYTES,
+  MAX_BODY_BYTES,
+  sha256Hex as contentSha256Hex,
+  type RpcRequest,
+} from "@takazudo/zudo-history-stash-core";
 import { createStashClient } from "@takazudo/zudo-history-stash";
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
@@ -9,7 +14,7 @@ import { createStashStore } from "../src/d1/store.js";
 import type { Env } from "../src/env.js";
 import { StashRpc } from "../src/rpc.js";
 import { resetDatabase } from "./helpers/app.js";
-import { createTestEnv } from "./helpers/env.js";
+import { createTestEnv, wrapBlobs, type BlobCallCounts } from "./helpers/env.js";
 import {
   RPC_FIXED_NOW,
   RPC_FOREIGN_TOKEN,
@@ -30,6 +35,8 @@ const PARITY_HEADERS = [
 
 const RPC_EXPIRED_TOKEN = `zhs_${"E".repeat(43)}`;
 const RPC_EXPIRED_TOKEN_ID = `tok_${"e".repeat(32)}`;
+const RPC_MAX_FILE_PATH = "docs/rpc-max.txt";
+const RPC_AGGREGATE_FILE_PATH = "docs/rpc-aggregate.txt";
 
 interface ResponseSnapshot {
   status: number;
@@ -92,6 +99,51 @@ async function dispatchRpc(init: RpcRequest, bindings: Env): Promise<Response> {
   const response = await new StashRpc(ctx, bindings).request(init);
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+async function dispatchTransport(
+  transport: "http" | "rpc",
+  init: RpcRequest,
+  bindings: Env,
+): Promise<Response> {
+  return transport === "http" ? dispatchHttp(init, bindings) : dispatchRpc(init, bindings);
+}
+
+async function storageCounts(bindings: Env): Promise<{
+  blobs: number;
+  files: number;
+  objects: number;
+  versions: number;
+}> {
+  const [files, versions, blobs, objects] = await Promise.all([
+    bindings.DB.prepare("SELECT COUNT(*) AS count FROM files").first<{ count: number }>(),
+    bindings.DB.prepare("SELECT COUNT(*) AS count FROM versions").first<{ count: number }>(),
+    bindings.DB.prepare("SELECT COUNT(*) AS count FROM blobs").first<{ count: number }>(),
+    bindings.BLOBS.list({ prefix: `${RPC_STASH}/` }),
+  ]);
+  return {
+    files: files?.count ?? -1,
+    versions: versions?.count ?? -1,
+    blobs: blobs?.count ?? -1,
+    objects: objects.objects.length,
+  };
+}
+
+function aggregateImportBody(): string {
+  const escapedBodyPrefix = "\\u0001".repeat(800_000);
+  const entries: string[] = [];
+  for (let index = 0; index < 7; index += 1) {
+    entries.push(
+      `{"kind":"put","body":"${escapedBodyPrefix}${String(index)}","createdAt":${String(
+        1_000 + index,
+      )}}`,
+    );
+  }
+  const body = `{"path":"${RPC_AGGREGATE_FILE_PATH}","expectedVersion":null,"versions":[${entries.join(
+    ",",
+  )}]}`;
+  if (body.length <= BODY_LIMIT_BYTES) throw new Error("Aggregate RPC fixture is not oversized");
+  return body;
 }
 
 async function putFixture(
@@ -508,6 +560,163 @@ describe("HTTP and RPC parity", () => {
       expect(results.rpc?.headers).toMatchObject(scenario.expectedHeaders);
     }
   });
+});
+
+describe.sequential("large payload HTTP and RPC parity", () => {
+  it("accepts and round-trips the exact 5,000,000-byte file boundary through R2", async () => {
+    const body = "m".repeat(MAX_BODY_BYTES);
+    const hash = await contentSha256Hex(body);
+    const putInit = jsonRequest(
+      "PUT",
+      `/v1/stashes/${RPC_STASH}/files/${RPC_MAX_FILE_PATH}`,
+      { body, expectedVersion: null },
+      RPC_WRITE_TOKEN,
+    );
+    const getInit: RpcRequest = {
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/files/${RPC_MAX_FILE_PATH}`,
+      token: RPC_READ_TOKEN,
+    };
+    const results: Partial<
+      Record<
+        "http" | "rpc",
+        {
+          calls: BlobCallCounts;
+          get: ResponseSnapshot;
+          put: ResponseSnapshot;
+          storage: Awaited<ReturnType<typeof storageCounts>>;
+        }
+      >
+    > = {};
+
+    for (const transport of ["http", "rpc"] as const) {
+      await resetDatabase();
+      await seedRpcFixture();
+      const calls: BlobCallCounts = { get: -1, put: -1 };
+      const bindings = wrapBlobs(createTestEnv().env, { count: calls });
+      const put = await snapshot(await dispatchTransport(transport, putInit, bindings));
+      const get = await snapshot(await dispatchTransport(transport, getInit, bindings));
+      results[transport] = {
+        put,
+        get,
+        calls: { ...calls },
+        storage: await storageCounts(bindings),
+      };
+    }
+
+    expect(results.rpc).toEqual(results.http);
+    expect(results.rpc?.put).toMatchObject({
+      status: 201,
+      headers: { "content-type": "application/json", "x-stash-version": null },
+    });
+    expect(results.rpc?.get).toMatchObject({
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        etag: `"v1-${hash}"`,
+        "x-stash-version": "1",
+      },
+    });
+    const record = JSON.parse(results.rpc?.get.body ?? "null") as {
+      body?: unknown;
+      hash?: unknown;
+      path?: unknown;
+      size?: unknown;
+      version?: unknown;
+    };
+    expect(record).toMatchObject({
+      path: RPC_MAX_FILE_PATH,
+      version: 1,
+      hash,
+      size: MAX_BODY_BYTES,
+      body,
+    });
+    expect(results.rpc?.calls).toEqual({ get: 1, put: 1 });
+    expect(results.rpc?.storage).toEqual({ files: 1, versions: 1, blobs: 1, objects: 1 });
+  }, 60_000);
+
+  it("rejects a 5,000,001-byte file body as the exact 413 contract without storage", async () => {
+    const body = "x".repeat(MAX_BODY_BYTES + 1);
+    const init = jsonRequest(
+      "PUT",
+      `/v1/stashes/${RPC_STASH}/files/docs/rpc-too-large.txt`,
+      { body, expectedVersion: null },
+      RPC_WRITE_TOKEN,
+    );
+    const results: Partial<Record<"http" | "rpc", ResponseSnapshot>> = {};
+
+    for (const transport of ["http", "rpc"] as const) {
+      await resetDatabase();
+      await seedRpcFixture();
+      const calls: BlobCallCounts = { get: -1, put: -1 };
+      const bindings = wrapBlobs(createTestEnv().env, { count: calls });
+      results[transport] = await snapshot(await dispatchTransport(transport, init, bindings));
+      expect(calls).toEqual({ get: 0, put: 0 });
+      await expect(storageCounts(bindings)).resolves.toEqual({
+        files: 0,
+        versions: 0,
+        blobs: 0,
+        objects: 0,
+      });
+    }
+
+    expect(results.rpc).toEqual(results.http);
+    expect(results.rpc).toEqual({
+      status: 413,
+      body: '{"error":{"code":"payload-too-large","message":"The file body is too large."}}',
+      headers: {
+        etag: null,
+        "x-stash-version": null,
+        "idempotent-replayed": null,
+        "content-type": "application/json",
+        "retry-after": null,
+      },
+    });
+  }, 60_000);
+
+  it("rejects a valid aggregate import above 32 MiB as the exact 413 contract without storage", async () => {
+    const body = aggregateImportBody();
+    const init: RpcRequest = {
+      method: "POST",
+      path: `/v1/stashes/${RPC_STASH}/import`,
+      headers: {
+        "Content-Length": String(body.length),
+        "Content-Type": "application/json",
+      },
+      body,
+      token: "test-admin",
+    };
+    const results: Partial<Record<"http" | "rpc", ResponseSnapshot>> = {};
+
+    for (const transport of ["http", "rpc"] as const) {
+      await resetDatabase();
+      await seedRpcFixture();
+      const calls: BlobCallCounts = { get: -1, put: -1 };
+      const bindings = wrapBlobs(createTestEnv().env, { count: calls });
+      results[transport] = await snapshot(await dispatchTransport(transport, init, bindings));
+      expect(calls).toEqual({ get: 0, put: 0 });
+      await expect(storageCounts(bindings)).resolves.toEqual({
+        files: 0,
+        versions: 0,
+        blobs: 0,
+        objects: 0,
+      });
+    }
+
+    expect(body.length).toBeGreaterThan(BODY_LIMIT_BYTES);
+    expect(results.rpc).toEqual(results.http);
+    expect(results.rpc).toEqual({
+      status: 413,
+      body: '{"error":{"code":"payload-too-large","message":"The request payload is too large."}}',
+      headers: {
+        etag: null,
+        "x-stash-version": null,
+        "idempotent-replayed": null,
+        "content-type": "application/json",
+        "retry-after": null,
+      },
+    });
+  }, 60_000);
 });
 
 describe("named-entrypoint RPC boundary", () => {

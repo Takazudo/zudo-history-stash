@@ -1,9 +1,14 @@
 import type { APIRequestContext, APIResponse, Page } from "@playwright/test";
+import { sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { expect, test } from "./fixtures/console-errors.js";
 
 const ADMIN_TOKEN = process.env.STASH_ADMIN_TOKEN ?? "dev-admin-token";
 const ADMIN_AUTHORIZATION = { Authorization: `Bearer ${ADMIN_TOKEN}` };
 const GUIDE_PATH = "docs/guide.md";
+const LARGE_FILE_BYTES = 1_500_000;
+const LARGE_FILE_PREFIX = "History Stash R2 large-file fixture\n";
+const LARGE_FILE_SUFFIX = "\nHistory Stash R2 large-file fixture end\n";
+const LARGE_FILE_LINE = `${"x".repeat(4_095)}\n`;
 
 interface HistoryResponse {
   total: number;
@@ -51,6 +56,15 @@ function authorization(token: string): { Authorization: string } {
 
 function idempotencyKey(kind: string): string {
   return `viewer-live-${kind}-${globalThis.crypto.randomUUID()}`;
+}
+
+function largeFileBody(): string {
+  const fillBytes = LARGE_FILE_BYTES - LARGE_FILE_PREFIX.length - LARGE_FILE_SUFFIX.length;
+  const body = `${LARGE_FILE_PREFIX}${LARGE_FILE_LINE.repeat(
+    Math.floor(fillBytes / LARGE_FILE_LINE.length),
+  )}${"x".repeat(fillBytes % LARGE_FILE_LINE.length)}${LARGE_FILE_SUFFIX}`;
+  if (body.length !== LARGE_FILE_BYTES) throw new Error("Large-file fixture size drifted");
+  return body;
 }
 
 function liveFileUrl(path: string): string {
@@ -284,6 +298,101 @@ test("@live viewer renders the seeded v2 to v3 CJK and CRLF diff", async ({ page
     page.getByText("CRLF line endings on the new side are shown normalized", { exact: true }),
   ).toBeVisible();
   expect(pageErrors).toEqual([]);
+});
+
+test("@live viewer proxy round-trips a fixed 1.5 MB body with a minted write token", async ({
+  request,
+}) => {
+  await waitForDemo(request);
+  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const path = `e2e/large-${runId}.txt`;
+  const label = `viewer-live-large-${runId}`;
+  const resources: LiveResources = {
+    path,
+    tokenLabel: label,
+    tokenId: null,
+    tokenSecret: null,
+  };
+
+  let primaryFailure: unknown = null;
+  let cleanupFailures: Error[] = [];
+  try {
+    const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
+      headers: ADMIN_AUTHORIZATION,
+      data: { label, scope: "write" },
+    });
+    await requireStatus(mintResponse, 201, "mint large-file write token");
+    const minted = (await mintResponse.json()) as MintedToken;
+    if (typeof minted.id === "string") resources.tokenId = minted.id;
+    if (typeof minted.token === "string") resources.tokenSecret = minted.token;
+    expect(minted).toEqual({
+      id: expect.stringMatching(/^tok_/u),
+      token: expect.stringMatching(/^zhs_/u),
+      label,
+      scope: "write",
+      createdAt: expect.any(String),
+      expiresAt: null,
+      rotatedFrom: null,
+    });
+
+    const body = largeFileBody();
+    const hash = await sha256Hex(body);
+    const put = await request.put(liveFileUrl(path), {
+      headers: {
+        ...authorization(minted.token),
+        "Idempotency-Key": idempotencyKey("large-put"),
+      },
+      data: {
+        body,
+        expectedVersion: null,
+        author: "viewer-live-large",
+        message: "Create fixed 1.5 MB proxy fixture",
+      },
+    });
+    await requireStatus(put, 201, `create ${path} through the viewer proxy`);
+    const mutation = (await put.json()) as MutationResult & { hash: string; size: number };
+    expect(mutation).toMatchObject({
+      version: 1,
+      hash,
+      size: LARGE_FILE_BYTES,
+      changeId: expect.any(Number),
+      createdAt: expect.any(String),
+    });
+
+    const read = await request.get(liveFileUrl(path), {
+      headers: authorization(minted.token),
+    });
+    await requireStatus(read, 200, `read ${path} through the viewer proxy`);
+    expect(read.headers()["x-stash-version"]).toBe("1");
+    expect(read.headers().etag).toBe(`"v1-${hash}"`);
+    const record = (await read.json()) as {
+      body?: unknown;
+      deleted?: unknown;
+      hash?: unknown;
+      path?: unknown;
+      size?: unknown;
+      version?: unknown;
+    };
+    expect(record).toMatchObject({
+      path,
+      version: 1,
+      hash,
+      size: LARGE_FILE_BYTES,
+      deleted: false,
+      body,
+    });
+  } catch (error: unknown) {
+    primaryFailure = error;
+  } finally {
+    cleanupFailures = await cleanupUniqueResources(request, resources);
+  }
+
+  if (primaryFailure !== null || cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
+      "large-file proxy flow or its verified logical cleanup failed",
+    );
+  }
 });
 
 test("@live viewer saves and rolls back an isolated file with a minted write token", async ({
