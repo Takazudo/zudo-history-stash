@@ -7,6 +7,7 @@
 @import "../components/delete-stash-dialog.css";
 @import "../components/edit-workbench.css";
 @import "../components/history-rail.css";
+@import "../components/live-indicator.css";
 @import "../components/gc-panel.css";
 @import "../components/new-file-form.css";
 @import "../components/proposal.css";
