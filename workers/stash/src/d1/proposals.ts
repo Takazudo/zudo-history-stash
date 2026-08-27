@@ -1,4 +1,5 @@
 import {
+  ApproveProposalBody,
   CreateProposalBody,
   DIFF_MAX_BYTES,
   IDEMPOTENCY_KEY_MAX_CHARS,
@@ -6,6 +7,7 @@ import {
   LIST_LIMIT_MAX,
   MAX_BODY_BYTES,
   MAX_META_BYTES,
+  RejectProposalBody,
   StashError,
   canonicalJson,
   computeDiff,
@@ -14,6 +16,8 @@ import {
   utf8ByteLength,
   validatePath,
   validateStashName,
+  type ApproveProposalBody as ApproveProposalInput,
+  type ApproveProposalResult,
   type CreateProposalBody as CreateProposalInput,
   type Current,
   type JsonValue,
@@ -22,18 +26,23 @@ import {
   type ProposalRecord,
   type ProposalStatus,
   type ProposalWithBody,
+  type RejectProposalBody as RejectProposalInput,
 } from "@takazudo/zudo-history-stash-core";
 import { z } from "zod";
 import type { Env } from "../env.js";
 import { assertBlobRowShape, prepareBlob, readBlob, type BlobCodecRow } from "./blobs.js";
 import type { ProposalRow } from "./schema.js";
 import {
+  SELECT_APPLIED_PROPOSAL_VERSION,
   SELECT_PROPOSAL,
   SELECT_PROPOSAL_BASE,
   SELECT_PROPOSAL_BY_KEY,
   SELECT_PROPOSAL_CURRENT,
+  approveProposalBatch,
+  backfillAppliedChangeId,
   countProposals,
   createProposalBatch,
+  rejectProposalStatement,
   selectProposals,
 } from "./sql/proposals.js";
 import type { StoreDependencies } from "./store.js";
@@ -43,6 +52,7 @@ const DEFAULT_PROPOSAL_TTL_DAYS = 14;
 const PROPOSAL_ID = /^prp_\d{13}[0-9a-f]{8}$/;
 const HEX = /^[0-9a-f]{8}$/;
 const IsoTimestamp = z.iso.datetime();
+const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 
 interface ProposalReadRow extends ProposalRow {
   blob_body: string | null;
@@ -71,6 +81,14 @@ interface ProposalCurrentRow {
 
 interface TotalRow {
   total: number;
+}
+
+interface AppliedVersionRow {
+  id: number;
+  version: number;
+  kind: "put" | "delete" | "rollback";
+  blob_hash: string | null;
+  created_at: number;
 }
 
 export interface ProposalCreateOptions {
@@ -111,6 +129,18 @@ export interface ProposalStore {
     id: string,
     options?: ProposalDiffOptions,
   ): Promise<ProposalDiffResult | null>;
+  approveProposal(
+    stash: string,
+    id: string,
+    input: ApproveProposalInput,
+    decidedBy: string,
+  ): Promise<ApproveProposalResult | null>;
+  rejectProposal(
+    stash: string,
+    id: string,
+    input: RejectProposalInput,
+    decidedBy: string,
+  ): Promise<ProposalRecord | null>;
 }
 
 function validation(message: string): never {
@@ -370,6 +400,87 @@ function validateDiffOptions(options: ProposalDiffOptions): number | undefined {
   return options.context;
 }
 
+function validateDecisionInput(
+  schema: typeof ApproveProposalBody | typeof RejectProposalBody,
+  input: unknown,
+  decidedBy: string,
+): void {
+  if (!schema.safeParse(input).success) return validation("Invalid proposal decision input");
+  if (typeof decidedBy !== "string" || decidedBy.length === 0) {
+    return validation("Invalid proposal decision principal");
+  }
+}
+
+async function appliedResult(
+  db: D1DatabaseSession,
+  row: ProposalReadRow,
+): Promise<ApproveProposalResult> {
+  if (row.status !== "applied" || row.applied_version === null || row.decision_attempt === null) {
+    return internal("Applied proposal state is incomplete.");
+  }
+  const version = await db
+    .prepare(SELECT_APPLIED_PROPOSAL_VERSION)
+    .bind(row.stash_name, row.path, row.applied_version)
+    .first<AppliedVersionRow>();
+  if (
+    version === null ||
+    version.version !== row.applied_version ||
+    version.kind !== "put" ||
+    version.blob_hash === null ||
+    version.blob_hash !== row.blob_hash
+  ) {
+    return internal("Applied proposal version is missing or invalid.");
+  }
+  if (row.applied_change_id === null) {
+    await backfillAppliedChangeId(db, {
+      stash: row.stash_name,
+      id: row.id,
+      attempt: row.decision_attempt,
+      changeId: version.id,
+    }).run();
+  } else if (row.applied_change_id !== version.id) {
+    return internal("Applied proposal change id is invalid.");
+  }
+  return {
+    status: "applied",
+    appliedVersion: version.version,
+    appliedChangeId: version.id,
+    hash: version.blob_hash,
+    createdAt: toIso(version.created_at),
+  };
+}
+
+async function approvalOutcome(
+  db: D1DatabaseSession,
+  stash: string,
+  id: string,
+  now: number,
+): Promise<ApproveProposalResult | null> {
+  await ensureLive(db, stash);
+  const row = await selectProposalById(db, stash, id);
+  if (row === null) return null;
+  if (row.status === "applied") return appliedResult(db, row);
+  if (row.status === "rejected") {
+    throw new StashError("proposal-closed", "Proposal is already rejected");
+  }
+  if (row.expires_at <= now) {
+    throw new StashError("proposal-expired", "Proposal has expired");
+  }
+  const currentRow = await db
+    .prepare(SELECT_PROPOSAL_CURRENT)
+    .bind(stash, row.path)
+    .first<ProposalCurrentRow>();
+  const current = currentFromRow(currentRow);
+  if ((current?.version ?? null) !== row.base_version) {
+    throw new StashError(
+      "stale",
+      "Proposal base no longer matches the current head",
+      current ?? undefined,
+    );
+  }
+  return internal("Proposal decision failed without a competing mutation.");
+}
+
 export function createProposals(env: Env, deps: ProposalDependencies): ProposalStore {
   return {
     async createProposal(stash, input, options = {}) {
@@ -555,6 +666,99 @@ export function createProposals(env: Env, deps: ProposalDependencies): ProposalS
         context,
       });
       return { ...result, base, candidate, current, stale };
+    },
+
+    async approveProposal(stash, id, input, decidedBy) {
+      const stashName = validateStash(stash);
+      const proposalIdValue = validateProposalId(id);
+      validateDecisionInput(ApproveProposalBody, input, decidedBy);
+      const db = env.DB.withSession("first-primary");
+      await ensureLive(db, stashName);
+      const proposal = await selectProposalById(db, stashName, proposalIdValue);
+      if (proposal === null) return null;
+      if (proposal.status === "applied") return appliedResult(db, proposal);
+      if (proposal.status === "rejected") {
+        throw new StashError("proposal-closed", "Proposal is already rejected");
+      }
+
+      await deps.onBeforeCommit?.();
+      const decidedAt = deps.now();
+      const attempt = deps.createId();
+      let results: D1Result[] | undefined;
+      try {
+        results = await db.batch(
+          approveProposalBatch(db, {
+            id: proposal.id,
+            stash: proposal.stash_name,
+            path: proposal.path,
+            baseVersion: proposal.base_version,
+            hash: proposal.blob_hash,
+            size: proposal.size_bytes,
+            contentType: DEFAULT_CONTENT_TYPE,
+            author: input.author ?? proposal.author,
+            message: input.message ?? proposal.message,
+            metaJson: proposal.meta_json,
+            attempt,
+            decidedAt,
+            decidedBy,
+          }),
+        );
+      } catch {
+        // A competing fenced mutation may have claimed the proposal or moved the head.
+      }
+      if (results?.at(-1)?.meta.changes === 1) {
+        const insertedId = results[1]?.meta.last_row_id;
+        if (typeof insertedId === "number" && insertedId > 0) {
+          await backfillAppliedChangeId(db, {
+            stash: stashName,
+            id: proposalIdValue,
+            attempt,
+            changeId: insertedId,
+          }).run();
+        }
+        const applied = await selectProposalById(db, stashName, proposalIdValue);
+        if (applied === null) return internal("Applied proposal could not be read.");
+        return appliedResult(db, applied);
+      }
+      return approvalOutcome(db, stashName, proposalIdValue, decidedAt);
+    },
+
+    async rejectProposal(stash, id, input, decidedBy) {
+      const stashName = validateStash(stash);
+      const proposalIdValue = validateProposalId(id);
+      validateDecisionInput(RejectProposalBody, input, decidedBy);
+      const db = env.DB.withSession("first-primary");
+      await ensureLive(db, stashName);
+      const proposal = await selectProposalById(db, stashName, proposalIdValue);
+      if (proposal === null) return null;
+      if (proposal.status === "applied") {
+        throw new StashError("proposal-closed", "Proposal is already applied");
+      }
+      if (proposal.status === "rejected") return mapProposal(proposal, deps.now());
+
+      await deps.onBeforeCommit?.();
+      const decidedAt = deps.now();
+      const result = await rejectProposalStatement(db, {
+        stash: stashName,
+        id: proposalIdValue,
+        decidedAt,
+        decidedBy,
+        reason: input.reason ?? null,
+      }).run();
+      if (result.meta.changes === 1) {
+        const rejected = await selectProposalById(db, stashName, proposalIdValue);
+        if (rejected === null) return internal("Rejected proposal could not be read.");
+        return mapProposal(rejected, decidedAt);
+      }
+
+      await ensureLive(db, stashName);
+      const winner = await selectProposalById(db, stashName, proposalIdValue);
+      if (winner === null) return null;
+      if (winner.status === "rejected") return mapProposal(winner, decidedAt);
+      if (winner.status === "applied") {
+        throw new StashError("proposal-closed", "Proposal is already applied");
+      }
+      return internal("Proposal rejection failed without a competing decision.");
     },
   };
 }
