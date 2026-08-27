@@ -70,6 +70,32 @@ describe("D1 migrations", () => {
       { name: "id", desc: 1 },
     ]);
 
+    const proposalIndexes = await env.DB.prepare("PRAGMA index_list(proposals)").all<{
+      name: string;
+      partial: number;
+      unique: number;
+    }>();
+    expect(proposalIndexes.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "proposals_stash_status_created", partial: 0, unique: 0 }),
+        expect.objectContaining({ name: "proposals_stash_path", partial: 0, unique: 0 }),
+        expect.objectContaining({ name: "proposals_stash_idempotency", partial: 1, unique: 1 }),
+      ]),
+    );
+    const proposalOrder = await env.DB.prepare(
+      "PRAGMA index_xinfo(proposals_stash_status_created)",
+    ).all<{ name: string | null; desc: number; key: number }>();
+    expect(
+      proposalOrder.results
+        .filter((column) => column.key === 1)
+        .map(({ name, desc }) => ({ name, desc })),
+    ).toEqual([
+      { name: "stash_name", desc: 0 },
+      { name: "status", desc: 0 },
+      { name: "created_at", desc: 0 },
+      { name: "id", desc: 0 },
+    ]);
+
     const jobs = await env.DB.prepare(
       "SELECT kind, next_cursor, lease_owner, lease_generation, lease_until, updated_at FROM gc_jobs ORDER BY kind",
     ).all();
@@ -221,6 +247,13 @@ describe("D1 migrations", () => {
     await expect(
       env.DB.prepare(
         "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at) VALUES ('alpha','a',1,'delete','sha256-x',1)",
+      ).run(),
+    ).rejects.toThrow();
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO proposals
+           (id, stash_name, path, blob_hash, size_bytes, status, expires_at, created_at)
+         VALUES ('prp_000000000000100000001', 'alpha', 'p', 'sha256-x', 1, 'expired', 2, 1)`,
       ).run(),
     ).rejects.toThrow();
     await expect(

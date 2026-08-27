@@ -45,6 +45,7 @@ describe("Wrangler and Env drift", () => {
       "DB",
       "GC_LEASE_TTL_MS",
       "GC_ORPHAN_MIN_AGE_MS",
+      "PROPOSAL_TTL_DAYS",
       "RL_DIFF",
       "RL_READ",
       "RL_WRITE",
@@ -100,6 +101,7 @@ describe("Wrangler and Env drift", () => {
       STASH_DELETE_GRACE_DAYS: "30",
       GC_ORPHAN_MIN_AGE_MS: "900000",
       GC_LEASE_TTL_MS: "300000",
+      PROPOSAL_TTL_DAYS: "14",
     };
     expect(sectionVars(wranglerSource, "vars")).toEqual({
       ALLOWED_ORIGINS: "",
