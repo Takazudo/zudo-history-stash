@@ -1,3 +1,5 @@
+import type { PreparedBlob } from "../blobs.js";
+
 /**
  * Every mutation has one operation predicate F, and that exact predicate is applied to every
  * statement in its batch. The files/head statement is always last and also requires the newly
@@ -15,12 +17,11 @@ export interface LedgerInsert {
   statusCode: number;
 }
 
-export interface PutBatchInput {
+export type PutBatchInput = {
   stash: string;
   path: string;
   expectedVersion: number | null;
   hash: string;
-  body: string;
   size: number;
   contentType: string;
   author: string;
@@ -28,7 +29,7 @@ export interface PutBatchInput {
   metaJson: string;
   createdAt: number;
   ledger?: LedgerInsert;
-}
+} & PreparedBlob;
 
 export interface DeleteBatchInput {
   stash: string;
@@ -175,13 +176,14 @@ function putStatements(
     db
       .prepare(
         `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
-         SELECT ?, ?, ?, NULL, ?, ? WHERE ${operationFence.sql}
+         SELECT ?, ?, ?, ?, ?, ? WHERE ${operationFence.sql}
          ON CONFLICT(stash_name, hash) DO NOTHING`,
       )
       .bind(
         input.stash,
         input.hash,
         input.body,
+        input.r2_key,
         input.size,
         input.createdAt,
         ...operationFence.params,
