@@ -249,29 +249,70 @@ const TRACE: readonly TraceStep[] = [
     201,
     (context) => ({ name: context.laterStash }),
   ),
-  responseStep(
-    "stash list exposes a keyset continuation",
-    "listStashes",
-    (context) => ({
+  {
+    name: "stash list exposes a keyset continuation",
+    routeId: "listStashes",
+    request: (context) => ({
       method: "GET",
       path: `/v1/stashes?limit=1&after=${context.stash}`,
     }),
-    200,
-    (context) => ({
-      stashes: [{ name: context.foreignStash }],
-      nextAfter: context.foreignStash,
-    }),
-  ),
-  responseStep(
-    "stash list continues after its keyset",
-    "listStashes",
-    (context) => ({
+    verify(response, body, context) {
+      const step = "stash list exposes a keyset continuation";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      const stashes = array(value.stashes, step);
+      assertEqual(step, stashes.length, 1, "stashes.length");
+      const first = record(stashes[0], step);
+      if (
+        typeof first.name !== "string" ||
+        first.name <= context.stash ||
+        first.name > context.foreignStash
+      ) {
+        traceFailure(
+          step,
+          "first row must be after the supplied cursor and no later than the known foreign stash",
+        );
+      }
+      // The trace creates both -foreign and -later after the primary name, so at least one row
+      // necessarily remains even when unrelated persisted stashes interleave with them.
+      assertEqual(step, value.nextAfter, first.name, "nextAfter");
+      remember(context, "stashPaginationCursor", first.name);
+    },
+  },
+  {
+    name: "stash list continues after its keyset",
+    routeId: "listStashes",
+    request: (context) => ({
       method: "GET",
-      path: `/v1/stashes?limit=1&after=${context.foreignStash}`,
+      path: `/v1/stashes?limit=1&after=${stringValue(
+        context,
+        "stashPaginationCursor",
+        "stash list continues after its keyset",
+      )}`,
     }),
-    200,
-    (context) => ({ stashes: [{ name: context.laterStash }], nextAfter: null }),
-  ),
+    verify(response, body, context) {
+      const step = "stash list continues after its keyset";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      const stashes = array(value.stashes, step);
+      assertEqual(step, stashes.length, 1, "stashes.length");
+      const row = record(stashes[0], step);
+      const cursor = stringValue(context, "stashPaginationCursor", step);
+      const upperBound = cursor < context.foreignStash ? context.foreignStash : context.laterStash;
+      if (typeof row.name !== "string" || row.name <= cursor || row.name > upperBound) {
+        traceFailure(
+          step,
+          "continued row must be after the cursor and no later than the next known trace stash",
+        );
+      }
+      if (row.name < context.laterStash) {
+        // The created -later row proves another page exists in this branch.
+        assertEqual(step, value.nextAfter, row.name, "nextAfter");
+      } else if (value.nextAfter !== null && value.nextAfter !== row.name) {
+        traceFailure(step, "nextAfter must be null or the returned last row name");
+      }
+    },
+  },
   responseStep(
     "get stash returns its aggregate",
     "getStash",
