@@ -1327,12 +1327,13 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     } catch {
       return fail("validation", "Invalid proposal cursor.");
     }
-    const match = /^(\d+):(prp_\d{13}[0-9a-f]{8})$/.exec(decoded);
-    if (match?.[1] === undefined || match[2] === undefined) {
+    const match = /^(\d+):(prp_(\d{13})[0-9a-f]{8})$/.exec(decoded);
+    if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) {
       return fail("validation", "Invalid proposal cursor.");
     }
     const createdAt = Number(match[1]);
-    if (!Number.isSafeInteger(createdAt) || btoa(decoded) !== cursor) {
+    const idCreatedAt = Number(match[3]);
+    if (!Number.isSafeInteger(createdAt) || idCreatedAt !== createdAt || btoa(decoded) !== cursor) {
       return fail("validation", "Invalid proposal cursor.");
     }
     return { createdAt, id: match[2] };
@@ -1371,41 +1372,48 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         : candidate;
     const parsed = CreateProposalBody.safeParse(schemaCandidate);
     if (!parsed.success) return fail("validation", "Invalid proposal input.");
-    const createdAt = now();
-    let expiresAt = createdAt + proposalTtlDays * 86_400_000;
+    let suppliedExpiry: number | undefined;
     if (suppliedExpiresAt !== undefined) {
       if (typeof suppliedExpiresAt !== "string") {
         return fail("validation", "Invalid proposal expiry.");
       }
-      const parsedExpiresAt = parseIsoDateTime(suppliedExpiresAt);
-      if (parsedExpiresAt === undefined) {
+      suppliedExpiry = parseIsoDateTime(suppliedExpiresAt);
+      if (suppliedExpiry === undefined) {
         return fail("validation", "Invalid proposal expiry.");
-      }
-      expiresAt = parsedExpiresAt;
-      if (expiresAt <= createdAt) {
-        return fail("validation", "Proposal expiry must be in the future.");
       }
     }
 
     const requestHash = await sha256Hex(canonicalJson(candidate as JsonValue));
+    requireLiveStash(stash);
+    const replayForKey = (): Response | undefined => {
+      if (key === undefined) return undefined;
+      const existing = [...proposalsFor(stash).values()].find((row) => row.idempotencyKey === key);
+      if (existing === undefined) return undefined;
+      if (existing.requestHash !== requestHash) {
+        return fail("idempotency-key-reused", "Idempotency key was used for another request");
+      }
+      return json(proposalRecord(existing, now()), 201, { "Idempotent-Replayed": "true" });
+    };
+    const replay = replayForKey();
+    if (replay !== undefined) return replay;
+
+    const createdAt = now();
+    const expiresAt = suppliedExpiry ?? createdAt + proposalTtlDays * 86_400_000;
+    if (expiresAt <= createdAt) {
+      return fail("validation", "Proposal expiry must be in the future.");
+    }
+
     const bodyHash = await sha256Hex(parsed.data.body);
     requireLiveStash(stash);
-    if (key !== undefined) {
-      const existing = [...proposalsFor(stash).values()].find((row) => row.idempotencyKey === key);
-      if (existing !== undefined) {
-        if (existing.requestHash !== requestHash) {
-          return fail("idempotency-key-reused", "Idempotency key was used for another request");
-        }
-        return json(proposalRecord(existing, now()), 201, { "Idempotent-Replayed": "true" });
-      }
-    }
+    const racedReplay = replayForKey();
+    if (racedReplay !== undefined) return racedReplay;
 
     const id = `prp_${String(createdAt).padStart(13, "0")}${nextProposalSerial
       .toString(16)
       .padStart(8, "0")}`;
     nextProposalSerial += 1;
-    const meta = cloneMeta(parsed.data.meta);
-    if (utf8ByteLength(JSON.stringify({ ...meta, proposalId: id })) > MAX_META_BYTES) {
+    const meta = { ...cloneMeta(parsed.data.meta), proposalId: id };
+    if (utf8ByteLength(JSON.stringify(meta)) > MAX_META_BYTES) {
       return fail("validation", "Proposal metadata is too large after stamping.");
     }
     const blob = storeBlob(stash, bodyHash, parsed.data.body, createdAt);
@@ -1578,7 +1586,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         rollbackOf: null,
         author: parsed.data.author ?? row.author,
         message: parsed.data.message ?? row.message,
-        meta: { ...cloneMeta(row.meta), proposalId: row.id },
+        meta: cloneMeta(row.meta),
       },
       decidedAt,
     );

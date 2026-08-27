@@ -7,6 +7,7 @@ import {
   ROUTES,
   sha256Hex,
   type GcRunResult,
+  type ProposalRecord,
   type RouteId,
 } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
@@ -148,11 +149,15 @@ describe("proposal lifecycle", () => {
     const concurrent = await Promise.all([create(), create()]);
     expect(concurrent.map(({ status }) => status)).toEqual([201, 201]);
     const created = await Promise.all(
-      concurrent.map((response) => response.json() as Promise<{ id: string; expiresAt: string }>),
+      concurrent.map((response) => response.json() as Promise<ProposalRecord>),
     );
     expect(created[0]).toEqual(created[1]);
     expect(created[0]?.id).toMatch(/^prp_\d{13}[0-9a-f]{8}$/);
     expect(created[0]?.expiresAt).toBe("2026-09-09T00:00:00.000Z");
+    expect(created[0]?.meta).toEqual({
+      ...createBody.meta,
+      proposalId: created[0]?.id,
+    });
     expect(
       concurrent.map((response) => response.headers.get("Idempotent-Replayed")).sort(),
     ).toEqual([null, "true"]);
@@ -185,7 +190,7 @@ describe("proposal lifecycle", () => {
     );
     expect(firstPage.status).toBe(200);
     const firstPageBody = (await firstPage.json()) as {
-      proposals: Array<{ id: string; body?: string }>;
+      proposals: Array<{ id: string; meta: Record<string, unknown>; body?: string }>;
       nextAfter: string | null;
       total: number;
     };
@@ -194,6 +199,9 @@ describe("proposal lifecycle", () => {
     expect(firstPageBody.proposals[0]?.id).toBe(
       [...(fake.state.proposals.get("demo")?.keys() ?? [])].at(-1),
     );
+    expect(firstPageBody.proposals[0]?.meta).toMatchObject({
+      proposalId: firstPageBody.proposals[0]?.id,
+    });
     expect(firstPageBody.proposals[0]).not.toHaveProperty("body");
     expect(firstPageBody.nextAfter).toEqual(expect.any(String));
 
@@ -210,16 +218,81 @@ describe("proposal lifecycle", () => {
     expect(invalidCursor.status).toBe(400);
     expect(await errorCode(invalidCursor)).toBe("validation");
 
+    const forgedCursor = btoa(`${now}:prp_${String(now + 1).padStart(13, "0")}deadbeef`);
+    const forged = await request(
+      fake,
+      `/v1/stashes/demo/proposals?after=${encodeURIComponent(forgedCursor)}`,
+    );
+    expect(forged.status).toBe(400);
+    expect(await errorCode(forged)).toBe("validation");
+
     const detail = await request(fake, `/v1/stashes/demo/proposals/${created[0]?.id ?? "missing"}`);
     expect(detail.status).toBe(200);
     await expect(detail.json()).resolves.toMatchObject({
       ...createBody,
       id: created[0]?.id,
+      meta: { ...createBody.meta, proposalId: created[0]?.id },
       status: "open",
       body: createBody.body,
       decidedAt: null,
       decidedBy: null,
     });
+  });
+
+  it("replays an explicitly expired create without allocating another candidate", async () => {
+    let now = Date.parse("2026-08-26T00:30:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const input = {
+      path: "docs/expiring-replay.md",
+      body: "x".repeat(R2_SPILL_BYTES + 1),
+      baseVersion: null,
+      expiresAt: new Date(now + 1).toISOString(),
+    };
+    const create = () =>
+      request(fake, "/v1/stashes/demo/proposals", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "expiring-replay",
+        },
+        body: JSON.stringify(input),
+      });
+
+    const initial = await create();
+    expect(initial.status).toBe(201);
+    const initialBody = (await initial.json()) as ProposalRecord;
+    expect(initialBody).toMatchObject({
+      status: "open",
+      meta: { proposalId: initialBody.id },
+    });
+    expect(fake.state.proposals.get("demo")?.size).toBe(1);
+    expect(fake.state.blobs.get("demo")?.size).toBe(1);
+    expect(fake.state.r2Objects.size).toBe(1);
+
+    now += 1;
+    const equalityReplay = await create();
+    expect(equalityReplay.status).toBe(201);
+    expect(equalityReplay.headers.get("Idempotent-Replayed")).toBe("true");
+    await expect(equalityReplay.json()).resolves.toEqual({ ...initialBody, status: "expired" });
+
+    now += 1_000;
+    const laterReplay = await create();
+    expect(laterReplay.status).toBe(201);
+    expect(laterReplay.headers.get("Idempotent-Replayed")).toBe("true");
+    await expect(laterReplay.json()).resolves.toEqual({ ...initialBody, status: "expired" });
+    expect(fake.state.proposals.get("demo")?.size).toBe(1);
+    expect(fake.state.blobs.get("demo")?.size).toBe(1);
+    expect(fake.state.r2Objects.size).toBe(1);
+
+    const next = await request(fake, "/v1/stashes/demo/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "docs/next.md", body: "next", baseVersion: null }),
+    });
+    expect(next.status).toBe(201);
+    const nextBody = (await next.json()) as ProposalRecord;
+    expect(nextBody.id).toMatch(/^prp_\d{13}00000002$/);
   });
 
   it("keeps diffs immutable and allows exactly one fenced approval to append", async () => {
@@ -254,10 +327,11 @@ describe("proposal lifecycle", () => {
         }),
       });
       expect(response.status).toBe(201);
-      return response.json() as Promise<{ id: string; hash: string }>;
+      return response.json() as Promise<ProposalRecord>;
     };
 
     const candidate = await createProposal("candidate\n", 1);
+    expect(candidate.meta).toEqual({ source: "fake", proposalId: candidate.id });
     const staleCandidate = await createProposal("stale candidate\n", 1);
     const beforeDiff = await request(
       fake,
@@ -305,10 +379,14 @@ describe("proposal lifecycle", () => {
     });
     expect(fake.state.proposals.get("demo")?.get(candidate.id)).toMatchObject({
       status: "applied",
+      meta: { source: "fake", proposalId: candidate.id },
       decidedBy: writer.id,
       appliedVersion: 2,
       appliedChangeId: 2,
     });
+    expect(fake.state.versions[1]?.meta).toEqual(
+      fake.state.proposals.get("demo")?.get(candidate.id)?.meta,
+    );
 
     const afterDiff = await request(
       fake,

@@ -1370,6 +1370,9 @@ const TRACE: readonly TraceStep[] = [
       if (typeof value.id !== "string" || !/^prp_\d{13}[0-9a-f]{8}$/.test(value.id)) {
         traceFailure(step, "proposal id is not time sortable");
       }
+      assertSubset(step, value, {
+        meta: { source: "conformance", proposalId: value.id },
+      });
       if (typeof value.hash !== "string" || typeof value.expiresAt !== "string") {
         traceFailure(step, "proposal hash or expiry is missing");
       }
@@ -1417,6 +1420,10 @@ const TRACE: readonly TraceStep[] = [
           id: stringValue(context, "proposalId", "proposal list"),
           status: "open",
           path,
+          meta: {
+            source: "conformance",
+            proposalId: stringValue(context, "proposalId", "proposal list"),
+          },
         },
       ],
       nextAfter: null,
@@ -1436,6 +1443,10 @@ const TRACE: readonly TraceStep[] = [
       id: stringValue(context, "proposalId", "proposal detail"),
       body: proposalCandidate,
       status: "open",
+      meta: {
+        source: "conformance",
+        proposalId: stringValue(context, "proposalId", "proposal detail"),
+      },
     }),
   ),
   {
