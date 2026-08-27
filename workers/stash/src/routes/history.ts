@@ -6,7 +6,6 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
 import { Hono, type Context } from "hono";
-import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
 
@@ -23,14 +22,13 @@ function filePath(c: Context<AppEnv>): string {
 
 history.get(
   "/v1/stashes/:stash/history/:path{.+}",
-  requireRoute("getHistory"),
   zValidator("query", HistoryQuery, (result) => {
     if (!result.success) throw new StashError("validation", "Invalid history query.");
   }),
   async (c) => {
     const path = filePath(c);
     const page = await createStashStore(c.env).reads.listHistory(
-      c.req.param("stash"),
+      c.get("routeStash").name,
       path,
       c.req.valid("query"),
     );
@@ -41,13 +39,12 @@ history.get(
 
 history.get(
   "/v1/stashes/:stash/changes",
-  requireRoute("getStashChanges"),
   zValidator("query", ChangesQuery, (result) => {
     if (!result.success) throw new StashError("validation", "Invalid changes query.");
   }),
   async (c) => {
     const page = await createStashStore(c.env).reads.listChanges(
-      c.req.param("stash"),
+      c.get("routeStash").name,
       c.req.valid("query"),
     );
     return c.json(page);
