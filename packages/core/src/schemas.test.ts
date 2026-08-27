@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   ChangesQuery,
   CreateStashBody,
@@ -76,7 +76,11 @@ describe("strict request and query schemas", () => {
     }
   });
   it("defaults and bounds rotation grace while keeping expiry forms exclusive", () => {
-    expect(RotateTokenBody.parse({})).toEqual({ graceSeconds: 300 });
+    const input: RotateTokenBody = {};
+    const parsed = RotateTokenBody.parse(input);
+    expectTypeOf(input.graceSeconds).toEqualTypeOf<number | undefined>();
+    expectTypeOf(parsed.graceSeconds).toEqualTypeOf<number>();
+    expect(parsed).toEqual({ graceSeconds: 300 });
     expect(RotateTokenBody.parse({ graceSeconds: 0 })).toEqual({ graceSeconds: 0 });
     expect(RotateTokenBody.safeParse({ graceSeconds: 86_400 }).success).toBe(true);
     for (const input of [
