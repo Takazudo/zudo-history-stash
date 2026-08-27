@@ -18,6 +18,7 @@ meta.get("/v1/me", (c) => {
           stash: principal.stash,
           tokenId: principal.tokenId,
           scope: principal.scope,
+          expiresAt: principal.expiresAt,
         },
   );
 });

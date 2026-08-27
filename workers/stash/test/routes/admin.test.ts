@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256Hex } from "../../src/auth.js";
-import { app } from "../../src/app.js";
+import { app, createApp } from "../../src/app.js";
 import type { Env } from "../../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
@@ -367,6 +367,119 @@ describe("stash token administration", () => {
     });
     expect(JSON.stringify(listed)).not.toContain("token_hash");
     expect(JSON.stringify(listed)).not.toContain(created.token);
+  });
+
+  it("stores explicit and TTL expiries in milliseconds and lists rotation metadata", async () => {
+    const now = 1_800_000_000_123;
+    const explicitExpiry = now + 86_400_456;
+    const fixedApp = createApp({ now: () => now });
+    await seedStash("expiries");
+    const createToken = (payload: unknown) =>
+      request(fixedApp, `${BASE_URL}/v1/stashes/expiries/tokens`, {
+        method: "POST",
+        headers: { ...bearer("test-admin"), "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+    const explicitResponse = await createToken({
+      label: "Explicit",
+      scope: "read",
+      expiresAt: new Date(explicitExpiry).toISOString(),
+    });
+    expect(explicitResponse.status).toBe(201);
+    const explicit = await explicitResponse.json<{ id: string; expiresAt: string | null }>();
+    expect(explicit.expiresAt).toBe(new Date(explicitExpiry).toISOString());
+
+    const ttlResponse = await createToken({ label: "TTL", scope: "write", ttlSeconds: 60 });
+    expect(ttlResponse.status).toBe(201);
+    const ttl = await ttlResponse.json<{ id: string; expiresAt: string | null }>();
+    expect(ttl.expiresAt).toBe(new Date(now + 60_000).toISOString());
+
+    await createTestEnv()
+      .env.DB.prepare("UPDATE tokens SET rotated_from = ?, rotated_to = ? WHERE id = ?")
+      .bind("tok_predecessor", "tok_successor", explicit.id)
+      .run();
+    const stored = await createTestEnv()
+      .env.DB.prepare(
+        `SELECT id, created_at, expires_at, rotated_from, rotated_to
+         FROM tokens
+         WHERE id IN (?, ?)
+         ORDER BY id`,
+      )
+      .bind(explicit.id, ttl.id)
+      .all<{
+        id: string;
+        created_at: number;
+        expires_at: number | null;
+        rotated_from: string | null;
+        rotated_to: string | null;
+      }>();
+    expect(stored.results).toEqual(
+      expect.arrayContaining([
+        {
+          id: explicit.id,
+          created_at: now,
+          expires_at: explicitExpiry,
+          rotated_from: "tok_predecessor",
+          rotated_to: "tok_successor",
+        },
+        {
+          id: ttl.id,
+          created_at: now,
+          expires_at: now + 60_000,
+          rotated_from: null,
+          rotated_to: null,
+        },
+      ]),
+    );
+
+    const listResponse = await request(fixedApp, `${BASE_URL}/v1/stashes/expiries/tokens`, {
+      headers: bearer("test-admin"),
+    });
+    expect(listResponse.status).toBe(200);
+    const listed = await listResponse.json<{
+      tokens: Array<{
+        id: string;
+        expiresAt: string | null;
+        rotatedFrom: string | null;
+        rotatedTo: string | null;
+      }>;
+    }>();
+    expect(listed.tokens.find(({ id }) => id === explicit.id)).toMatchObject({
+      expiresAt: new Date(explicitExpiry).toISOString(),
+      rotatedFrom: "tok_predecessor",
+      rotatedTo: "tok_successor",
+    });
+    expect(listed.tokens.find(({ id }) => id === ttl.id)).toMatchObject({
+      expiresAt: new Date(now + 60_000).toISOString(),
+      rotatedFrom: null,
+      rotatedTo: null,
+    });
+  });
+
+  it("requires a strictly future expiry while allowing the inclusive ten-year bound", async () => {
+    const now = 1_800_000_000_000;
+    const tenYearsMs = 315_360_000 * 1_000;
+    const fixedApp = createApp({ now: () => now });
+    await seedStash("expiry-bounds");
+    const createToken = (expiresAt: number) =>
+      request(fixedApp, `${BASE_URL}/v1/stashes/expiry-bounds/tokens`, {
+        method: "POST",
+        headers: { ...bearer("test-admin"), "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "read", expiresAt: new Date(expiresAt).toISOString() }),
+      });
+
+    for (const invalidExpiry of [now - 1, now, now + tenYearsMs + 1]) {
+      const response = await createToken(invalidExpiry);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: "validation" } });
+    }
+
+    const boundary = await createToken(now + tenYearsMs);
+    expect(boundary.status).toBe(201);
+    await expect(boundary.json()).resolves.toMatchObject({
+      expiresAt: new Date(now + tenYearsMs).toISOString(),
+    });
   });
 
   it("revokes a token, rejects it on the next request, and reports unknown ids", async () => {

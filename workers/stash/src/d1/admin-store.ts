@@ -69,7 +69,10 @@ const LIST_TOKENS = `
     t.scope,
     t.created_at,
     t.revoked_at,
-    t.last_used_at
+    t.last_used_at,
+    t.expires_at,
+    t.rotated_from,
+    t.rotated_to
   FROM stashes AS s
   LEFT JOIN tokens AS t ON t.stash_name = s.name
   WHERE s.name = ?
@@ -145,6 +148,9 @@ interface TokenListRow {
   created_at: number | null;
   revoked_at: number | null;
   last_used_at: number | null;
+  expires_at: number | null;
+  rotated_from: string | null;
+  rotated_to: string | null;
 }
 
 interface ChangeRow {
@@ -178,6 +184,8 @@ const defaultDependencies: AdminStoreDependencies = {
   now: () => Date.now(),
   mintToken: () => mintToken(),
 };
+
+const MAX_TOKEN_TTL_MS = 315_360_000 * 1_000;
 
 function validation(message: string): never {
   throw new StashError("validation", message);
@@ -221,6 +229,25 @@ function toIso(value: number): string {
   return new Date(value).toISOString();
 }
 
+function resolveTokenExpiry(
+  input: Pick<CreateTokenBody, "expiresAt" | "ttlSeconds">,
+  now: number,
+): number | null {
+  const expiresAt =
+    input.expiresAt !== undefined
+      ? Date.parse(input.expiresAt)
+      : input.ttlSeconds !== undefined
+        ? now + input.ttlSeconds * 1_000
+        : null;
+  if (
+    expiresAt !== null &&
+    (!Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + MAX_TOKEN_TTL_MS)
+  ) {
+    validation("Token expiry must be in the future and no more than ten years away.");
+  }
+  return expiresAt;
+}
+
 function mapStashSummary(row: StashAggregateRow): StashSummary {
   return {
     name: row.name,
@@ -252,9 +279,9 @@ function mapToken(row: TokenListRow): TokenRecord | null {
     label: row.label,
     scope: row.scope,
     createdAt: toIso(row.created_at),
-    expiresAt: null,
-    rotatedFrom: null,
-    rotatedTo: null,
+    expiresAt: row.expires_at === null ? null : toIso(row.expires_at),
+    rotatedFrom: row.rotated_from,
+    rotatedTo: row.rotated_to,
     revokedAt: row.revoked_at === null ? null : toIso(row.revoked_at),
     lastUsedAt: row.last_used_at === null ? null : toIso(row.last_used_at),
   };
@@ -344,13 +371,15 @@ export function createAdminStore(
       const parsed = CreateTokenBody.safeParse(input);
       if (!parsed.success) validation("Invalid token input.");
       const createdAt = deps.now();
+      const expiresAt = resolveTokenExpiry(parsed.data, createdAt);
       const created = deps.mintToken();
       const tokenHash = await sha256Hex(created.token);
       const result = await env.DB.withSession("first-primary")
         .prepare(
           `INSERT INTO tokens
-             (id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at)
-           SELECT ?, ?, ?, ?, ?, ?, NULL, NULL
+             (id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at,
+              expires_at, rotated_from, rotated_to)
+           SELECT ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL
            WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ?)`,
         )
         .bind(
@@ -360,6 +389,7 @@ export function createAdminStore(
           parsed.data.label ?? "",
           parsed.data.scope,
           createdAt,
+          expiresAt,
           name,
         )
         .run();
@@ -370,7 +400,7 @@ export function createAdminStore(
         label: parsed.data.label ?? "",
         scope: parsed.data.scope,
         createdAt: toIso(createdAt),
-        expiresAt: null,
+        expiresAt: expiresAt === null ? null : toIso(expiresAt),
         rotatedFrom: null,
       };
     },

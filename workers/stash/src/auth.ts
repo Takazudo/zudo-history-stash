@@ -54,10 +54,17 @@ export const requireToken: MiddlewareHandler<AppEnv> = async (c, next) => {
       principal = { kind: "admin" };
     } else {
       if (!token.startsWith("zhs_")) throw unauthorized();
+      const now = c.get("deps").now();
       const tokenRow = await c.env.DB.prepare(
-        "SELECT id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at FROM tokens WHERE token_hash = ? AND revoked_at IS NULL",
+        `SELECT
+           id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at,
+           expires_at, rotated_from, rotated_to
+         FROM tokens
+         WHERE token_hash = ?
+           AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)`,
       )
-        .bind(await sha256Hex(token))
+        .bind(await sha256Hex(token), now)
         .first<TokenRow>();
       if (tokenRow === null || (tokenRow.scope !== "read" && tokenRow.scope !== "write")) {
         throw unauthorized();
@@ -67,8 +74,9 @@ export const requireToken: MiddlewareHandler<AppEnv> = async (c, next) => {
         stash: tokenRow.stash_name,
         tokenId: tokenRow.id,
         scope: tokenRow.scope,
+        expiresAt:
+          tokenRow.expires_at === null ? null : new Date(tokenRow.expires_at).toISOString(),
       };
-      const now = Date.now();
       if (tokenRow.last_used_at === null || tokenRow.last_used_at <= now - LAST_USED_INTERVAL_MS) {
         c.executionCtx.waitUntil(touchLastUsed(c.env, tokenRow, now));
       }
