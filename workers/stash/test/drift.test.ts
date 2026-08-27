@@ -95,7 +95,7 @@ describe("Wrangler and Env drift", () => {
     }
   });
 
-  it("pins lifecycle variables in production and preview without scheduling or paid limits", () => {
+  it("pins lifecycle variables and production-only scheduling without paid limits", () => {
     const expected = {
       STASH_DELETE_GRACE_DAYS: "30",
       GC_ORPHAN_MIN_AGE_MS: "900000",
@@ -112,6 +112,8 @@ describe("Wrangler and Env drift", () => {
 
     const envKeys = matches(envSource, /^\s*([A-Z][A-Z0-9_]*):/gm);
     for (const name of Object.keys(expected)) expect(envKeys.has(name)).toBe(true);
-    expect(wranglerSource).not.toMatch(/\b(?:triggers|crons|subrequests)\b/i);
+    expect(wranglerSource).toContain('[triggers]\ncrons = ["17 3 * * *"]');
+    expect(wranglerSource).toContain("[env.preview.triggers]\ncrons = []");
+    expect(wranglerSource).not.toMatch(/\bsubrequests\b/i);
   });
 });
