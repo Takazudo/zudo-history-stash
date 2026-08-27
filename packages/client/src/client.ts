@@ -59,6 +59,7 @@ import type {
   StashRecord,
 } from "@takazudo/zudo-history-stash-core";
 import type { StashRpcBinding } from "./rpc-types.js";
+import { createStashEventStream, type EventsOptions, type StashEventStream } from "./events.js";
 import { parseClientResponse, StashHttpError } from "./parse.js";
 import {
   createFetchSend,
@@ -75,6 +76,7 @@ export type { StashFetch } from "./transport.js";
 export interface StashFetchClientOptions {
   baseUrl: string;
   token?: string;
+  clientId?: string;
   fetch?: StashFetch;
   idempotencyKey?: () => string | Promise<string>;
   transport?: { kind: "fetch" };
@@ -83,6 +85,7 @@ export interface StashFetchClientOptions {
 /** Configuration for an in-process Worker RPC binding. */
 export interface StashRpcClientOptions {
   transport: { kind: "rpc"; binding: StashRpcBinding; token: string };
+  clientId?: string;
   baseUrl?: never;
   token?: never;
   fetch?: never;
@@ -210,6 +213,12 @@ const routeTemplates = Object.fromEntries(
   ROUTES.map((route) => [route.id, route.template]),
 ) as RouteTemplate;
 
+const mutationRouteIds = new Set<RouteId>(
+  ROUTES.filter((candidate) => candidate.method !== "GET" && candidate.principal !== "read").map(
+    ({ id }) => id,
+  ),
+);
+
 /**
  * The route set used by this package. It is exported so contract tests can assert that the SDK
  * never invents an endpoint outside the core route table.
@@ -264,12 +273,17 @@ function requestHeaders(
   body: unknown,
   idempotencyKey: string | undefined,
   ifNoneMatch: string | undefined,
+  clientId: string | undefined,
+  routeId: RouteId,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   if (token !== undefined) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (idempotencyKey !== undefined) headers["Idempotency-Key"] = idempotencyKey;
   if (ifNoneMatch !== undefined) headers["If-None-Match"] = ifNoneMatch;
+  if (clientId !== undefined && mutationRouteIds.has(routeId)) {
+    headers["X-Stash-Client-Id"] = clientId;
+  }
   return headers;
 }
 
@@ -282,6 +296,7 @@ async function request<T>(
   body?: unknown,
   idempotencyKey?: string,
   ifNoneMatch?: string,
+  clientId?: string,
 ): Promise<ClientResult<T> | NotModifiedResult> {
   let response: Response;
   try {
@@ -290,7 +305,7 @@ async function request<T>(
       method,
       requestTarget.path,
       requestTarget.query,
-      requestHeaders(authorizationToken, body, idempotencyKey, ifNoneMatch),
+      requestHeaders(authorizationToken, body, idempotencyKey, ifNoneMatch, clientId, routeId),
       serializedBody,
     );
   } catch (error) {
@@ -323,6 +338,7 @@ export interface StashTokensClient {
 
 /** The operations scoped to one stash's files. */
 export interface StashFilesClient {
+  events(options?: EventsOptions): StashEventStream;
   get(path: string, options?: FileGetOptions): Promise<FileGetResult>;
   put(
     path: string,
@@ -400,9 +416,23 @@ export interface StashClient {
  * replaced with a Cloudflare service binding: `fetch: (input, init) => env.STASH.fetch(input, init)`.
  */
 export function createStashClient(options: StashClientOptions): StashClient {
+  const clientId = options.clientId;
+  if (
+    clientId !== undefined &&
+    (typeof clientId !== "string" ||
+      [...clientId].length < 1 ||
+      [...clientId].length > 64 ||
+      /[\r\n]/.test(clientId))
+  ) {
+    throw new TypeError("clientId must contain between 1 and 64 characters");
+  }
+
   let send: Send;
   let authorizationToken: string | undefined;
   let keyFactory: () => string | Promise<string>;
+  let connectEvents:
+    | ((stash: string, since: number | undefined, signal: AbortSignal) => Promise<Response>)
+    | undefined;
 
   if (isRpcClientOptions(options)) {
     if ("baseUrl" in options || "fetch" in options) {
@@ -423,11 +453,24 @@ export function createStashClient(options: StashClientOptions): StashClient {
     send = createRpcSend(options.transport.binding, options.transport.token);
     authorizationToken = undefined;
     keyFactory = () => globalThis.crypto.randomUUID();
+    connectEvents = undefined;
   } else {
     const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
+    const eventBaseUrl = options.baseUrl.replace(/\/+$/, "");
+    const eventToken = options.token;
     send = createFetchSend(fetcher, options.baseUrl);
     authorizationToken = options.token;
     keyFactory = options.idempotencyKey ?? (() => globalThis.crypto.randomUUID());
+    connectEvents = (stash, since, signal) => {
+      const path = route("stashEvents", stash);
+      const url = `${eventBaseUrl}${path}`;
+      const query = since === undefined ? "" : `?${new URLSearchParams({ since: String(since) })}`;
+      return fetcher(`${url}${query}`, {
+        method: "GET",
+        headers: eventToken === undefined ? {} : { Authorization: `Bearer ${eventToken}` },
+        signal,
+      });
+    };
   }
 
   const call = <T>(
@@ -447,6 +490,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
       body,
       idempotencyKey,
       ifNoneMatch,
+      clientId,
     );
 
   const stashError = <T>(stash: string): ClientResult<T> | undefined => validateStash<T>(stash);
@@ -458,6 +502,20 @@ export function createStashClient(options: StashClientOptions): StashClient {
   };
 
   const getFileClient = (stash: string): StashFilesClient => ({
+    events(eventOptions = {}) {
+      if (connectEvents === undefined) {
+        throw new TypeError("unsupported-transport: events are fetch-only");
+      }
+      const connect = connectEvents;
+      return createStashEventStream(
+        {
+          connect(since, signal) {
+            return connect(stash, since, signal);
+          },
+        },
+        eventOptions,
+      );
+    },
     async get(path, getOptions = {}) {
       const invalid = filePath<FileRecordWithEtag>(stash, path);
       if (invalid !== undefined) return invalid;

@@ -1,6 +1,7 @@
 import { DIFF_MAX_BYTES, canonicalJson } from "@takazudo/zudo-history-stash-core";
 import type { JsonValue, RouteId } from "@takazudo/zudo-history-stash-core";
 import type { StashFetch } from "../client.js";
+import { parseStashEventStream } from "../sse.js";
 import type { ConformanceOptions, ConformanceRateLimitTarget, ConformanceReport } from "./types.js";
 
 export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
@@ -31,6 +32,7 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "getProposalDiff",
   "approveProposal",
   "rejectProposal",
+  "stashEvents",
 ] as const satisfies readonly RouteId[];
 
 type TraceToken =
@@ -68,6 +70,8 @@ interface TraceStep {
   routeId: RouteId;
   before?: (context: TraceContext) => void | Promise<void>;
   request: (context: TraceContext) => TraceRequest;
+  /** The verifier owns the original streaming body; the runner must never clone it. */
+  streaming?: boolean;
   verify: (response: Response, body: unknown, context: TraceContext) => void | Promise<void>;
 }
 
@@ -714,6 +718,54 @@ const TRACE: readonly TraceStep[] = [
       remember(context, "putCreateResponse", body);
     },
   ),
+  {
+    name: "events replay the committed change through ready",
+    routeId: "stashEvents",
+    streaming: true,
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/events?since=0`,
+      token: "read",
+    }),
+    async verify(response, _body, context) {
+      const step = "events replay the committed change through ready";
+      assertStatus(step, response, 200);
+      assertEqual(
+        step,
+        response.headers.get("Content-Type")?.split(";", 1)[0],
+        "text/event-stream",
+        "Content-Type",
+      );
+      const body = response.body;
+      if (body === null) return traceFailure(step, "missing event stream body");
+      const iterator = parseStashEventStream(body)[Symbol.asyncIterator]();
+      try {
+        const replayed = await iterator.next();
+        const ready = await iterator.next();
+        assertSubset(step, replayed.value, {
+          id: String(numberValue(context, "firstChange", step)),
+          event: {
+            type: "change",
+            changeId: numberValue(context, "firstChange", step),
+            stash: context.stash,
+            path,
+            version: 1,
+            kind: "put",
+            origin: null,
+          },
+        });
+        assertSubset(step, ready.value, {
+          event: {
+            type: "ready",
+            head: numberValue(context, "firstChange", step),
+            checkpoint: numberValue(context, "firstChange", step),
+          },
+        });
+      } finally {
+        await iterator.return?.();
+      }
+    },
+  },
   {
     name: "replay preserves create status and body",
     routeId: "putFile",
@@ -2080,8 +2132,22 @@ export async function runConformance(
     if (step === undefined) return traceFailure("trace", `missing step ${index}`);
     await step.before?.(context);
     const response = await send(context, step.request(context), step.name);
-    const body = await readBody(response);
-    await step.verify(response, body, context);
+    if (step.streaming) {
+      try {
+        await step.verify(response, undefined, context);
+      } finally {
+        if (response.body !== null && !response.body.locked) {
+          try {
+            await response.body.cancel();
+          } catch {
+            // The verifier may already have consumed, cancelled, or errored the original body.
+          }
+        }
+      }
+    } else {
+      const body = await readBody(response);
+      await step.verify(response, body, context);
+    }
     context.exercised.add(step.routeId);
   }
 

@@ -8,6 +8,7 @@ import {
   DeleteFileBody,
   DiffCandidateBody,
   DiffQuery,
+  EventsQuery,
   FileGetQuery,
   ListGcRunsQuery,
   HistoryQuery,
@@ -25,6 +26,7 @@ import {
   RejectProposalBody,
   RollbackBody,
   RunGcBody,
+  StashEventSchema,
   canonicalJson,
   computeDiff,
   formatEtag,
@@ -43,7 +45,9 @@ import type {
   ErrorCode,
   GcKind,
   JsonValue,
+  ReconnectReason,
   RouteId,
+  StashEvent,
   TokenScope,
 } from "@takazudo/zudo-history-stash-core";
 import type { StashFetch } from "../client.js";
@@ -57,6 +61,7 @@ import type {
   FakeR2ObjectRow,
   FakeRateLimitInput,
   FakeStash,
+  FakeStashEvents,
   FakeStashOptions,
   FakeStashRow,
   FakeStashState,
@@ -105,6 +110,7 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "getProposalDiff",
   "approveProposal",
   "rejectProposal",
+  "stashEvents",
 ]);
 
 const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
@@ -127,6 +133,7 @@ const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
   "getProposalDiff",
   "approveProposal",
   "rejectProposal",
+  "stashEvents",
 ]);
 
 const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
@@ -567,6 +574,91 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   let nextGcCursorSerial = 1;
   const gcCursorPositions = new Map<string, { kind: GcKind; afterKey: string }>();
 
+  interface EventSubscriber {
+    stash: string;
+    controller: ReadableStreamDefaultController<Uint8Array>;
+    signal: AbortSignal;
+    abort: () => void;
+    closed: boolean;
+  }
+
+  const eventEncoder = new TextEncoder();
+  const eventSubscribers = new Map<string, Set<EventSubscriber>>();
+
+  const encodeEvent = (event: StashEvent): Uint8Array => {
+    const validated = StashEventSchema.parse(event);
+    const id = validated.type === "change" ? `id: ${validated.changeId}\n` : "";
+    return eventEncoder.encode(
+      `event: ${validated.type}\n${id}data: ${JSON.stringify(validated)}\n\n`,
+    );
+  };
+
+  const forgetSubscriber = (subscriber: EventSubscriber): void => {
+    if (subscriber.closed) return;
+    subscriber.closed = true;
+    subscriber.signal.removeEventListener("abort", subscriber.abort);
+    const subscribers = eventSubscribers.get(subscriber.stash);
+    subscribers?.delete(subscriber);
+    if (subscribers?.size === 0) eventSubscribers.delete(subscriber.stash);
+  };
+
+  const finishSubscriber = (subscriber: EventSubscriber, error?: unknown): void => {
+    if (subscriber.closed) return;
+    forgetSubscriber(subscriber);
+    try {
+      if (error === undefined) subscriber.controller.close();
+      else subscriber.controller.error(error);
+    } catch {
+      // Cancellation can race fixture-driven closure or failure.
+    }
+  };
+
+  const broadcastEvent = (stash: string, event: StashEvent): void => {
+    const bytes = encodeEvent(event);
+    for (const subscriber of [...(eventSubscribers.get(stash) ?? [])]) {
+      if (subscriber.closed) continue;
+      try {
+        subscriber.controller.enqueue(bytes);
+      } catch {
+        forgetSubscriber(subscriber);
+      }
+    }
+  };
+
+  const closeSubscribers = (stash: string, error?: unknown): void => {
+    for (const subscriber of [...(eventSubscribers.get(stash) ?? [])]) {
+      finishSubscriber(subscriber, error);
+    }
+  };
+
+  const events: FakeStashEvents = {
+    emit(stashOrEvent: string | StashEvent, suppliedEvent?: StashEvent) {
+      const event = typeof stashOrEvent === "string" ? suppliedEvent : stashOrEvent;
+      const stash =
+        typeof stashOrEvent === "string"
+          ? stashOrEvent
+          : stashOrEvent.type === "change" || stashOrEvent.type === "proposal"
+            ? stashOrEvent.stash
+            : undefined;
+      if (stash === undefined || event === undefined) {
+        throw new TypeError("ready and reconnect fixtures require an explicit stash");
+      }
+      broadcastEvent(stash, event);
+    },
+    rotate(stash, reason: ReconnectReason = "lifetime") {
+      const event = { type: "reconnect" as const, reason };
+      broadcastEvent(stash, event);
+      closeSubscribers(stash);
+    },
+    close: closeSubscribers,
+    error(stash, error = new TypeError("Simulated fake event stream failure")) {
+      closeSubscribers(stash, error);
+    },
+    subscriberCount(stash) {
+      return eventSubscribers.get(stash)?.size ?? 0;
+    },
+  };
+
   const nested = <T>(table: Map<string, Map<string, T>>, stash: string): Map<string, T> => {
     let rows = table.get(stash);
     if (rows === undefined) {
@@ -589,6 +681,30 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (version === undefined)
       return fail("internal", "The fake head points at a missing version.");
     return version;
+  };
+
+  const changeEvent = (version: FakeVersionRow, origin: string | null): StashEvent => ({
+    type: "change",
+    changeId: version.changeId,
+    stash: version.stash,
+    path: version.path,
+    version: version.version,
+    kind: version.kind,
+    origin,
+    createdAt: iso(version.createdAt),
+  });
+
+  const requestOrigin = (request: Request): string | null => {
+    const clientId = request.headers.get("X-Stash-Client-Id");
+    if (
+      clientId === null ||
+      [...clientId].length < 1 ||
+      [...clientId].length > 64 ||
+      /[\r\n]/.test(clientId)
+    ) {
+      return null;
+    }
+    return clientId;
   };
   const bodyFor = (version: FakeVersionRow): string => {
     if (version.hash === null) return "";
@@ -862,12 +978,72 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return json(value, ledger.statusCode, { "Idempotent-Replayed": "true" });
   };
 
+  const handleEvents = (request: Request, stash: string, url: URL): Response => {
+    const parsed = EventsQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid events query.");
+    const versions = state.versions
+      .filter((version) => version.stash === stash)
+      .sort((left, right) => left.changeId - right.changeId);
+    const head = versions.at(-1)?.changeId ?? null;
+    const replayed =
+      parsed.data.since === undefined
+        ? []
+        : versions.filter((version) => version.changeId > (parsed.data.since ?? 0));
+    const checkpoint =
+      replayed.at(-1)?.changeId ?? (parsed.data.since === undefined ? head : parsed.data.since);
+    let subscriber: EventSubscriber | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const abort = () => {
+          if (subscriber !== undefined) finishSubscriber(subscriber);
+        };
+        subscriber = {
+          stash,
+          controller,
+          signal: request.signal,
+          abort,
+          closed: false,
+        };
+        if (request.signal.aborted) {
+          finishSubscriber(subscriber);
+          return;
+        }
+        let subscribers = eventSubscribers.get(stash);
+        if (subscribers === undefined) {
+          subscribers = new Set();
+          eventSubscribers.set(stash, subscribers);
+        }
+        subscribers.add(subscriber);
+        request.signal.addEventListener("abort", abort, { once: true });
+        try {
+          for (const version of replayed)
+            controller.enqueue(encodeEvent(changeEvent(version, null)));
+          controller.enqueue(encodeEvent({ type: "ready", head, checkpoint }));
+        } catch {
+          forgetSubscriber(subscriber);
+        }
+      },
+      cancel() {
+        if (subscriber !== undefined) forgetSubscriber(subscriber);
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  };
+
   const append = (
     stash: string,
     path: string,
     input: Omit<FakeVersionRow, "changeId" | "stash" | "path" | "version" | "createdAt">,
-    createdAt = now(),
+    appendOptions: { createdAt?: number; origin?: string | null } = {},
   ): FakeVersionRow => {
+    const createdAt = appendOptions.createdAt ?? now();
     const file = getFile(stash, path);
     const row: FakeVersionRow = {
       ...input,
@@ -895,6 +1071,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       file.deleted = row.kind === "delete";
       file.updatedAt = createdAt;
     }
+    broadcastEvent(stash, changeEvent(row, appendOptions.origin ?? null));
     return row;
   };
 
@@ -1318,6 +1495,21 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     appliedChangeId: row.appliedChangeId,
   });
 
+  const publishProposal = (
+    row: FakeProposalRow,
+    status: "open" | "applied" | "rejected",
+    origin: string | null,
+  ): void => {
+    broadcastEvent(row.stash, {
+      type: "proposal",
+      proposalId: row.id,
+      stash: row.stash,
+      path: row.path,
+      status,
+      origin,
+    });
+  };
+
   const proposalBody = (row: FakeProposalRow): string => {
     const body = state.blobs.get(row.stash)?.get(row.blobHash)?.body;
     if (body === undefined) return fail("internal", "The fake proposal points at a missing blob.");
@@ -1445,6 +1637,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       appliedChangeId: null,
     };
     proposalsFor(stash).set(id, row);
+    publishProposal(row, "open", requestOrigin(request));
     return json(proposalRecord(row, createdAt), 201);
   };
 
@@ -1594,10 +1787,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         message: parsed.data.message ?? row.message,
         meta: cloneMeta(row.meta),
       },
-      decidedAt,
+      { createdAt: decidedAt, origin: requestOrigin(request) },
     );
     row.appliedVersion = version.version;
     row.appliedChangeId = version.changeId;
+    publishProposal(row, "applied", requestOrigin(request));
     return json(approvalResult(row));
   };
 
@@ -1617,6 +1811,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     row.decidedAt = now();
     row.decidedBy = principalId(principal);
     row.decisionReason = parsed.data.reason ?? null;
+    publishProposal(row, "rejected", requestOrigin(request));
     return json(proposalRecord(row, row.decidedAt));
   };
 
@@ -1750,16 +1945,21 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       return json({ unchanged: true, version: file.headVersion });
     }
     const size = utf8ByteLength(parsed.data.body);
-    const version = append(stash, path, {
-      kind: "put",
-      hash: bodyHash,
-      size,
-      contentType,
-      rollbackOf: null,
-      author: parsed.data.author ?? "",
-      message: parsed.data.message ?? "",
-      meta: cloneMeta(parsed.data.meta),
-    });
+    const version = append(
+      stash,
+      path,
+      {
+        kind: "put",
+        hash: bodyHash,
+        size,
+        contentType,
+        rollbackOf: null,
+        author: parsed.data.author ?? "",
+        message: parsed.data.message ?? "",
+        meta: cloneMeta(parsed.data.meta),
+      },
+      { origin: requestOrigin(request) },
+    );
     storeBlob(stash, bodyHash, parsed.data.body, version.createdAt);
     ledger(stash, key, requestHash, version, 201);
     return json(
@@ -1799,16 +1999,21 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     if (file.deleted)
       return fail("already-deleted", "File is already deleted", current(file, head));
-    const version = append(stash, path, {
-      kind: "delete",
-      hash: null,
-      size: 0,
-      contentType: DEFAULT_CONTENT_TYPE,
-      rollbackOf: null,
-      author: parsed.data.author ?? "",
-      message: parsed.data.message ?? "",
-      meta: {},
-    });
+    const version = append(
+      stash,
+      path,
+      {
+        kind: "delete",
+        hash: null,
+        size: 0,
+        contentType: DEFAULT_CONTENT_TYPE,
+        rollbackOf: null,
+        author: parsed.data.author ?? "",
+        message: parsed.data.message ?? "",
+        meta: {},
+      },
+      { origin: requestOrigin(request) },
+    );
     ledger(stash, key, requestHash, version, 200);
     return json(
       { version: version.version, changeId: version.changeId, createdAt: iso(version.createdAt) },
@@ -1850,19 +2055,24 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (target.hash === null) {
       return fail("rollback-target-tombstone", "Cannot rollback to a tombstone");
     }
-    const version = append(stash, path, {
-      kind: "rollback",
-      hash: target.hash,
-      size: target.size,
-      contentType: target.contentType,
-      rollbackOf: target.version,
-      author: parsed.data.author ?? "",
-      message:
-        parsed.data.message === undefined || parsed.data.message === ""
-          ? `Rollback to v${target.version}`
-          : parsed.data.message,
-      meta: cloneMeta(parsed.data.meta),
-    });
+    const version = append(
+      stash,
+      path,
+      {
+        kind: "rollback",
+        hash: target.hash,
+        size: target.size,
+        contentType: target.contentType,
+        rollbackOf: target.version,
+        author: parsed.data.author ?? "",
+        message:
+          parsed.data.message === undefined || parsed.data.message === ""
+            ? `Rollback to v${target.version}`
+            : parsed.data.message,
+        meta: cloneMeta(parsed.data.meta),
+      },
+      { origin: requestOrigin(request) },
+    );
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
@@ -2053,6 +2263,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           return await handleRotateToken(request, stash ?? "", match.tokenId ?? "");
         case "revokeToken":
           return handleRevokeToken(stash ?? "", match.tokenId ?? "");
+        case "stashEvents":
+          return handleEvents(request, stash ?? "", url);
         case "listFiles":
           return handleListFiles(stash ?? "", url);
         case "getFile":
@@ -2109,6 +2321,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   return {
     fetch,
     state,
+    events,
     createStash(name) {
       return createStashRow(name).name;
     },
@@ -2118,6 +2331,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       return (await mintStoredToken(stash, parsed.data.scope, parsed.data)).token;
     },
     reset() {
+      for (const stash of [...eventSubscribers.keys()]) closeSubscribers(stash);
       state.proposals.clear();
       state.stashes.clear();
       state.tokens.clear();

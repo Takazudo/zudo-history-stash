@@ -9,8 +9,11 @@ import {
   type GcRunResult,
   type ProposalRecord,
   type RouteId,
+  type StashEvent,
 } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
+import { createStashClient } from "../../src/index.js";
+import { parseStashEventStream } from "../../src/sse.js";
 import {
   CONFORMANCE_SUPPORTED_ROUTE_IDS,
   FAKE_SUPPORTED_ROUTE_IDS,
@@ -41,7 +44,6 @@ const UNSUPPORTED_SAMPLES: Record<
   health: { method: "GET", path: "/v1/health" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
-  stashEvents: { method: "GET", path: "/v1/stashes/demo/events" },
 };
 
 const EMPTY_DIFF_ROUTES = [
@@ -76,6 +78,203 @@ describe("fake route boundary", () => {
     const response = await request(fake, "/v1/not-a-real-route");
     expect(response.status).toBe(501);
     expect(await errorCode(response)).toBe("not-implemented");
+  });
+});
+
+describe("fake live events", () => {
+  it("authenticates the route and emits replay followed by its authoritative ready checkpoint", async () => {
+    const now = Date.parse("2026-08-28T01:02:03.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const token = await fake.mintToken("demo", "read");
+    const created = await request(fake, "/v1/stashes/demo/files/a.md", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Stash-Client-Id": "before-connect" },
+      body: JSON.stringify({ body: "a", expectedVersion: null }),
+    });
+    expect(created.status).toBe(201);
+
+    const response = await fake.fetch("https://fake.invalid/v1/stashes/demo/events?since=0", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/event-stream");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("X-Accel-Buffering")).toBe("no");
+    if (response.body === null) throw new Error("missing fake event body");
+    const iterator = parseStashEventStream(response.body)[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        id: "1",
+        event: {
+          type: "change",
+          changeId: 1,
+          origin: null,
+          path: "a.md",
+          createdAt: "2026-08-28T01:02:03.000Z",
+        },
+      },
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { event: { type: "ready", head: 1, checkpoint: 1 } },
+    });
+    expect(fake.events.subscriberCount("demo")).toBe(1);
+
+    fake.events.emit("demo", { type: "ready", head: 1, checkpoint: 1 });
+    await expect(iterator.next()).resolves.toMatchObject({ value: { event: { type: "ready" } } });
+    fake.events.rotate("demo", "replay-limit");
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { event: { type: "reconnect", reason: "replay-limit" } },
+    });
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    expect(fake.events.subscriberCount("demo")).toBe(0);
+
+    expect((await fake.fetch("https://fake.invalid/v1/stashes/demo/events")).status).toBe(401);
+    expect(
+      (
+        await fake.fetch("https://fake.invalid/v1/stashes/demo/events?since=-1", {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("supports clean close, body failure, cancellation, and reset with one stable controller", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    const events = fake.events;
+    fake.createStash("demo");
+
+    const clean = await request(fake, "/v1/stashes/demo/events");
+    if (clean.body === null) throw new Error("missing clean event body");
+    const cleanIterator = parseStashEventStream(clean.body)[Symbol.asyncIterator]();
+    await cleanIterator.next();
+    fake.events.close("demo");
+    await expect(cleanIterator.next()).resolves.toEqual({ done: true, value: undefined });
+
+    const failed = await request(fake, "/v1/stashes/demo/events");
+    if (failed.body === null) throw new Error("missing failed event body");
+    const failedIterator = parseStashEventStream(failed.body)[Symbol.asyncIterator]();
+    await failedIterator.next();
+    fake.events.error("demo", new TypeError("offline"));
+    await expect(failedIterator.next()).rejects.toThrow("stash event stream could not be decoded");
+    expect(fake.events.subscriberCount("demo")).toBe(0);
+
+    const cancelled = await request(fake, "/v1/stashes/demo/events");
+    expect(fake.events.subscriberCount("demo")).toBe(1);
+    await cancelled.body?.cancel();
+    expect(fake.events.subscriberCount("demo")).toBe(0);
+
+    const resetResponse = await request(fake, "/v1/stashes/demo/events");
+    if (resetResponse.body === null) throw new Error("missing reset event body");
+    const reader = resetResponse.body.getReader();
+    await reader.read();
+    fake.reset();
+    expect(fake.events).toBe(events);
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    expect(fake.events.subscriberCount("demo")).toBe(0);
+  });
+
+  it("emits only newly committed changes and proposal decisions with the valid client origin", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const token = await fake.mintToken("demo", "write");
+    let keySerial = 0;
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "tab-a",
+      fetch: fake.fetch,
+      idempotencyKey: () => `auto-${(keySerial += 1)}`,
+    });
+    const files = client.files("demo");
+    const proposals = client.proposals("demo");
+    const stream = files.events({ since: 0 });
+    const iterator = stream[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: "ready", head: null, checkpoint: 0 },
+    });
+
+    const firstInput = { body: "one", expectedVersion: null } as const;
+    await files.put("a.md", firstInput, { idempotencyKey: "put-one" });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: "change", changeId: 1, version: 1, origin: "tab-a" },
+    });
+    await files.put("a.md", firstInput, { idempotencyKey: "put-one" });
+    await files.put("a.md", { body: "one", expectedVersion: 1, skipIfUnchanged: true });
+    await files.put("a.md", { body: "refused", expectedVersion: 99 });
+    await files.put("a.md", { body: "two", expectedVersion: 1 });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: "change", changeId: 2, version: 2, origin: "tab-a" },
+    });
+
+    const created = await proposals.create(
+      { path: "a.md", body: "candidate", baseVersion: 2 },
+      { idempotencyKey: "proposal-one" },
+    );
+    if (!created.ok) throw new Error("proposal fixture failed");
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        type: "proposal",
+        proposalId: created.value.id,
+        status: "open",
+        origin: "tab-a",
+      },
+    });
+    await proposals.create(
+      { path: "a.md", body: "candidate", baseVersion: 2 },
+      { idempotencyKey: "proposal-one" },
+    );
+    await proposals.approve(created.value.id);
+    const approvalEvents = [await iterator.next(), await iterator.next()].map(
+      ({ value }) => value as StashEvent,
+    );
+    expect(approvalEvents).toEqual([
+      expect.objectContaining({ type: "change", changeId: 3, version: 3, origin: "tab-a" }),
+      expect.objectContaining({
+        type: "proposal",
+        proposalId: created.value.id,
+        status: "applied",
+        origin: "tab-a",
+      }),
+    ]);
+    await proposals.approve(created.value.id);
+
+    const rejected = await proposals.create({ path: "a.md", body: "later", baseVersion: 3 });
+    if (!rejected.ok) throw new Error("rejection fixture failed");
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: "proposal", proposalId: rejected.value.id, status: "open" },
+    });
+    await proposals.reject(rejected.value.id, { reason: "no" });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        type: "proposal",
+        proposalId: rejected.value.id,
+        status: "rejected",
+        origin: "tab-a",
+      },
+    });
+    await proposals.reject(rejected.value.id, { reason: "ignored replay" });
+    await files.put("a.md", { body: "after decisions", expectedVersion: 3 });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: "change", changeId: 4, version: 4 },
+    });
+
+    const stale = await proposals.create({ path: "a.md", body: "stale", baseVersion: 4 });
+    if (!stale.ok) throw new Error("stale fixture failed");
+    await iterator.next();
+    await files.put("a.md", { body: "moved", expectedVersion: 4 });
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: "change", changeId: 5, version: 5 },
+    });
+    await proposals.approve(stale.value.id);
+    await proposals.reject(stale.value.id);
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: "proposal", proposalId: stale.value.id, status: "rejected" },
+    });
+
+    stream.close();
+    expect(fake.events.subscriberCount("demo")).toBe(0);
   });
 });
 
