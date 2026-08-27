@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { MAX_BODY_BYTES } from "../limits.js";
 import {
   CreateTokenBody,
   DiffQuery,
@@ -95,7 +96,9 @@ describe("projectRequestSchema", () => {
   });
 
   it("projects PutFileBody deterministically", () => {
-    expect(projectRequestSchema(PutFileBody)).toMatchSnapshot();
+    const projected = projectRequestSchema(PutFileBody);
+    expect(propertiesOf(projected).body?.description).toContain(String(MAX_BODY_BYTES));
+    expect(projected).toMatchSnapshot();
   });
 });
 

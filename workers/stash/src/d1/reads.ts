@@ -6,6 +6,7 @@ import {
   type VersionKind,
 } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
+import { assertBlobRowShape, readBlob, type BlobCodecRow } from "./blobs.js";
 import type { StoreDependencies } from "./store.js";
 import {
   SELECT_CHANGES_ASC,
@@ -37,6 +38,13 @@ export interface ReadFileRecord {
   deleted: boolean;
   body: string | null;
   contentType: string;
+}
+
+export type ReadFileMetadata = Omit<ReadFileRecord, "body">;
+
+export interface ReadFileSource {
+  metadata: ReadFileMetadata;
+  blob: BlobCodecRow | null;
 }
 
 export interface ReadVersionRecord {
@@ -112,6 +120,12 @@ export interface ListChangesOptions {
 }
 
 export interface StashReads {
+  getFileSource(
+    stash: string,
+    path: string,
+    options?: GetFileOptions,
+  ): Promise<ReadFileSource | null>;
+  materializeFile(source: ReadFileSource): Promise<ReadFileRecord>;
   getFile(stash: string, path: string, options?: GetFileOptions): Promise<ReadFileRecord | null>;
   listFiles(stash: string, options?: ListFilesOptions): Promise<ReadFileList>;
   listHistory(
@@ -124,6 +138,10 @@ export interface StashReads {
 
 function validation(message: string): never {
   throw new StashError("validation", message);
+}
+
+function internalReadError(): never {
+  throw new StashError("internal", "Stored file content is unavailable or invalid.");
 }
 
 function validateLimit(value: number | undefined): number {
@@ -183,7 +201,7 @@ function toIso(value: number): string {
   return new Date(value).toISOString();
 }
 
-function mapFile(row: FileReadRow): ReadFileRecord {
+function mapFileMetadata(row: FileReadRow): ReadFileMetadata {
   return {
     path: row.path,
     version: row.version,
@@ -196,9 +214,51 @@ function mapFile(row: FileReadRow): ReadFileRecord {
     meta: parseMeta(row.meta_json),
     createdAt: toIso(row.created_at),
     deleted: row.deleted === 1,
-    body: row.deleted === 1 ? null : row.body,
     contentType: row.content_type,
   };
+}
+
+function assertReadFileSource(source: ReadFileSource): void {
+  const { metadata, blob } = source;
+  if (!Number.isSafeInteger(metadata.size) || metadata.size < 0) return internalReadError();
+
+  if (metadata.deleted) {
+    if (metadata.hash !== null || metadata.size !== 0 || blob !== null) return internalReadError();
+    return;
+  }
+
+  if (
+    metadata.hash === null ||
+    blob === null ||
+    blob.hash !== metadata.hash ||
+    blob.size_bytes !== metadata.size
+  ) {
+    return internalReadError();
+  }
+  assertBlobRowShape(blob);
+}
+
+function mapFileSource(row: FileReadRow): ReadFileSource {
+  const metadata = mapFileMetadata(row);
+  const hasBlobColumns =
+    row.blob_hash !== null ||
+    row.blob_body !== null ||
+    row.blob_r2_key !== null ||
+    row.blob_size !== null;
+  let blob: BlobCodecRow | null = null;
+  if (hasBlobColumns) {
+    if (row.blob_hash === null || row.blob_size === null) return internalReadError();
+    blob = {
+      hash: row.blob_hash,
+      body: row.blob_body,
+      r2_key: row.blob_r2_key,
+      size_bytes: row.blob_size,
+    };
+  }
+
+  const source = { metadata, blob } satisfies ReadFileSource;
+  assertReadFileSource(source);
+  return source;
 }
 
 function mapVersion(row: HistoryVersionRow): ReadVersionRecord {
@@ -241,21 +301,38 @@ function mapChange(row: ChangeRow): ReadChangeItem {
 }
 
 export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
+  const getFileSource: StashReads["getFileSource"] = async (stash, path, options = {}) => {
+    const stashName = validateString(stash, "stash");
+    const filePath = validateString(path, "path");
+    const version = validateOptionalPositiveInteger(options.version, "version");
+    const session = env.DB.withSession("first-primary");
+    const statement = session.prepare(
+      version === undefined ? SELECT_FILE_HEAD : SELECT_FILE_VERSION,
+    );
+    const row =
+      version === undefined
+        ? await statement.bind(stashName, filePath).first<FileReadRow>()
+        : await statement.bind(stashName, filePath, version).first<FileReadRow>();
+    return row === null ? null : mapFileSource(row);
+  };
+
+  const materializeFile: StashReads["materializeFile"] = async (source) => {
+    assertReadFileSource(source);
+    if (source.metadata.deleted) return { ...source.metadata, body: null };
+    if (source.blob === null) return internalReadError();
+    const body = await readBlob(env, source.blob);
+    return { ...source.metadata, body };
+  };
+
+  const getFile: StashReads["getFile"] = async (stash, path, options = {}) => {
+    const source = await getFileSource(stash, path, options);
+    return source === null ? null : materializeFile(source);
+  };
+
   return {
-    async getFile(stash, path, options = {}) {
-      const stashName = validateString(stash, "stash");
-      const filePath = validateString(path, "path");
-      const version = validateOptionalPositiveInteger(options.version, "version");
-      const session = env.DB.withSession("first-primary");
-      const statement = session.prepare(
-        version === undefined ? SELECT_FILE_HEAD : SELECT_FILE_VERSION,
-      );
-      const row =
-        version === undefined
-          ? await statement.bind(stashName, filePath).first<FileReadRow>()
-          : await statement.bind(stashName, filePath, version).first<FileReadRow>();
-      return row === null ? null : mapFile(row);
-    },
+    getFileSource,
+    materializeFile,
+    getFile,
 
     async listFiles(stash, options = {}) {
       const stashName = validateString(stash, "stash");

@@ -21,7 +21,7 @@ import { Hono, type Context } from "hono";
 import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
-import type { ReadFileRecord } from "../d1/reads.js";
+import type { ReadFileMetadata, ReadFileRecord } from "../d1/reads.js";
 import type { StoreWriteResult } from "../d1/writes.js";
 
 const files = new Hono<AppEnv>();
@@ -146,7 +146,7 @@ function responseFile(record: ReadFileRecord): FileRecord {
   };
 }
 
-function currentFromRecord(record: ReadFileRecord): Current {
+function currentFromRecord(record: ReadFileMetadata): Current {
   return {
     version: record.version,
     hash: record.hash,
@@ -157,7 +157,7 @@ function currentFromRecord(record: ReadFileRecord): Current {
   };
 }
 
-function fileEtag(record: ReadFileRecord): string {
+function fileEtag(record: ReadFileMetadata): string {
   if (record.deleted) {
     return formatEtag({ version: record.version, hash: null, deleted: true });
   }
@@ -189,13 +189,15 @@ files.get(
   async (c) => {
     const path = filePath(c);
     const query = c.req.valid("query");
-    const record = await createStashStore(c.env).reads.getFile(c.req.param("stash"), path, query);
-    if (record === null) {
+    const reads = createStashStore(c.env).reads;
+    const source = await reads.getFileSource(c.req.param("stash"), path, query);
+    if (source === null) {
       throw new StashError(
         query.version === undefined ? "not-found" : "version-not-found",
         query.version === undefined ? "File not found." : "Version not found.",
       );
     }
+    const record = source.metadata;
     if (record.deleted && query.version === undefined) {
       return c.json(
         {
@@ -211,8 +213,9 @@ files.get(
     if (ifNoneMatchMatches(c.req.header("If-None-Match"), etag)) {
       return c.body(null, 304, headers);
     }
+    const materialized = await reads.materializeFile(source);
     for (const [name, value] of Object.entries(headers)) c.header(name, value);
-    return c.json(responseFile(record));
+    return c.json(responseFile(materialized));
   },
 );
 

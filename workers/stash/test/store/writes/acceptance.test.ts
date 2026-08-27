@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { MAX_BODY_BYTES } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
 import { createWrites } from "../../../src/d1/writes.js";
 import { rollbackBatch } from "../../../src/d1/sql/writes.js";
@@ -24,7 +25,7 @@ describe("stash writes", () => {
       expectedVersion = result.value.version;
     }
     const tooLarge = await writes.put(stash, "large.txt", {
-      body: "x".repeat(1_000_001),
+      body: "x".repeat(MAX_BODY_BYTES + 1),
       expectedVersion: null,
     });
     expectError(tooLarge, "payload-too-large");

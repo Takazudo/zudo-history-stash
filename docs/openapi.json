@@ -2832,7 +2832,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "body": {
-                    "description": "Must be a well-formed Unicode string. Maximum 1000000 UTF-8 bytes.",
+                    "description": "Must be a well-formed Unicode string. Maximum 5000000 UTF-8 bytes.",
                     "type": "string"
                   },
                   "context": {
@@ -3303,7 +3303,7 @@
                     "type": "string"
                   },
                   "body": {
-                    "description": "Must be a well-formed Unicode string. Maximum 1000000 UTF-8 bytes.",
+                    "description": "Must be a well-formed Unicode string. Maximum 5000000 UTF-8 bytes.",
                     "type": "string"
                   },
                   "contentType": {
@@ -3687,7 +3687,7 @@
                               "type": "string"
                             },
                             "body": {
-                              "description": "Must be a well-formed Unicode string. Maximum 1000000 UTF-8 bytes.",
+                              "description": "Must be a well-formed Unicode string. Maximum 5000000 UTF-8 bytes.",
                               "type": "string"
                             },
                             "createdAt": {

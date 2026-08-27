@@ -9,9 +9,8 @@ consumers (Node.js, browser, Worker service binding)
                          │
                          ▼
                  stash Worker (/v1)
-                         │
-                         ▼
-                         D1
+                   ├──► D1 (metadata, heads, history, and inline text)
+                   └──► private R2 (large text bodies)
 
 viewer Worker ── service binding ──► stash Worker
 ```
@@ -21,7 +20,7 @@ viewer Worker ── service binding ──► stash Worker
 | `@takazudo/zudo-history-stash-core` (`packages/core`) | Runtime-agnostic types, schemas, validators, hashes, limits, and diff engine |
 | `@takazudo/zudo-history-stash` (`packages/client`)    | Node, browser, and Worker client with CAS writes and bounded retries         |
 | `@takazudo/zudo-history-stash-ui` (`packages/ui`)     | Router-independent React workflows, hooks, and components                    |
-| `zudo-history-stash` (`workers/stash`)                | Hono `/v1` API and the D1 system of record                                   |
+| `zudo-history-stash` (`workers/stash`)                | Hono `/v1` API with D1 metadata/history and private R2 spill storage         |
 | `zudo-history-stash-viewer` (`workers/viewer`)        | React/Tailwind standalone viewer and service-binding proxy                   |
 
 ## Consumer guide
