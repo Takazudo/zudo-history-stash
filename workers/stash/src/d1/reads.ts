@@ -2,11 +2,18 @@ import {
   LIST_LIMIT_DEFAULT,
   LIST_LIMIT_MAX,
   StashError,
+  sha256Hex,
+  type ByteObject,
+  type ByteRange,
+  type ContentAccess,
+  type ContentStorage,
   type JsonValue,
+  type Representation,
   type VersionKind,
 } from "@takazudo/zudo-history-stash-core";
+import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
-import { assertBlobRowShape, readBlob, type BlobCodecRow } from "./blobs.js";
+import { createByteStorageReader } from "./byte-reader.js";
 import type { StoreDependencies } from "./store.js";
 import {
   SELECT_CHANGES_ASC,
@@ -37,14 +44,21 @@ export interface ReadFileRecord {
   createdAt: string;
   deleted: boolean;
   body: string | null;
+  representation: Representation;
+  contentAccess: ContentAccess;
   contentType: string;
+  byteSize: number;
+  etag: string | null;
 }
 
-export type ReadFileMetadata = Omit<ReadFileRecord, "body">;
+export type ReadFileMetadata = Omit<ReadFileRecord, "body"> & {
+  contentStorage: ContentStorage;
+  contentRemote: boolean;
+};
 
 export interface ReadFileSource {
+  stash: string;
   metadata: ReadFileMetadata;
-  blob: BlobCodecRow | null;
 }
 
 export interface ReadVersionRecord {
@@ -57,6 +71,11 @@ export interface ReadVersionRecord {
   message: string;
   meta: Record<string, JsonValue>;
   createdAt: string;
+  representation: Representation;
+  contentAccess: ContentAccess;
+  contentType: string;
+  byteSize: number;
+  etag: string | null;
 }
 
 export interface ReadFileSummary {
@@ -66,6 +85,11 @@ export interface ReadFileSummary {
   size: number;
   deleted: boolean;
   updatedAt: string;
+  representation: Representation;
+  contentAccess: ContentAccess;
+  contentType: string;
+  byteSize: number;
+  etag: string | null;
 }
 
 export interface ReadFileList {
@@ -92,6 +116,11 @@ export interface ReadChangeItem {
   message: string;
   size: number;
   createdAt: string;
+  representation: Representation;
+  contentAccess: ContentAccess;
+  contentType: string;
+  byteSize: number;
+  etag: string | null;
 }
 
 export type ReadChangesPage =
@@ -126,6 +155,8 @@ export interface StashReads {
     options?: GetFileOptions,
   ): Promise<ReadFileSource | null>;
   materializeFile(source: ReadFileSource): Promise<ReadFileRecord>;
+  materializeText(source: ReadFileSource): Promise<string>;
+  getByteObject(source: ReadFileSource, range?: ByteRange): Promise<ByteObject>;
   getFile(stash: string, path: string, options?: GetFileOptions): Promise<ReadFileRecord | null>;
   listFiles(stash: string, options?: ListFilesOptions): Promise<ReadFileList>;
   listHistory(
@@ -201,7 +232,53 @@ function toIso(value: number): string {
   return new Date(value).toISOString();
 }
 
-function mapFileMetadata(row: FileReadRow): ReadFileMetadata {
+function applicationEtag(
+  hash: string | null,
+  stored: string | null,
+  deleted: boolean,
+): string | null {
+  if (deleted) {
+    if (hash !== null || stored !== null) return internalReadError();
+    return null;
+  }
+  if (hash === null || (stored !== null && stored !== hash)) return internalReadError();
+  return stored ?? hash;
+}
+
+function contentAccess(
+  representation: Representation,
+  deleted: boolean,
+  size: number,
+  jsonInlineMaxBytes: number,
+): ContentAccess {
+  if (deleted) return "deleted";
+  return representation === "text" && size <= jsonInlineMaxBytes ? "inline" : "raw";
+}
+
+function contentFields(
+  row: {
+    hash: string | null;
+    size: number;
+    kind: VersionKind;
+    representation: Representation;
+    content_type: string;
+    application_etag: string | null;
+  },
+  jsonInlineMaxBytes: number,
+) {
+  if (!Number.isSafeInteger(row.size) || row.size < 0) return internalReadError();
+  const deleted = row.kind === "delete";
+  return {
+    representation: row.representation,
+    contentAccess: contentAccess(row.representation, deleted, row.size, jsonInlineMaxBytes),
+    contentType: row.content_type,
+    byteSize: row.size,
+    etag: applicationEtag(row.hash, row.application_etag, deleted),
+  };
+}
+
+function mapFileMetadata(row: FileReadRow, jsonInlineMaxBytes: number): ReadFileMetadata {
+  const deleted = row.deleted === 1;
   return {
     path: row.path,
     version: row.version,
@@ -213,55 +290,53 @@ function mapFileMetadata(row: FileReadRow): ReadFileMetadata {
     message: row.message,
     meta: parseMeta(row.meta_json),
     createdAt: toIso(row.created_at),
-    deleted: row.deleted === 1,
-    contentType: row.content_type,
+    deleted,
+    ...contentFields(row, jsonInlineMaxBytes),
+    contentStorage: row.content_storage,
+    contentRemote: row.stored_r2_key !== null,
   };
 }
 
 function assertReadFileSource(source: ReadFileSource): void {
-  const { metadata, blob } = source;
+  const { metadata } = source;
   if (!Number.isSafeInteger(metadata.size) || metadata.size < 0) return internalReadError();
 
   if (metadata.deleted) {
-    if (metadata.hash !== null || metadata.size !== 0 || blob !== null) return internalReadError();
+    if (
+      metadata.hash !== null ||
+      metadata.size !== 0 ||
+      metadata.contentAccess !== "deleted" ||
+      metadata.etag !== null
+    ) {
+      return internalReadError();
+    }
     return;
   }
 
-  if (
-    metadata.hash === null ||
-    blob === null ||
-    blob.hash !== metadata.hash ||
-    blob.size_bytes !== metadata.size
-  ) {
+  if (metadata.hash === null || metadata.etag === null || metadata.contentAccess === "deleted") {
     return internalReadError();
   }
-  assertBlobRowShape(blob);
 }
 
-function mapFileSource(row: FileReadRow): ReadFileSource {
-  const metadata = mapFileMetadata(row);
-  const hasBlobColumns =
-    row.blob_hash !== null ||
-    row.blob_body !== null ||
-    row.blob_r2_key !== null ||
-    row.blob_size !== null;
-  let blob: BlobCodecRow | null = null;
-  if (hasBlobColumns) {
-    if (row.blob_hash === null || row.blob_size === null) return internalReadError();
-    blob = {
-      hash: row.blob_hash,
-      body: row.blob_body,
-      r2_key: row.blob_r2_key,
-      size_bytes: row.blob_size,
-    };
+function mapFileSource(
+  stash: string,
+  row: FileReadRow,
+  jsonInlineMaxBytes: number,
+): ReadFileSource {
+  const metadata = mapFileMetadata(row, jsonInlineMaxBytes);
+  if (metadata.deleted) {
+    if (row.stored_hash !== null || row.stored_size !== null || row.stored_r2_key !== null) {
+      return internalReadError();
+    }
+  } else if (row.stored_hash !== metadata.hash || row.stored_size !== metadata.size) {
+    return internalReadError();
   }
-
-  const source = { metadata, blob } satisfies ReadFileSource;
+  const source = { stash, metadata } satisfies ReadFileSource;
   assertReadFileSource(source);
   return source;
 }
 
-function mapVersion(row: HistoryVersionRow): ReadVersionRecord {
+function mapVersion(row: HistoryVersionRow, jsonInlineMaxBytes: number): ReadVersionRecord {
   return {
     version: row.version,
     kind: row.kind,
@@ -272,10 +347,11 @@ function mapVersion(row: HistoryVersionRow): ReadVersionRecord {
     message: row.message,
     meta: parseMeta(row.meta_json),
     createdAt: toIso(row.created_at),
+    ...contentFields(row, jsonInlineMaxBytes),
   };
 }
 
-function mapFileSummary(row: FileSummaryRow): ReadFileSummary {
+function mapFileSummary(row: FileSummaryRow, jsonInlineMaxBytes: number): ReadFileSummary {
   return {
     path: row.path,
     headVersion: row.head_version,
@@ -283,10 +359,11 @@ function mapFileSummary(row: FileSummaryRow): ReadFileSummary {
     size: row.size,
     deleted: row.deleted === 1,
     updatedAt: toIso(row.updated_at),
+    ...contentFields({ ...row, kind: row.deleted === 1 ? "delete" : "put" }, jsonInlineMaxBytes),
   };
 }
 
-function mapChange(row: ChangeRow): ReadChangeItem {
+function mapChange(row: ChangeRow, jsonInlineMaxBytes: number): ReadChangeItem {
   return {
     changeId: row.change_id,
     stash: row.stash,
@@ -297,10 +374,13 @@ function mapChange(row: ChangeRow): ReadChangeItem {
     message: row.message,
     size: row.size,
     createdAt: toIso(row.created_at),
+    ...contentFields(row, jsonInlineMaxBytes),
   };
 }
 
 export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
+  const { jsonInlineMaxBytes } = parseBinarySettings(env);
+  const byteReader = createByteStorageReader(env);
   const getFileSource: StashReads["getFileSource"] = async (stash, path, options = {}) => {
     const stashName = validateString(stash, "stash");
     const filePath = validateString(path, "path");
@@ -313,15 +393,55 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
       version === undefined
         ? await statement.bind(stashName, filePath).first<FileReadRow>()
         : await statement.bind(stashName, filePath, version).first<FileReadRow>();
-    return row === null ? null : mapFileSource(row);
+    return row === null ? null : mapFileSource(stashName, row, jsonInlineMaxBytes);
+  };
+
+  const getByteObject: StashReads["getByteObject"] = async (source, range) => {
+    assertReadFileSource(source);
+    const { metadata } = source;
+    if (metadata.deleted || metadata.hash === null || metadata.etag === null) {
+      return internalReadError();
+    }
+    const object = await byteReader.get({
+      stash: source.stash,
+      hash: metadata.hash,
+      storage: metadata.contentStorage,
+      size: metadata.size,
+      etag: metadata.etag,
+      contentType: metadata.contentType,
+      ...(range === undefined ? {} : { range }),
+    });
+    return object ?? internalReadError();
+  };
+
+  const materializeText: StashReads["materializeText"] = async (source) => {
+    assertReadFileSource(source);
+    if (source.metadata.deleted || source.metadata.representation !== "text") {
+      return internalReadError();
+    }
+    const object = await getByteObject(source);
+    const bytes = await new Response(object.stream).arrayBuffer();
+    if (bytes.byteLength !== source.metadata.size) return internalReadError();
+    if (source.metadata.contentRemote && (await sha256Hex(bytes)) !== source.metadata.hash) {
+      return internalReadError();
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      return internalReadError();
+    }
   };
 
   const materializeFile: StashReads["materializeFile"] = async (source) => {
     assertReadFileSource(source);
-    if (source.metadata.deleted) return { ...source.metadata, body: null };
-    if (source.blob === null) return internalReadError();
-    const body = await readBlob(env, source.blob);
-    return { ...source.metadata, body };
+    const {
+      contentStorage: _contentStorage,
+      contentRemote: _contentRemote,
+      ...metadata
+    } = source.metadata;
+    if (source.metadata.deleted) return { ...metadata, body: null };
+    if (source.metadata.contentAccess === "raw") return { ...metadata, body: null };
+    return { ...metadata, body: await materializeText(source) };
   };
 
   const getFile: StashReads["getFile"] = async (stash, path, options = {}) => {
@@ -332,6 +452,8 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
   return {
     getFileSource,
     materializeFile,
+    materializeText,
+    getByteObject,
     getFile,
 
     async listFiles(stash, options = {}) {
@@ -352,7 +474,7 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
       const hasMore = rows.length > limit;
       if (hasMore) rows.pop();
       return {
-        files: rows.map(mapFileSummary),
+        files: rows.map((row) => mapFileSummary(row, jsonInlineMaxBytes)),
         nextAfter: hasMore ? (rows.at(-1)?.path ?? null) : null,
       };
     },
@@ -381,7 +503,7 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
         headVersion: head.head_version,
         deleted: head.deleted === 1,
         total: head.total,
-        versions: rows.map(mapVersion),
+        versions: rows.map((row) => mapVersion(row, jsonInlineMaxBytes)),
         nextBefore: hasMore ? (rows.at(-1)?.version ?? null) : null,
       };
     },
@@ -406,7 +528,7 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
       const rows = result.results;
       const hasMore = rows.length > limit;
       if (hasMore) rows.pop();
-      const changes = rows.map(mapChange);
+      const changes = rows.map((row) => mapChange(row, jsonInlineMaxBytes));
       if (since !== undefined) {
         return {
           changes,

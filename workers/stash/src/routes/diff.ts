@@ -1,5 +1,4 @@
 import {
-  DIFF_MAX_BYTES,
   DiffCandidateBody,
   DiffQuery,
   MAX_BODY_BYTES,
@@ -12,6 +11,7 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
+import { parseBinarySettings } from "../binary-config.js";
 import type { AppEnv } from "../context.js";
 import type { StashReads, ReadVersionRecord } from "../d1/reads.js";
 import { createStashStore } from "../d1/store.js";
@@ -46,7 +46,7 @@ const DiffCandidateRouteBody = DiffCandidateBody.superRefine((value, context) =>
   }
 });
 
-type DiffReads = Pick<StashReads, "getFile" | "listHistory">;
+type DiffReads = Pick<StashReads, "getFileSource" | "materializeText" | "listHistory">;
 
 export interface DiffRouteDependencies {
   createReads?: (env: Env) => DiffReads;
@@ -83,6 +83,11 @@ function toResolvedSide(version: ReadVersionRecord): ResolvedSide {
       version: version.version,
       hash: version.hash,
       deleted: version.kind === "delete",
+      representation: version.representation,
+      contentAccess: version.contentAccess,
+      contentType: version.contentType,
+      byteSize: version.byteSize,
+      etag: version.etag,
     },
     size: version.size,
   };
@@ -124,18 +129,19 @@ async function loadText(
 ): Promise<string> {
   const { side, size } = resolved;
   if (side.deleted) return "";
-  const file = await reads.getFile(stash, path, { version: side.version });
-  if (file === null) return versionNotFound();
+  const source = await reads.getFileSource(stash, path, { version: side.version });
+  if (source === null) return versionNotFound();
+  const file = source.metadata;
   if (
     file.version !== side.version ||
     file.deleted ||
-    file.body === null ||
+    file.representation !== "text" ||
     file.hash !== side.hash ||
     file.size !== size
   ) {
     return internalReadError();
   }
-  return file.body;
+  return reads.materializeText(source);
 }
 
 function candidateValidationError(result: {
@@ -172,11 +178,19 @@ export function createDiffRoutes(dependencies: DiffRouteDependencies = {}): Hono
       const toVersion = query.to === "head" ? head.side.version : query.to;
       const to = await resolveSide(reads, stash, path, toVersion, head);
 
+      if (
+        (!from.side.deleted && from.side.representation === "binary") ||
+        (!to.side.deleted && to.side.representation === "binary")
+      ) {
+        return c.json({ state: "binary" as const, from: from.side, to: to.side });
+      }
+
       if (from.side.hash === to.side.hash) {
         return c.json({ state: "same" as const, from: from.side, to: to.side });
       }
 
-      if (from.size > DIFF_MAX_BYTES || to.size > DIFF_MAX_BYTES) {
+      const diffMaxBytes = parseBinarySettings(c.env).diffMaxBytes;
+      if (from.size > diffMaxBytes || to.size > diffMaxBytes) {
         return c.json({
           state: "oversized" as const,
           reason: "bytes" as const,
@@ -217,9 +231,14 @@ export function createDiffRoutes(dependencies: DiffRouteDependencies = {}): Hono
       const candidateHash = await sha256Hex(input.body);
       const candidateSize = utf8ByteLength(input.body);
 
+      if (!from.side.deleted && from.side.representation === "binary") {
+        return c.json({ state: "binary" as const });
+      }
+
       if (candidateHash === from.side.hash) return c.json({ state: "same" as const });
 
-      if (from.size > DIFF_MAX_BYTES || candidateSize > DIFF_MAX_BYTES) {
+      const diffMaxBytes = parseBinarySettings(c.env).diffMaxBytes;
+      if (from.size > diffMaxBytes || candidateSize > diffMaxBytes) {
         return c.json({ state: "oversized" as const, reason: "bytes" as const });
       }
 

@@ -66,6 +66,7 @@ describe("rate-limit route buckets", () => {
   it("keeps every route in its capability bucket", () => {
     expect(RATE_LIMIT_BINDING_BY_ROUTE).toEqual({
       health: null,
+      getCapabilities: null,
       me: "RL_READ",
       listStashes: null,
       createStash: null,
@@ -96,6 +97,17 @@ describe("rate-limit route buckets", () => {
       getDiff: "RL_DIFF",
       diffCandidate: "RL_DIFF",
       getStashChanges: "RL_READ",
+      getRawFile: "RL_READ",
+      headRawFile: "RL_READ",
+      getRawVersion: "RL_READ",
+      headRawVersion: "RL_READ",
+      createUploadSession: "RL_WRITE",
+      getUploadSession: "RL_WRITE",
+      abortUploadSession: "RL_WRITE",
+      uploadSingleContent: "RL_WRITE",
+      uploadPart: "RL_WRITE",
+      completeUploadSession: "RL_WRITE",
+      resumeUploadSession: "RL_WRITE",
     });
   });
 
@@ -536,7 +548,7 @@ describe("rate-limit control flow", () => {
 
     expect(response.status).toBe(204);
     expect(response.headers.get("Access-Control-Expose-Headers")).toBe(
-      "ETag,X-Stash-Version,Idempotent-Replayed,Retry-After",
+      "ETag,X-Stash-Version,Idempotent-Replayed,Retry-After,Accept-Ranges,Content-Length,Content-Range,Content-Disposition,X-Content-Type-Options",
     );
     expect(read.limit).not.toHaveBeenCalled();
   });

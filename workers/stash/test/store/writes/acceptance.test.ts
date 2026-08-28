@@ -76,6 +76,17 @@ describe("stash writes", () => {
       statusCode: 200,
       value: { unchanged: true, version: 1 },
     });
+    const metadataChange = await writes.put(stash, "cas.txt", {
+      body: "same",
+      expectedVersion: 1,
+      contentType: "text/markdown; charset=utf-8",
+      skipIfUnchanged: true,
+    });
+    expect(metadataChange).toMatchObject({
+      ok: true,
+      statusCode: 201,
+      value: { version: 2 },
+    });
   });
 
   it("covers deletion, tombstone resurrection, and missing outcomes", async () => {

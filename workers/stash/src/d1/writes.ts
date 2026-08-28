@@ -42,10 +42,14 @@ interface HeadForWriteRow {
   kind: "put" | "delete" | "rollback";
   author: string;
   created_at: number;
+  representation: "text" | "binary";
+  content_type: string;
 }
 
 interface VersionMetaRow extends VersionRow {
   previous_blob_hash: string | null;
+  previous_representation: "text" | "binary" | null;
+  previous_content_type: string | null;
 }
 
 export interface WriteOptions {
@@ -185,7 +189,14 @@ async function replay<T>(
       ...base,
       hash: row.blob_hash,
       rollbackOf: row.rollback_of,
-      identicalToHead: row.blob_hash === row.previous_blob_hash,
+      identicalToHead:
+        row.blob_hash === row.previous_blob_hash &&
+        row.representation === row.previous_representation &&
+        row.content_type === row.previous_content_type,
+      representation: row.representation,
+      contentType: row.content_type,
+      byteSize: row.size_bytes,
+      etag: row.application_etag ?? row.blob_hash,
     };
   } else {
     if (row.blob_hash === null) return failure("internal", 500, "Invalid put ledger result");
@@ -274,7 +285,14 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } else if (head.head_version !== input.expectedVersion) {
       return failure("stale", 409, "Expected version is stale", currentFromHead(head));
     }
-    if (input.skipIfUnchanged && head && head.deleted === 0 && head.head_hash === hash) {
+    if (
+      input.skipIfUnchanged &&
+      head &&
+      head.deleted === 0 &&
+      head.head_hash === hash &&
+      head.representation === "text" &&
+      head.content_type === contentType
+    ) {
       return created({ unchanged: true, version: head.head_version }, 200);
     }
 
@@ -507,9 +525,16 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
             version: input.expectedVersion + 1,
             hash: target.blob_hash,
             rollbackOf: input.toVersion,
-            identicalToHead: target.blob_hash === head.head_hash,
+            identicalToHead:
+              target.blob_hash === head.head_hash &&
+              target.representation === head.representation &&
+              target.content_type === head.content_type,
             changeId: id,
             createdAt: new Date(createdAt).toISOString(),
+            representation: target.representation,
+            contentType: target.content_type,
+            byteSize: target.size_bytes,
+            etag: target.application_etag ?? target.blob_hash,
           },
           201,
         );
