@@ -189,6 +189,61 @@ function readStringValue(source, start, end, fieldName) {
   }
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function readImportedStringValue(source, configPath, start, end, fieldName) {
+  const expression = source.slice(start, end).trim();
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(expression)) {
+    throw new Error(
+      `zfb.config.ts field ${fieldName} must be a literal string or an imported string constant`,
+    );
+  }
+
+  const matches = [];
+  const importPattern = /^\s*import\s*\{([^}]*)\}\s*from\s*(["'])(\.\.?\/[^"']+)\2\s*;?\s*$/gm;
+  for (const match of source.matchAll(importPattern)) {
+    for (const rawSpecifier of match[1].split(",")) {
+      const specifier = rawSpecifier.trim();
+      if (!specifier) continue;
+      const parsed = /^([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?$/.exec(
+        specifier,
+      );
+      if (parsed === null) continue;
+      const importedName = parsed[1];
+      const localName = parsed[2] ?? importedName;
+      if (localName === expression) matches.push({ importedName, modulePath: match[3] });
+    }
+  }
+  if (matches.length !== 1) {
+    throw new Error(
+      `zfb.config.ts field ${fieldName} must reference exactly one relative named import`,
+    );
+  }
+
+  const importedPath = resolve(dirname(configPath), matches[0].modulePath);
+  const importedSource = await readFile(importedPath, "utf-8");
+  const declarationPattern = new RegExp(
+    `^\\s*export\\s+const\\s+${escapeRegExp(matches[0].importedName)}\\s*=`,
+    "gm",
+  );
+  const declarations = [...importedSource.matchAll(declarationPattern)];
+  if (declarations.length !== 1) {
+    throw new Error(
+      `zfb.config.ts field ${fieldName} must reference exactly one exported string constant`,
+    );
+  }
+  const valueStart = skipTrivia(importedSource, declarations[0].index + declarations[0][0].length);
+  const valueEnd = readStringEnd(importedSource, valueStart);
+  const lineEnd = importedSource.indexOf("\n", valueStart);
+  const declarationEnd = lineEnd === -1 ? importedSource.length : lineEnd;
+  if (valueEnd === null || !/^;?$/.test(importedSource.slice(valueEnd, declarationEnd).trim())) {
+    throw new Error(`zfb.config.ts field ${fieldName} imported constant must be a literal string`);
+  }
+  return readStringValue(importedSource, valueStart, valueEnd, fieldName);
+}
+
 function matchingDelimiter(source, start, end = source.length) {
   const opening = source[start];
   const pairs = { "{": "}", "[": "]", "(": ")" };
@@ -396,7 +451,22 @@ export async function parseZfbConfig(configPath) {
   };
 
   const base = entries.get("base");
-  if (base) result.basePath = readStringValue(source, base.start, base.end, "base");
+  if (base) {
+    try {
+      result.basePath = readStringValue(source, base.start, base.end, "base");
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("must be a literal string")) {
+        throw error;
+      }
+      result.basePath = await readImportedStringValue(
+        source,
+        configPath,
+        base.start,
+        base.end,
+        "base",
+      );
+    }
+  }
   const trailing = entries.get("trailingSlash");
   if (trailing)
     result.trailingSlash = readLiteralBoolean(

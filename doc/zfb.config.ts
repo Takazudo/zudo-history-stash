@@ -1,7 +1,9 @@
 import { defineConfig } from "zfb/config";
 import { zudoDoc } from "@takazudo/zudo-doc/config";
+import { DOC_BASE_PATH } from "./src/data/site-paths.ts";
 
 const config = zudoDoc({
+  base: DOC_BASE_PATH,
   themePack: "drift",
   siteName: "zudo-history-stash",
   siteUrl: "https://zudo-history-stash.zudolab.dev",

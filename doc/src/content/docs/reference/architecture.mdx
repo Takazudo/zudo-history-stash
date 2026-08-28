@@ -1,0 +1,50 @@
+---
+title: Architecture
+description: Storage, consistency, mutation, garbage-collection, and live-delivery boundaries.
+sidebar_position: 10
+category: reference
+---
+
+Consumers call Stash through HTTP/fetch or a Cloudflare RPC binding, normally through the
+[Client package](./client-package.mdx). The Viewer uses the same API through its proxy or binding.
+D1 owns metadata and mutable heads; large immutable text can spill into a private R2 bucket.
+
+## Data relationships
+
+| Data | Role |
+| --- | --- |
+| `stashes` | Lifecycle and descriptive metadata for one namespace. |
+| `tokens` | Credential hashes, scope, expiry, revocation, and rotation metadata; never recoverable secrets. |
+| `blobs` | Content-addressed text metadata and the inline-or-R2 storage reference. |
+| `files` | The mutable head for each stash/path pair. |
+| `versions` | Append-only history; its database-global ID is also the change cursor. |
+| `idempotency` | Request-identity ledger for safe write replay. |
+| `gc_jobs`, `gc_runs` | Generation-fenced garbage-collection leases, progress, and results. |
+| `proposals` | Immutable candidates with fenced decision state. |
+
+## Write protocol
+
+1. Validate authorization, the path, request limits, and the expected head.
+2. Store a possible large immutable object in R2 before the database transaction.
+3. In one fenced D1 batch, record or reuse the blob, append a version, and publish the file-head
+   mutation last.
+4. Record the idempotency result and publish advisory live activity.
+
+The compare-and-set fence prevents a lost update. If the fence loses after an R2 upload, the object
+can remain unreferenced until garbage collection; it never becomes a file head. Create, update,
+delete, rollback, import, and proposal approval all use fences. A rollback appends a new version—it
+does not move history backward—and proposal approval requires the proposal's exact base head rather
+than rebasing it.
+
+An idempotency key identifies one canonical request. Reusing the key with changed content is a
+`422 idempotency-key-reused` error, not permission to change a replayed operation.
+
+## Lifecycle and recovery
+
+Stash deletion is soft and deferred. It revokes active stash credentials; restoration retains data
+but does not revive those credentials. Garbage collection uses generation-fenced leases so an
+expired runner cannot finalize or release a successor's work, and every bounded run is recorded.
+
+Live delivery subscribes before replay, then emits advisory events. A consumer must reconcile with
+the authoritative change feed and resource reads after `ready`, `change`, `proposal`, or reconnect;
+the event stream is not a second source of truth.

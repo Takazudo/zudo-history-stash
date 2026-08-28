@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "snippets": {
+    "reference-client-transports": {
+      "source": "reference-client-transports.ts"
+    },
+    "reference-ui-provider": {
+      "source": "reference-ui-provider.tsx"
+    }
+  }
+}

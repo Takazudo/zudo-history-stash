@@ -1,0 +1,35 @@
+---
+title: Limits
+description: Exact public Core numeric limits, units, and boundary semantics.
+sidebar_position: 70
+category: reference
+---
+
+The exact decimal column is checked against every finite numeric export from the built Core package.
+Human-readable units do not replace those bytes, characters, items, milliseconds, or days.
+
+## Public numeric exports
+
+| Constant | Exact decimal | Display | Meaning |
+| --- | ---: | ---: | --- |
+| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | Maximum stored UTF-8 text body. |
+| `MAX_PATH_BYTES` | `512` | 512 bytes | Maximum canonical UTF-8 file path. |
+| `MAX_META_BYTES` | `4096` | 4 KiB | Maximum encoded metadata payload. |
+| `MAX_AUTHOR_BYTES` | `200` | 200 bytes | Maximum UTF-8 author value. |
+| `MAX_MESSAGE_BYTES` | `2000` | 2,000 bytes | Maximum UTF-8 message value. |
+| `LIST_LIMIT_DEFAULT` | `50` | 50 items | Default page size when no limit is supplied. |
+| `LIST_LIMIT_MAX` | `200` | 200 items | Maximum general list page size. |
+| `DIFF_MAX_BYTES` | `524288` | 512 KiB per side | Maximum input size for each diff side. |
+| `R2_SPILL_BYTES` | `524288` | 512 KiB | Bodies at or below this boundary stay inline; larger bodies spill to R2. |
+| `DIFF_TIMEOUT_MS` | `2000` | 2 seconds | Diff computation time budget. |
+| `DIFF_MAX_EDIT_LENGTH` | `50000` | 50,000 units | Maximum edit span considered by the diff engine. |
+| `DIFF_MAX_INTRALINE_LENGTH` | `800` | 800 units | Maximum per-line length for intraline work. |
+| `DIFF_MAX_INTRALINE_CHARS` | `200000` | 200,000 characters | Aggregate intraline work ceiling. |
+| `IDEMPOTENCY_KEY_MAX_CHARS` | `200` | 200 characters | Maximum idempotency-key length. |
+| `IDEMPOTENCY_TTL_DAYS` | `7` | 7 days | Idempotency-ledger retention. |
+| `BODY_LIMIT_BYTES` | `33554432` | 32 MiB | Encoded HTTP request-body ceiling, distinct from stored text. |
+| `MAX_IMPORT_VERSIONS` | `20` | 20 versions | Maximum entries in one import request. |
+
+The storage threshold and diff input limit currently share the same numeric value but are separate
+contracts. Similarly, byte limits measure encoded bytes while the idempotency key limit counts
+characters; callers must apply the named boundary, not match a coincidental number.

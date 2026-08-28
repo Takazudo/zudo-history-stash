@@ -1,0 +1,23 @@
+---
+title: Live events
+description: Fetch-only SSE replay, advisory events, reconnect, and authoritative recovery.
+sidebar_position: 180
+category: reference
+---
+
+### `GET /v1/stashes/{stash}/events`
+
+**Contract:** operation `stashEvents`; principal `read`; transport `fetch-only`.
+
+Opens `text/event-stream`, optionally replaying after non-negative `since`. The response disables
+caching and proxy buffering. It emits `ready`, `change`, `proposal`, and `reconnect` events using
+SSE `event`, `id`, and `data` fields; heartbeat comments are transport liveness, not events.
+
+The server subscribes before it reads replay so a concurrent mutation is not lost. Events are
+bounded hints: after `ready`, mutation activity, focus/visibility recovery, or reconnect, page the
+[authoritative stash change feed](./change-feeds.mdx) and refresh affected resources. Advance a
+consumer checkpoint only after reconciliation completes. Close or abort the response when the
+consumer changes stash or unmounts.
+
+Authentication, scope, stash existence, and rate limits can fail before stream bytes. Credential
+expiry bounds the stream lifetime; reconnect must authenticate again.

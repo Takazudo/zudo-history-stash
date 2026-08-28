@@ -1,0 +1,44 @@
+---
+title: Stashes
+description: Administrative stash listing, creation, deletion, restoration, and scoped reads.
+sidebar_position: 120
+category: reference
+---
+
+### `GET /v1/stashes`
+
+**Contract:** operation `listStashes`; principal `admin`; transport `any`.
+
+Accepts bounded `limit`, the stash-name `after` cursor, and `includeDeleted`. Returns `200` with
+summaries and `nextAfter`; restoration fields reflect the live window. Stash credentials receive a
+concealing `404` rather than the administrative list.
+
+### `POST /v1/stashes`
+
+**Contract:** operation `createStash`; principal `admin`; transport `any`.
+
+Creates `{ name, description?, meta? }` and returns the record with `201`. Names are lowercase
+alphanumeric/hyphen identifiers up to 63 characters. Invalid input is `400`, a reused name is
+`409 exists`, and an oversized encoded request is `413`.
+
+### `GET /v1/stashes/{stash}`
+
+**Contract:** operation `getStash`; principal `admin-or-stash`; transport `any`.
+
+Returns counts, last-change metadata, lifecycle timestamps, and restore eligibility for an admin or
+a credential belonging to this stash. Unknown and foreign stashes are not disclosed.
+
+### `DELETE /v1/stashes/{stash}`
+
+**Contract:** operation `deleteStash`; principal `admin`; transport `any`.
+
+Soft-deletes the stash and returns `200` with deletion/restoration timestamps and the number of
+revoked stash tokens. History and blobs remain for deferred cleanup; the name is never recycled.
+Deleting an existing tombstone returns `409 already-deleted`.
+
+### `POST /v1/stashes/{stash}/restore`
+
+**Contract:** operation `restoreStash`; principal `admin`; transport `any`.
+
+Restores a soft-deleted stash during its window and returns `200`. Data remains intact, but revoked
+tokens are not revived. Unknown, live, and no-longer-restorable stashes share a concealed `404`.
