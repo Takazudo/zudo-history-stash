@@ -31,9 +31,36 @@ export function isStagingObjectKey(key: string): boolean {
   );
 }
 
-interface StreamResult {
+export interface StreamResult {
   size: number;
   hash: string;
+}
+
+export async function verifyByteStream(input: {
+  stream: ReadableStream<Uint8Array>;
+  declaredSize: number;
+  maximumBytes: number;
+  representation: Representation;
+}): Promise<StreamResult> {
+  const state = {
+    size: 0,
+    hash: new IncrementalSha256(),
+    decoder: validator(input.representation),
+  };
+  const reader = input.stream.getReader();
+  try {
+    for (;;) {
+      const read = await reader.read();
+      if (read.done) break;
+      consumeChunk(read.value, state, input.maximumBytes, input.declaredSize);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (state.size !== input.declaredSize) {
+    throw new StashError("upload-size-mismatch", "Upload size does not match its declaration.");
+  }
+  return finish(state);
 }
 
 function validator(representation: Representation): TextDecoder | null {

@@ -2,6 +2,8 @@ import {
   AbortUploadSessionBody,
   CompleteUploadSessionBody,
   CreateUploadSessionBody,
+  MAX_MULTIPART_PARTS,
+  UploadPartQuery,
   IDEMPOTENCY_KEY_MAX_CHARS,
   StashError,
   canonicalJson,
@@ -12,7 +14,12 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { Hono, type Context } from "hono";
 import { parseBinarySettings } from "../binary-config.js";
-import { discardStagedBytes, stageSingleBytes } from "../byte-writes.js";
+import {
+  discardStagedBytes,
+  stageSingleBytes,
+  stagingObjectKey,
+  verifyByteStream,
+} from "../byte-writes.js";
 import type { AppEnv, Principal } from "../context.js";
 import { finalizeUnchanged, finalizeUpload } from "../d1/upload-finalize.js";
 import { D1UploadSessionStore } from "../d1/upload-sessions.js";
@@ -147,6 +154,43 @@ function sameCreate(
   );
 }
 
+function settings(c: Context<AppEnv>) {
+  return parseBinarySettings(c.env, c.get("deps").binarySettingOverrides);
+}
+
+async function ensureMultipart(
+  c: Context<AppEnv>,
+  row: UploadSessionRow,
+): Promise<UploadSessionRow> {
+  if (row.upload_mode !== "multipart") return row;
+  if (row.r2_upload_id !== null && row.staged_r2_key !== null) return row;
+  if (row.state !== "open") {
+    throw new StashError(
+      "upload-session-not-open",
+      "Upload session cannot initialize multipart state.",
+    );
+  }
+  const objectKey = stagingObjectKey(row.id, row.attempt_generation, c.get("deps").createId());
+  const multipart = await c.env.BLOBS.createMultipartUpload(objectKey, {
+    httpMetadata: { contentType: "application/octet-stream" },
+    customMetadata: { session: row.id, generation: String(row.attempt_generation) },
+  });
+  const store = new D1UploadSessionStore(c.env.DB);
+  const bound = await store.bindMultipart({
+    sessionId: row.id,
+    generation: row.attempt_generation,
+    objectKey,
+    uploadId: multipart.uploadId,
+    now: c.get("deps").now(),
+  });
+  if (!bound) await multipart.abort().catch(() => undefined);
+  const current = requireOwned(await store.get(row.id), c);
+  if (current.r2_upload_id === null || current.staged_r2_key === null) {
+    throw new StashError("internal", "Multipart upload initialization failed.");
+  }
+  return current;
+}
+
 async function assertCreateCas(
   c: Context<AppEnv>,
   path: string,
@@ -167,21 +211,24 @@ async function createSession(c: Context<AppEnv>) {
   const parsed = CreateUploadSessionBody.safeParse(await json(c));
   if (!parsed.success) throw new StashError("validation", "Invalid upload session input.");
   const path = uploadPath(c);
-  const settings = parseBinarySettings(c.env);
-  if (parsed.data.size > settings.maxFileBytes) {
+  const policy = settings(c);
+  if (parsed.data.size > policy.maxFileBytes) {
     throw new StashError("payload-too-large", "The declared file size is too large.");
   }
   const mode =
     parsed.data.mode === "auto"
-      ? !parsed.data.resumable && parsed.data.size <= settings.singleUploadMaxBytes
+      ? !parsed.data.resumable && parsed.data.size <= policy.singleUploadMaxBytes
         ? "single"
         : "multipart"
       : parsed.data.mode;
   if (mode === "single" && parsed.data.resumable) {
     throw new StashError("validation", "A resumable upload must use multipart mode.");
   }
-  if (mode === "single" && parsed.data.size > settings.singleUploadMaxBytes) {
+  if (mode === "single" && parsed.data.size > policy.singleUploadMaxBytes) {
     throw new StashError("payload-too-large", "The declared single upload size is too large.");
+  }
+  if (mode === "multipart" && parsed.data.size === 0) {
+    throw new StashError("validation", "An empty file must use single upload mode.");
   }
   const stash = c.get("routeStash").name;
   const principal = principalColumns(c.get("principal"));
@@ -196,7 +243,7 @@ async function createSession(c: Context<AppEnv>) {
       throw new StashError("idempotency-key-reused", "Idempotency-Key was reused.");
     }
     c.header("Idempotent-Replayed", "true");
-    return c.json(record(existing), 201);
+    return c.json(record(await ensureMultipart(c, existing)), 201);
   }
   await assertCreateCas(c, path, parsed.data.expectedVersion);
   const now = c.get("deps").now();
@@ -212,13 +259,13 @@ async function createSession(c: Context<AppEnv>) {
     representation: parsed.data.representation,
     contentType: parsed.data.contentType,
     mode,
-    tier: parsed.data.size <= settings.d1InlineMaxBytes ? "d1" : "r2",
-    partSize: mode === "multipart" ? settings.multipartPartBytes : null,
+    tier: mode === "multipart" || parsed.data.size > policy.d1InlineMaxBytes ? "r2" : "d1",
+    partSize: mode === "multipart" ? policy.multipartPartBytes : null,
     fingerprint: createFingerprint,
-    expiresAt: now + settings.uploadSessionTtlSeconds * 1_000,
+    expiresAt: now + policy.uploadSessionTtlSeconds * 1_000,
     now,
-    maxOpenSessions: settings.maxOpenUploadSessions,
-    maxReservedBytes: settings.maxReservedUploadBytes,
+    maxOpenSessions: policy.maxOpenUploadSessions,
+    maxReservedBytes: policy.maxReservedUploadBytes,
     skipIfUnchanged: parsed.data.skipIfUnchanged,
   });
   if (!created) {
@@ -229,12 +276,13 @@ async function createSession(c: Context<AppEnv>) {
       sameCreate(raced, parsed.data, path, mode)
     ) {
       c.header("Idempotent-Replayed", "true");
-      return c.json(record(raced), 201);
+      return c.json(record(await ensureMultipart(c, raced)), 201);
     }
     throw new StashError("payload-too-large", "Upload reservation capacity is exhausted.");
   }
-  const row = await store.getByCreateFingerprint(stash, createFingerprint);
+  let row = await store.getByCreateFingerprint(stash, createFingerprint);
   if (row === null) throw new StashError("internal", "Created upload session is unavailable.");
+  row = await ensureMultipart(c, row);
   return c.json(record(row), 201);
 }
 
@@ -278,7 +326,7 @@ uploads.put("/v1/stashes/:stash/uploads/:sessionId/content", async (c) => {
   if (row.state !== "open" || row.upload_mode !== "single") {
     throw new StashError("upload-session-not-open", "Upload session does not accept content.");
   }
-  const settings = parseBinarySettings(c.env);
+  const settings = parseBinarySettings(c.env, c.get("deps").binarySettingOverrides);
   const declaredLength = contentLength(c);
   if (declaredLength !== null) {
     if (declaredLength > settings.httpRequestMaxBytes || declaredLength > settings.maxFileBytes) {
@@ -358,6 +406,157 @@ uploads.put("/v1/stashes/:stash/uploads/:sessionId/content", async (c) => {
   return c.json(record(uploaded), 202);
 });
 
+function partNumber(c: Context<AppEnv>): number {
+  const raw = c.req.param("partNumber");
+  if (raw === undefined || !/^[1-9]\d*$/.test(raw)) {
+    throw new StashError("validation", "Invalid multipart part number.");
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value > MAX_MULTIPART_PARTS) {
+    throw new StashError("validation", "Invalid multipart part number.");
+  }
+  return value;
+}
+
+async function uploadMultipartBody(input: {
+  upload: R2MultipartUpload;
+  partNumber: number;
+  body: ReadableStream<Uint8Array>;
+  expectedSize: number;
+  maximumBytes: number;
+}): Promise<R2UploadedPart> {
+  const fixed = new FixedLengthStream(input.expectedSize);
+  const reader = input.body.getReader();
+  const writer = fixed.writable.getWriter();
+  const uploaded = input.upload.uploadPart(input.partNumber, fixed.readable);
+  let size = 0;
+  try {
+    for (;;) {
+      const read = await reader.read();
+      if (read.done) break;
+      size += read.value.byteLength;
+      if (size > input.maximumBytes) {
+        throw new StashError("payload-too-large", "The upload part is too large.");
+      }
+      if (size > input.expectedSize) {
+        throw new StashError("upload-size-mismatch", "Upload part size is incorrect.");
+      }
+      await writer.write(read.value);
+    }
+    if (size !== input.expectedSize) {
+      throw new StashError("upload-size-mismatch", "Upload part size is incorrect.");
+    }
+    await writer.close();
+    return await uploaded;
+  } catch (error) {
+    await writer.abort(error).catch(() => undefined);
+    await uploaded.catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+    writer.releaseLock();
+  }
+}
+
+uploads.put("/v1/stashes/:stash/uploads/:sessionId/parts/:partNumber", async (c) => {
+  const parsedQuery = UploadPartQuery.safeParse(c.req.query());
+  if (!parsedQuery.success) throw new StashError("validation", "Invalid multipart generation.");
+  const store = new D1UploadSessionStore(c.env.DB);
+  let row = requireOwned(await store.get(sessionId(c)), c);
+  if (row.expires_at <= c.get("deps").now()) {
+    if (await store.expire(row.id, c.get("deps").now())) {
+      row = requireOwned(await store.get(row.id), c);
+      await cleanupMultipart(c, row);
+    }
+    throw new StashError("upload-session-expired", "Upload session expired.");
+  }
+  if (
+    row.state !== "open" ||
+    row.upload_mode !== "multipart" ||
+    parsedQuery.data.generation !== row.attempt_generation
+  ) {
+    throw new StashError("upload-session-not-open", "Upload session does not accept parts.");
+  }
+  row = await ensureMultipart(c, row);
+  const number = partNumber(c);
+  const partSize = row.part_size!;
+  const expectedParts = Math.ceil(row.declared_size / partSize);
+  if (number > expectedParts || expectedParts > MAX_MULTIPART_PARTS) {
+    throw new StashError("validation", "Multipart part number is outside the declared file.");
+  }
+  const expectedSize =
+    number === expectedParts ? row.declared_size - partSize * (expectedParts - 1) : partSize;
+  const policy = settings(c);
+  const length = contentLength(c);
+  if (length !== null && length !== expectedSize) {
+    throw new StashError("upload-size-mismatch", "Upload part size is incorrect.");
+  }
+  if (expectedSize > policy.httpRequestMaxBytes || expectedSize > policy.multipartPartBytes) {
+    throw new StashError("payload-too-large", "The upload part is too large.");
+  }
+  const owner = c.get("deps").createId();
+  const claimed = await store.claimPart({
+    sessionId: row.id,
+    generation: row.attempt_generation,
+    partNumber: number,
+    owner,
+    now: c.get("deps").now(),
+    staleBefore: c.get("deps").now() - c.get("deps").uploadLeaseMs,
+  });
+  if (!claimed) {
+    throw new StashError("upload-session-not-open", "The multipart part is already being written.");
+  }
+  try {
+    const body = c.req.raw.body;
+    if (body === null)
+      throw new StashError("upload-size-mismatch", "Upload part size is incorrect.");
+    const upload = c.env.BLOBS.resumeMultipartUpload(row.staged_r2_key!, row.r2_upload_id!);
+    const part = await uploadMultipartBody({
+      upload,
+      partNumber: number,
+      body,
+      expectedSize,
+      maximumBytes: Math.min(policy.httpRequestMaxBytes, policy.multipartPartBytes),
+    });
+    await c.get("deps").uploadHooks.afterMultipartPart?.();
+    const recorded = await store.recordClaimedPart({
+      sessionId: row.id,
+      generation: row.attempt_generation,
+      partNumber: number,
+      owner,
+      size: expectedSize,
+      etag: part.etag,
+      now: c.get("deps").now(),
+    });
+    if (!recorded) {
+      throw new StashError("upload-session-not-open", "Upload session no longer accepts parts.");
+    }
+  } catch (error) {
+    await store.releasePartClaim({
+      sessionId: row.id,
+      generation: row.attempt_generation,
+      partNumber: number,
+      owner,
+    });
+    if (error instanceof StashError) throw error;
+    throw new StashError("internal", "Multipart part upload failed.");
+  }
+  row = requireOwned(await store.get(row.id), c);
+  const parts = await store.listParts(row.id, row.attempt_generation);
+  return c.json(
+    {
+      ...record(row),
+      parts: parts.map((part) => ({
+        partNumber: part.part_number,
+        size: part.size_bytes,
+        generation: part.generation,
+        etag: part.r2_etag,
+      })),
+    },
+    202,
+  );
+});
+
 function replayResponse(row: UploadSessionRow, fingerprintValue: string): Response | null {
   if (row.result_status === null || row.result_json === null) return null;
   if (row.complete_fingerprint !== fingerprintValue) {
@@ -367,6 +566,40 @@ function replayResponse(row: UploadSessionRow, fingerprintValue: string): Respon
     status: row.result_status,
     headers: { "Content-Type": "application/json; charset=UTF-8", "Idempotent-Replayed": "true" },
   });
+}
+
+async function cleanupMultipart(c: Context<AppEnv>, row: UploadSessionRow): Promise<void> {
+  if (
+    row.upload_mode !== "multipart" ||
+    row.staged_r2_key === null ||
+    row.r2_upload_id === null ||
+    row.state === "committed"
+  ) {
+    return;
+  }
+  const objectKey = row.staged_r2_key;
+  const uploadId = row.r2_upload_id;
+  const tracked = await c.env.DB.prepare(
+    `SELECT 1 AS tracked FROM upload_objects WHERE session_id = ? AND generation = ?
+       AND purpose IN ('multipart','staging')`,
+  )
+    .bind(row.id, row.attempt_generation)
+    .first<{ tracked: 1 }>();
+  if (tracked === null) return;
+  const head = await c.env.BLOBS.head(objectKey);
+  if (head !== null) {
+    await c.env.BLOBS.delete(objectKey);
+  } else {
+    await c.env.BLOBS.resumeMultipartUpload(objectKey, uploadId).abort();
+  }
+  await c.env.DB.prepare(
+    `DELETE FROM upload_objects WHERE session_id = ? AND generation = ?
+       AND purpose IN ('multipart','staging')
+       AND NOT EXISTS (SELECT 1 FROM upload_sessions
+         WHERE id = ? AND state IN ('open','uploaded','finalizing','committed'))`,
+  )
+    .bind(row.id, row.attempt_generation, row.id)
+    .run();
 }
 
 async function publishCommitted(c: Context<AppEnv>, row: UploadSessionRow): Promise<void> {
@@ -442,19 +675,55 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     return replayed;
   }
   const now = c.get("deps").now();
+  let finalizationNow = now;
   if (row.expires_at <= now && row.state !== "finalizing") {
-    await store.expire(row.id, now);
+    if (await store.expire(row.id, now)) {
+      row = requireOwned(await store.get(row.id), c);
+      await cleanupMultipart(c, row);
+    }
     throw new StashError("upload-session-expired", "Upload session expired.");
   }
-  if (
-    parsed.data.generation !== row.attempt_generation ||
-    row.uploaded_size === null ||
-    row.uploaded_hash === null
-  ) {
+  if (parsed.data.generation !== row.attempt_generation) {
+    throw new StashError("upload-session-not-open", "Upload session is not ready to complete.");
+  }
+  let multipartParts: { partNumber: number; etag: string }[] | null = null;
+  if (row.upload_mode === "multipart") {
+    const durable = await store.listParts(row.id, row.attempt_generation);
+    const partSize = row.part_size!;
+    const expectedCount = Math.ceil(row.declared_size / partSize);
+    const valid =
+      expectedCount > 0 &&
+      expectedCount <= MAX_MULTIPART_PARTS &&
+      durable.length === expectedCount &&
+      durable.every((part, index) => {
+        const number = index + 1;
+        const expectedSize =
+          number === expectedCount ? row.declared_size - partSize * (expectedCount - 1) : partSize;
+        return (
+          part.part_number === number &&
+          part.generation === row.attempt_generation &&
+          part.size_bytes === expectedSize &&
+          part.r2_etag.length > 0
+        );
+      });
+    if (!valid) {
+      throw new StashError("upload-size-mismatch", "Multipart upload is incomplete.");
+    }
+    multipartParts = durable.map((part) => ({
+      partNumber: part.part_number,
+      etag: part.r2_etag,
+    }));
+    if (row.state === "open") {
+      if (!(await store.sealMultipart(row.id, row.attempt_generation, now))) {
+        throw new StashError("upload-session-not-open", "Multipart upload has active part writes.");
+      }
+      row = requireOwned(await store.get(row.id), c);
+    }
+  } else if (row.uploaded_size === null || row.uploaded_hash === null) {
     throw new StashError("upload-session-not-open", "Upload session is not ready to complete.");
   }
   const owner = c.get("deps").createId();
-  const lease = await store.acquireFinalizationLease({
+  let lease = await store.acquireFinalizationLease({
     sessionId: row.id,
     generation: parsed.data.generation,
     owner,
@@ -473,15 +742,131 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
   }
   row = requireOwned(await store.get(row.id), c);
   await c.get("deps").uploadHooks.duringFinalizing?.();
+  if (row.upload_mode === "multipart") {
+    const renewed = await store.renewFinalizationLease(
+      lease,
+      c.get("deps").now(),
+      c.get("deps").now() + c.get("deps").uploadLeaseMs,
+    );
+    if (renewed === null) {
+      throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+    }
+    lease = renewed;
+    row = requireOwned(await store.get(row.id), c);
+    const key = row.staged_r2_key;
+    if (key === null || row.r2_upload_id === null || multipartParts === null) {
+      await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
+      throw new StashError("internal", "Multipart staging is unavailable.");
+    }
+    let completed = await c.env.BLOBS.head(key);
+    if (completed === null) {
+      try {
+        completed = await c.env.BLOBS.resumeMultipartUpload(key, row.r2_upload_id).complete(
+          multipartParts,
+        );
+      } catch {
+        completed = await c.env.BLOBS.head(key);
+        if (completed === null) {
+          await store.finish({
+            lease,
+            state: "failed",
+            errorCode: "multipart-complete-failed",
+            now,
+          });
+          throw new StashError("internal", "Multipart completion failed.");
+        }
+      }
+      await c.get("deps").uploadHooks.afterMultipartComplete?.();
+    }
+    if (
+      completed.size !== row.declared_size ||
+      completed.customMetadata?.session !== row.id ||
+      completed.customMetadata.generation !== String(row.attempt_generation)
+    ) {
+      await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
+      throw new StashError("internal", "Completed multipart staging is invalid.");
+    }
+    if (row.r2_completed_at === null) {
+      if (!(await store.markMultipartCompleted({ lease, now: c.get("deps").now() }))) {
+        throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+      }
+    }
+    const verificationLease = await store.renewFinalizationLease(
+      lease,
+      c.get("deps").now(),
+      c.get("deps").now() + c.get("deps").uploadLeaseMs,
+    );
+    if (verificationLease === null) {
+      throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+    }
+    lease = verificationLease;
+    const object = await c.env.BLOBS.get(key);
+    if (object === null) {
+      await store.finish({
+        lease,
+        state: "failed",
+        errorCode: "staging-unavailable",
+        now: c.get("deps").now(),
+      });
+      throw new StashError("internal", "Completed multipart staging is unavailable.");
+    }
+    try {
+      const verified = await verifyByteStream({
+        stream: object.body,
+        declaredSize: row.declared_size,
+        maximumBytes: settings(c).maxFileBytes,
+        representation: row.representation,
+      });
+      if (row.declared_hash !== null && verified.hash !== row.declared_hash) {
+        throw new StashError("upload-hash-mismatch", "Upload hash does not match its declaration.");
+      }
+      if (
+        !(await store.markMultipartVerified({
+          lease,
+          size: verified.size,
+          hash: verified.hash,
+          now: c.get("deps").now(),
+        }))
+      ) {
+        throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+      }
+    } catch (error) {
+      if (error instanceof StashError && error.code !== "upload-session-not-open") {
+        await store.finish({
+          lease,
+          state: "failed",
+          errorCode: error.code,
+          now: c.get("deps").now(),
+        });
+      }
+      throw error;
+    }
+    row = requireOwned(await store.get(row.id), c);
+    finalizationNow = c.get("deps").now();
+    const commitLease = await store.renewFinalizationLease(
+      lease,
+      finalizationNow,
+      finalizationNow + c.get("deps").uploadLeaseMs,
+    );
+    if (commitLease === null) {
+      throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+    }
+    lease = commitLease;
+  }
   if (!(await verifyR2Staging(c, row))) {
-    await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
+    await store.finish({
+      lease,
+      state: "failed",
+      errorCode: "staging-unavailable",
+      now: finalizationNow,
+    });
     throw new StashError("internal", "Durable upload staging is unavailable.");
   }
   const origin = eventOrigin(c.req.raw);
   const unchanged = await finalizeUnchanged(c.env.DB, {
     session: row,
     lease,
-    createdAt: now,
+    createdAt: finalizationNow,
     eventOrigin: origin,
   });
   if (unchanged !== null) {
@@ -493,7 +878,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
   const committed = await finalizeUpload(c.env.DB, {
     session: row,
     lease,
-    createdAt: now,
+    createdAt: finalizationNow,
     eventOrigin: origin,
   });
   if (committed !== null) {
@@ -525,7 +910,12 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
       deleted_at: number | null;
     }>();
   if (current === null || current.deleted_at !== null) {
-    await store.finish({ lease, state: "failed", errorCode: "stash-unavailable", now });
+    await store.finish({
+      lease,
+      state: "failed",
+      errorCode: "stash-unavailable",
+      now: finalizationNow,
+    });
     throw new StashError("not-found", "The requested resource was not found.");
   }
   const casIsStale =
@@ -533,7 +923,12 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
       ? current.head_version !== null
       : current.head_version !== row.expected_version;
   if (!casIsStale) {
-    await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
+    await store.finish({
+      lease,
+      state: "failed",
+      errorCode: "staging-unavailable",
+      now: finalizationNow,
+    });
     throw new StashError("internal", "Upload finalization could not reference durable staging.");
   }
   const staleJson = JSON.stringify({
@@ -561,7 +956,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     resultStatus: 409,
     resultJson: staleJson,
     errorCode: "stale",
-    now,
+    now: finalizationNow,
   });
   if (!stale)
     throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
@@ -574,7 +969,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
 uploads.post("/v1/stashes/:stash/uploads/:sessionId/complete", complete);
 uploads.post("/v1/stashes/:stash/uploads/:sessionId/resume", async (c) => {
   const store = new D1UploadSessionStore(c.env.DB);
-  const before = requireOwned(await store.get(sessionId(c)), c);
+  let before = requireOwned(await store.get(sessionId(c)), c);
   if (before.state === "open") {
     idempotencyKey(c);
     if (!JSON_CONTENT_TYPE.test(c.req.header("Content-Type") ?? "")) {
@@ -590,6 +985,7 @@ uploads.post("/v1/stashes/:stash/uploads/:sessionId/resume", async (c) => {
     if (!parsed.success || parsed.data.generation !== before.attempt_generation) {
       throw new StashError("validation", "Invalid upload resume input.");
     }
+    before = await ensureMultipart(c, before);
     return c.json(record(before), 200);
   }
   const completion = await complete(c);
@@ -609,7 +1005,10 @@ uploads.delete("/v1/stashes/:stash/uploads/:sessionId", async (c) => {
   let row = requireOwned(await store.get(sessionId(c)), c);
   const abortFingerprint = await fingerprint(c, "abort", row.id, parsed.data);
   const replayed = replayResponse(row, abortFingerprint);
-  if (replayed !== null) return replayed;
+  if (replayed !== null) {
+    await cleanupMultipart(c, row);
+    return replayed;
+  }
   const won = await store.abort({
     sessionId: row.id,
     generation: parsed.data.generation,
@@ -623,6 +1022,7 @@ uploads.delete("/v1/stashes/:stash/uploads/:sessionId", async (c) => {
     throw new StashError("upload-session-not-open", "Upload session cannot be aborted.");
   }
   row = requireOwned(await store.get(row.id), c);
+  await cleanupMultipart(c, row);
   return new Response(row.result_json!, {
     status: 200,
     headers: { "Content-Type": "application/json; charset=UTF-8" },

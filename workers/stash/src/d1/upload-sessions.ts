@@ -144,6 +144,231 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
     return rows.results;
   }
 
+  async bindMultipart(input: {
+    sessionId: string;
+    generation: number;
+    objectKey: string;
+    uploadId: string;
+    now: number;
+  }): Promise<boolean> {
+    const predicate = `EXISTS (SELECT 1 FROM upload_sessions
+      WHERE id = ? AND state = 'open' AND upload_mode = 'multipart'
+        AND attempt_generation = ? AND r2_upload_id IS NULL)`;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT INTO upload_objects
+             (object_key, session_id, generation, purpose, created_at, completed_at)
+           SELECT ?, ?, ?, 'multipart', ?, NULL WHERE ${predicate}`,
+        )
+        .bind(
+          input.objectKey,
+          input.sessionId,
+          input.generation,
+          input.now,
+          input.sessionId,
+          input.generation,
+        ),
+      this.db
+        .prepare(
+          `UPDATE upload_sessions SET staged_r2_key = ?, r2_upload_id = ?, updated_at = ?
+           WHERE id = ? AND state = 'open' AND upload_mode = 'multipart'
+             AND attempt_generation = ? AND r2_upload_id IS NULL`,
+        )
+        .bind(input.objectKey, input.uploadId, input.now, input.sessionId, input.generation),
+    ]);
+    return results[0]?.meta.changes === 1 && results[1]?.meta.changes === 1;
+  }
+
+  async claimPart(input: {
+    sessionId: string;
+    generation: number;
+    partNumber: number;
+    owner: string;
+    now: number;
+    staleBefore: number;
+  }): Promise<boolean> {
+    await this.db
+      .prepare(
+        `DELETE FROM upload_part_writes WHERE session_id = ? AND generation = ?
+           AND part_number = ? AND started_at <= ?`,
+      )
+      .bind(input.sessionId, input.generation, input.partNumber, input.staleBefore)
+      .run();
+    const result = await this.db
+      .prepare(
+        `INSERT INTO upload_part_writes (session_id, generation, part_number, owner, started_at)
+         SELECT id, attempt_generation, ?, ?, ? FROM upload_sessions
+         WHERE id = ? AND state = 'open' AND upload_mode = 'multipart'
+           AND attempt_generation = ? AND r2_upload_id IS NOT NULL
+         ON CONFLICT(session_id, generation, part_number) DO NOTHING`,
+      )
+      .bind(input.partNumber, input.owner, input.now, input.sessionId, input.generation)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async releasePartClaim(input: {
+    sessionId: string;
+    generation: number;
+    partNumber: number;
+    owner: string;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `DELETE FROM upload_part_writes WHERE session_id = ? AND generation = ?
+           AND part_number = ? AND owner = ?`,
+      )
+      .bind(input.sessionId, input.generation, input.partNumber, input.owner)
+      .run();
+  }
+
+  async recordClaimedPart(input: {
+    sessionId: string;
+    generation: number;
+    partNumber: number;
+    owner: string;
+    size: number;
+    etag: string;
+    now: number;
+  }): Promise<boolean> {
+    const claim = `EXISTS (SELECT 1 FROM upload_part_writes writes
+      JOIN upload_sessions sessions ON sessions.id = writes.session_id
+      WHERE writes.session_id = ? AND writes.generation = ? AND writes.part_number = ?
+        AND writes.owner = ? AND sessions.state = 'open'
+        AND sessions.attempt_generation = writes.generation)`;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT INTO upload_parts
+             (session_id, generation, part_number, size_bytes, r2_etag, recorded_at)
+           SELECT ?, ?, ?, ?, ?, ? WHERE ${claim}
+           ON CONFLICT(session_id, generation, part_number) DO UPDATE SET
+             size_bytes = excluded.size_bytes, r2_etag = excluded.r2_etag,
+             recorded_at = excluded.recorded_at`,
+        )
+        .bind(
+          input.sessionId,
+          input.generation,
+          input.partNumber,
+          input.size,
+          input.etag,
+          input.now,
+          input.sessionId,
+          input.generation,
+          input.partNumber,
+          input.owner,
+        ),
+      this.db
+        .prepare(
+          `DELETE FROM upload_part_writes WHERE session_id = ? AND generation = ?
+             AND part_number = ? AND owner = ?`,
+        )
+        .bind(input.sessionId, input.generation, input.partNumber, input.owner),
+    ]);
+    return results[0]?.meta.changes === 1;
+  }
+
+  async sealMultipart(sessionId: string, generation: number, now: number): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE upload_sessions SET state = 'uploaded', uploaded_size = declared_size, updated_at = ?
+         WHERE id = ? AND state = 'open' AND upload_mode = 'multipart'
+           AND attempt_generation = ? AND r2_upload_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM upload_part_writes
+             WHERE session_id = upload_sessions.id AND generation = upload_sessions.attempt_generation)`,
+      )
+      .bind(now, sessionId, generation)
+      .run();
+    return result.meta.changes === 1;
+  }
+
+  async renewFinalizationLease(
+    lease: FinalizationLease,
+    now: number,
+    leaseUntil: number,
+  ): Promise<FinalizationLease | null> {
+    const result = await this.db
+      .prepare(
+        `UPDATE upload_sessions SET finalization_lease_until = ?, updated_at = ?
+         WHERE id = ? AND state = 'finalizing' AND attempt_generation = ?
+           AND finalization_lease_owner = ? AND finalization_lease_until = ?
+           AND finalization_lease_until > ?`,
+      )
+      .bind(leaseUntil, now, lease.sessionId, lease.generation, lease.owner, lease.expiresAt, now)
+      .run();
+    return result.meta.changes === 1 ? { ...lease, expiresAt: leaseUntil } : null;
+  }
+
+  async markMultipartCompleted(input: { lease: FinalizationLease; now: number }): Promise<boolean> {
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE upload_objects SET purpose = 'staging', completed_at = ?
+           WHERE session_id = ? AND generation = ? AND purpose = 'multipart'
+             AND EXISTS (SELECT 1 FROM upload_sessions WHERE id = ? AND state = 'finalizing'
+               AND attempt_generation = ? AND finalization_lease_owner = ?
+               AND finalization_lease_until = ? AND finalization_lease_until > ?)`,
+        )
+        .bind(
+          input.now,
+          input.lease.sessionId,
+          input.lease.generation,
+          input.lease.sessionId,
+          input.lease.generation,
+          input.lease.owner,
+          input.lease.expiresAt,
+          input.now,
+        ),
+      this.db
+        .prepare(
+          `UPDATE upload_sessions SET r2_completed_at = COALESCE(r2_completed_at, ?), updated_at = ?
+           WHERE id = ? AND state = 'finalizing' AND attempt_generation = ?
+             AND finalization_lease_owner = ? AND finalization_lease_until = ?
+             AND finalization_lease_until > ?`,
+        )
+        .bind(
+          input.now,
+          input.now,
+          input.lease.sessionId,
+          input.lease.generation,
+          input.lease.owner,
+          input.lease.expiresAt,
+          input.now,
+        ),
+    ]);
+    return results[0]?.meta.changes === 1 && results[1]?.meta.changes === 1;
+  }
+
+  async markMultipartVerified(input: {
+    lease: FinalizationLease;
+    size: number;
+    hash: string;
+    now: number;
+  }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE upload_sessions SET uploaded_size = ?, uploaded_hash = ?,
+           verification_completed_at = ?, updated_at = ?
+         WHERE id = ? AND state = 'finalizing' AND attempt_generation = ?
+           AND finalization_lease_owner = ? AND finalization_lease_until = ?
+           AND finalization_lease_until > ? AND r2_completed_at IS NOT NULL`,
+      )
+      .bind(
+        input.size,
+        input.hash,
+        input.now,
+        input.now,
+        input.lease.sessionId,
+        input.lease.generation,
+        input.lease.owner,
+        input.lease.expiresAt,
+        input.now,
+      )
+      .run();
+    return result.meta.changes === 1;
+  }
+
   async recordStagedBytes(input: {
     sessionId: string;
     generation: number;
@@ -234,7 +459,10 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
     const result = await this.db
       .prepare(
         `UPDATE upload_sessions SET state = 'expired', reservation_released_at = ?, updated_at = ?
-         WHERE id = ? AND state IN ('open','uploaded') AND expires_at <= ?`,
+         WHERE id = ? AND state IN ('open','uploaded') AND expires_at <= ?
+           AND NOT EXISTS (SELECT 1 FROM upload_part_writes
+             WHERE session_id = upload_sessions.id
+               AND generation = upload_sessions.attempt_generation)`,
       )
       .bind(now, now, sessionId, now)
       .run();
@@ -273,7 +501,10 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
          WHERE id = ? AND attempt_generation = ?
            AND (state IN ('open','uploaded') OR
                 (state = 'finalizing' AND finalization_lease_until <= ?))
-           AND (complete_fingerprint IS NULL OR complete_fingerprint = ?)`,
+           AND (complete_fingerprint IS NULL OR complete_fingerprint = ?)
+           AND NOT EXISTS (SELECT 1 FROM upload_part_writes
+             WHERE session_id = upload_sessions.id
+               AND generation = upload_sessions.attempt_generation)`,
       )
       .bind(
         input.fingerprint,

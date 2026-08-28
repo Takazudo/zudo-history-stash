@@ -20,6 +20,103 @@ export interface WrapBlobsOptions {
   count?: BlobCallCounts;
 }
 
+export interface MultipartBucketStats {
+  creates: number;
+  completes: number;
+  aborts: number;
+  abortFailuresRemaining?: number;
+}
+
+/** Synthetic multipart seam for correctness tests; deliberately does not emulate R2's 5 MiB floor. */
+export function withSyntheticMultipart(
+  bindings: Env,
+  stats: MultipartBucketStats = { creates: 0, completes: 0, aborts: 0 },
+): Env {
+  const uploads = new Map<
+    string,
+    {
+      key: string;
+      options?: R2MultipartOptions;
+      parts: Map<number, { bytes: Uint8Array; etag: string }>;
+      aborted: boolean;
+      completed: boolean;
+    }
+  >();
+  let serial = 0;
+
+  function resumed(key: string, uploadId: string): R2MultipartUpload {
+    const state = uploads.get(uploadId);
+    if (state === undefined || state.key !== key) throw new Error("Unknown multipart upload");
+    return {
+      key,
+      uploadId,
+      async uploadPart(partNumber, value) {
+        if (state.aborted || state.completed) throw new Error("Multipart upload is terminal");
+        const bytes =
+          value instanceof ReadableStream
+            ? new Uint8Array(await new Response(value).arrayBuffer())
+            : new Uint8Array(await new Response(value as BodyInit).arrayBuffer());
+        const etag = `fake-${uploadId}-${partNumber}-${++serial}`;
+        state.parts.set(partNumber, { bytes, etag });
+        return { partNumber, etag };
+      },
+      async abort() {
+        if ((stats.abortFailuresRemaining ?? 0) > 0) {
+          stats.abortFailuresRemaining = (stats.abortFailuresRemaining ?? 0) - 1;
+          throw new Error("Injected multipart abort failure");
+        }
+        if (!state.aborted && !state.completed) stats.aborts += 1;
+        state.aborted = true;
+        state.parts.clear();
+      },
+      async complete(parts) {
+        if (state.aborted || state.completed) throw new Error("Multipart upload is terminal");
+        const chunks = parts.map(({ partNumber, etag }) => {
+          const part = state.parts.get(partNumber);
+          if (part === undefined || part.etag !== etag)
+            throw new Error("Invalid multipart manifest");
+          return part.bytes;
+        });
+        const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const object = await bindings.BLOBS.put(key, bytes, state.options);
+        if (object === null) throw new Error("Synthetic multipart put failed");
+        state.completed = true;
+        stats.completes += 1;
+        return object;
+      },
+    };
+  }
+
+  const blobs = new Proxy(bindings.BLOBS, {
+    get(target, property) {
+      if (property === "createMultipartUpload") {
+        return async (key: string, options?: R2MultipartOptions) => {
+          const uploadId = `fake-upload-${++serial}`;
+          uploads.set(uploadId, {
+            key,
+            options,
+            parts: new Map(),
+            aborted: false,
+            completed: false,
+          });
+          stats.creates += 1;
+          return resumed(key, uploadId);
+        };
+      }
+      if (property === "resumeMultipartUpload") return resumed;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { ...bindings, BLOBS: blobs };
+}
+
 function allowAllRateLimiter(): RateLimiter {
   return {
     limit: () => Promise.resolve({ success: true }),

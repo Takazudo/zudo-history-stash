@@ -266,6 +266,26 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
           dependencies.now() - orphanMinAgeMs,
           dependencies.now(),
         );
+    if (!run.dryRun) {
+      const cleanupLimit = Math.min(
+        input.maxObjects,
+        Math.floor(Math.max(0, dependencies.budget.remaining - 3) / 2),
+      );
+      const cleanup = await store.multipartCleanupCandidates(cleanupLimit);
+      const cleaned = [];
+      for (const row of cleanup) {
+        dependencies.budget.charge();
+        const completed = await env.BLOBS.head(row.staged_r2_key);
+        dependencies.budget.charge();
+        if (completed !== null) {
+          await env.BLOBS.delete(row.staged_r2_key);
+        } else {
+          await env.BLOBS.resumeMultipartUpload(row.staged_r2_key, row.r2_upload_id).abort();
+        }
+        cleaned.push(row);
+      }
+      await store.removeMultipartCleanupRows(cleaned);
+    }
     return store.finish(run, {
       nextCursor,
       scanned: page.length,
