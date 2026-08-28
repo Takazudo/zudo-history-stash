@@ -1,6 +1,45 @@
 {
   "schemaVersion": 1,
   "snippets": {
+    "consumer-fetch-binding": {
+      "source": "consumer-fetch-binding.ts"
+    },
+    "consumer-gc": {
+      "source": "consumer-gc.ts"
+    },
+    "consumer-import-history": {
+      "source": "consumer-import-history.ts"
+    },
+    "consumer-live-updates": {
+      "source": "consumer-live-updates.ts"
+    },
+    "consumer-path-validation": {
+      "source": "consumer-path-validation.ts"
+    },
+    "consumer-proposals": {
+      "source": "consumer-proposals.ts"
+    },
+    "consumer-quickstart": {
+      "source": "consumer-quickstart.ts"
+    },
+    "consumer-rate-limit": {
+      "source": "consumer-rate-limit.ts"
+    },
+    "consumer-rpc-binding": {
+      "source": "consumer-rpc-binding.ts"
+    },
+    "consumer-token-lifecycle": {
+      "source": "consumer-token-lifecycle.ts"
+    },
+    "consumer-write-protocol": {
+      "source": "consumer-write-protocol.ts"
+    },
+    "ops-ui-credential-boundary": {
+      "source": "ops-ui-credential-boundary.ts"
+    },
+    "ops-ui-host": {
+      "source": "ops-ui-host.tsx"
+    },
     "reference-client-transports": {
       "source": "reference-client-transports.ts"
     },
