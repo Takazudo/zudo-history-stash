@@ -3,6 +3,7 @@ import { StashHttpError } from "./parse.js";
 import { parseStashEventStream } from "./sse.js";
 
 const DEDUPE_LIMIT = 1_000;
+const EVENT_QUEUE_CAPACITY = 1;
 const MAX_ERROR_BODY_BYTES = 64 * 1_024;
 const MAX_NETWORK_DELAY_MS = 30_000;
 const MAX_ROTATION_JITTER_MS = 250;
@@ -38,30 +39,70 @@ export interface StashEventStreamDependencies {
 }
 
 type QueueWaiter<T> = (result: IteratorResult<T>) => void;
+type QueueAdmission<T> = {
+  value: T;
+  settle(admitted: boolean): void;
+};
 
-class AsyncQueue<T> {
+/** @internal A fixed-capacity queue for the reconnect loop's single producer. */
+export class BoundedAsyncQueue<T> {
+  readonly #capacity: number;
   readonly #values: T[] = [];
   readonly #waiters: QueueWaiter<T>[] = [];
+  #pendingAdmission: QueueAdmission<T> | undefined;
   #ended = false;
 
-  push(value: T): void {
-    if (this.#ended) return;
+  constructor(capacity: number) {
+    this.#capacity = capacity;
+  }
+
+  push(value: T): Promise<boolean> {
+    if (this.#ended) return Promise.resolve(false);
     const waiter = this.#waiters.shift();
-    if (waiter === undefined) this.#values.push(value);
-    else waiter({ done: false, value });
+    if (waiter !== undefined) {
+      waiter({ done: false, value });
+      return Promise.resolve(true);
+    }
+    if (this.#values.length < this.#capacity) {
+      this.#values.push(value);
+      return Promise.resolve(true);
+    }
+    if (this.#pendingAdmission !== undefined) {
+      throw new Error("stash event queue has more than one pending producer");
+    }
+    return new Promise((settle) => {
+      this.#pendingAdmission = { value, settle };
+    });
   }
 
   end(): void {
     if (this.#ended) return;
     this.#ended = true;
+    this.#values.length = 0;
+    const pendingAdmission = this.#pendingAdmission;
+    this.#pendingAdmission = undefined;
+    pendingAdmission?.settle(false);
     for (const waiter of this.#waiters.splice(0)) waiter({ done: true, value: undefined });
   }
 
   next(): Promise<IteratorResult<T>> {
-    const value = this.#values.shift();
-    if (value !== undefined) return Promise.resolve({ done: false, value });
     if (this.#ended) return Promise.resolve({ done: true, value: undefined });
+    if (this.#values.length > 0) {
+      const value = this.#values.shift()!;
+      this.#admitPending();
+      return Promise.resolve({ done: false, value });
+    }
     return new Promise((resolve) => this.#waiters.push(resolve));
+  }
+
+  #admitPending(): void {
+    const pendingAdmission = this.#pendingAdmission;
+    if (pendingAdmission === undefined || this.#ended) return;
+    this.#pendingAdmission = undefined;
+    const waiter = this.#waiters.shift();
+    if (waiter === undefined) this.#values.push(pendingAdmission.value);
+    else waiter({ done: false, value: pendingAdmission.value });
+    pendingAdmission.settle(true);
   }
 }
 
@@ -188,7 +229,7 @@ export function createStashEventStream(
   }
 
   const timing = { ...defaultDependencies, ...dependencies };
-  const queue = new AsyncQueue<StashEvent>();
+  const queue = new BoundedAsyncQueue<StashEvent>(EVENT_QUEUE_CAPACITY);
   const lifecycle = new AbortController();
   const listeners = new Set<(status: StashLiveStatus) => void>();
   const seenIds = new Set<string>();
@@ -216,13 +257,15 @@ export function createStashEventStream(
     if (stopped) return;
     stopped = true;
     options.signal?.removeEventListener("abort", stop);
+    queue.end();
+    seenIds.clear();
+    seenOrder.length = 0;
     const connection = currentConnection;
     currentConnection = undefined;
     connection?.abort();
     lifecycle.abort();
     notify(status);
     listeners.clear();
-    queue.end();
   };
 
   const stop = () => finalize("closed");
@@ -296,7 +339,7 @@ export function createStashEventStream(
           if (event.type === "change") {
             if (!ready) checkpoint = event.changeId;
             if (id === undefined) throw new TypeError("validated change event is missing its id");
-            if (rememberChange(id)) queue.push(event);
+            if (rememberChange(id) && (!(await queue.push(event)) || stopped)) return;
           } else {
             if (event.type === "ready") {
               ready = true;
@@ -304,7 +347,7 @@ export function createStashEventStream(
               consecutiveFailures = 0;
               notify("live");
             }
-            queue.push(event);
+            if (!(await queue.push(event)) || stopped) return;
             if (event.type === "reconnect") break;
           }
         }
