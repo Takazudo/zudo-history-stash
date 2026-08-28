@@ -7,8 +7,9 @@ category: guides
 
 Treat `workers/stash/wrangler.toml` as the deployment contract. Copy its environment shape, replace
 resource placeholders, and keep the R2 bucket private. Cloudflare environments do not inherit many
-binding, variable, and migration keys, so repeat and verify them instead of assuming a top-level
-value applies.
+binding and variable keys, while Durable Object `migrations` are inheritable. Repeat and verify each
+non-inheritable entry, and verify the selected environment's inherited migration chain rather than
+treating all keys alike.
 
 ## Bind every resource
 
@@ -65,10 +66,12 @@ Production schedules garbage collection at `17 3 * * *`. The committed preview e
 generated per-PR application configs use an empty cron list. Do not let a copied production trigger
 run against disposable preview storage.
 
-Wrangler's environment model makes `vars`, Durable Object bindings/migrations, D1, R2, and other
-bindings non-inheritable. Compare the selected environment as a complete unit before deployment;
-see Cloudflare's current [environment](https://developers.cloudflare.com/workers/wrangler/environments/)
-and [configuration](https://developers.cloudflare.com/workers/wrangler/configuration/) references.
+Wrangler's environment model makes `vars`, Durable Object bindings, D1, R2, and other bindings
+non-inheritable. Durable Object `migrations` are inheritable; this repository still repeats the exact
+`v1` entry in its checked preview configuration so that class registration remains explicit there.
+Compare the selected environment as a complete unit before deployment; see Cloudflare's current
+[environment](https://developers.cloudflare.com/workers/wrangler/environments/) and
+[configuration](https://developers.cloudflare.com/workers/wrangler/configuration/) references.
 
 ## Bound exposure and metering
 
