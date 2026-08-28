@@ -1,6 +1,6 @@
 import type { StashEvent } from "@takazudo/zudo-history-stash-core";
 import { runInDurableObject } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { app, createApp } from "../../src/app.js";
 import { createStashStore } from "../../src/d1/store.js";
 import {
@@ -142,6 +142,9 @@ function instrumentSubscriptionCancellation(
   bindings: Env;
   canceled: Promise<void>;
   cancelCalls: () => number;
+  lifetimeHeader: () => string | null;
+  namespaceCalls: () => number;
+  subscribeCalls: () => number;
 } {
   // The DO suite proves that its source cancel hook removes the subscriber. Current Miniflare
   // does not propagate cancellation across DurableObjectStub.fetch(), so this probe isolates the
@@ -151,10 +154,14 @@ function instrumentSubscriptionCancellation(
     resolveCanceled = resolve;
   });
   let cancelCalls = 0;
+  let namespaceCalls = 0;
+  let subscribeCalls = 0;
+  let lifetimeHeader: string | null = null;
   const namespace = new Proxy(bindings.STASH_EVENTS, {
     get(target, property) {
       if (property === "getByName") {
         return (...args: Parameters<typeof target.getByName>) => {
+          namespaceCalls += 1;
           const stub = target.getByName(...args);
           if (args[0] !== stash) return stub;
           return new Proxy(stub, {
@@ -164,6 +171,11 @@ function instrumentSubscriptionCancellation(
                   const input = fetchArgs[0];
                   const url = new URL(input instanceof Request ? input.url : String(input));
                   if (url.pathname !== "/subscribe") return stubTarget.fetch(...fetchArgs);
+                  subscribeCalls += 1;
+                  lifetimeHeader =
+                    input instanceof Request
+                      ? input.headers.get("X-Stash-Events-Max-Stream-Ms")
+                      : new Headers(fetchArgs[1]?.headers).get("X-Stash-Events-Max-Stream-Ms");
                   return Promise.resolve(
                     new Response(
                       new ReadableStream<Uint8Array>({
@@ -191,6 +203,9 @@ function instrumentSubscriptionCancellation(
     bindings: { ...bindings, STASH_EVENTS: namespace },
     canceled,
     cancelCalls: () => cancelCalls,
+    lifetimeHeader: () => lifetimeHeader,
+    namespaceCalls: () => namespaceCalls,
+    subscribeCalls: () => subscribeCalls,
   };
 }
 
@@ -237,6 +252,125 @@ function instrumentSubscriptionRejection(
     capturedSignal: () => signal,
     subscribeCalls: () => calls,
   };
+}
+
+function instrumentDelayedSubscription(
+  bindings: Env,
+  stash: string,
+): {
+  bindings: Env;
+  canceled: Promise<void>;
+  cancelCalls: () => number;
+  capturedSignal: () => AbortSignal | undefined;
+  dispatched: Promise<void>;
+  release: () => void;
+} {
+  let resolveDispatched: () => void = () => undefined;
+  const dispatched = new Promise<void>((resolve) => {
+    resolveDispatched = resolve;
+  });
+  let resolveResponse: (response: Response) => void = () => undefined;
+  const response = new Promise<Response>((resolve) => {
+    resolveResponse = resolve;
+  });
+  let resolveCanceled: () => void = () => undefined;
+  const canceled = new Promise<void>((resolve) => {
+    resolveCanceled = resolve;
+  });
+  let signal: AbortSignal | undefined;
+  let cancelCalls = 0;
+  let released = false;
+  const namespace = new Proxy(bindings.STASH_EVENTS, {
+    get(target, property) {
+      if (property === "getByName") {
+        return (...args: Parameters<typeof target.getByName>) => {
+          const stub = target.getByName(...args);
+          if (args[0] !== stash) return stub;
+          return new Proxy(stub, {
+            get(stubTarget, stubProperty) {
+              if (stubProperty === "fetch") {
+                return (...fetchArgs: Parameters<typeof stubTarget.fetch>) => {
+                  const input = fetchArgs[0];
+                  const url = new URL(input instanceof Request ? input.url : String(input));
+                  if (url.pathname !== "/subscribe") return stubTarget.fetch(...fetchArgs);
+                  signal = input instanceof Request ? input.signal : undefined;
+                  resolveDispatched();
+                  return response;
+                };
+              }
+              const value: unknown = Reflect.get(stubTarget, stubProperty, stubTarget);
+              return typeof value === "function" ? value.bind(stubTarget) : value;
+            },
+          });
+        };
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  return {
+    bindings: { ...bindings, STASH_EVENTS: namespace },
+    canceled,
+    cancelCalls: () => cancelCalls,
+    capturedSignal: () => signal,
+    dispatched,
+    release() {
+      if (released) return;
+      released = true;
+      resolveResponse(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              cancelCalls += 1;
+              resolveCanceled();
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        ),
+      );
+    },
+  };
+}
+
+function rejectingChangesDatabase(db: D1Database): D1Database {
+  function wrapStatement(statement: D1PreparedStatement, reject: boolean): D1PreparedStatement {
+    return new Proxy(statement, {
+      get(target, property) {
+        if (property === "bind") {
+          return (...values: Parameters<D1PreparedStatement["bind"]>) =>
+            wrapStatement(target.bind(...values), reject);
+        }
+        if (property === "all" && reject) {
+          return () => Promise.reject(new Error("fixture change read failed"));
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  return new Proxy(db, {
+    get(target, property) {
+      if (property === "withSession") {
+        return (constraint?: string) => {
+          const session = target.withSession(constraint);
+          return new Proxy(session, {
+            get(sessionTarget, sessionProperty) {
+              if (sessionProperty === "prepare") {
+                return (sql: string) =>
+                  wrapStatement(sessionTarget.prepare(sql), /\bchange_id\b/iu.test(sql));
+              }
+              const value: unknown = Reflect.get(sessionTarget, sessionProperty, sessionTarget);
+              return typeof value === "function" ? value.bind(sessionTarget) : value;
+            },
+          });
+        };
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 function delayedAscendingSnapshot(db: D1Database): {
@@ -413,6 +547,79 @@ describe("stash events route", () => {
     ).toBe(300_000);
   });
 
+  it("fails closed while resolving the exact principal and configuration lifetime fence", () => {
+    const now = Date.parse("2026-08-28T01:00:00.000Z");
+    const expiring = (expiresAt: string) => ({
+      kind: "stash" as const,
+      stash: "events-lifetime",
+      tokenId: "tok_expiring",
+      scope: "read" as const,
+      expiresAt,
+    });
+
+    expect(
+      effectiveStashEventsLifetimeMs("500", expiring(new Date(now + 250).toISOString()), now),
+    ).toBe(250);
+    expect(
+      effectiveStashEventsLifetimeMs("500", expiring(new Date(now + 1_000).toISOString()), now),
+    ).toBe(500);
+
+    for (const invalidNow of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(() => effectiveStashEventsLifetimeMs("500", { kind: "admin" }, invalidNow)).toThrow(
+        "event stream lifetime is invalid",
+      );
+    }
+    expect(() => effectiveStashEventsLifetimeMs("500", expiring("not-a-date"), now)).toThrow(
+      "event stream lifetime is invalid",
+    );
+    expect(() =>
+      effectiveStashEventsLifetimeMs("500", expiring(new Date(now).toISOString()), now),
+    ).toThrow("valid bearer token");
+    expect(() =>
+      effectiveStashEventsLifetimeMs("500", expiring(new Date(now - 1).toISOString()), now),
+    ).toThrow("valid bearer token");
+  });
+
+  it.each(["0", "+1", "-1", " 1", "1 ", "1.5", "9007199254740992", "2147483648"])(
+    "rejects invalid configured lifetime %j before Durable Object dispatch",
+    async (configured) => {
+      const stash = `events-invalid-lifetime-${configured.replaceAll(/\W/gu, "x")}`;
+      await seedStash(stash);
+      const baseBindings = createTestEnv().env;
+      const probe = instrumentSubscriptionCancellation(baseBindings, stash);
+      const bindings = { ...probe.bindings, STASH_EVENTS_MAX_STREAM_MS: configured };
+
+      const response = await connect(stash, "", "test-admin", bindings);
+
+      await expectError(response, 500, "internal");
+      expect(probe.namespaceCalls()).toBe(0);
+      expect(probe.subscribeCalls()).toBe(0);
+      expect(probe.cancelCalls()).toBe(0);
+      expect(await subscriberCount(baseBindings, stash)).toBe(0);
+    },
+  );
+
+  it("forwards the exact expiring-principal effective lifetime to Durable Object dispatch", async () => {
+    const stash = "events-forwarded-effective-lifetime";
+    const now = Date.parse("2026-08-28T01:00:00.000Z");
+    await seedStash(stash);
+    const token = await mintToken(stash, "read", { expiresAt: now + 250 });
+    const baseBindings = createTestEnv().env;
+    const probe = instrumentSubscriptionCancellation(baseBindings, stash);
+    const bindings = { ...probe.bindings, STASH_EVENTS_MAX_STREAM_MS: "500" };
+    const application = createApp({ now: () => now });
+    const reader = eventReader(await connect(stash, "", token.token, bindings, application));
+    try {
+      expect((await reader.next()).event).toEqual({ type: "ready", head: null, checkpoint: null });
+      expect(probe.subscribeCalls()).toBe(1);
+      expect(probe.lifetimeHeader()).toBe("250");
+    } finally {
+      await reader.close();
+    }
+    await probe.canceled;
+    expect(probe.cancelCalls()).toBe(1);
+  });
+
   it("rotates a revoked non-expiring principal at the configured lifetime and denies reconnect", async () => {
     const stash = "events-revoked-rotation";
     const now = Date.parse("2026-08-28T01:00:00.000Z");
@@ -435,7 +642,7 @@ describe("stash events route", () => {
         event: { type: "reconnect", reason: "lifetime" },
       });
       await reader.expectDone();
-      expect(await subscriberCount(baseBindings, stash)).toBe(0);
+      await expect.poll(() => subscriberCount(baseBindings, stash)).toBe(0);
       await publish(baseBindings, stash, {
         type: "proposal",
         proposalId: "prp_1756339200000deadbeef",
@@ -474,13 +681,126 @@ describe("stash events route", () => {
         event: { type: "reconnect", reason: "lifetime" },
       });
       await reader.expectDone();
-      expect(await subscriberCount(baseBindings, stash)).toBe(0);
+      await expect.poll(() => subscriberCount(baseBindings, stash)).toBe(0);
 
       clock = expiresAt;
       const denied = await connect(stash, "", token.token, bindings, application);
       await expectError(denied, 401, "unauthorized");
       expect(await subscriberCount(baseBindings, stash)).toBe(0);
     } finally {
+      await reader?.close();
+    }
+  });
+
+  it("drops an unread replay prefix at expiry before emitting one lifetime terminal", async () => {
+    const stash = "events-expiry-slow-replay";
+    let clock = Date.parse("2026-08-28T02:30:00.000Z");
+    const lifetimeMs = 250;
+    const expiresAt = clock + lifetimeMs;
+    await seedStash(stash);
+    const token = await mintToken(stash, "read", { expiresAt });
+    const bindings = { ...createTestEnv().env, STASH_EVENTS_MAX_STREAM_MS: "1000" };
+    const changes = [
+      await put(bindings, stash, "one.txt"),
+      await put(bindings, stash, "two.txt"),
+      await put(bindings, stash, "three.txt"),
+      await put(bindings, stash, "four.txt"),
+    ];
+    const application = createApp({ now: () => clock });
+    const reader = eventReader(
+      await connect(stash, "?since=0", token.token, bindings, application),
+    );
+    try {
+      expect(await reader.next()).toEqual({
+        id: String(changes[0]!.changeId),
+        event: expect.objectContaining({ type: "change", path: "one.txt" }),
+      });
+
+      // wait-ok: this deliberately withholds downstream demand beyond the authenticated lifetime.
+      await new Promise((resolve) => setTimeout(resolve, lifetimeMs + 50));
+
+      expect(await reader.next()).toEqual({
+        id: null,
+        event: { type: "reconnect", reason: "lifetime" },
+      });
+      await reader.expectDone();
+      await expect.poll(() => subscriberCount(bindings, stash)).toBe(0);
+
+      clock = expiresAt;
+      const denied = await connect(stash, "?since=0", token.token, bindings, application);
+      await expectError(denied, 401, "unauthorized");
+    } finally {
+      await reader.close();
+    }
+  });
+
+  it("does not publish a stalled D1 replay result after the authenticated deadline", async () => {
+    const stash = "events-expiry-stalled-replay";
+    let clock = Date.parse("2026-08-28T02:45:00.000Z");
+    const lifetimeMs = 150;
+    const expiresAt = clock + lifetimeMs;
+    await seedStash(stash);
+    const token = await mintToken(stash, "read", { expiresAt });
+    const baseBindings = createTestEnv().env;
+    await put(baseBindings, stash, "late.txt");
+    const gate = delayedAscendingSnapshot(baseBindings.DB);
+    const bindings = {
+      ...baseBindings,
+      DB: gate.db,
+      STASH_EVENTS_MAX_STREAM_MS: "500",
+    };
+    const application = createApp({ now: () => clock });
+    const pendingResponse = connect(stash, "?since=0", token.token, bindings, application);
+    let reader: EventReader | undefined;
+    try {
+      await gate.snapshotTaken;
+      reader = eventReader(await pendingResponse);
+      expect(await reader.next()).toEqual({
+        id: null,
+        event: { type: "reconnect", reason: "lifetime" },
+      });
+
+      gate.release();
+      await reader.expectDone();
+      await expect.poll(() => subscriberCount(baseBindings, stash)).toBe(0);
+
+      clock = expiresAt;
+      const denied = await connect(stash, "?since=0", token.token, baseBindings, application);
+      await expectError(denied, 401, "unauthorized");
+    } finally {
+      gate.release();
+      await reader?.close();
+    }
+  });
+
+  it("uses the absolute monotonic fence when a late replay settles before its overdue timer", async () => {
+    const stash = "events-expiry-overdue-timer";
+    await seedStash(stash);
+    const baseBindings = createTestEnv().env;
+    await put(baseBindings, stash, "late-same-turn.txt");
+    const gate = delayedAscendingSnapshot(baseBindings.DB);
+    const probe = instrumentSubscriptionCancellation({ ...baseBindings, DB: gate.db }, stash);
+    const bindings = { ...probe.bindings, STASH_EVENTS_MAX_STREAM_MS: "60000" };
+    let monotonicNow = 1_000;
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+    const pendingResponse = connect(stash, "?since=0", "test-admin", bindings);
+    let reader: EventReader | undefined;
+    try {
+      await gate.snapshotTaken;
+      monotonicNow += 60_001;
+      gate.release();
+
+      reader = eventReader(await pendingResponse);
+      expect(await reader.next()).toEqual({
+        id: null,
+        event: { type: "reconnect", reason: "lifetime" },
+      });
+      await reader.expectDone();
+      await probe.canceled;
+      expect(probe.cancelCalls()).toBe(1);
+    } finally {
+      gate.release();
+      nowSpy.mockRestore();
       await reader?.close();
     }
   });
@@ -714,6 +1034,88 @@ describe("stash events route", () => {
     expect(probe.capturedSignal()).toBeDefined();
     expect(probe.capturedSignal()?.aborted).toBe(true);
     expect(await subscriberCount(baseBindings, stash)).toBe(0);
+  });
+
+  it("bounds stalled Durable Object dispatch and releases a response that settles late", async () => {
+    const stash = "events-stalled-dispatch";
+    await seedStash(stash);
+    const baseBindings = createTestEnv().env;
+    const probe = instrumentDelayedSubscription(baseBindings, stash);
+    const bindings = { ...probe.bindings, STASH_EVENTS_MAX_STREAM_MS: "75" };
+    const pendingResponse = connect(stash, "", "test-admin", bindings);
+    let reader: EventReader | undefined;
+    try {
+      await probe.dispatched;
+      reader = eventReader(await pendingResponse);
+      expect(await reader.next()).toEqual({
+        id: null,
+        event: { type: "reconnect", reason: "lifetime" },
+      });
+      await reader.expectDone();
+      expect(probe.capturedSignal()?.aborted).toBe(true);
+
+      probe.release();
+      await probe.canceled;
+      expect(probe.cancelCalls()).toBe(1);
+    } finally {
+      probe.release();
+      await reader?.close();
+    }
+  });
+
+  it("closes the live subscription before returning a pre-deadline D1 failure", async () => {
+    const stash = "events-change-read-failure";
+    await seedStash(stash);
+    const baseBindings = createTestEnv().env;
+    const failingBindings = { ...baseBindings, DB: rejectingChangesDatabase(baseBindings.DB) };
+    const probe = instrumentSubscriptionCancellation(failingBindings, stash);
+
+    const response = await connect(stash, "", "test-admin", probe.bindings);
+
+    await expectError(response, 500, "internal");
+    await probe.canceled;
+    expect(probe.cancelCalls()).toBe(1);
+  });
+
+  it("lets the authenticated deadline beat an unread replay-limit prefix", async () => {
+    const stash = "events-replay-limit-expiry";
+    let clock = Date.parse("2026-08-28T03:00:00.000Z");
+    const lifetimeMs = 800;
+    const expiresAt = clock + lifetimeMs;
+    await seedStash(stash);
+    const token = await mintToken(stash, "read", { expiresAt });
+    const baseBindings = createTestEnv().env;
+    const probe = instrumentSubscriptionCancellation(baseBindings, stash);
+    const bindings = { ...probe.bindings, STASH_EVENTS_MAX_STREAM_MS: "2000" };
+    await seedChanges(baseBindings, stash, 1_001);
+    const application = createApp({ now: () => clock });
+    const reader = eventReader(
+      await connect(stash, "?since=0", token.token, bindings, application),
+    );
+    try {
+      expect(await reader.next()).toEqual({
+        id: "1",
+        event: expect.objectContaining({ type: "change", changeId: 1, origin: null }),
+      });
+
+      // wait-ok: this deliberately withholds demand past the authenticated lifetime so the
+      // buffered replay-limit branch must be discarded rather than drained.
+      await new Promise((resolve) => setTimeout(resolve, lifetimeMs + 50));
+
+      expect(await reader.next()).toEqual({
+        id: null,
+        event: { type: "reconnect", reason: "lifetime" },
+      });
+      await reader.expectDone();
+      await probe.canceled;
+      expect(probe.cancelCalls()).toBe(1);
+
+      clock = expiresAt;
+      const denied = await connect(stash, "?since=0", token.token, baseBindings, application);
+      await expectError(denied, 401, "unauthorized");
+    } finally {
+      await reader.close();
+    }
   });
 
   it("rotates after 1,000 replayed changes and closes without a ready frame", async () => {

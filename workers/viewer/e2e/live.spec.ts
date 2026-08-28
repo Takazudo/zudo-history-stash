@@ -126,6 +126,114 @@ function capturePageErrors(page: Page): string[] {
   return errors;
 }
 
+interface LiveAttributionEvidence {
+  statusHistory: string[];
+  focusEvents: number;
+  visibilityEvents: number;
+}
+
+async function installLiveAttributionObserver(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    interface ObserverState {
+      statusHistory: string[];
+      focusEvents: number;
+      visibilityEvents: number;
+      observer: MutationObserver;
+      onFocus: () => void;
+      onVisibilityChange: () => void;
+    }
+    type AttributionWindow = Window & { __zhsLiveAttribution?: ObserverState };
+    const attributionWindow = window as AttributionWindow;
+    attributionWindow.__zhsLiveAttribution?.observer.disconnect();
+
+    const statusHistory: string[] = [];
+    const record = (label: string | null) => {
+      if (label === null || !label.startsWith("Live updates: ")) return;
+      if (statusHistory.at(-1) !== label) statusHistory.push(label);
+    };
+    const recordNode = (node: Node) => {
+      if (!(node instanceof Element)) return;
+      if (node.matches('[role="status"][aria-label^="Live updates: "]')) {
+        record(node.getAttribute("aria-label"));
+      }
+      for (const status of node.querySelectorAll('[role="status"][aria-label^="Live updates: "]')) {
+        record(status.getAttribute("aria-label"));
+      }
+    };
+    const recordCurrent = () => {
+      for (const status of document.querySelectorAll(
+        '[role="status"][aria-label^="Live updates: "]',
+      )) {
+        record(status.getAttribute("aria-label"));
+      }
+    };
+    recordCurrent();
+    if (statusHistory[0] !== "Live updates: live") {
+      throw new Error("live attribution observer was installed before the live state was proven");
+    }
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes") {
+          record(mutation.oldValue);
+          record((mutation.target as Element).getAttribute("aria-label"));
+          continue;
+        }
+        for (const removed of mutation.removedNodes) recordNode(removed);
+        for (const added of mutation.addedNodes) recordNode(added);
+      }
+      recordCurrent();
+    });
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["aria-label"],
+      attributeOldValue: true,
+    });
+
+    const state: ObserverState = {
+      statusHistory,
+      focusEvents: 0,
+      visibilityEvents: 0,
+      observer,
+      onFocus: () => {
+        state.focusEvents += 1;
+      },
+      onVisibilityChange: () => {
+        state.visibilityEvents += 1;
+      },
+    };
+    window.addEventListener("focus", state.onFocus);
+    document.addEventListener("visibilitychange", state.onVisibilityChange);
+    attributionWindow.__zhsLiveAttribution = state;
+  });
+}
+
+async function takeLiveAttributionEvidence(page: Page): Promise<LiveAttributionEvidence> {
+  return page.evaluate(() => {
+    interface ObserverState {
+      statusHistory: string[];
+      focusEvents: number;
+      visibilityEvents: number;
+      observer: MutationObserver;
+      onFocus: () => void;
+      onVisibilityChange: () => void;
+    }
+    const state = (window as Window & { __zhsLiveAttribution?: ObserverState })
+      .__zhsLiveAttribution;
+    if (state === undefined) throw new Error("live attribution observer was not installed");
+    state.observer.disconnect();
+    window.removeEventListener("focus", state.onFocus);
+    document.removeEventListener("visibilitychange", state.onVisibilityChange);
+    return {
+      statusHistory: [...state.statusHistory],
+      focusEvents: state.focusEvents,
+      visibilityEvents: state.visibilityEvents,
+    };
+  });
+}
+
 async function withinLiveRefreshDeadline<T>(operation: () => Promise<T>): Promise<T> {
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
@@ -455,6 +563,7 @@ test("@live a foreign mutation refreshes the stash through SSE before polling", 
     ).toBe(browserClientId);
     const liveIndicator = page.getByRole("status", { name: "Live updates: live" });
     await expect(liveIndicator).toBeVisible();
+    await installLiveAttributionObserver(page);
 
     let authoritativeFeed: ChangeFeedResponse | undefined;
     const postMutationRefresh = page.waitForResponse(async (response) => {
@@ -504,6 +613,13 @@ test("@live a foreign mutation refreshes the stash through SSE before polling", 
       await expect(liveIndicator).toBeVisible();
     });
     expect(performance.now() - startedAt).toBeLessThan(VIEWER_LIVE_POLL_INTERVAL_MS);
+    const attribution = await takeLiveAttributionEvidence(page);
+    expect(attribution.statusHistory.length).toBeGreaterThan(0);
+    expect(attribution.statusHistory).toEqual(
+      attribution.statusHistory.map(() => "Live updates: live"),
+    );
+    expect(attribution.focusEvents).toBe(0);
+    expect(attribution.visibilityEvents).toBe(0);
     expect(pageErrors).toEqual([]);
   } catch (error: unknown) {
     primaryFailure = error;
@@ -1013,8 +1129,46 @@ test("@live admin deletes and restores a unique stash through the viewer", async
     await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
       token: ADMIN_TOKEN,
     });
-    await page.goto(`/s/${stash}`);
+    const stashRoute = `/s/${stash}`;
+    const reconciledLoads = { files: 0, changes: 0, proposals: 0 };
+    page.on("response", (response) => {
+      if (response.request().method() !== "GET" || response.status() !== 200) return;
+      const referer = response.request().headers().referer;
+      if (referer === undefined || new URL(referer).pathname !== stashRoute) return;
+      const url = new URL(response.url());
+      let kind: keyof typeof reconciledLoads | undefined;
+      if (
+        url.pathname === `/api/v1/stashes/${stash}/files` &&
+        url.searchParams.get("includeDeleted") === "false" &&
+        !url.searchParams.has("after")
+      ) {
+        kind = "files";
+      }
+      if (url.pathname === `/api/v1/stashes/${stash}/changes` && url.search === "") {
+        kind = "changes";
+      }
+      if (
+        url.pathname === `/api/v1/stashes/${stash}/proposals` &&
+        url.searchParams.get("status") === "open" &&
+        url.searchParams.get("limit") === "1" &&
+        !url.searchParams.has("path")
+      ) {
+        kind = "proposals";
+      }
+      if (kind === undefined) return;
+      void response.finished().then((failure) => {
+        if (failure === null) reconciledLoads[kind] += 1;
+      });
+    });
+    await page.goto(stashRoute);
     await expect(page.getByRole("heading", { name: stash, exact: true })).toBeVisible();
+    await expect
+      .poll(() => Math.min(...Object.values(reconciledLoads)), {
+        message:
+          "the lifecycle page's initial and ready-triggered files, changes, and proposal loads should finish",
+        timeout: 10_000,
+      })
+      .toBeGreaterThanOrEqual(2);
     await page.getByRole("button", { name: "Delete stash" }).click();
 
     const dialog = page.getByRole("dialog", { name: `Delete ${stash}` });
