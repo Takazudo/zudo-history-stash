@@ -25,7 +25,7 @@ import {
   RotateTokenBody,
   STASH_CLIENT_ID_HEADER,
 } from "../schemas.js";
-import { ROUTES, routeAcceptsClientId, type RouteId, type RouteTransport } from "../routes.js";
+import type { RouteId, RouteTransport } from "../routes.js";
 import type { RESPONSE_SCHEMAS } from "./responses.js";
 import type { SAMPLES } from "./samples.js";
 
@@ -101,7 +101,7 @@ const error = (
 
 const rateLimited = (): RouteError => error("rate-limited", false, undefined, ["Retry-After"]);
 
-const ROUTE_CONTRACT_BASES = {
+export const ROUTE_CONTRACTS = {
   health: {
     summary: "Health check",
     description: "Returns the service health marker without requiring authentication.",
@@ -138,6 +138,7 @@ const ROUTE_CONTRACT_BASES = {
     description: "Creates a new stash and returns its initial record.",
     principalNote: "admin; administrator only.",
     body: CreateStashBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("The newly created stash record.", "CreateStashResult", "CreateStashResult"),
     },
@@ -165,6 +166,7 @@ const ROUTE_CONTRACT_BASES = {
     description:
       "Soft-deletes a stash, revokes its tokens, and returns the end of its restoration window.",
     principalNote: "admin; administrator only.",
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response(
         "The soft-deleted stash and its restoration deadline.",
@@ -184,6 +186,7 @@ const ROUTE_CONTRACT_BASES = {
     summary: "Restore a stash",
     description: "Restores a soft-deleted stash during its restoration window.",
     principalNote: "admin; administrator only.",
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("The restored stash record.", "RestoreStashResult", "RestoreStashResult"),
     },
@@ -195,6 +198,7 @@ const ROUTE_CONTRACT_BASES = {
     description: "Creates a scoped stash token and returns the secret once.",
     principalNote: "admin; administrator only.",
     body: CreateTokenBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response(
         "The newly created token, including its secret.",
@@ -225,6 +229,7 @@ const ROUTE_CONTRACT_BASES = {
     description: "Creates one successor token and shortens the predecessor to a grace period.",
     principalNote: "admin; administrator only.",
     body: RotateTokenBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response(
         "The newly created successor token and the predecessor's shortened expiry.",
@@ -246,6 +251,7 @@ const ROUTE_CONTRACT_BASES = {
     summary: "Revoke a stash token",
     description: "Revokes a token so it can no longer authenticate.",
     principalNote: "admin; administrator only.",
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       204: noContentResponse("The token was revoked; the response has no body."),
     },
@@ -257,6 +263,7 @@ const ROUTE_CONTRACT_BASES = {
     description: "Appends an existing file history in one fenced batch.",
     principalNote: "admin; administrator only.",
     body: ImportBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response(
         "The imported path and resulting head version.",
@@ -296,6 +303,7 @@ const ROUTE_CONTRACT_BASES = {
       "Runs one bounded garbage-collection page synchronously for either private R2 orphans or the idempotency ledger. An invocation safety budget may stop a page below maxObjects.",
     principalNote: "admin; administrator only.",
     body: RunGcBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("The completed garbage-collection run page.", "GcRunResult", "GcRunResult"),
     },
@@ -319,7 +327,7 @@ const ROUTE_CONTRACT_BASES = {
       "Stores an expiring candidate write against an exact base version. An Idempotency-Key can replay the same proposal creation safely.",
     principalNote: "write; administrator or a matching write stash token.",
     body: CreateProposalBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("The stored proposal record.", "ProposalRecord", "ProposalRecord", [
         "Idempotent-Replayed",
@@ -402,6 +410,7 @@ const ROUTE_CONTRACT_BASES = {
       "Applies an open, unexpired proposal only when the current head still equals its exact base. Re-approving an applied proposal returns its stored result.",
     principalNote: "write; administrator or a matching write stash token.",
     body: ApproveProposalBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response(
         "The applied proposal result.",
@@ -429,6 +438,7 @@ const ROUTE_CONTRACT_BASES = {
       "Rejects an open proposal with an optional reason. Re-rejecting it is idempotent; applied proposals are closed.",
     principalNote: "write; administrator or a matching write stash token.",
     body: RejectProposalBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("The rejected proposal record.", "ProposalRecord", "RejectedProposalRecord"),
     },
@@ -504,7 +514,7 @@ const ROUTE_CONTRACT_BASES = {
     description: "Compares and sets a file head, appending history when content changes.",
     principalNote: "write; administrator or a matching write stash token.",
     body: PutFileBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("A new version was appended.", "PutCreatedResult", "PutCreatedResult", [
         "Idempotent-Replayed",
@@ -537,7 +547,7 @@ const ROUTE_CONTRACT_BASES = {
     description: "Appends a tombstone version for a file using compare-and-set semantics.",
     principalNote: "write; administrator or a matching write stash token.",
     body: DeleteFileBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("A tombstone version was appended.", "DeleteResult", "DeleteResult", [
         "Idempotent-Replayed",
@@ -563,7 +573,7 @@ const ROUTE_CONTRACT_BASES = {
     description: "Restores a target version by appending a new rollback version.",
     principalNote: "write; administrator or a matching write stash token.",
     body: RollbackBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("A rollback version was appended.", "RollbackResult", "RollbackResult", [
         "Idempotent-Replayed",
@@ -654,17 +664,3 @@ const ROUTE_CONTRACT_BASES = {
     wildcardPath: false,
   },
 } as const satisfies Record<RouteId, RouteContract>;
-
-export const ROUTE_CONTRACTS = Object.fromEntries(
-  ROUTES.map((route) => {
-    const contract: RouteContract = ROUTE_CONTRACT_BASES[route.id];
-    if (!routeAcceptsClientId(route)) return [route.id, contract];
-    return [
-      route.id,
-      {
-        ...contract,
-        requestHeaders: [...(contract.requestHeaders ?? []), STASH_CLIENT_ID_HEADER],
-      },
-    ];
-  }),
-) as Record<RouteId, RouteContract>;

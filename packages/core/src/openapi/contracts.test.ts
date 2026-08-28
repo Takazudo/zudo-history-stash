@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { ERROR_CODES } from "../errors.js";
 import { ROUTES, routeAcceptsClientId, transportForRoute } from "../routes.js";
 import { STASH_CLIENT_ID_HEADER } from "../schemas.js";
@@ -30,6 +30,17 @@ describe("route contract coverage", () => {
     expect(new Set(Object.keys(ROUTE_CONTRACTS)).size).toBe(routeIds.length);
   });
 
+  it("preserves literal per-route types on the public contract registry", () => {
+    expectTypeOf(ROUTE_CONTRACTS.stashEvents.transport).toEqualTypeOf<"fetch-only">();
+    expectTypeOf<keyof typeof ROUTE_CONTRACTS.createProposal.responses>().toEqualTypeOf<201>();
+    expectTypeOf(ROUTE_CONTRACTS.createProposal.responses[201].schema).toEqualTypeOf<
+      keyof typeof RESPONSE_SCHEMAS | undefined
+    >();
+    expectTypeOf(ROUTE_CONTRACTS.createProposal.requestHeaders).toEqualTypeOf<
+      ["Idempotency-Key", "X-Stash-Client-Id"]
+    >();
+  });
+
   it("keeps wildcard path metadata aligned with the route templates", () => {
     for (const route of ROUTES) {
       const contract = ROUTE_CONTRACTS[route.id];
@@ -40,7 +51,9 @@ describe("route contract coverage", () => {
   it("declares client identity on exactly the mutations stamped by the SDK", () => {
     expect(ROUTES.filter(routeAcceptsClientId).map(({ id }) => id)).toEqual(clientIdentityRouteIds);
     for (const route of ROUTES) {
-      const headers = ROUTE_CONTRACTS[route.id].requestHeaders ?? [];
+      const contract = ROUTE_CONTRACTS[route.id];
+      const headers: readonly string[] =
+        "requestHeaders" in contract ? contract.requestHeaders : [];
       const expected = clientIdentityRouteIds.includes(
         route.id as (typeof clientIdentityRouteIds)[number],
       );

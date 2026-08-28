@@ -731,9 +731,11 @@ token, or soft-deleting a stash, stops delivery no later than the next forced re
 is the lesser of the configured maximum stream lifetime and any earlier token-expiry boundary.
 Reauthorization then returns `401` or `404` before a new stream opens.
 
-Mutations may send `X-Stash-Client-Id` with a 1–64 character stable client identifier. The client
-uses it on mutations, and live events echo it as `origin`; absent identifiers produce `null` and
-the value is advisory, never authorization. Replayed changes always have `origin: null`.
+Mutations may send `X-Stash-Client-Id` with a stable client identifier matching
+`^[!-~](?:[ -~]{0,62}[!-~])?$`: 1–64 printable ASCII characters with no leading or trailing
+whitespace. The client sends it on mutation operations, and live events echo it as `origin`;
+absent identifiers produce `null` and the value is advisory, never authorization. Replayed changes
+always have `origin: null`.
 
 The fan-out Durable Object uses SQLite-backed Durable Objects, which are available on Cloudflare's
 free plan. An open SSE response keeps the object active and non-hibernating, so an always-open
