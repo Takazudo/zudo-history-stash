@@ -1,5 +1,8 @@
 import {
   ROUTES,
+  STASH_CLIENT_ID_HEADER,
+  isStashClientId,
+  routeAcceptsClientId,
   statusForCode,
   validatePath,
   validateStashName,
@@ -213,11 +216,7 @@ const routeTemplates = Object.fromEntries(
   ROUTES.map((route) => [route.id, route.template]),
 ) as RouteTemplate;
 
-const mutationRouteIds = new Set<RouteId>(
-  ROUTES.filter((candidate) => candidate.method !== "GET" && candidate.principal !== "read").map(
-    ({ id }) => id,
-  ),
-);
+const mutationRouteIds = new Set<RouteId>(ROUTES.filter(routeAcceptsClientId).map(({ id }) => id));
 
 /**
  * The route set used by this package. It is exported so contract tests can assert that the SDK
@@ -282,7 +281,7 @@ function requestHeaders(
   if (idempotencyKey !== undefined) headers["Idempotency-Key"] = idempotencyKey;
   if (ifNoneMatch !== undefined) headers["If-None-Match"] = ifNoneMatch;
   if (clientId !== undefined && mutationRouteIds.has(routeId)) {
-    headers["X-Stash-Client-Id"] = clientId;
+    headers[STASH_CLIENT_ID_HEADER] = clientId;
   }
   return headers;
 }
@@ -417,14 +416,10 @@ export interface StashClient {
  */
 export function createStashClient(options: StashClientOptions): StashClient {
   const clientId = options.clientId;
-  if (
-    clientId !== undefined &&
-    (typeof clientId !== "string" ||
-      [...clientId].length < 1 ||
-      [...clientId].length > 64 ||
-      /[\r\n]/.test(clientId))
-  ) {
-    throw new TypeError("clientId must contain between 1 and 64 characters");
+  if (clientId !== undefined && !isStashClientId(clientId)) {
+    throw new TypeError(
+      "clientId must contain between 1 and 64 characters and use printable ASCII without leading or trailing whitespace",
+    );
   }
 
   let send: Send;

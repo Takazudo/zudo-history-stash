@@ -173,7 +173,17 @@ describe("transport options", () => {
 describe("live transport and client identity", () => {
   it("validates clientId once when constructing either transport", () => {
     const binding = { request: vi.fn(async () => new Response(null, { status: 204 })) };
-    for (const clientId of ["", "x".repeat(65), "line\nbreak"]) {
+    for (const clientId of [
+      "",
+      "x".repeat(65),
+      " leading",
+      "trailing ",
+      "internal\ttab",
+      "line\nbreak",
+      "nul\0byte",
+      "delete\u007f",
+      "emoji🙂",
+    ]) {
       expect(() => createStashClient({ baseUrl: "https://stash.example", clientId })).toThrow(
         "clientId must contain between 1 and 64 characters",
       );
@@ -185,13 +195,16 @@ describe("live transport and client identity", () => {
       }),
     ).toThrow("clientId must contain between 1 and 64 characters");
     expect(() =>
-      createStashClient({ baseUrl: "https://stash.example", clientId: "🙂".repeat(64) }),
+      createStashClient({ baseUrl: "https://stash.example", clientId: "tab A!~" }),
     ).not.toThrow();
     expect(binding.request).not.toHaveBeenCalled();
   });
 
   it("adds the stable identity to every fetch mutation route and no read route", async () => {
-    mock.mockImplementation(async (input) => {
+    const boundaryRequests: Request[] = [];
+    mock.mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      boundaryRequests.push(request);
       if (String(input).includes("/events")) {
         return new Response(
           `event: ready\ndata: ${JSON.stringify({
@@ -207,7 +220,7 @@ describe("live transport and client identity", () => {
     const clientOptions = {
       baseUrl: "https://stash.example/",
       token: "read-token",
-      clientId: "tab-a",
+      clientId: "tab A!~",
       fetch: mock,
       idempotencyKey: () => "key",
     };
@@ -240,11 +253,12 @@ describe("live transport and client identity", () => {
     await files.rollback("a.md", { toVersion: 1, expectedVersion: 2 });
 
     expect(mock).toHaveBeenCalledTimes(14);
-    for (const [, init] of mock.mock.calls) {
-      expect(init?.headers).toMatchObject({ "X-Stash-Client-Id": "tab-a" });
+    for (const request of boundaryRequests) {
+      expect(request.headers.get("X-Stash-Client-Id")).toBe("tab A!~");
     }
 
     mock.mockClear();
+    boundaryRequests.length = 0;
     await c.health();
     await c.me();
     await c.stashes.list();
@@ -268,8 +282,8 @@ describe("live transport and client identity", () => {
     events.close();
 
     expect(mock).toHaveBeenCalledTimes(17);
-    for (const [, init] of mock.mock.calls) {
-      expect(init?.headers).not.toHaveProperty("X-Stash-Client-Id");
+    for (const request of boundaryRequests) {
+      expect(request.headers.has("X-Stash-Client-Id")).toBe(false);
     }
     expect(requestAt(14)).toMatchObject({
       init: { method: "POST", headers: { "Content-Type": "application/json" } },
@@ -285,12 +299,21 @@ describe("live transport and client identity", () => {
   });
 
   it("passes mutation identity through generic RPC but rejects events before dispatch", async () => {
+    const boundaryRequests: Request[] = [];
     const binding = {
-      request: vi.fn<StashRpcBinding["request"]>(async () => jsonResponse({})),
+      request: vi.fn<StashRpcBinding["request"]>(async (init) => {
+        boundaryRequests.push(
+          new Request(`https://stash.example${init.path}`, {
+            method: init.method,
+            headers: init.headers,
+          }),
+        );
+        return jsonResponse({});
+      }),
     };
     const c = createStashClient({
       transport: { kind: "rpc", binding, token: "rpc-token" },
-      clientId: "worker-a",
+      clientId: "worker A!~",
     });
 
     await c.stashes.delete("demo");
@@ -299,13 +322,16 @@ describe("live transport and client identity", () => {
 
     expect(binding.request.mock.calls[0]?.[0]).toMatchObject({
       method: "DELETE",
-      headers: { "X-Stash-Client-Id": "worker-a" },
+      headers: { "X-Stash-Client-Id": "worker A!~" },
     });
     expect(binding.request.mock.calls[1]?.[0]).toMatchObject({
       method: "PUT",
-      headers: { "X-Stash-Client-Id": "worker-a" },
+      headers: { "X-Stash-Client-Id": "worker A!~" },
     });
     expect(binding.request.mock.calls[2]?.[0].headers).not.toHaveProperty("X-Stash-Client-Id");
+    expect(boundaryRequests[0]?.headers.get("X-Stash-Client-Id")).toBe("worker A!~");
+    expect(boundaryRequests[1]?.headers.get("X-Stash-Client-Id")).toBe("worker A!~");
+    expect(boundaryRequests[2]?.headers.has("X-Stash-Client-Id")).toBe(false);
     expect(() => c.files("demo").events()).toThrow(
       new TypeError("unsupported-transport: events are fetch-only"),
     );

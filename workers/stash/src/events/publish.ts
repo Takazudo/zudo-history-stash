@@ -1,4 +1,8 @@
-import type { StashEvent } from "@takazudo/zudo-history-stash-core";
+import {
+  STASH_CLIENT_ID_HEADER,
+  isStashClientId,
+  type StashEvent,
+} from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
 import { STASH_EVENTS_PUBLISH_PATH } from "./stash-events.js";
 
@@ -8,13 +12,10 @@ export interface EventExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
-/** Returns the caller-provided advisory origin only when it is a safe bounded header value. */
+/** Returns the caller-provided advisory origin only when it is a canonical client identity. */
 export function eventOrigin(request: Request): string | null {
-  const value = request.headers.get("X-Stash-Client-Id");
-  if (value === null || [...value].length < 1 || [...value].length > 64 || /[\r\n]/.test(value)) {
-    return null;
-  }
-  return value;
+  const value = request.headers.get(STASH_CLIENT_ID_HEADER);
+  return isStashClientId(value) ? value : null;
 }
 
 async function deliver(env: Env, stash: string, events: readonly StashEvent[]): Promise<void> {

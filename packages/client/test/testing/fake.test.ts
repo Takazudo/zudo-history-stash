@@ -183,7 +183,7 @@ describe("fake live events", () => {
     const client = createStashClient({
       baseUrl: "https://fake.invalid",
       token,
-      clientId: "tab-a",
+      clientId: "tab A!~",
       fetch: fake.fetch,
       idempotencyKey: () => `auto-${(keySerial += 1)}`,
     });
@@ -198,14 +198,14 @@ describe("fake live events", () => {
     const firstInput = { body: "one", expectedVersion: null } as const;
     await files.put("a.md", firstInput, { idempotencyKey: "put-one" });
     await expect(iterator.next()).resolves.toMatchObject({
-      value: { type: "change", changeId: 1, version: 1, origin: "tab-a" },
+      value: { type: "change", changeId: 1, version: 1, origin: "tab A!~" },
     });
     await files.put("a.md", firstInput, { idempotencyKey: "put-one" });
     await files.put("a.md", { body: "one", expectedVersion: 1, skipIfUnchanged: true });
     await files.put("a.md", { body: "refused", expectedVersion: 99 });
     await files.put("a.md", { body: "two", expectedVersion: 1 });
     await expect(iterator.next()).resolves.toMatchObject({
-      value: { type: "change", changeId: 2, version: 2, origin: "tab-a" },
+      value: { type: "change", changeId: 2, version: 2, origin: "tab A!~" },
     });
 
     const created = await proposals.create(
@@ -218,7 +218,7 @@ describe("fake live events", () => {
         type: "proposal",
         proposalId: created.value.id,
         status: "open",
-        origin: "tab-a",
+        origin: "tab A!~",
       },
     });
     await proposals.create(
@@ -230,12 +230,12 @@ describe("fake live events", () => {
       ({ value }) => value as StashEvent,
     );
     expect(approvalEvents).toEqual([
-      expect.objectContaining({ type: "change", changeId: 3, version: 3, origin: "tab-a" }),
+      expect.objectContaining({ type: "change", changeId: 3, version: 3, origin: "tab A!~" }),
       expect.objectContaining({
         type: "proposal",
         proposalId: created.value.id,
         status: "applied",
-        origin: "tab-a",
+        origin: "tab A!~",
       }),
     ]);
     await proposals.approve(created.value.id);
@@ -251,7 +251,7 @@ describe("fake live events", () => {
         type: "proposal",
         proposalId: rejected.value.id,
         status: "rejected",
-        origin: "tab-a",
+        origin: "tab A!~",
       },
     });
     await proposals.reject(rejected.value.id, { reason: "ignored replay" });
@@ -274,6 +274,31 @@ describe("fake live events", () => {
     });
 
     stream.close();
+    expect(fake.events.subscriberCount("demo")).toBe(0);
+  });
+
+  it("drops a non-canonical identity supplied by a raw fake mutation request", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const response = await request(fake, "/v1/stashes/demo/events");
+    if (response.body === null) throw new Error("missing fake event body");
+    const iterator = parseStashEventStream(response.body)[Symbol.asyncIterator]();
+    await iterator.next();
+
+    const created = await request(fake, "/v1/stashes/demo/files/raw.md", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "raw-invalid-origin",
+        "X-Stash-Client-Id": "x".repeat(65),
+      },
+      body: JSON.stringify({ body: "raw", expectedVersion: null }),
+    });
+    expect(created.status).toBe(201);
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { event: { type: "change", path: "raw.md", origin: null } },
+    });
+    await iterator.return?.();
     expect(fake.events.subscriberCount("demo")).toBe(0);
   });
 });

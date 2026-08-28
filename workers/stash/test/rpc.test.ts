@@ -817,10 +817,12 @@ async function proposalLifecycleThroughClient(
     transport === "rpc"
       ? createStashClient({
           transport: { kind: "rpc", binding: rpc, token: RPC_WRITE_TOKEN },
+          clientId: "rpc A!~",
         })
       : createStashClient({
           baseUrl: "https://stash.internal",
           token: RPC_WRITE_TOKEN,
+          clientId: "rpc A!~",
           fetch: async (input, init) => {
             const ctx = createExecutionContext();
             const response = await app.fetch(new Request(input, init), bindings, ctx);
@@ -939,12 +941,17 @@ describe.sequential("generic RPC proposal client parity", () => {
         headers: {
           "Content-Type": "application/json",
           "Idempotency-Key": "generic-rpc-proposal-create",
+          "X-Stash-Client-Id": "rpc A!~",
         },
         token: RPC_WRITE_TOKEN,
       }),
       expect.objectContaining({
         method: "POST",
         path: `/v1/stashes/${RPC_STASH}/proposals/${rpc.created.id}/approve`,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Stash-Client-Id": "rpc A!~",
+        },
         token: RPC_WRITE_TOKEN,
       }),
       expect.objectContaining({
@@ -954,6 +961,7 @@ describe.sequential("generic RPC proposal client parity", () => {
         token: RPC_WRITE_TOKEN,
       }),
     ]);
+    expect(rpc.rpcRequests[2]?.headers?.["X-Stash-Client-Id"]).toBeUndefined();
   });
 });
 

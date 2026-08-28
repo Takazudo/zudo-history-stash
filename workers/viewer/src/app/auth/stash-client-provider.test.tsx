@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ClientResult, MeResponse } from "@takazudo/zudo-history-stash";
+import { StashClientIdSchema } from "@takazudo/zudo-history-stash-core";
 import { useLayoutEffect, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { createFakeViewerClient } from "../../test/fake-viewer-client.js";
@@ -320,6 +321,54 @@ describe("createViewerStashClient", () => {
       </StashClientProvider>,
     );
     expect(screen.getByLabelText("Provider client id").textContent).toBe(firstId);
+  });
+
+  it.each([
+    { label: "emoji", value: "emoji🙂" },
+    { label: "NUL", value: "nul\0byte" },
+    { label: "leading whitespace", value: " leading" },
+    { label: "trailing whitespace", value: "trailing " },
+    { label: "overlength ASCII", value: "x".repeat(65) },
+  ])("regenerates a persisted $label identity and keeps the replacement stable", ({ value }) => {
+    const clientFactory = vi.fn<ViewerStashClientFactory>(() => createFakeViewerClient());
+    const store = clientIdStore(value);
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+
+    const first = render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={store}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    const replacement = screen.getByLabelText("Provider client id").textContent;
+    expect(replacement).not.toBe(value);
+    expect(StashClientIdSchema.safeParse(replacement).success).toBe(true);
+    expect(store.value).toBe(replacement);
+    expect(clientFactory.mock.calls.at(-1)?.[0].clientId).toBe(replacement);
+
+    first.unmount();
+    render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={store}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+    expect(screen.getByLabelText("Provider client id").textContent).toBe(replacement);
+    expect(clientFactory.mock.calls.at(-1)?.[0].clientId).toBe(replacement);
+  });
+
+  it("preserves a canonical persisted identity byte-for-byte", () => {
+    const clientFactory = vi.fn<ViewerStashClientFactory>(() => createFakeViewerClient());
+    const store = clientIdStore("tab A!~");
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, "zhs_admin");
+
+    render(
+      <StashClientProvider clientFactory={clientFactory} clientIdStore={store}>
+        <ProviderState />
+      </StashClientProvider>,
+    );
+
+    expect(screen.getByLabelText("Provider client id").textContent).toBe("tab A!~");
+    expect(store.setItem).not.toHaveBeenCalled();
+    expect(clientFactory.mock.calls.at(-1)?.[0].clientId).toBe("tab A!~");
   });
 
   it("keeps a denied tab store identity in memory across remounts without disabling auth", () => {

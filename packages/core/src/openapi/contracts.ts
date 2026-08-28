@@ -23,12 +23,13 @@ import {
   RollbackBody,
   RunGcBody,
   RotateTokenBody,
+  STASH_CLIENT_ID_HEADER,
 } from "../schemas.js";
 import type { RouteId, RouteTransport } from "../routes.js";
 import type { RESPONSE_SCHEMAS } from "./responses.js";
 import type { SAMPLES } from "./samples.js";
 
-export type RequestHeader = "Idempotency-Key" | "If-None-Match";
+export type RequestHeader = "Idempotency-Key" | "If-None-Match" | typeof STASH_CLIENT_ID_HEADER;
 export type ResponseHeader =
   | "ETag"
   | "X-Stash-Version"
@@ -137,6 +138,7 @@ export const ROUTE_CONTRACTS = {
     description: "Creates a new stash and returns its initial record.",
     principalNote: "admin; administrator only.",
     body: CreateStashBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("The newly created stash record.", "CreateStashResult", "CreateStashResult"),
     },
@@ -164,6 +166,7 @@ export const ROUTE_CONTRACTS = {
     description:
       "Soft-deletes a stash, revokes its tokens, and returns the end of its restoration window.",
     principalNote: "admin; administrator only.",
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response(
         "The soft-deleted stash and its restoration deadline.",
@@ -183,6 +186,7 @@ export const ROUTE_CONTRACTS = {
     summary: "Restore a stash",
     description: "Restores a soft-deleted stash during its restoration window.",
     principalNote: "admin; administrator only.",
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("The restored stash record.", "RestoreStashResult", "RestoreStashResult"),
     },
@@ -194,6 +198,7 @@ export const ROUTE_CONTRACTS = {
     description: "Creates a scoped stash token and returns the secret once.",
     principalNote: "admin; administrator only.",
     body: CreateTokenBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response(
         "The newly created token, including its secret.",
@@ -224,6 +229,7 @@ export const ROUTE_CONTRACTS = {
     description: "Creates one successor token and shortens the predecessor to a grace period.",
     principalNote: "admin; administrator only.",
     body: RotateTokenBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response(
         "The newly created successor token and the predecessor's shortened expiry.",
@@ -245,6 +251,7 @@ export const ROUTE_CONTRACTS = {
     summary: "Revoke a stash token",
     description: "Revokes a token so it can no longer authenticate.",
     principalNote: "admin; administrator only.",
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       204: noContentResponse("The token was revoked; the response has no body."),
     },
@@ -256,6 +263,7 @@ export const ROUTE_CONTRACTS = {
     description: "Appends an existing file history in one fenced batch.",
     principalNote: "admin; administrator only.",
     body: ImportBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       201: response(
         "The imported path and resulting head version.",
@@ -295,6 +303,7 @@ export const ROUTE_CONTRACTS = {
       "Runs one bounded garbage-collection page synchronously for either private R2 orphans or the idempotency ledger. An invocation safety budget may stop a page below maxObjects.",
     principalNote: "admin; administrator only.",
     body: RunGcBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("The completed garbage-collection run page.", "GcRunResult", "GcRunResult"),
     },
@@ -318,7 +327,7 @@ export const ROUTE_CONTRACTS = {
       "Stores an expiring candidate write against an exact base version. An Idempotency-Key can replay the same proposal creation safely.",
     principalNote: "write; administrator or a matching write stash token.",
     body: CreateProposalBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("The stored proposal record.", "ProposalRecord", "ProposalRecord", [
         "Idempotent-Replayed",
@@ -401,6 +410,7 @@ export const ROUTE_CONTRACTS = {
       "Applies an open, unexpired proposal only when the current head still equals its exact base. Re-approving an applied proposal returns its stored result.",
     principalNote: "write; administrator or a matching write stash token.",
     body: ApproveProposalBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response(
         "The applied proposal result.",
@@ -428,6 +438,7 @@ export const ROUTE_CONTRACTS = {
       "Rejects an open proposal with an optional reason. Re-rejecting it is idempotent; applied proposals are closed.",
     principalNote: "write; administrator or a matching write stash token.",
     body: RejectProposalBody,
+    requestHeaders: [STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("The rejected proposal record.", "ProposalRecord", "RejectedProposalRecord"),
     },
@@ -503,7 +514,7 @@ export const ROUTE_CONTRACTS = {
     description: "Compares and sets a file head, appending history when content changes.",
     principalNote: "write; administrator or a matching write stash token.",
     body: PutFileBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("A new version was appended.", "PutCreatedResult", "PutCreatedResult", [
         "Idempotent-Replayed",
@@ -536,7 +547,7 @@ export const ROUTE_CONTRACTS = {
     description: "Appends a tombstone version for a file using compare-and-set semantics.",
     principalNote: "write; administrator or a matching write stash token.",
     body: DeleteFileBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       200: response("A tombstone version was appended.", "DeleteResult", "DeleteResult", [
         "Idempotent-Replayed",
@@ -562,7 +573,7 @@ export const ROUTE_CONTRACTS = {
     description: "Restores a target version by appending a new rollback version.",
     principalNote: "write; administrator or a matching write stash token.",
     body: RollbackBody,
-    requestHeaders: ["Idempotency-Key"],
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
     responses: {
       201: response("A rollback version was appended.", "RollbackResult", "RollbackResult", [
         "Idempotent-Replayed",

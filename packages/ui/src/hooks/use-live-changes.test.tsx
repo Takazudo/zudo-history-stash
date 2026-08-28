@@ -73,7 +73,7 @@ async function flushMicrotasks(rounds = 8): Promise<void> {
 
 describe("useLiveChanges", () => {
   it("refreshes exactly once for ready and advances only from validated ready checkpoints", async () => {
-    const { fake, client } = fixture();
+    const { fake, client } = fixture("tab A!~");
     const seeded = await client
       .files("notes")
       .put(
@@ -84,7 +84,7 @@ describe("useLiveChanges", () => {
     expect(seeded.ok).toBe(true);
     const refresh = vi.fn<(request: LiveRefreshRequest) => void>();
     const rendered = renderHook(
-      () => useLiveChanges("notes", { enabled: true, clientId: "tab-a", refresh }),
+      () => useLiveChanges("notes", { enabled: true, clientId: "tab A!~", refresh }),
       { wrapper: providerFor(client) },
     );
 
@@ -107,7 +107,19 @@ describe("useLiveChanges", () => {
     expect(rendered.result.current.checkpoint).toBe(1);
 
     refresh.mockClear();
-    act(() => fake.events.emit(change(100, "tab-a")));
+    act(() => fake.events.emit(change(100, "tab A!~")));
+    await flushMicrotasks();
+    expect(refresh).not.toHaveBeenCalled();
+
+    const ownProposal = await client.proposals("notes").create(
+      {
+        path: "docs/own-proposal.txt",
+        body: "own proposal",
+        baseVersion: null,
+      },
+      { idempotencyKey: "own-proposal" },
+    );
+    expect(ownProposal.ok).toBe(true);
     await flushMicrotasks();
     expect(refresh).not.toHaveBeenCalled();
 
@@ -409,5 +421,14 @@ describe("useLiveChanges", () => {
 
     await waitFor(() => expect(rendered.result.current.status).toBe("polling"));
     expect(binding.request).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a separately supplied non-canonical suppression identity", () => {
+    const { client } = fixture();
+    expect(() =>
+      renderHook(() => useLiveChanges("notes", { enabled: true, clientId: "emoji🙂" }), {
+        wrapper: providerFor(client),
+      }),
+    ).toThrow("clientId must contain between 1 and 64 characters");
   });
 });

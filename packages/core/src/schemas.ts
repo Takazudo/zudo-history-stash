@@ -12,6 +12,19 @@ import { isWellFormedString, utf8ByteLength } from "./hash.js";
 import { validatePath, validateStashName } from "./paths.js";
 import type { StashEvent } from "./types.js";
 
+export const STASH_CLIENT_ID_HEADER = "X-Stash-Client-Id";
+export const STASH_CLIENT_ID_PATTERN = /^[!-~](?:[ -~]{0,62}[!-~])?$/;
+export const StashClientIdSchema = z
+  .string()
+  .regex(
+    STASH_CLIENT_ID_PATTERN,
+    "Client ID must be 1-64 printable ASCII characters without leading or trailing whitespace",
+  );
+
+export function isStashClientId(value: unknown): value is z.infer<typeof StashClientIdSchema> {
+  return StashClientIdSchema.safeParse(value).success;
+}
+
 const nonEmptyQueryInteger = (minimum: number) =>
   z.preprocess(
     (value) => (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? Number(value) : value),
@@ -254,7 +267,7 @@ export const StashChangeEventSchema = z.strictObject({
   path: z.string(),
   version: z.number().int().nonnegative(),
   kind: z.enum(["put", "delete", "rollback"]),
-  origin: z.string().nullable(),
+  origin: StashClientIdSchema.nullable(),
   createdAt: z.iso.datetime(),
 });
 export const StashProposalEventSchema = z.strictObject({
@@ -263,7 +276,7 @@ export const StashProposalEventSchema = z.strictObject({
   stash: z.string(),
   path: z.string(),
   status: z.enum(["open", "applied", "rejected", "expired"]),
-  origin: z.string().nullable(),
+  origin: StashClientIdSchema.nullable(),
 });
 export const StashReconnectEventSchema = z.strictObject({
   type: z.literal("reconnect"),
@@ -304,3 +317,4 @@ export type ParsedListProposalsQuery = z.output<typeof ListProposalsQuery>;
 export type ApproveProposalBody = z.infer<typeof ApproveProposalBody>;
 export type RejectProposalBody = z.infer<typeof RejectProposalBody>;
 export type ProposalDiffQuery = z.infer<typeof ProposalDiffQuery>;
+export type StashClientId = z.infer<typeof StashClientIdSchema>;

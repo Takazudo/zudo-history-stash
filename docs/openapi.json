@@ -2366,6 +2366,7 @@
           "origin": {
             "oneOf": [
               {
+                "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
                 "type": "string"
               },
               {
@@ -2437,6 +2438,7 @@
           "origin": {
             "oneOf": [
               {
+                "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
                 "type": "string"
               },
               {
@@ -2900,6 +2902,20 @@
       "post": {
         "description": "Runs one bounded garbage-collection page synchronously for either private R2 orphans or the idempotency ledger. An invocation safety budget may stop a page below maxObjects.\n\nadmin; administrator only.",
         "operationId": "runGc",
+        "parameters": [
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3375,6 +3391,20 @@
       "post": {
         "description": "Creates a new stash and returns its initial record.\n\nadmin; administrator only.",
         "operationId": "createStash",
+        "parameters": [
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3500,6 +3530,18 @@
             "name": "stash",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
               "type": "string"
             }
           }
@@ -3827,6 +3869,18 @@
             "schema": {
               "maxLength": 200,
               "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
               "type": "string"
             }
           }
@@ -4769,6 +4823,18 @@
               "minLength": 1,
               "type": "string"
             }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -5128,6 +5194,18 @@
             "name": "stash",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
               "type": "string"
             }
           }
@@ -5546,6 +5624,18 @@
               "minLength": 1,
               "type": "string"
             }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -5883,6 +5973,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -6188,6 +6290,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -6336,6 +6450,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -6431,6 +6557,18 @@
             "schema": {
               "maxLength": 200,
               "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
               "type": "string"
             }
           }
@@ -6696,6 +6834,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -6820,6 +6970,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -6881,6 +7043,18 @@
             "name": "id",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
               "type": "string"
             }
           }

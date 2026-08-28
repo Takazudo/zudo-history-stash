@@ -1,11 +1,28 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { ERROR_CODES } from "../errors.js";
-import { ROUTES, transportForRoute } from "../routes.js";
+import { ROUTES, routeAcceptsClientId, transportForRoute } from "../routes.js";
+import { STASH_CLIENT_ID_HEADER } from "../schemas.js";
 import { RESPONSE_SCHEMAS } from "./responses.js";
 import { SAMPLES } from "./samples.js";
 import { ROUTE_CONTRACTS } from "./contracts.js";
 
 const routeIds = ROUTES.map(({ id }) => id);
+const clientIdentityRouteIds = [
+  "createStash",
+  "deleteStash",
+  "restoreStash",
+  "createToken",
+  "rotateToken",
+  "revokeToken",
+  "importHistory",
+  "runGc",
+  "createProposal",
+  "approveProposal",
+  "rejectProposal",
+  "putFile",
+  "deleteFile",
+  "rollbackFile",
+] as const;
 
 describe("route contract coverage", () => {
   it("has exactly one contract for every route", () => {
@@ -13,10 +30,38 @@ describe("route contract coverage", () => {
     expect(new Set(Object.keys(ROUTE_CONTRACTS)).size).toBe(routeIds.length);
   });
 
+  it("preserves literal per-route types on the public contract registry", () => {
+    expectTypeOf(ROUTE_CONTRACTS.stashEvents.transport).toEqualTypeOf<"fetch-only">();
+    expectTypeOf<keyof typeof ROUTE_CONTRACTS.createProposal.responses>().toEqualTypeOf<201>();
+    expectTypeOf(ROUTE_CONTRACTS.createProposal.responses[201].schema).toEqualTypeOf<
+      keyof typeof RESPONSE_SCHEMAS | undefined
+    >();
+    expectTypeOf(ROUTE_CONTRACTS.createProposal.requestHeaders).toEqualTypeOf<
+      ["Idempotency-Key", "X-Stash-Client-Id"]
+    >();
+  });
+
   it("keeps wildcard path metadata aligned with the route templates", () => {
     for (const route of ROUTES) {
       const contract = ROUTE_CONTRACTS[route.id];
       expect(contract.wildcardPath, route.id).toBe(route.template.includes("*path"));
+    }
+  });
+
+  it("declares client identity on exactly the mutations stamped by the SDK", () => {
+    expect(ROUTES.filter(routeAcceptsClientId).map(({ id }) => id)).toEqual(clientIdentityRouteIds);
+    for (const route of ROUTES) {
+      const contract = ROUTE_CONTRACTS[route.id];
+      const headers: readonly string[] =
+        "requestHeaders" in contract ? contract.requestHeaders : [];
+      const expected = clientIdentityRouteIds.includes(
+        route.id as (typeof clientIdentityRouteIds)[number],
+      );
+      expect(headers.includes(STASH_CLIENT_ID_HEADER), route.id).toBe(expected);
+      expect(
+        headers.filter((header) => header === STASH_CLIENT_ID_HEADER),
+        route.id,
+      ).toHaveLength(expected ? 1 : 0);
     }
   });
 
@@ -90,7 +135,7 @@ describe("route contract coverage", () => {
   it("declares the idempotency request and replay headers on every file write", () => {
     for (const routeId of ["putFile", "deleteFile", "rollbackFile"] as const) {
       const contract = ROUTE_CONTRACTS[routeId];
-      expect(contract.requestHeaders, routeId).toEqual(["Idempotency-Key"]);
+      expect(contract.requestHeaders, routeId).toEqual(["Idempotency-Key", STASH_CLIENT_ID_HEADER]);
       for (const response of Object.values(contract.responses)) {
         expect(response?.headers, routeId).toContain("Idempotent-Replayed");
       }
@@ -98,7 +143,10 @@ describe("route contract coverage", () => {
   });
 
   it("declares proposal-create replay metadata and stale approval current metadata", () => {
-    expect(ROUTE_CONTRACTS.createProposal.requestHeaders).toEqual(["Idempotency-Key"]);
+    expect(ROUTE_CONTRACTS.createProposal.requestHeaders).toEqual([
+      "Idempotency-Key",
+      STASH_CLIENT_ID_HEADER,
+    ]);
     expect(ROUTE_CONTRACTS.createProposal.responses[201]?.headers).toEqual(["Idempotent-Replayed"]);
     expect(
       ROUTE_CONTRACTS.approveProposal.errors.find(({ code }) => code === "stale"),

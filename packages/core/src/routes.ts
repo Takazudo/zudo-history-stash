@@ -128,6 +128,11 @@ export type RouteId = Route["id"];
 export type FetchOnlyRouteId = Extract<Route, { transport: "fetch-only" }>["id"];
 export type RpcRouteId = Exclude<RouteId, FetchOnlyRouteId>;
 
+/** Whether the SDK stamps a stable client identity on this route. */
+export function routeAcceptsClientId(route: Pick<Route, "method" | "principal">): boolean {
+  return route.method !== "GET" && route.principal !== "read";
+}
+
 /** Resolves the optional transport marker to its semantic default. */
 export function transportForRoute(routeId: RouteId): RouteTransport {
   const route = ROUTES.find((candidate) => candidate.id === routeId);
