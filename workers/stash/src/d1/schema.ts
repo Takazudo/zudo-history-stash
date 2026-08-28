@@ -130,6 +130,14 @@ export interface UploadPartRow {
   recorded_at: number;
 }
 
+export interface UploadPartWriteRow {
+  session_id: string;
+  generation: number;
+  part_number: number;
+  owner: string;
+  started_at: number;
+}
+
 export interface UploadObjectRow {
   object_key: string;
   session_id: string;
@@ -212,6 +220,7 @@ export const TABLE_NAMES = [
   "upload_sessions",
   "upload_staged_bytes",
   "upload_parts",
+  "upload_part_writes",
   "upload_objects",
 ] as const;
 
@@ -354,6 +363,7 @@ export const TABLE_COLUMNS = {
     "created_at",
   ],
   upload_parts: ["session_id", "generation", "part_number", "size_bytes", "r2_etag", "recorded_at"],
+  upload_part_writes: ["session_id", "generation", "part_number", "owner", "started_at"],
   upload_objects: [
     "object_key",
     "session_id",
@@ -378,5 +388,6 @@ export interface DatabaseSchema {
   upload_sessions: UploadSessionRow;
   upload_staged_bytes: UploadStagedBytesRow;
   upload_parts: UploadPartRow;
+  upload_part_writes: UploadPartWriteRow;
   upload_objects: UploadObjectRow;
 }

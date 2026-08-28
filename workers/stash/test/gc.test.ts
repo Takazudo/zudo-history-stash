@@ -436,7 +436,7 @@ describe("ledger collection", () => {
       expect(await ledgerKeys()).toEqual([]);
       expect(calls.d1BatchSizes).toEqual([deleteStatements + 3, 4]);
       expect(calls.d1).toBe(budget.used);
-      expect(budget.used).toBe(6);
+      expect(budget.used).toBe(7);
     },
   );
 
@@ -545,7 +545,7 @@ describe("ledger collection", () => {
     expect(orphanRun).toMatchObject({ scanned: 24, eligible: 24, deleted: 24 });
     expect(ledgerRun).toMatchObject({ scanned: 500, eligible: 500, deleted: 500 });
     expect(calls).toEqual({
-      d1: 11,
+      d1: 12,
       d1BatchSizes: [4, 9, 4],
       list: 1,
       head: 24,
