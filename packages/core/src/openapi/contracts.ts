@@ -23,12 +23,13 @@ import {
   RollbackBody,
   RunGcBody,
   RotateTokenBody,
+  STASH_CLIENT_ID_HEADER,
 } from "../schemas.js";
-import type { RouteId, RouteTransport } from "../routes.js";
+import { ROUTES, routeAcceptsClientId, type RouteId, type RouteTransport } from "../routes.js";
 import type { RESPONSE_SCHEMAS } from "./responses.js";
 import type { SAMPLES } from "./samples.js";
 
-export type RequestHeader = "Idempotency-Key" | "If-None-Match";
+export type RequestHeader = "Idempotency-Key" | "If-None-Match" | typeof STASH_CLIENT_ID_HEADER;
 export type ResponseHeader =
   | "ETag"
   | "X-Stash-Version"
@@ -100,7 +101,7 @@ const error = (
 
 const rateLimited = (): RouteError => error("rate-limited", false, undefined, ["Retry-After"]);
 
-export const ROUTE_CONTRACTS = {
+const ROUTE_CONTRACT_BASES = {
   health: {
     summary: "Health check",
     description: "Returns the service health marker without requiring authentication.",
@@ -653,3 +654,17 @@ export const ROUTE_CONTRACTS = {
     wildcardPath: false,
   },
 } as const satisfies Record<RouteId, RouteContract>;
+
+export const ROUTE_CONTRACTS = Object.fromEntries(
+  ROUTES.map((route) => {
+    const contract: RouteContract = ROUTE_CONTRACT_BASES[route.id];
+    if (!routeAcceptsClientId(route)) return [route.id, contract];
+    return [
+      route.id,
+      {
+        ...contract,
+        requestHeaders: [...(contract.requestHeaders ?? []), STASH_CLIENT_ID_HEADER],
+      },
+    ];
+  }),
+) as Record<RouteId, RouteContract>;

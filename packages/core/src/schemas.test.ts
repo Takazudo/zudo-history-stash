@@ -22,7 +22,9 @@ import {
   RejectProposalBody,
   RunGcBody,
   RotateTokenBody,
+  STASH_CLIENT_ID_HEADER,
   StashChangeEventSchema,
+  StashClientIdSchema,
   StashEventSchema,
   StashProposalEventSchema,
   StashReadyEventSchema,
@@ -226,6 +228,34 @@ describe("strict request and query schemas", () => {
   });
 });
 
+describe("StashClientIdSchema", () => {
+  it("accepts only canonical IDs that round-trip unchanged through Fetch headers", () => {
+    for (const value of ["a", "tab A!~", "x".repeat(64)]) {
+      expect(StashClientIdSchema.parse(value)).toBe(value);
+
+      const headers = new Headers({ [STASH_CLIENT_ID_HEADER]: value });
+      const request = new Request("https://stash.example/v1/stashes/demo", { headers });
+      expect(request.headers.get(STASH_CLIENT_ID_HEADER)).toBe(value);
+    }
+  });
+
+  it("rejects values that are non-canonical or unsafe at a Fetch boundary", () => {
+    for (const value of [
+      "",
+      "x".repeat(65),
+      " leading",
+      "trailing ",
+      "internal\ttab",
+      "line\nbreak",
+      "nul\0byte",
+      "delete\u007f",
+      "emoji🙂",
+    ]) {
+      expect(StashClientIdSchema.safeParse(value).success, JSON.stringify(value)).toBe(false);
+    }
+  });
+});
+
 describe("StashEventSchema", () => {
   const ready = { type: "ready", head: 7, checkpoint: 6 } as const;
   const change = {
@@ -272,6 +302,7 @@ describe("StashEventSchema", () => {
       { ...change, checkpoint: 6 },
       { ...proposal, reason: "shutdown" },
       { ...reconnect, origin: null },
+      { ...change, origin: "emoji🙂" },
       { type: "heartbeat" },
     ]) {
       expect(StashEventSchema.safeParse(value).success).toBe(false);

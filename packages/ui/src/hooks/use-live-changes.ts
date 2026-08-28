@@ -1,4 +1,5 @@
 import type { StashEventStream, StashLiveStatus } from "@takazudo/zudo-history-stash";
+import { isStashClientId } from "@takazudo/zudo-history-stash-core";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStashClient } from "../provider/hooks.js";
 import { createRefreshScheduler } from "./refresh-scheduler.js";
@@ -271,6 +272,12 @@ export function useLiveChanges(
       if (activeStreamRef.current?.target === target) activeStreamRef.current = null;
     };
   }, [client, enabled, stash, target, visible]);
+
+  if (clientId !== undefined && !isStashClientId(clientId)) {
+    throw new TypeError(
+      "clientId must contain between 1 and 64 characters and use printable ASCII without leading or trailing whitespace",
+    );
+  }
 
   return {
     status: enabled && visible ? current.status : "off",

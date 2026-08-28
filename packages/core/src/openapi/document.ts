@@ -2,6 +2,7 @@ import type { ZodType } from "zod";
 import { statusForCode } from "../errors.js";
 import { ROUTES } from "../routes.js";
 import type { RoutePrincipal } from "../routes.js";
+import { STASH_CLIENT_ID_HEADER, STASH_CLIENT_ID_PATTERN } from "../schemas.js";
 import { ROUTE_CONTRACTS } from "./contracts.js";
 import type { RequestHeader, ResponseHeader, RouteContract } from "./contracts.js";
 import { projectRequestSchema, projectResponseSchemas } from "./project.js";
@@ -81,6 +82,21 @@ function queryParameters(schema: ZodType | undefined): OpenApiObject[] {
 }
 
 function requestHeaderParameter(name: RequestHeader): OpenApiObject {
+  if (name === STASH_CLIENT_ID_HEADER) {
+    return {
+      name,
+      in: "header",
+      required: false,
+      description:
+        "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+      schema: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+        pattern: STASH_CLIENT_ID_PATTERN.source,
+      },
+    };
+  }
   return {
     name,
     in: "header",

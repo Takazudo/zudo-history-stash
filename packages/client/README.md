@@ -13,6 +13,7 @@ import { createStashClient } from "@takazudo/zudo-history-stash";
 const client = createStashClient({
   baseUrl: "https://stash.example.com",
   token: "zhs_…",
+  clientId: "viewer-tab-7",
 });
 
 const file = await client.files("docs").get("README.md");
@@ -62,6 +63,12 @@ const client = createStashClient({
 Write tokens are full-stash credentials and should not be embedded in browser code. Use a read
 token for browser-direct consumers.
 
+`clientId` is an optional stable mutation origin used to suppress a caller's own live-update
+echoes. It must be 1–64 printable ASCII characters with no leading or trailing whitespace; values
+matching `^[!-~](?:[ -~]{0,62}[!-~])?$` round-trip unchanged through Fetch headers. The SDK sends
+`X-Stash-Client-Id` on non-GET, non-read-principal mutation operations over both fetch and generic
+RPC transports, and never sends it on reads.
+
 ## In-memory testing fake
 
 The `./testing` subpath provides a deliberately narrow, environment-neutral fetch fake. It is for
@@ -88,12 +95,34 @@ direct fixture setup and assertions. `fake.reset()` clears those tables without 
 state object. Pass `now` to control timestamps and token expiry; pass `rateLimit` to inject
 Cloudflare-shaped capability/key verdicts (rejections fail open, matching the Worker).
 
-The fake implements `GET /v1/me`, stash list/create/detail, token create/list/rotate/revoke, and the
-stash-scoped file list, file read/write/delete/rollback, history, changes, and stored/candidate diff
-routes. Health, import, cross-stash changes, fetch-only stash events, and unknown routes return
-`501 not-implemented`.
+The fake implements the SDK route surface, including proposals and the authenticated fetch-only
+stash event stream, except for health, import, and cross-stash changes. Those unsupported routes
+and unknown routes return `501 not-implemented`.
 `await fake.mintToken()` remains available for direct fixture setup, accepts `expiresAt` or
 `ttlSeconds`, and uses the same hash-only storage path as the token-management routes.
+
+Live tests can drive the stable `fake.events` controller directly:
+
+```ts
+const stream = client.files("docs").events();
+const iterator = stream[Symbol.asyncIterator]();
+await iterator.next(); // authoritative ready event
+
+fake.events.emit({
+  type: "proposal",
+  proposalId: "prp_1787875200000deadbeef",
+  stash: "docs",
+  path: "README.md",
+  status: "open",
+  origin: null,
+});
+const proposal = await iterator.next();
+
+fake.events.rotate("docs", "lifetime");
+stream.close();
+```
+
+The controller also provides `close`, `error`, and `subscriberCount` for lifecycle assertions.
 
 The same exported conformance runner is used to detect drift between the fake and the real Worker:
 

@@ -1,11 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { ROUTES } from "../routes.js";
+import { ROUTES, routeAcceptsClientId } from "../routes.js";
+import { STASH_CLIENT_ID_HEADER, STASH_CLIENT_ID_PATTERN } from "../schemas.js";
 import { RESPONSE_SCHEMAS } from "./responses.js";
 import { SAMPLES } from "./samples.js";
 import { ROUTE_CONTRACTS } from "./contracts.js";
 import { buildOpenApiDocument } from "./document.js";
 
 type ObjectValue = Record<string, unknown>;
+
+const clientIdentityRouteIds = [
+  "createStash",
+  "deleteStash",
+  "restoreStash",
+  "createToken",
+  "rotateToken",
+  "revokeToken",
+  "importHistory",
+  "runGc",
+  "createProposal",
+  "approveProposal",
+  "rejectProposal",
+  "putFile",
+  "deleteFile",
+  "rollbackFile",
+] as const;
 
 function operations(document: ReturnType<typeof buildOpenApiDocument>): ObjectValue[] {
   return Object.values(document.paths).flatMap((path) => Object.values(path));
@@ -44,6 +62,37 @@ describe("buildOpenApiDocument", () => {
       expect(operation?.description, route.id).toContain(ROUTE_CONTRACTS[route.id].principalNote);
     }
     expect(all.find((operation) => operation.operationId === "health")?.security).toEqual([]);
+  });
+
+  it("documents the canonical client identity on exactly mutation operations", () => {
+    const all = operations(buildOpenApiDocument({ version: "test" }));
+    const withIdentity = all.filter((operation) =>
+      ((operation.parameters ?? []) as ObjectValue[]).some(
+        (parameter) => parameter.in === "header" && parameter.name === STASH_CLIENT_ID_HEADER,
+      ),
+    );
+    expect(withIdentity.map(({ operationId }) => operationId)).toEqual(clientIdentityRouteIds);
+    expect(ROUTES.filter(routeAcceptsClientId).map(({ id }) => id)).toEqual(clientIdentityRouteIds);
+    for (const route of ROUTES) {
+      const operation = all.find((candidate) => candidate.operationId === route.id);
+      const parameters = (operation?.parameters ?? []) as ObjectValue[];
+      const identity = parameters.filter(
+        (parameter) => parameter.in === "header" && parameter.name === STASH_CLIENT_ID_HEADER,
+      );
+      expect(identity, route.id).toHaveLength(
+        clientIdentityRouteIds.includes(route.id as (typeof clientIdentityRouteIds)[number])
+          ? 1
+          : 0,
+      );
+      if (identity.length === 1) {
+        expect(identity[0]?.schema).toEqual({
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          pattern: STASH_CLIENT_ID_PATTERN.source,
+        });
+      }
+    }
   });
 
   it("marks all seven wildcard operations and warns about client generation", () => {

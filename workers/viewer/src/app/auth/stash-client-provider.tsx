@@ -6,6 +6,7 @@ import {
   type StashClient,
   type StashFetch,
 } from "@takazudo/zudo-history-stash";
+import { isStashClientId } from "@takazudo/zudo-history-stash-core";
 import { clearWorkbenchDraftsForCredentialChange } from "@takazudo/zudo-history-stash-ui";
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { clearToken as clearStoredToken, getToken, setToken as storeToken } from "./token-store.js";
@@ -48,18 +49,12 @@ const PERSISTED_DRAFT_WARNING =
 const fallbackClientIds = new WeakMap<object, string>();
 let inaccessibleStoreClientId: string | null = null;
 
-function validClientId(value: string | null): value is string {
-  return (
-    value !== null && [...value].length >= 1 && [...value].length <= 64 && !/[\r\n]/u.test(value)
-  );
-}
-
 function tabClientId(injectedStore?: ViewerClientIdStore): string {
   let store: ViewerClientIdStore | null = null;
   try {
     store = injectedStore ?? sessionStorage;
     const stored = store.getItem(VIEWER_CLIENT_ID_STORAGE_KEY);
-    if (validClientId(stored)) return stored;
+    if (isStashClientId(stored)) return stored;
   } catch {
     // The stable in-memory fallback below keeps authentication usable when storage is denied.
   }

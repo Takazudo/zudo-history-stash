@@ -1,4 +1,8 @@
-import { StashEventSchema, type StashEvent } from "@takazudo/zudo-history-stash-core";
+import {
+  STASH_CLIENT_ID_HEADER,
+  StashEventSchema,
+  type StashEvent,
+} from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../../src/app.js";
 import type { Env } from "../../src/env.js";
@@ -95,7 +99,7 @@ async function mutation(
 ): Promise<Response> {
   const headers = new Headers({ ...bearer("test-admin"), "Content-Type": "application/json" });
   if (options.key !== undefined) headers.set("Idempotency-Key", options.key);
-  if (options.clientId !== undefined) headers.set("X-Stash-Client-Id", options.clientId);
+  if (options.clientId !== undefined) headers.set(STASH_CLIENT_ID_HEADER, options.clientId);
   return request(
     app,
     `${BASE}${path}`,
@@ -110,14 +114,33 @@ beforeEach(async () => {
 });
 
 describe("event publication", () => {
-  it("accepts only bounded client origins", () => {
+  it("accepts only canonical client origins after the actual Request boundary", () => {
     expect(
-      eventOrigin(new Request("https://x", { headers: { "X-Stash-Client-Id": "tab-a" } })),
-    ).toBe("tab-a");
+      eventOrigin(new Request("https://x", { headers: { [STASH_CLIENT_ID_HEADER]: "tab A!~" } })),
+    ).toBe("tab A!~");
     expect(eventOrigin(new Request("https://x"))).toBeNull();
     expect(
-      eventOrigin(new Request("https://x", { headers: { "X-Stash-Client-Id": "x".repeat(65) } })),
+      eventOrigin(
+        new Request("https://x", { headers: { [STASH_CLIENT_ID_HEADER]: "x".repeat(65) } }),
+      ),
     ).toBeNull();
+    expect(
+      eventOrigin(
+        new Request("https://x", { headers: { [STASH_CLIENT_ID_HEADER]: "internal\ttab" } }),
+      ),
+    ).toBeNull();
+
+    const normalized = new Request("https://x", {
+      headers: { [STASH_CLIENT_ID_HEADER]: " edge-space " },
+    });
+    expect(normalized.headers.get(STASH_CLIENT_ID_HEADER)).toBe("edge-space");
+    expect(eventOrigin(normalized)).toBe("edge-space");
+    expect(
+      () =>
+        new Request("https://x", {
+          headers: { [STASH_CLIENT_ID_HEADER]: "nul\0byte" },
+        }),
+    ).toThrow(TypeError);
   });
 
   it("publishes only new file versions and preserves exact ids and origin", async () => {
@@ -126,7 +149,7 @@ describe("event publication", () => {
       bindings,
       "/files/a.txt",
       { body: "one", expectedVersion: null },
-      { method: "PUT", key: "put-one", clientId: "tab-a" },
+      { method: "PUT", key: "put-one", clientId: "tab A!~" },
     );
     const putResult = await put.json<{ changeId: number; createdAt: string }>();
     expect(events).toEqual([
@@ -137,7 +160,7 @@ describe("event publication", () => {
         path: "a.txt",
         version: 1,
         kind: "put",
-        origin: "tab-a",
+        origin: "tab A!~",
         createdAt: putResult.createdAt,
       }),
     ]);

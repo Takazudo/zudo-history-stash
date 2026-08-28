@@ -26,11 +26,13 @@ import {
   RejectProposalBody,
   RollbackBody,
   RunGcBody,
+  STASH_CLIENT_ID_HEADER,
   StashEventSchema,
   canonicalJson,
   computeDiff,
   formatEtag,
   ifNoneMatchMatches,
+  isStashClientId,
   isWellFormedString,
   requestHashInput,
   sha256Hex,
@@ -695,16 +697,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   });
 
   const requestOrigin = (request: Request): string | null => {
-    const clientId = request.headers.get("X-Stash-Client-Id");
-    if (
-      clientId === null ||
-      [...clientId].length < 1 ||
-      [...clientId].length > 64 ||
-      /[\r\n]/.test(clientId)
-    ) {
-      return null;
-    }
-    return clientId;
+    const clientId = request.headers.get(STASH_CLIENT_ID_HEADER);
+    return isStashClientId(clientId) ? clientId : null;
   };
   const bodyFor = (version: FakeVersionRow): string => {
     if (version.hash === null) return "";
