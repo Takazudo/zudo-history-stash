@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkExamples, ExampleCheckError } from "./check-examples.mjs";
@@ -307,6 +307,45 @@ test("tsconfig coverage and TypeScript diagnostics are part of the checker bound
       /@takazudo\/zudo-history-stash must resolve only to packages\/client\/dist\/index\.d\.ts/,
     );
   });
+
+  await t.test("relative package implementation import", async (t) => {
+    const value = await fixture(t);
+    const sourceImport = relative(
+      value.examplesRoot,
+      resolve(REPOSITORY_ROOT, "packages/core/src/index.js"),
+    ).replaceAll("\\", "/");
+    const source = `import { ROUTES } from "${sourceImport}";\nexport const fixtureValue = ROUTES.length;\n`;
+    await writeFile(join(value.examplesRoot, value.sourceName), source);
+    await writeFile(join(value.en, "fixture.mdx"), mdx(value.id, "ts", source));
+    await expectDiagnostic(
+      value.options,
+      /implementation source outside examples-check is forbidden: packages\/core\/src\/index\.ts/,
+    );
+  });
+
+  await t.test("unused unexpected paths key", async (t) => {
+    const value = await fixture(t);
+    const config = JSON.parse(await readFile(value.tsconfigPath, "utf8"));
+    config.compilerOptions.paths["@unexpected/unused"] = [
+      resolve(REPOSITORY_ROOT, "packages/core/dist/index.d.ts"),
+    ];
+    await writeFile(value.tsconfigPath, `${JSON.stringify(config, null, 2)}\n`);
+    await expectDiagnostic(value.options, /unexpected paths key @unexpected\/unused/);
+  });
+
+  await t.test("used unpublished paths key", async (t) => {
+    const value = await fixture(t);
+    const config = JSON.parse(await readFile(value.tsconfigPath, "utf8"));
+    config.compilerOptions.paths["@internal/core"] = [
+      resolve(REPOSITORY_ROOT, "packages/core/dist/index.d.ts"),
+    ];
+    await writeFile(value.tsconfigPath, `${JSON.stringify(config, null, 2)}\n`);
+    const source =
+      'import { ROUTES } from "@internal/core";\nexport const fixtureValue = ROUTES.length;\n';
+    await writeFile(join(value.examplesRoot, value.sourceName), source);
+    await writeFile(join(value.en, "fixture.mdx"), mdx(value.id, "ts", source));
+    await expectDiagnostic(value.options, /unexpected paths key @internal\/core/);
+  });
 });
 
 test("raw and hand-written include forms cannot evade the inventory", async (t) => {
@@ -319,8 +358,43 @@ test("raw and hand-written include forms cannot evade the inventory", async (t) 
       /unsupported code\/include markup/,
     ],
     [
-      "embedded include",
+      "decorated include at line start",
+      '<CodeInclude source="sentinel.ts" />\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "decorated include after wrapper content",
       '<Aside><CodeInclude source="sentinel.ts" /></Aside>\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "exact Include at line start",
+      '<Include source="sentinel.ts" />\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "exact Snippet at line start",
+      '<Snippet source="sentinel.ts" />\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "exact Source at line start",
+      '<Source source="sentinel.ts" />\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "exact Include after wrapper content",
+      '<Aside><Include source="sentinel.ts" /></Aside>\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "exact Snippet after wrapper content",
+      '<Aside><Snippet source="sentinel.ts" /></Aside>\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "exact Source after wrapper content",
+      '<Aside><Source source="sentinel.ts" /></Aside>\n',
       /unsupported code\/include markup/,
     ],
     [
@@ -336,6 +410,15 @@ test("raw and hand-written include forms cannot evade the inventory", async (t) 
       await expectDiagnostic(value.options, diagnostic);
     });
   }
+});
+
+test("ordinary source HTML and Resource components do not look like code includes", async (t) => {
+  const value = await fixture(t);
+  await writeFile(
+    join(value.en, "ordinary-tags.mdx"),
+    '<picture><source src="fixture.webp" /></picture>\n\n<Resource />\n',
+  );
+  assert.equal((await checkExamples(value.options)).examples, 1);
 });
 
 test("symlink sources are rejected and generated Claude paths are excluded explicitly", async (t) => {

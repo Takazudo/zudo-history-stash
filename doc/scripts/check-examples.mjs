@@ -11,8 +11,9 @@ const TYPESCRIPT_FENCE_PATTERN = /^\s*(`{3,}|~{3,})\s*(ts|typescript|tsx)(?:\s+.
 const NESTED_TYPESCRIPT_FENCE_PATTERN =
   /^\s*(?:>\s*|(?:[-+*]|\d+[.)])\s+)+(`{3,}|~{3,})\s*(ts|typescript|tsx)(?:\s+.*)?$/i;
 const ANY_FENCE_PATTERN = /^\s*(`{3,}|~{3,})([^\s]*)?.*$/;
-const BYPASS_PATTERN =
-  /<\/?(?:pre|code)\b|<\/?(?:SourceCode|CodeSource|[A-Za-z][A-Za-z0-9]*(?:Include|Snippet|Source)[A-Za-z0-9]*)\b/i;
+const RAW_CODE_MARKUP_PATTERN = /<\/?(?:pre|code)\b/i;
+const INCLUDE_COMPONENT_PATTERN =
+  /<\/?(?=[A-Z])(?:[A-Za-z0-9]*(?:Include|Snippet|Source)[A-Za-z0-9]*)\b/;
 
 export class ExampleCheckError extends Error {
   constructor(diagnostics) {
@@ -121,7 +122,7 @@ function parseMdx(path, body, locale, diagnostics) {
       continue;
     }
 
-    if (BYPASS_PATTERN.test(line)) {
+    if (RAW_CODE_MARKUP_PATTERN.test(line) || INCLUDE_COMPONENT_PATTERN.test(line)) {
       addDiagnostic(
         diagnostics,
         `${locale}: unsupported code/include markup at ${path}:${index + 1}`,
@@ -280,6 +281,14 @@ async function validateTsconfig(repositoryRoot, tsconfigPath, examplePaths, diag
     ["@takazudo/zudo-history-stash-core/openapi", "packages/core/dist/openapi/index.d.ts"],
     ["@takazudo/zudo-history-stash-ui", "packages/ui/dist/index.d.ts"],
   ]);
+  for (const specifier of Object.keys(parsed.options.paths ?? {})) {
+    if (!requiredPaths.has(specifier)) {
+      addDiagnostic(
+        diagnostics,
+        `tsconfig: unexpected paths key ${specifier}; only the five published package specifiers are allowed`,
+      );
+    }
+  }
   for (const [specifier, suffix] of requiredPaths) {
     const targets = parsed.options.paths?.[specifier];
     const resolvedTarget =
@@ -298,6 +307,17 @@ async function validateTsconfig(repositoryRoot, tsconfigPath, examplePaths, diag
     }
   }
   const program = ts.createProgram({ rootNames: parsed.fileNames, options: parsed.options });
+  const allowedImplementationFiles = new Set(examplePaths.map((path) => resolve(path)));
+  for (const sourceFile of program.getSourceFiles()) {
+    const path = resolve(sourceFile.fileName);
+    if (!sourceFile.isDeclarationFile && !allowedImplementationFiles.has(path)) {
+      const repositoryPath = relative(repositoryRoot, path).replaceAll("\\", "/");
+      addDiagnostic(
+        diagnostics,
+        `typecheck: implementation source outside examples-check is forbidden: ${repositoryPath}`,
+      );
+    }
+  }
   for (const error of ts.getPreEmitDiagnostics(program)) {
     const location =
       error.file === undefined || error.start === undefined
