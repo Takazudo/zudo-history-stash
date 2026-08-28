@@ -1,0 +1,109 @@
+---
+title: Troubleshooting
+description: Diagnose authentication, conflict, live-update, proxy, and storage failures without leaking credentials or hidden resources.
+sidebar_position: 106
+category: guides
+---
+
+Start with the response status, stable error `code`, sanitized time, and the operation being
+attempted. Do not capture `Authorization`, document bodies, R2 keys or generations, user-authored
+content, or bearer tokens. The [reference landing page](../reference/index.mdx) is the stable entry
+point for the exhaustive route and error contract.
+
+## Authentication and visibility
+
+### `401 unauthorized`
+
+**Symptom:** `/v1/me` or another protected request rejects the principal.
+
+**Likely cause:** the bearer credential is malformed, expired, revoked, or absent.
+
+**Safe diagnostic:** validate the exact header path and `/v1/me` outcome without printing the
+token. Confirm the Viewer proxy received `authorization`; do not move the token into a URL.
+
+**Recovery:** mint or obtain a least-privilege replacement through an authorized operator. Treat an
+automatic `401` logout as a credential boundary and clear the tab's site data if draft/token cleanup
+was not confirmed.
+
+### `403 scope`
+
+**Symptom:** authentication succeeds, but a stash or capability is forbidden.
+
+**Likely cause:** the valid principal lacks the needed read, write, admin, or stash scope.
+
+**Safe diagnostic:** inspect the resolved `/v1/me` capability and authorized stash set. Hidden
+buttons, a navigable route, outer Access, `clientId`, and proposal authorship do not grant scope.
+
+**Recovery:** use an appropriately scoped credential or ask an administrator to change access. Do
+not escalate a browser token to admin merely to bypass a control.
+
+### concealed or missing `404`
+
+`not-found`, `file-deleted`, and `version-not-found` can all appear around unavailable resources.
+Check the request path and version using a principal already authorized for that stash. Do not probe
+with different credentials or describe response differences as a way to discover a concealed
+stash. Restore a deleted resource only through an authorized workflow.
+
+## State and replay conflicts
+
+### `409 stale`
+
+The loaded compare-and-set head no longer matches. Preserve dirty draft text and its pinned
+comparison, fetch the authoritative head, compare, and deliberately reapply the change. Never
+silently merge, rebase, or blind-retry the mutation. The same fence refuses approval of a proposal
+whose base is no longer current.
+
+Other `409` operation states need their own recovery:
+
+- `exists` and `already-deleted`: inspect the authoritative resource state before choosing a new
+  create/delete/restore action.
+- `gc-busy`: let the active lease finish and inspect GC history before a later bounded retry.
+- `already-rotated`: use the recorded successor workflow; do not rotate the predecessor again.
+- `token-expired`: the requested token-management operation has crossed its state boundary. This is
+  distinct from an expired bearer principal authenticating as `401 unauthorized`.
+- `proposal-expired` and `proposal-closed`: reload the immutable proposal record. Expired, rejected,
+  and applied proposals cannot be reopened or automatically rebased.
+
+### `422 idempotency-key-reused`
+
+The same idempotency key identified a different canonical request. After an uncertain response,
+first replay the exact same request and key; do not invent another write until the authoritative
+state is known. A deliberate new mutation needs a new key. This response is `422`, not `409`.
+
+`rollback-target-tombstone` is also `422`: select a live historical body or use the explicit restore
+flow rather than treating a tombstone as writable content.
+
+## Input and traffic limits
+
+- `400 validation`, `invalid-path`, or `body-not-well-formed`: correct the documented query, path,
+  media type, or JSON shape. Retrying identical invalid input cannot help.
+- `413 payload-too-large`: reduce the request to the documented byte limit; compression or a larger
+  client timeout does not change the accepted decoded payload contract.
+- `429 rate-limited`: honor `Retry-After`, apply jittered coordination, and avoid a retry loop. Read,
+  write, and diff routes have different limiter classifications.
+
+## Live status is degraded
+
+`Reconnecting` means the event stream is recovering. `Polling` means authoritative refreshes are
+continuing without a healthy stream. `Off` means the live owner is unavailable or disabled. On
+focus or visibility changes, allow the Viewer to reconcile through the change feed/refetch before
+assuming a missed event. Event path/origin values are hints, not committed state.
+
+If degradation persists, check authentication lifetime, response streaming, buffering proxies,
+and downstream cancellation. Do not solve an SSE transport problem by lengthening credentials or
+opening one stream per widget.
+
+## Viewer proxy or origin fails
+
+Verify the selected environment as a complete configuration. A non-empty trimmed
+`STASH_BASE_URL` wins; otherwise the `STASH` service binding is required. Confirm repeated
+environment bindings, `/api/v1/*` routing, Viewer asset routing, the intended origin/CORS policy,
+and unbuffered stream transport before rotating any credential. Cookies and arbitrary headers are
+not part of the proxy contract.
+
+## `500 internal`
+
+Retain a sanitized timestamp, request target shape, deployed revision, and stable error code. Remove
+authorization, full request/response bodies, R2 identifiers, and user content unless a deliberately
+minimized sample is essential and approved. Retry only after identifying a transient boundary or a
+deployed fix; repeated blind mutations can create ambiguity even when the client saw an error.

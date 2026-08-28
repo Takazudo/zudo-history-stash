@@ -40,6 +40,53 @@ self-skip green while either secret is absent. Fork PRs skip before any secret-b
 Optional `STASH_SMOKE_BASE_URL` and `VIEWER_SMOKE_BASE_URL` variables enable the existing
 post-deploy production smoke URLs; they are not PR-preview prerequisites.
 
+## Documentation site
+
+The production documentation Worker is `zudo-history-stash-docs`. The committed
+`doc/wrangler.toml` serves Workers Static Assets at
+`https://zudo-history-stash.zudolab.dev`; it is the deployment source of truth. The target account
+must own an active `zudolab.dev` zone, and the exact `zudo-history-stash.zudolab.dev` hostname must
+not already have a CNAME. Its committed `[[routes]]` entry has `custom_domain = true`, so Cloudflare
+creates and manages the DNS record and certificate. Do not create a competing dashboard Worker or
+Git-connected build for this site. See Cloudflare's current
+[Custom Domains documentation](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/).
+
+The docs workflows reuse `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. A token used only for
+the docs site needs **Workers Scripts — Edit/Write** on the exact account and, for the production
+custom domain, **Workers Routes — Edit/Write** on only the `zudolab.dev` zone. It needs no D1, R2,
+KV, or Account Settings grant. In particular, **Account Settings — Read is not required**: Workers
+Scripts read/write covers the Workers-subdomain APIs, and the preview workflow consumes the alias
+URL returned in [Wrangler's structured output](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)
+instead of depending on `CF_WORKERS_SUBDOMAIN`. If one token also runs the application previews,
+grant the union with the application scopes in [CI API token](#ci-api-token); those storage grants
+are application requirements, not docs requirements. Keep the token scoped according to the
+current [API token permission reference](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
+and follow Cloudflare's
+[GitHub Actions authentication guidance](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/).
+
+Documentation checks need no Cloudflare credentials. Production always builds, generates page
+history, and performs a credential-free Wrangler dry run; it green-skips only the live deploy when
+either Cloudflare secret is missing. Fork previews and same-repository previews with missing
+credentials skip before upload or comment. An eligible PR `N` updates the intentionally public
+alias `pr-N-zudo-history-stash-docs.<subdomain>.workers.dev`. Uploading a version moves that alias
+to the new version without shifting production traffic. The production custom domain and these
+`workers.dev` aliases are intentionally public under this repository's contract.
+
+Docs aliases are versions of the one long-lived docs Worker, not the isolated per-PR Worker, D1,
+and R2 resources described below. They contain no bearer token and have no close teardown or
+reaper; an alias may remain reachable after its PR closes, subject to Cloudflare's
+[most-recent-1000 alias retention and current preview rules](https://developers.cloudflare.com/workers/versions-and-deployments/preview-urls/).
+Never put confidential content in a documentation PR. Cloudflare Access can require sign-in, but
+enabling it explicitly changes this public-preview contract.
+
+Full Git history supplies the author, date, and revision history published with each page.
+Deleting a secret from the current line does not remove it from committed history: rotate the
+credential and remediate Git history separately. Capacity and cost follow the current
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), and
+[Static Assets billing and limitations](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/);
+do not assume a fixed price, unlimited aliases, universal plan behavior, or immediate cleanup.
+
 ## Pull-request previews
 
 Once the repository configuration above exists, a same-repository PR `N` targeting `main` or

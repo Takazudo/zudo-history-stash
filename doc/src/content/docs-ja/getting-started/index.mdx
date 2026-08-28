@@ -1,0 +1,36 @@
+---
+title: はじめに
+description: History Stash が適する用途を理解し、バージョン管理されたテキスト API を使い始めます。
+sidebar_position: 1
+category: getting-started
+---
+
+Zudo History Stash は、バージョン管理された UTF-8 テキストを Cloudflare Workers 上で扱う、
+Git の考え方を取り入れた小規模なストアです。各パスに追記専用の履歴、明示的な
+compare-and-set 書き込み、保存済み内容と候補内容の diff、新しいバージョンとしての
+ロールバック、提案を介したコンシューマー所有の承認、助言的なライブ更新シグナルを提供します。
+Git ホスティングでも、汎用ファイルシステムでもありません。
+
+アプリケーションは Stash Worker を呼び出します。D1 は stash のメタデータ、ファイルの head、
+履歴、小さなテキスト本文の正本です。大きなテキスト本文は、非公開かつコンテンツアドレス方式の
+R2 バケットに保存されます。別途デプロイした Viewer は、認証済み Service Binding を通じて
+Stash Worker に接続します。R2 が公開オブジェクト API になることはありません。
+
+## 適した用途
+
+History Stash は、サービスがパスごとの履歴や監査証跡を必要とする場合、呼び出し側が並行書き込みを
+フェンスする必要がある場合、レビュー担当者が不変の候補 diff を必要とする場合、または助言的な
+変更イベントの後にインターフェースを更新したい場合に適しています。
+
+バイナリやバイト範囲の配信、複数ファイルにまたがるアトミックコミット、ブランチとマージ、
+組み込みのレビュー担当者ロールやレビューコメントが必要な場合は、別のシステムを選んでください。
+承認ポリシーとユーザー ID は、引き続き利用側アプリケーションの責任です。
+
+## 次に進む
+
+[インストール](./install.mdx)を済ませてから、[新しい stash のクイックスタート](./quickstart.mdx)を
+実行してください。各ガイドでは、
+[コンシューマーの書き込みプロトコル](../guides/consumer-write-protocol.mdx)、
+[提案](../guides/proposals-and-approval.mdx)、[ライブ更新](../guides/live-updates.mdx)を詳しく説明しています。
+
+<CategoryNav category="getting-started" />

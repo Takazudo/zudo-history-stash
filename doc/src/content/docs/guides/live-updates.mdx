@@ -1,0 +1,91 @@
+---
+title: Live Updates
+description: Reconcile authoritative state from an advisory, reconnecting event stream.
+sidebar_position: 50
+category: guides
+---
+
+`files(stash).events()` opens an authenticated, fetch-only SSE stream. Its events are advisory
+hints, not authoritative file or proposal state. Reconcile the file list, file history, changes
+feed, and proposal resources through ordinary reads.
+
+Refresh authoritative state when `ready` arrives and after each `change` or `proposal` hint. The
+client keeps its replay checkpoint separate from possibly out-of-order live change IDs, deduplicates
+the replay/live overlap, and limits its pending event queue to one hint. These rules deliberately
+favor a fresh read over treating a buffered event path or payload as truth.
+
+{/* zhs-example: consumer-live-updates */}
+
+```ts
+import {
+  createStashClient,
+  type StashEvent,
+  type StashEventStream,
+  type StashLiveStatus,
+} from "@takazudo/zudo-history-stash";
+
+export function openAdvisoryUpdates(input: {
+  baseUrl: string;
+  readToken: string;
+  stash: string;
+  clientId: string;
+  refreshAuthoritativeState: (event: StashEvent) => Promise<void>;
+  onRemoteHint: (event: StashEvent) => void;
+  onStatus: (status: StashLiveStatus, failureCount: number) => void;
+}): { stream: StashEventStream; done: Promise<void>; close: () => void } {
+  const client = createStashClient({
+    baseUrl: input.baseUrl,
+    token: input.readToken,
+    clientId: input.clientId,
+  });
+  const abort = new AbortController();
+  const stream = client.files(input.stash).events({ signal: abort.signal });
+  const unsubscribe = stream.onStatus((status) => {
+    input.onStatus(status, stream.failureCount);
+  });
+
+  const done = (async () => {
+    try {
+      for await (const event of stream) {
+        if (event.type === "ready" || event.type === "change" || event.type === "proposal") {
+          await input.refreshAuthoritativeState(event);
+        }
+        if (
+          (event.type === "change" || event.type === "proposal") &&
+          event.origin !== input.clientId
+        ) {
+          input.onRemoteHint(event);
+        }
+      }
+    } finally {
+      unsubscribe();
+      stream.close();
+    }
+  })();
+
+  return {
+    stream,
+    done,
+    close() {
+      abort.abort();
+      stream.close();
+      unsubscribe();
+    },
+  };
+}
+```
+
+The example performs authoritative refresh before using `origin` to suppress only the caller's own
+UI echo. Replayed change events have `origin: null`, and a stable `clientId` is merely an advisory
+label echoed from mutation requests. It is never authentication or authorization.
+
+Observe `status`, consecutive `failureCount`, and `onStatus` rather than assuming a socket is live.
+Normal lifetime rotation yields a `reconnect` event and reconnects immediately. Retryable failures
+back off; terminal 401, 403, or 404 responses transition to a failed status. Every reconnect
+reauthorizes, and each healthy response ends no later than the configured stream lifetime or the
+token's earlier expiry boundary.
+
+Keep the returned `done` promise supervised. On teardown, abort and call `stream.close()`; the
+iterator's `finally` block also removes the status subscriber and closes the stream. This prevents a
+hidden reconnect loop after the consumer no longer needs updates. Credential placement still
+follows the [security guide](./security.mdx).

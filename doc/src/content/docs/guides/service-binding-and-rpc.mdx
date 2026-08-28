@@ -1,0 +1,93 @@
+---
+title: Service Bindings and RPC
+description: Connect a same-account Worker through authenticated fetch or typed RPC transports.
+sidebar_position: 20
+category: guides
+---
+
+A same-account Cloudflare Worker can reach the Stash Worker without using its public route. The
+public client supports two authenticated binding shapes: an HTTP fetch binding and the named
+`StashRpc` entrypoint. The consuming Worker must use compatibility date `2024-04-03` or later for
+Worker RPC.
+
+## Fetch service binding
+
+Bind the Stash service to the consumer and pass its `fetch` method to the SDK. The base URL only
+needs to be a syntactically valid, inert HTTPS origin because the binding performs the internal
+dispatch. Authentication is still mandatory.
+
+{/* zhs-example: consumer-fetch-binding */}
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+export interface StashFetchBinding {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
+
+export function createFetchBindingClient(input: { binding: StashFetchBinding; token: string }) {
+  return createStashClient({
+    baseUrl: "https://stash.internal",
+    token: input.token,
+    fetch: (request, init) => input.binding.fetch(request, init),
+  });
+}
+```
+
+## Named RPC entrypoint
+
+For the typed alternative, configure a service binding whose entrypoint is `StashRpc`, type it as
+`StashRpcEntrypoint`, and select the SDK's discriminated RPC transport. Business responses remain
+`ClientResult` unions. If the outer binding call rejects before a response exists, the SDK throws
+`StashHttpError` with `status === 0`; direct calls on the binding also need an outer rejection
+boundary.
+
+RPC raises neither the platform nor API limits. Cloudflare's outer serialized RPC call is capped at
+32 MiB, including envelope overhead, so an application payload of exactly 33,554,432 bytes is not
+guaranteed to reach dispatch. Independently, Stash caps the complete encoded `Request` body with
+`BODY_LIMIT_BYTES` at 33,554,432 bytes (32 MiB), while each stored text body is capped with
+`MAX_BODY_BYTES` at 5,000,000 UTF-8 bytes.
+
+{/* zhs-example: consumer-rpc-binding */}
+
+```ts
+import {
+  createStashClient,
+  StashHttpError,
+  type StashRpcEntrypoint,
+} from "@takazudo/zudo-history-stash";
+
+export async function readThroughRpc(input: {
+  binding: StashRpcEntrypoint;
+  token: string;
+  stash: string;
+  path: string;
+}) {
+  const client = createStashClient({
+    transport: { kind: "rpc", binding: input.binding, token: input.token },
+  });
+
+  try {
+    const result = await client.files(input.stash).get(input.path);
+    if (result.ok && "notModified" in result) {
+      return { kind: "not-modified" as const };
+    }
+    if (!result.ok) {
+      return { kind: "business-failure" as const, failure: result };
+    }
+    return { kind: "file" as const, value: result.value };
+  } catch (error) {
+    if (error instanceof StashHttpError && error.status === 0) {
+      throw new Error("The RPC binding call was rejected before an HTTP response existed.", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
+```
+
+The named RPC surface intentionally excludes the live-event operation. Advisory SSE remains
+fetch-only at `GET /v1/stashes/{stash}/events`; use an HTTP client or fetch service binding for it.
+The generic binding `request()` method does not turn SSE into a named structured RPC method. See
+[Live updates](./live-updates.mdx) for the stream lifecycle.

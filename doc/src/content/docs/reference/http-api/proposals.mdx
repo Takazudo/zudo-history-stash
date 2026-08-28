@@ -1,0 +1,52 @@
+---
+title: Proposals
+description: Immutable candidates, diffs, expiry, and exact-head decisions.
+sidebar_position: 170
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/proposals`
+
+**Contract:** operation `createProposal`; principal `write`; transport `any`.
+
+Creates an immutable candidate `{ path, body, baseVersion, ... }` with optional expiry and
+idempotency key, returning `201`. `baseVersion: null` means the path must not exist. The server owns
+`meta.proposalId`. Replaying the same key/request returns the original record; changed content under
+that key is `422 idempotency-key-reused`.
+
+### `GET /v1/stashes/{stash}/proposals`
+
+**Contract:** operation `listProposals`; principal `read`; transport `any`.
+
+Lists newest-first proposals by status and optional exact path with bounded `limit` and opaque
+`after`. `total` covers the complete filtered set, not only the returned page.
+
+### `GET /v1/stashes/{stash}/proposals/{id}`
+
+**Contract:** operation `getProposal`; principal `read`; transport `any`.
+
+Returns the proposal record plus its immutable candidate body. Unknown or foreign proposals are
+not disclosed.
+
+### `GET /v1/stashes/{stash}/proposals/{id}/diff`
+
+**Contract:** operation `getProposalDiff`; principal `read`; transport `any`.
+
+Returns the candidate diff with immutable base/candidate sides and separately moving current-head
+and stale fields. Optional non-negative `context` controls surrounding lines.
+
+### `POST /v1/stashes/{stash}/proposals/{id}/approve`
+
+**Contract:** operation `approveProposal`; principal `write`; transport `any`.
+
+Applies only when the current head exactly equals the proposal base. Optional author/message values
+override those stored on the applied version. A stale head is `409 stale`; expiry and terminal
+decisions have their own `409` codes. Re-approving an already-applied proposal reconstructs the
+same result rather than appending another version.
+
+### `POST /v1/stashes/{stash}/proposals/{id}/reject`
+
+**Contract:** operation `rejectProposal`; principal `write`; transport `any`.
+
+Records an optional bounded reason and returns the rejected record. Rejection is idempotent and may
+close an open proposal after its expiry; it cannot replace an applied decision.

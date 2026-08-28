@@ -1,0 +1,100 @@
+---
+title: Consumer Write Protocol
+description: Use putLatest, compare-and-set fences, and idempotency keys without overwriting concurrent work.
+sidebar_position: 10
+category: guides
+---
+
+Every file mutation is a compare-and-set operation. Read the current representation, decide what to
+write from that snapshot, and submit its positive version as `expectedVersion`. Use
+`expectedVersion: null` only to create a path that does not exist. A tombstoned path still has a
+positive current version, so resurrection must fence against that version rather than use `null`.
+
+The example also handles the distinct ETag cache-hit shape from `files.get()`. Its explicit
+`stableIdempotencyKey` identifies one canonical request across an exact transport retry.
+
+{/* zhs-example: consumer-write-protocol */}
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+export async function writeWithCompareAndSet(input: {
+  baseUrl: string;
+  writeToken: string;
+  stash: string;
+  path: string;
+  body: string;
+  stableIdempotencyKey: string;
+  ifNoneMatch?: string;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.writeToken });
+  const files = client.files(input.stash);
+  const snapshot = await files.get(input.path, { ifNoneMatch: input.ifNoneMatch });
+
+  if (snapshot.ok && "notModified" in snapshot) {
+    return { kind: "not-modified" as const };
+  }
+
+  let expectedVersion: number | null;
+  if (snapshot.ok) {
+    expectedVersion = snapshot.value.version;
+  } else if (snapshot.error.code === "not-found") {
+    expectedVersion = null;
+  } else if (snapshot.error.code === "file-deleted" && snapshot.current) {
+    expectedVersion = snapshot.current.version;
+  } else {
+    return { kind: "read-failed" as const, failure: snapshot };
+  }
+
+  const written = await files.put(
+    input.path,
+    { body: input.body, expectedVersion },
+    { idempotencyKey: input.stableIdempotencyKey },
+  );
+  if (!written.ok && written.error.code === "stale") {
+    return { kind: "stale" as const, current: written.current };
+  }
+  if (!written.ok) {
+    return { kind: "write-failed" as const, failure: written };
+  }
+  return { kind: "written" as const, value: written.value, replayed: written.replayed === true };
+}
+
+export async function replaceLatestForSimpleIntent(input: {
+  baseUrl: string;
+  writeToken: string;
+  stash: string;
+  path: string;
+  body: string;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.writeToken });
+  const result = await client.putLatest(input.stash, input.path, input.body, { retries: 3 });
+  if (!result.ok) {
+    return { kind: "failed" as const, failure: result };
+  }
+  return { kind: "written" as const, value: result.value };
+}
+```
+
+If a write returns `stale`, inspect its root-level `current`, then recompute from the winner or ask
+the user what to do. Do not blindly resubmit the losing body. A new body or fence is a new canonical
+operation and needs a new idempotency key; reusing one key with a different request returns
+`422 idempotency-key-reused`.
+
+The SDK creates keys automatically for ordinary put, delete, rollback, and proposal-create calls.
+When recovering from an ambiguous transport failure, provide and retain a stable key so the exact
+same request can be replayed. The idempotency ledger lasts seven days; a replay reconstructs the
+original result and exposes `replayed` on success.
+
+A write refused before commit does not create a new ledger record, and a successful
+`skipIfUnchanged` no-op does not claim its key. A transport or `internal` outcome can be ambiguous;
+keep the same canonical request under the same key until resolved.
+
+`putLatest` is a bounded convenience for deliberately simple last-head updates. It performs a read
+and, by default, up to three stale retries; it does not make a multi-step decision atomic or remove
+conflicts. Use explicit `files.put` when durable retry identity or a custom conflict policy matters.
+
+History remains append-only. Delete appends a tombstone, and rollback appends another version while
+requiring the current positive head as its fence. A tombstone cannot be a rollback target. See the
+[proposal guide](./proposals-and-approval.mdx) when a candidate must be reviewed before it becomes a
+version.

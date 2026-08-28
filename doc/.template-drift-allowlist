@@ -1,0 +1,14 @@
+# Exact generator paths intentionally adapted for this monorepo. Every entry needs a reason.
+.gitignore :: Uses the epic's stable public skill name instead of the package-derived name.
+package.json :: Integrates the scaffold into the monorepo and pins the gate toolchain.
+pages/[locale]/docs/[[...slug]].tsx :: Root Prettier formatted the generated locale route without semantic changes.
+pages/docs/[[...slug]].tsx :: Root Prettier formatted the generated default route without semantic changes.
+pnpm-workspace.yaml :: The repository owns one root workspace file; a nested workspace is forbidden.
+scripts/check-links.js :: Preserves the #161 robust HTML start-tag parser and strict-link regression fix.
+src/content/docs/getting-started/index.mdx :: Replaces generic scaffold copy with the explicit temporary product placeholder.
+src/content/docs/getting-started/installation.mdx :: Replaces generic scaffold copy with the explicit temporary product placeholder.
+src/content/docs/getting-started/introduction.mdx :: Replaces generic scaffold copy with the explicit temporary product placeholder.
+src/content/docs-ja/getting-started/index.mdx :: Adds the required Japanese temporary product placeholder and frontmatter.
+src/content/docs-ja/getting-started/installation.mdx :: Adds the required Japanese temporary product placeholder and frontmatter.
+src/content/docs-ja/getting-started/introduction.mdx :: Adds the required Japanese temporary product placeholder and frontmatter.
+zfb.config.ts :: Applies repository URLs, navigation, version binding, Cloudflare adapter, and #161 link plugin.

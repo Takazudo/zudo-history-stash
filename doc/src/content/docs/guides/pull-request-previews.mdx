@@ -1,0 +1,85 @@
+---
+title: Pull-request previews
+description: Understand the isolated application preview lifecycle, credentials, evidence, cleanup, and quotas.
+sidebar_position: 104
+category: guides
+---
+
+Application pull-request previews provision a disposable Stash/Viewer deployment for one eligible
+pull request. They are different from Cloudflare version Preview URLs and from the Docs preview
+aliases and comments managed by the Docs workflow.
+
+## Eligibility and isolation
+
+The deploy workflow handles same-repository pull requests targeting `main` or `base/**` on
+`opened`, `synchronize`, or `reopened`. It evaluates the fork boundary before secret-bearing work;
+forks and repositories without the required Cloudflare configuration deliberately skip green.
+There is no `pull_request_target` path. Eligible work checks out the exact PR head SHA with
+persisted Git credentials disabled.
+
+For PR `N`, the isolated resource names are:
+
+| Resource | Name |
+| --- | --- |
+| Stash Worker | `zudo-history-stash-pr-N` |
+| Viewer Worker | `zudo-history-stash-viewer-pr-N` |
+| D1 database | `zudo-history-stash-pr-N` |
+| private R2 bucket | `zudo-history-stash-blobs-pr-N` |
+| Durable Object | The `StashEvents` namespace owned by that PR's Stash Worker. |
+
+Generated private configs flatten the committed preview environments into top-level configs. They
+enable `workers_dev`, remove production routes and version-preview settings, empty application
+crons, and inject the exact D1, R2, service, origin, rate-limit, and Worker names. The workflow
+deploys those files with `-c`; it does not apply `--env preview` to the generated config.
+
+## Evidence sequence and credential boundary
+
+The deploy job performs one ordered chain:
+
+1. Ensure D1/R2 resources and resolve the two Worker URLs.
+2. Generate private flattened configs.
+3. Apply D1 migrations.
+4. Generate and mask an admin credential, then perform the Stash's first deploy with a private
+   secrets file.
+5. Deploy the Viewer and wait for health.
+6. Seed the deterministic disposable `demo` stash through the Viewer proxy.
+7. Mint and mask a stash-scoped read token.
+8. Run the preview-tier read contract, strict Viewer HTTP smoke, and exactly one
+   `chromium-preview`/`@preview` browser test.
+9. Prove the deployed checkout is the exact expected SHA and create or update one marker comment.
+
+The preview contract receives the admin credential from its protected file while `TEST_TIER=preview`
+fences persisted cases. The browser and marker comment receive only the disposable read token. That
+intentional token disclosure is still a bearer credential: do not copy it beyond the preview. The
+admin token, Cloudflare API token, account ID, private configs, and secret inputs must never become
+workflow outputs, comments, or artifacts. Failure artifacts contain only the designated non-secret
+deployment logs.
+
+The browser proof uses the real HTTPS Viewer, real API and SSE traffic, no request mocks, strict
+console checks, and no write affordances. It is wiring evidence, not a replacement for local unit,
+contract, or live tests.
+
+## Teardown and reaping
+
+Deploy and close workflows serialize on the same `preview-N` concurrency key. Manual teardown
+accepts a PR number but checks out trusted base/default-branch helpers and verifies that exact PR is
+closed before mutation, then rechecks after acquiring the lock.
+
+Deletion and absence verification run in this order:
+
+1. Viewer Worker.
+2. Stash Worker and its owned Durable Object namespace.
+3. Empty, confirm, then delete the private R2 bucket.
+4. Delete and confirm the D1 database.
+5. Replace the single marker comment with a URL- and token-free torn-down state.
+
+Successful cleanup means structured resource discovery proves absence; a convenient CLI sentence
+or blanket `404` interpretation is not enough. The scheduled/manual reaper unions every paginated
+Worker, D1, and R2 inventory page, extracts only exact preview names, and serializes candidates one
+at a time under the same per-PR fence. It rechecks the PR state, retains open PRs, and never edits
+comments.
+
+Each open preview consumes its own Workers, database, bucket, Durable Object namespace, operations,
+and potentially active streams. Cleanup reduces orphan lifetime, but is not instantaneous and does
+not guarantee zero cost. Monitor current account quotas before enabling previews on a busy
+repository.

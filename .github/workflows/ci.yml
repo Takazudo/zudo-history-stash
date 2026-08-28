@@ -50,6 +50,9 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      - name: Markdown format check
+        run: pnpm format:md:check
+
       - name: Typecheck
         run: pnpm typecheck
 

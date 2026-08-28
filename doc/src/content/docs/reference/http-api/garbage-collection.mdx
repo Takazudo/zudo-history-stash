@@ -1,0 +1,27 @@
+---
+title: Garbage collection
+description: Bounded, generation-fenced orphan and ledger maintenance.
+sidebar_position: 160
+category: reference
+---
+
+### `POST /v1/admin/gc`
+
+**Contract:** operation `runGc`; principal `admin`; transport `any`.
+
+Runs one bounded `r2-orphans` or `ledger` page with optional `dryRun`, `maxObjects`, and an opaque,
+kind-bound cursor. It returns a synchronously completed run result. A `null` cursor completes the
+pass; a later cursor-less call starts a fresh pass.
+
+Dry runs acquire the same five-minute generation-fenced lease and record counters but never delete
+or persist progress. A non-dry runner can heartbeat/finalize only while it owns the current lease;
+an active owner yields `409 gc-busy`. R2 keys and generations are never exposed in responses or
+logs. Begin manual operations with a dry run, review counters, then run bounded non-dry pages.
+
+### `GET /v1/admin/gc/runs`
+
+**Contract:** operation `listGcRuns`; principal `admin`; transport `any`.
+
+Returns deterministic newest-first run records, optionally filtered by kind and bounded by `limit`.
+Counters describe only the requested page and can stop below `maxObjects` when the invocation safety
+budget wins.

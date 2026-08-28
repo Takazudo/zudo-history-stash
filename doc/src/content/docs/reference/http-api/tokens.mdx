@@ -1,0 +1,37 @@
+---
+title: Tokens
+description: Creation, inventory, one-shot rotation, expiry, and revocation.
+sidebar_position: 130
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/tokens`
+
+**Contract:** operation `createToken`; principal `admin`; transport `any`.
+
+Creates a `read` or `write` token with an optional label and either `expiresAt` or `ttlSeconds`.
+Returns `201`; the `zhs_…` secret appears only in this response because storage retains its hash.
+
+### `GET /v1/stashes/{stash}/tokens`
+
+**Contract:** operation `listTokens`; principal `admin`; transport `any`.
+
+Returns newest-first token metadata with rotation, revocation, expiry, and last-use fields, but
+never returns a secret.
+
+### `POST /v1/stashes/{stash}/tokens/{id}/rotate`
+
+**Contract:** operation `rotateToken`; principal `admin`; transport `any`.
+
+Creates one successor and returns its one-time secret with `201`. `graceSeconds` bounds the
+predecessor overlap; an optional expiry override follows creation rules. Rotation is one-shot:
+concurrent attempts have one winner, later attempts receive `409 already-rotated`, and an expired
+predecessor returns `409 token-expired`. If the response secret is lost, revoke the identified
+successor and create another token.
+
+### `DELETE /v1/stashes/{stash}/tokens/{id}`
+
+**Contract:** operation `revokeToken`; principal `admin`; transport `any`.
+
+Sets the token's revocation timestamp and returns `204` with no body. The credential cannot
+authenticate afterward; unknown stash/token pairs return `404`.

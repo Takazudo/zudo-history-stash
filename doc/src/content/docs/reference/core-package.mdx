@@ -1,0 +1,27 @@
+---
+title: Core package
+description: Public contracts exported by @takazudo/zudo-history-stash-core.
+sidebar_position: 20
+category: reference
+---
+
+`@takazudo/zudo-history-stash-core` is the runtime-agnostic contract package. It requires Node.js
+as shown on [Versions and compatibility](./versions.mdx), but it does not open Worker bindings or
+access D1 or R2.
+
+## Root entry point
+
+The package root exports runtime schemas and validators, canonical path helpers, hashes and ETags,
+route/error/limit contracts, diff models and engine helpers, and RPC request/response types. Some
+exports are TypeScript-only; check the published declarations before treating a type as a runtime
+value.
+
+Use the source-derived [HTTP route reference](./http-api/index.mdx),
+[error table](./error-codes.mdx), and [limit table](./limits.mdx) for the closed contracts rather
+than copying them into application code.
+
+## OpenAPI entry point
+
+`@takazudo/zudo-history-stash-core/openapi` exports `ROUTE_CONTRACTS`, `transportForRoute`,
+`buildOpenApiDocument`, `RESPONSE_SCHEMAS`, and `SAMPLES`. It is the generation boundary for the
+committed OpenAPI document; it is not a server implementation.

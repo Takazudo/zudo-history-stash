@@ -1,0 +1,23 @@
+---
+title: Change feeds
+description: Administrative and stash-scoped authoritative change pagination.
+sidebar_position: 150
+category: reference
+---
+
+### `GET /v1/changes`
+
+**Contract:** operation `listChanges`; principal `admin`; transport `any`.
+
+The global administrative feed accepts bounded `limit` and either `since` or `before`, never both.
+`since` pages are ascending for polling; initial and `before` pages are newest-first. The response
+contains changes, a directional next cursor, and `hasMore`.
+
+### `GET /v1/stashes/{stash}/changes`
+
+**Contract:** operation `getStashChanges`; principal `read`; transport `any`.
+
+Uses the same cursor and ordering contract, restricted to one authorized stash. Each change carries
+its global `changeId`, path, version, kind, authorship, size, and timestamp. Treat this feed as the
+authoritative reconciliation source after live events; consume all `hasMore` pages before advancing
+the effective checkpoint.

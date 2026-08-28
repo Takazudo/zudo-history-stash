@@ -1,0 +1,45 @@
+---
+title: HTTP API
+description: Authentication, capabilities, pagination, paths, conditional reads, and transports.
+sidebar_position: 100
+category: reference
+---
+
+The <OpenApiLink>served OpenAPI document</OpenApiLink> is the machine-readable request and response
+contract. The route pages add operational semantics without replacing that source.
+
+## Authentication and principals
+
+Send credentials as `Authorization: Bearer <token>`. The visible principal vocabulary is:
+
+| Principal | Meaning |
+| --- | --- |
+| `open` | No credential is required. |
+| `any` | Any valid admin or stash credential. |
+| `admin` | Administrator credential only. |
+| `admin-or-stash` | Administrator or a token belonging to the named stash. |
+| `read` | Administrator or matching read/write stash token. |
+| `write` | Administrator or matching write stash token. |
+
+A matching identity does not imply every capability. Treat `401` as missing/invalid identity,
+`403` as insufficient scope, and intentionally concealed `404` responses as non-disclosure.
+
+## Common request contracts
+
+- List endpoints use bounded `limit` values and keyset or opaque cursors. Do not construct opaque
+  cursor values or combine mutually exclusive directions.
+- File paths occupy a terminal wildcard. Percent-encode each segment independently so `/` remains
+  a separator; HTTP paths use `{stash}`, `{id}`, and `{path}` notation.
+- Conditional file reads use `If-None-Match`; successful reads expose `ETag` and
+  `X-Stash-Version`.
+- Mutation requests can carry `X-Stash-Client-Id` for origin attribution. Idempotent operations
+  accept `Idempotency-Key`; replay requires the same canonical request.
+- Errors use the canonical `{ error: { code, message, successorId? }, current? }` envelope:
+  `error.code` and `error.message` are required strings, optional `error.successorId` identifies the
+  winning successor after token rotation, and some conflict responses include root-level `current`
+  recovery state. See the [closed error-code table](../error-codes.mdx).
+
+Most operations support both fetch and RPC through the Client package. A route marked `fetch-only`
+requires HTTP semantics such as a streaming response and must not be invoked through RPC.
+
+<CategoryTreeNav category="reference" />
