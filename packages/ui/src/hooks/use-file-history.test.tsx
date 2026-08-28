@@ -84,8 +84,12 @@ describe("useFileHistory", () => {
     expect(result.current.state).toBe("ready");
     expect(history).not.toHaveBeenCalled();
 
-    act(() => result.current.reload());
+    let reload!: Promise<void>;
+    act(() => {
+      reload = result.current.reload();
+    });
     expect(result.current.state).toBe("loading");
+    await act(async () => reload);
     await waitFor(() => expect(result.current.state).toBe("ready"));
     expect(history).toHaveBeenCalledOnce();
     if (result.current.state !== "ready") throw new Error("Expected ready history");
@@ -120,8 +124,7 @@ describe("useFileHistory", () => {
     rendered.rerender({ stash: "archive", path: "next.txt" });
     expect(rendered.result.current.state).toBe("loading");
     expect(rendered.result.current.page).toBeNull();
-    act(() => rendered.result.current.loadMore());
-    expect(nextHistory).toHaveBeenCalledOnce();
+    await waitFor(() => expect(nextHistory).toHaveBeenCalledOnce());
     expect(nextHistory).toHaveBeenCalledWith("next.txt", undefined);
     expect(nextClient.files).toHaveBeenCalledWith("archive");
     expect(originalHistory).not.toHaveBeenCalled();
@@ -193,8 +196,12 @@ describe("useFileHistory", () => {
     });
 
     await waitFor(() => expect(result.current.state).toBe("error"));
-    act(() => result.current.reload());
+    let reload!: Promise<void>;
+    act(() => {
+      reload = result.current.reload();
+    });
     expect(result.current.state).toBe("loading");
+    await act(async () => reload);
     await waitFor(() => expect(result.current.state).toBe("ready"));
     expect(history).toHaveBeenCalledTimes(2);
   });
@@ -267,5 +274,61 @@ describe("useFileHistory", () => {
     if (rendered.result.current.state !== "ready") throw new Error("Expected ready history");
     expect(rendered.result.current.page.path).toBe("new.txt");
     expect(rendered.result.current.page.versions[0]?.version).toBe(7);
+  });
+
+  it("commits a blocked live reload before a queued same-target retry can fail", async () => {
+    let resolveFirst!: (result: ClientResult<HistoryPage>) => void;
+    const first = new Promise<ClientResult<HistoryPage>>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let resolveSecond!: (result: ClientResult<HistoryPage>) => void;
+    const second = new Promise<ClientResult<HistoryPage>>((resolve) => {
+      resolveSecond = resolve;
+    });
+    let active = 0;
+    let maxActive = 0;
+    const history = vi
+      .fn<StashFilesClient["history"]>()
+      .mockResolvedValueOnce({ ok: true, value: page([3, 2], null) })
+      .mockImplementation(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          return await (history.mock.calls.length === 2 ? first : second);
+        } finally {
+          active -= 1;
+        }
+      });
+    const client = clientWithHistory(history);
+    const { result } = renderHook(() => useFileHistory("notes", "docs/readme.txt"), {
+      wrapper: providerFor(client),
+    });
+    await waitFor(() => expect(result.current.state).toBe("ready"));
+
+    let firstReload!: Promise<void>;
+    let secondReload!: Promise<void>;
+    act(() => {
+      firstReload = result.current.reload();
+      secondReload = result.current.reload();
+    });
+    const secondFailure = secondReload.catch((error: unknown) => error);
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(2));
+    expect(history).toHaveBeenCalledTimes(2);
+
+    await act(async () => resolveFirst({ ok: true, value: page([4, 3], null) }));
+    await firstReload;
+    expect(result.current.state).toBe("ready");
+    if (result.current.state !== "ready") throw new Error("Expected committed live history");
+    expect(result.current.page.versions.map((item) => item.version)).toEqual([4, 3]);
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(3));
+    const failure: ClientResult<HistoryPage> = {
+      ok: false,
+      error: { status: 503, code: "internal", message: "history unavailable" },
+    };
+    await act(async () => resolveSecond(failure));
+
+    await expect(secondFailure).resolves.toBe(failure);
+    expect(maxActive).toBe(1);
+    expect(result.current.state).toBe("error");
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { MAX_BODY_BYTES } from "./limits.js";
+import type { LiveStatus, StashEvent } from "./types.js";
 import {
   ChangesQuery,
   ApproveProposalBody,
@@ -8,6 +9,7 @@ import {
   CreateTokenBody,
   DiffCandidateBody,
   DiffQuery,
+  EventsQuery,
   FileGetQuery,
   ImportBody,
   ListFilesQuery,
@@ -20,6 +22,13 @@ import {
   RejectProposalBody,
   RunGcBody,
   RotateTokenBody,
+  STASH_CLIENT_ID_HEADER,
+  StashChangeEventSchema,
+  StashClientIdSchema,
+  StashEventSchema,
+  StashProposalEventSchema,
+  StashReadyEventSchema,
+  StashReconnectEventSchema,
 } from "./schemas.js";
 
 const importPut = (createdAt: number) => ({ kind: "put" as const, body: "x", createdAt });
@@ -162,6 +171,19 @@ describe("strict request and query schemas", () => {
     expect(ChangesQuery.safeParse({ since: "0", limit: "1" }).success).toBe(true);
     expect(ChangesQuery.safeParse({ since: "1", before: "2" }).success).toBe(false);
   });
+  it("parses only a strict optional non-negative events cursor", () => {
+    expect(EventsQuery.parse({})).toEqual({});
+    expect(EventsQuery.parse({ since: "0" })).toEqual({ since: 0 });
+    expect(EventsQuery.parse({ since: "42" })).toEqual({ since: 42 });
+    for (const input of [
+      { since: "" },
+      { since: "-1" },
+      { since: "1.5" },
+      { since: "1", unknown: true },
+    ]) {
+      expect(EventsQuery.safeParse(input).success).toBe(false);
+    }
+  });
   it("parses exact diff discriminants", () => {
     expect(DiffQuery.parse({ from: "1", to: "head" })).toMatchObject({ from: 1, to: "head" });
     expect(DiffCandidateBody.safeParse({ from: "head", body: "" }).success).toBe(true);
@@ -202,6 +224,88 @@ describe("strict request and query schemas", () => {
       { unknown: true },
     ]) {
       expect(RotateTokenBody.safeParse(input).success).toBe(false);
+    }
+  });
+});
+
+describe("StashClientIdSchema", () => {
+  it("accepts only canonical IDs that round-trip unchanged through Fetch headers", () => {
+    for (const value of ["a", "tab A!~", "x".repeat(64)]) {
+      expect(StashClientIdSchema.parse(value)).toBe(value);
+
+      const headers = new Headers({ [STASH_CLIENT_ID_HEADER]: value });
+      const request = new Request("https://stash.example/v1/stashes/demo", { headers });
+      expect(request.headers.get(STASH_CLIENT_ID_HEADER)).toBe(value);
+    }
+  });
+
+  it("rejects values that are non-canonical or unsafe at a Fetch boundary", () => {
+    for (const value of [
+      "",
+      "x".repeat(65),
+      " leading",
+      "trailing ",
+      "internal\ttab",
+      "line\nbreak",
+      "nul\0byte",
+      "delete\u007f",
+      "emoji🙂",
+    ]) {
+      expect(StashClientIdSchema.safeParse(value).success, JSON.stringify(value)).toBe(false);
+    }
+  });
+});
+
+describe("StashEventSchema", () => {
+  const ready = { type: "ready", head: 7, checkpoint: 6 } as const;
+  const change = {
+    type: "change",
+    changeId: 7,
+    stash: "demo",
+    path: "docs/guide.md",
+    version: 3,
+    kind: "put",
+    origin: "viewer-1",
+    createdAt: "2026-08-28T00:00:00.000Z",
+  } as const;
+  const proposal = {
+    type: "proposal",
+    proposalId: "prp_1787875200000deadbeef",
+    stash: "demo",
+    path: "docs/guide.md",
+    status: "open",
+    origin: null,
+  } as const;
+  const reconnect = { type: "reconnect", reason: "lifetime" } as const;
+
+  it("parses every strict discriminated member and the public union", () => {
+    for (const [schema, value] of [
+      [StashReadyEventSchema, ready],
+      [StashChangeEventSchema, change],
+      [StashProposalEventSchema, proposal],
+      [StashReconnectEventSchema, reconnect],
+    ] as const) {
+      expect(schema.parse(value)).toEqual(value);
+      expect(StashEventSchema.parse(value)).toEqual(value);
+    }
+    expectTypeOf(StashEventSchema.parse(change)).toEqualTypeOf<StashEvent>();
+
+    const failed: LiveStatus<{ status: number }> = { failed: { status: 401 } };
+    expectTypeOf(failed.failed).toEqualTypeOf<{ status: number }>();
+    const lifecycle: LiveStatus = "reconnecting";
+    expect(lifecycle).toBe("reconnecting");
+  });
+
+  it("rejects cross-member fields, extra fields, and unknown discriminants", () => {
+    for (const value of [
+      { ...ready, changeId: 7 },
+      { ...change, checkpoint: 6 },
+      { ...proposal, reason: "shutdown" },
+      { ...reconnect, origin: null },
+      { ...change, origin: "emoji🙂" },
+      { type: "heartbeat" },
+    ]) {
+      expect(StashEventSchema.safeParse(value).success).toBe(false);
     }
   });
 });

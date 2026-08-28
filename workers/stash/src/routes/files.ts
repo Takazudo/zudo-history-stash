@@ -21,6 +21,7 @@ import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
 import type { ReadFileMetadata, ReadFileRecord } from "../d1/reads.js";
 import type { StoreWriteResult } from "../d1/writes.js";
+import { eventOrigin, publishEvents } from "../events/publish.js";
 
 const files = new Hono<AppEnv>();
 
@@ -190,40 +191,85 @@ files.get(
 
 files.put("/v1/stashes/:stash/files/:path{.+}", async (c) => {
   const path = filePath(c);
+  const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.put(c.get("routeStash").name, path, await putBody(c), {
+    await store.writes.put(stash, path, await putBody(c), {
       idempotencyKey: key,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
+  if (result.statusCode === 201 && !result.replayed && !("unchanged" in result.value)) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "change",
+        changeId: result.value.changeId,
+        stash,
+        path,
+        version: result.value.version,
+        kind: "put",
+        origin: eventOrigin(c.req.raw),
+        createdAt: result.value.createdAt,
+      },
+    ]);
+  }
   return c.json(result.value, result.statusCode);
 });
 
 files.post("/v1/stashes/:stash/delete/:path{.+}", async (c) => {
   const path = filePath(c);
+  const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.delete(c.get("routeStash").name, path, await deleteBody(c), {
+    await store.writes.delete(stash, path, await deleteBody(c), {
       idempotencyKey: key,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
+  if (!result.replayed) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "change",
+        changeId: result.value.changeId,
+        stash,
+        path,
+        version: result.value.version,
+        kind: "delete",
+        origin: eventOrigin(c.req.raw),
+        createdAt: result.value.createdAt,
+      },
+    ]);
+  }
   return c.json(result.value, result.statusCode);
 });
 
 files.post("/v1/stashes/:stash/rollback/:path{.+}", async (c) => {
   const path = filePath(c);
+  const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.rollback(c.get("routeStash").name, path, await rollbackBody(c), {
+    await store.writes.rollback(stash, path, await rollbackBody(c), {
       idempotencyKey: key,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
+  if (!result.replayed) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "change",
+        changeId: result.value.changeId,
+        stash,
+        path,
+        version: result.value.version,
+        kind: "rollback",
+        origin: eventOrigin(c.req.raw),
+        createdAt: result.value.createdAt,
+      },
+    ]);
+  }
   return c.json(result.value, result.statusCode);
 });
 

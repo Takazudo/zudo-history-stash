@@ -742,6 +742,37 @@ describe("named-entrypoint RPC boundary", () => {
     expect(response.headers.get("content-type")).toBe("application/json");
     expect(await response.text()).toContain('"body":"boundary body\\n"');
   });
+
+  it("keeps fetch-only events off the named method surface while generic request stays total", async () => {
+    await resetDatabase();
+    await seedRpcFixture();
+
+    expect(Object.getOwnPropertyNames(StashRpc.prototype)).not.toContain("stashEvents");
+    const response = await env.STASH_RPC.request({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/events`,
+      token: RPC_READ_TOKEN,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(response.body).not.toBeNull();
+    const reader = response.body!.getReader();
+    try {
+      let firstFrame = "";
+      const decoder = new TextDecoder();
+      for (let readCount = 0; readCount < 4 && !firstFrame.includes("\n\n"); readCount += 1) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        firstFrame += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(firstFrame).toContain(
+        'event: ready\ndata: {"type":"ready","head":null,"checkpoint":null}',
+      );
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+  });
 });
 
 interface ProposalLifecycleProjection {
@@ -786,10 +817,12 @@ async function proposalLifecycleThroughClient(
     transport === "rpc"
       ? createStashClient({
           transport: { kind: "rpc", binding: rpc, token: RPC_WRITE_TOKEN },
+          clientId: "rpc A!~",
         })
       : createStashClient({
           baseUrl: "https://stash.internal",
           token: RPC_WRITE_TOKEN,
+          clientId: "rpc A!~",
           fetch: async (input, init) => {
             const ctx = createExecutionContext();
             const response = await app.fetch(new Request(input, init), bindings, ctx);
@@ -908,12 +941,17 @@ describe.sequential("generic RPC proposal client parity", () => {
         headers: {
           "Content-Type": "application/json",
           "Idempotency-Key": "generic-rpc-proposal-create",
+          "X-Stash-Client-Id": "rpc A!~",
         },
         token: RPC_WRITE_TOKEN,
       }),
       expect.objectContaining({
         method: "POST",
         path: `/v1/stashes/${RPC_STASH}/proposals/${rpc.created.id}/approve`,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Stash-Client-Id": "rpc A!~",
+        },
         token: RPC_WRITE_TOKEN,
       }),
       expect.objectContaining({
@@ -923,6 +961,7 @@ describe.sequential("generic RPC proposal client parity", () => {
         token: RPC_WRITE_TOKEN,
       }),
     ]);
+    expect(rpc.rpcRequests[2]?.headers?.["X-Stash-Client-Id"]).toBeUndefined();
   });
 });
 

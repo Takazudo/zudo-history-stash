@@ -1,3 +1,5 @@
+import type { StashEvents } from "./events/stash-events.js";
+
 export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
@@ -5,6 +7,7 @@ export interface RateLimiter {
 export interface Env {
   DB: D1Database;
   BLOBS: R2Bucket;
+  STASH_EVENTS: DurableObjectNamespace<StashEvents>;
   RL_READ: RateLimiter;
   RL_WRITE: RateLimiter;
   RL_DIFF: RateLimiter;
@@ -14,4 +17,5 @@ export interface Env {
   GC_ORPHAN_MIN_AGE_MS: string;
   GC_LEASE_TTL_MS: string;
   PROPOSAL_TTL_DAYS: string;
+  STASH_EVENTS_MAX_STREAM_MS: string;
 }

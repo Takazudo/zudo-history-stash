@@ -85,7 +85,7 @@ export interface WorkbenchState {
   afterSaved: (record: FileRecord) => Promise<boolean>;
   afterStaleReload: (record: FileRecord) => void;
   /** Stable for one client/stash/path target so #98 can refresh without duplicating state. */
-  reloadHistory: () => Promise<boolean>;
+  reloadHistory: (signal?: AbortSignal) => Promise<boolean>;
 }
 
 interface WorkbenchTarget {
@@ -129,6 +129,7 @@ interface TargetRuntime {
   records: Map<number, FileRecord>;
   initialController: AbortController | null;
   historyController: AbortController | null;
+  historyTail: Promise<void>;
   sourceController: AbortController | null;
   comparisonController: AbortController | null;
   initialSequence: number;
@@ -188,6 +189,7 @@ function createRuntime(target: WorkbenchTarget): TargetRuntime {
     records: new Map(),
     initialController: null,
     historyController: null,
+    historyTail: Promise.resolve(),
     sourceController: null,
     comparisonController: null,
     initialSequence: 0,
@@ -556,59 +558,72 @@ export function useWorkbench({ stash, path, initialSource }: UseWorkbenchOptions
   }, [clientForSignal, commit, initialSource, path, stash, target]);
 
   const reloadHistoryFor = useCallback(
-    async (runtime: TargetRuntime): Promise<boolean> => {
-      if (runtimeRef.current !== runtime) return false;
-      runtime.historyController?.abort();
-      const controller = new AbortController();
-      runtime.historyController = controller;
-      const sequence = ++runtime.historySequence;
-      commit(runtime, {
-        ...runtime.snapshot,
-        historyLoading: true,
-        historyError: null,
-      });
-      try {
-        const page = await clientValue(
-          runtime.target
-            .clientForSignal(controller.signal)
-            .files(runtime.target.stash)
-            .history(runtime.target.path),
-        );
-        if (
-          controller.signal.aborted ||
-          runtimeRef.current !== runtime ||
-          runtime.historySequence !== sequence
-        ) {
-          return false;
-        }
-        return commit(runtime, {
+    (runtime: TargetRuntime, externalSignal?: AbortSignal): Promise<boolean> => {
+      const execute = async (): Promise<boolean> => {
+        if (runtimeRef.current !== runtime) return false;
+        const controller = new AbortController();
+        runtime.historyController = controller;
+        const signal =
+          externalSignal === undefined
+            ? controller.signal
+            : AbortSignal.any([controller.signal, externalSignal]);
+        const sequence = ++runtime.historySequence;
+        commit(runtime, {
           ...runtime.snapshot,
-          historyPage: normalizeHistory(page),
-          historyLoading: false,
+          historyLoading: true,
           historyError: null,
         });
-      } catch (error: unknown) {
-        if (
-          !controller.signal.aborted &&
-          runtimeRef.current === runtime &&
-          runtime.historySequence === sequence
-        ) {
-          commit(runtime, {
+        try {
+          signal.throwIfAborted();
+          const page = await clientValue(
+            runtime.target
+              .clientForSignal(signal)
+              .files(runtime.target.stash)
+              .history(runtime.target.path),
+          );
+          signal.throwIfAborted();
+          if (runtimeRef.current !== runtime || runtime.historySequence !== sequence) return false;
+          return commit(runtime, {
             ...runtime.snapshot,
+            historyPage: normalizeHistory(page),
             historyLoading: false,
-            historyError: error,
+            historyError: null,
           });
+        } catch (error: unknown) {
+          if (
+            !signal.aborted &&
+            runtimeRef.current === runtime &&
+            runtime.historySequence === sequence
+          ) {
+            commit(runtime, {
+              ...runtime.snapshot,
+              historyLoading: false,
+              historyError: error,
+            });
+          }
+          return false;
+        } finally {
+          if (runtime.historyController === controller) runtime.historyController = null;
         }
-        return false;
-      }
+      };
+
+      const request = runtime.historyTail.then(execute, execute);
+      runtime.historyTail = request.then(
+        () => undefined,
+        () => undefined,
+      );
+      return request;
     },
     [commit],
   );
 
-  const reloadHistory = useCallback(async (): Promise<boolean> => {
-    const runtime = runtimeRef.current;
-    return sameTarget(runtime.target, target) ? reloadHistoryFor(runtime) : false;
-  }, [reloadHistoryFor, target]);
+  const reloadHistory = useCallback(
+    async (signal?: AbortSignal): Promise<boolean> => {
+      const runtime = runtimeRef.current;
+      return sameTarget(runtime.target, target) ? reloadHistoryFor(runtime, signal) : false;
+    },
+    [reloadHistoryFor, target],
+  );
 
   const performSourceLoad = useCallback(
     async (runtime: TargetRuntime, version: number, intent: number): Promise<SourceLoadResult> => {

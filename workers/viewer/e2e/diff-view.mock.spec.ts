@@ -176,7 +176,9 @@ test("@smoke diff view switches layout and display preferences without refetchin
   await expectContainedHorizontalOverflow(page);
 
   await page.getByRole("button", { name: "Copy unified" }).click();
-  await expect(page.getByRole("status")).toContainText("Copied to clipboard.");
+  await expect(page.getByRole("status").filter({ hasText: "Copied to clipboard." })).toContainText(
+    "Copied to clipboard.",
+  );
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(UNIFIED);
   expect(diffRequestCount()).toBe(readyRequestCount);
 });

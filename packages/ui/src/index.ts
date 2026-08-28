@@ -15,7 +15,9 @@ export { useCandidateDiff } from "./hooks/use-candidate-diff.js";
 export { useDiffViewPreferences } from "./hooks/use-diff-view-preferences.js";
 export { useFileHistory } from "./hooks/use-file-history.js";
 export { useIdempotencyKey } from "./hooks/use-idempotency-key.js";
+export { useLiveChanges } from "./hooks/use-live-changes.js";
 export { useMediaQuery } from "./hooks/use-media-query.js";
+export { createRefreshScheduler } from "./hooks/refresh-scheduler.js";
 export { useSaveMachine } from "./hooks/use-save-machine.js";
 export { clearWorkbenchDraftsForCredentialChange, useWorkbench } from "./hooks/use-workbench.js";
 
@@ -33,6 +35,7 @@ export { HistoryRail } from "./components/history-rail.js";
 export { GcPanel } from "./components/gc-panel.js";
 export { KindBadge } from "./components/kind-badge.js";
 export { LoadMore } from "./components/load-more.js";
+export { LiveIndicator } from "./components/live-indicator.js";
 export { NewFileForm } from "./components/new-file-form.js";
 export { PathCell } from "./components/path-cell.js";
 export { ProposalList } from "./components/proposal-list.js";
@@ -78,9 +81,18 @@ export type { CandidateDiff, CandidateDiffOptions } from "./hooks/use-candidate-
 export type { DiffViewLayout, DiffViewPreferences } from "./hooks/use-diff-view-preferences.js";
 export type { FileHistoryState, UseFileHistoryOptions } from "./hooks/use-file-history.js";
 export type {
+  LiveChangesStatus,
+  LiveRefreshReason,
+  LiveRefreshRequest,
+  UseLiveChangesOptions,
+  UseLiveChangesResult,
+} from "./hooks/use-live-changes.js";
+export type { RefreshScheduler, RefreshTask } from "./hooks/refresh-scheduler.js";
+export type {
   LineEnding,
   SaveMachine,
   SaveMachineOptions,
+  SaveHeadVerificationOutcome,
   SaveMachineState,
   SaveMetadata,
 } from "./hooks/use-save-machine.js";
@@ -98,13 +110,19 @@ export type { DeleteFileDialogProps } from "./components/delete-file-dialog.js";
 export type { DeleteStashDialogProps } from "./components/delete-stash-dialog.js";
 export type { DiffControlsProps } from "./components/diff-controls.js";
 export type { DiffPaneLayout, DiffPaneProps } from "./components/diff-pane.js";
-export type { EditWorkbenchProps, EditWorkbenchSaved } from "./components/edit-workbench.js";
+export type {
+  EditWorkbenchLiveRefresh,
+  EditWorkbenchLiveRefreshOptions,
+  EditWorkbenchProps,
+  EditWorkbenchSaved,
+} from "./components/edit-workbench.js";
 export type { ErrorBannerProps, ErrorDetails } from "./components/error-banner.js";
 export type { HistoryListProps } from "./components/history-list.js";
 export type { HistoryRailProps } from "./components/history-rail.js";
 export type { GcPanelProps } from "./components/gc-panel.js";
 export type { KindBadgeProps } from "./components/kind-badge.js";
 export type { LoadMoreProps } from "./components/load-more.js";
+export type { LiveIndicatorProps } from "./components/live-indicator.js";
 export type { NewFileCreated, NewFileFormProps } from "./components/new-file-form.js";
 export type { PathCellProps } from "./components/path-cell.js";
 export type { ProposalListProps } from "./components/proposal-list.js";

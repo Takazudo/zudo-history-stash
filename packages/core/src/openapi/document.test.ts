@@ -1,11 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { ROUTES } from "../routes.js";
+import { ROUTES, routeAcceptsClientId } from "../routes.js";
+import { STASH_CLIENT_ID_HEADER, STASH_CLIENT_ID_PATTERN } from "../schemas.js";
 import { RESPONSE_SCHEMAS } from "./responses.js";
 import { SAMPLES } from "./samples.js";
 import { ROUTE_CONTRACTS } from "./contracts.js";
 import { buildOpenApiDocument } from "./document.js";
 
 type ObjectValue = Record<string, unknown>;
+
+const clientIdentityRouteIds = [
+  "createStash",
+  "deleteStash",
+  "restoreStash",
+  "createToken",
+  "rotateToken",
+  "revokeToken",
+  "importHistory",
+  "runGc",
+  "createProposal",
+  "approveProposal",
+  "rejectProposal",
+  "putFile",
+  "deleteFile",
+  "rollbackFile",
+] as const;
 
 function operations(document: ReturnType<typeof buildOpenApiDocument>): ObjectValue[] {
   return Object.values(document.paths).flatMap((path) => Object.values(path));
@@ -36,7 +54,7 @@ describe("buildOpenApiDocument", () => {
   it("contains every operation with the route identity and short principal", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
-    expect(all).toHaveLength(30);
+    expect(all).toHaveLength(31);
     expect(all.map((operation) => operation.operationId)).toEqual(ROUTES.map((route) => route.id));
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);
@@ -44,6 +62,37 @@ describe("buildOpenApiDocument", () => {
       expect(operation?.description, route.id).toContain(ROUTE_CONTRACTS[route.id].principalNote);
     }
     expect(all.find((operation) => operation.operationId === "health")?.security).toEqual([]);
+  });
+
+  it("documents the canonical client identity on exactly mutation operations", () => {
+    const all = operations(buildOpenApiDocument({ version: "test" }));
+    const withIdentity = all.filter((operation) =>
+      ((operation.parameters ?? []) as ObjectValue[]).some(
+        (parameter) => parameter.in === "header" && parameter.name === STASH_CLIENT_ID_HEADER,
+      ),
+    );
+    expect(withIdentity.map(({ operationId }) => operationId)).toEqual(clientIdentityRouteIds);
+    expect(ROUTES.filter(routeAcceptsClientId).map(({ id }) => id)).toEqual(clientIdentityRouteIds);
+    for (const route of ROUTES) {
+      const operation = all.find((candidate) => candidate.operationId === route.id);
+      const parameters = (operation?.parameters ?? []) as ObjectValue[];
+      const identity = parameters.filter(
+        (parameter) => parameter.in === "header" && parameter.name === STASH_CLIENT_ID_HEADER,
+      );
+      expect(identity, route.id).toHaveLength(
+        clientIdentityRouteIds.includes(route.id as (typeof clientIdentityRouteIds)[number])
+          ? 1
+          : 0,
+      );
+      if (identity.length === 1) {
+        expect(identity[0]?.schema).toEqual({
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          pattern: STASH_CLIENT_ID_PATTERN.source,
+        });
+      }
+    }
   });
 
   it("marks all seven wildcard operations and warns about client generation", () => {
@@ -126,7 +175,7 @@ describe("buildOpenApiDocument", () => {
       const responses = operation.responses as Record<string, ObjectValue>;
       return responses["429"] !== undefined;
     });
-    expect(rateLimited).toHaveLength(17);
+    expect(rateLimited).toHaveLength(18);
     for (const operation of rateLimited) {
       const responses = operation.responses as Record<string, ObjectValue>;
       expect(responses["429"]?.headers).toHaveProperty("Retry-After");
@@ -137,6 +186,39 @@ describe("buildOpenApiDocument", () => {
     const rotateResponses = rotate?.responses as Record<string, ObjectValue>;
     expect(rotateResponses["201"]).toBeDefined();
     expect(rotateResponses["429"]).toBeUndefined();
+  });
+
+  it("models stash events as a fetch-only SSE stream with resolvable event components", () => {
+    const document = buildOpenApiDocument({ version: "test" });
+    const operation = document.paths["/v1/stashes/{stash}/events"]?.get;
+    expect(operation?.operationId).toBe("stashEvents");
+    expect(operation?.["x-principal"]).toBe("read");
+    expect(operation?.["x-transport"]).toBe("fetch-only");
+    const responses = operation?.responses as Record<string, ObjectValue>;
+    const content = responses["200"]?.content as Record<string, ObjectValue>;
+    expect(content).toEqual({
+      "text/event-stream": {
+        schema: { $ref: "#/components/schemas/StashEvent" },
+      },
+    });
+    expect(content).not.toHaveProperty("application/json");
+    expect(responses["200"]?.headers).toMatchObject({
+      "Cache-Control": { schema: { type: "string", const: "no-store" } },
+      "X-Accel-Buffering": { schema: { type: "string", const: "no" } },
+    });
+    for (const name of [
+      "StashReadyEvent",
+      "StashChangeEvent",
+      "StashProposalEvent",
+      "StashReconnectEvent",
+      "StashEvent",
+    ]) {
+      expect(document.components.schemas[name], name).toBeDefined();
+    }
+    const nonFetchOnly = operations(document).filter(
+      (candidate) => candidate.operationId !== "stashEvents",
+    );
+    for (const candidate of nonFetchOnly) expect(candidate["x-transport"]).toBeUndefined();
   });
 
   it("documents proposal replay, filters, decisions, and stale current metadata", () => {

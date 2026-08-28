@@ -10,6 +10,20 @@ import {
 } from "./limits.js";
 import { isWellFormedString, utf8ByteLength } from "./hash.js";
 import { validatePath, validateStashName } from "./paths.js";
+import type { StashEvent } from "./types.js";
+
+export const STASH_CLIENT_ID_HEADER = "X-Stash-Client-Id";
+export const STASH_CLIENT_ID_PATTERN = /^[!-~](?:[ -~]{0,62}[!-~])?$/;
+export const StashClientIdSchema = z
+  .string()
+  .regex(
+    STASH_CLIENT_ID_PATTERN,
+    "Client ID must be 1-64 printable ASCII characters without leading or trailing whitespace",
+  );
+
+export function isStashClientId(value: unknown): value is z.infer<typeof StashClientIdSchema> {
+  return StashClientIdSchema.safeParse(value).success;
+}
 
 const nonEmptyQueryInteger = (minimum: number) =>
   z.preprocess(
@@ -190,6 +204,7 @@ export const ChangesQuery = z
   .refine((value) => value.since === undefined || value.before === undefined, {
     message: "since and before are mutually exclusive",
   });
+export const EventsQuery = z.strictObject({ since: optionalQueryInteger(0) });
 export const FileGetQuery = z.strictObject({ version: optionalQueryInteger(1) });
 export const HistoryQuery = z.strictObject({ limit, before: optionalQueryInteger(1) });
 export const DiffQuery = z.strictObject({
@@ -240,6 +255,40 @@ export const RejectProposalBody = z.strictObject({
 });
 export const ProposalDiffQuery = z.strictObject({ context: optionalQueryInteger(0) });
 
+export const StashReadyEventSchema = z.strictObject({
+  type: z.literal("ready"),
+  head: z.number().int().nonnegative().nullable(),
+  checkpoint: z.number().int().nonnegative().nullable(),
+});
+export const StashChangeEventSchema = z.strictObject({
+  type: z.literal("change"),
+  changeId: z.number().int().nonnegative(),
+  stash: z.string(),
+  path: z.string(),
+  version: z.number().int().nonnegative(),
+  kind: z.enum(["put", "delete", "rollback"]),
+  origin: StashClientIdSchema.nullable(),
+  createdAt: z.iso.datetime(),
+});
+export const StashProposalEventSchema = z.strictObject({
+  type: z.literal("proposal"),
+  proposalId: z.string().regex(/^prp_\d{13}[0-9a-f]{8}$/),
+  stash: z.string(),
+  path: z.string(),
+  status: z.enum(["open", "applied", "rejected", "expired"]),
+  origin: StashClientIdSchema.nullable(),
+});
+export const StashReconnectEventSchema = z.strictObject({
+  type: z.literal("reconnect"),
+  reason: z.enum(["lifetime", "replay-limit", "shutdown"]),
+});
+export const StashEventSchema: z.ZodType<StashEvent> = z.discriminatedUnion("type", [
+  StashReadyEventSchema,
+  StashChangeEventSchema,
+  StashProposalEventSchema,
+  StashReconnectEventSchema,
+]);
+
 export type PutFileBody = z.infer<typeof PutFileBody>;
 export type DeleteFileBody = z.infer<typeof DeleteFileBody>;
 export type RollbackBody = z.infer<typeof RollbackBody>;
@@ -255,6 +304,7 @@ export type ListStashesQuery = z.input<typeof ListStashesQuery>;
 export type ParsedListStashesQuery = z.output<typeof ListStashesQuery>;
 export type ListFilesQuery = z.infer<typeof ListFilesQuery>;
 export type ChangesQuery = z.infer<typeof ChangesQuery>;
+export type EventsQuery = z.infer<typeof EventsQuery>;
 export type FileGetQuery = z.infer<typeof FileGetQuery>;
 export type HistoryQuery = z.infer<typeof HistoryQuery>;
 export type RunGcBody = z.input<typeof RunGcBody>;
@@ -267,3 +317,4 @@ export type ParsedListProposalsQuery = z.output<typeof ListProposalsQuery>;
 export type ApproveProposalBody = z.infer<typeof ApproveProposalBody>;
 export type RejectProposalBody = z.infer<typeof RejectProposalBody>;
 export type ProposalDiffQuery = z.infer<typeof ProposalDiffQuery>;
+export type StashClientId = z.infer<typeof StashClientIdSchema>;

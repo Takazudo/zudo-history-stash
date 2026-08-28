@@ -1,5 +1,11 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { Current, RouteId } from "@takazudo/zudo-history-stash-core";
+import {
+  ROUTES,
+  transportForRoute,
+  type Current,
+  type RpcRouteId,
+} from "@takazudo/zudo-history-stash-core";
+import { ROUTE_CONTRACTS } from "@takazudo/zudo-history-stash-core/openapi";
 import {
   isProposalClosedResult,
   isProposalExpiredResult,
@@ -45,13 +51,19 @@ const rpcMethodsByRoute = {
   getDiff: "getDiff",
   diffCandidate: "diffCandidate",
   getStashChanges: "getStashChanges",
-} as const satisfies Record<RouteId, keyof StashRpcMethods>;
+} as const satisfies Record<RpcRouteId, keyof StashRpcMethods>;
 
-const routesByRpcMethod = rpcMethodsByRoute satisfies Record<keyof StashRpcMethods, RouteId>;
+const routesByRpcMethod = rpcMethodsByRoute satisfies Record<keyof StashRpcMethods, RpcRouteId>;
 
 describe("StashRpcMethods route pin", () => {
-  it("covers every RouteId and exposes no extra method keys", () => {
+  it("covers every transport-eligible RouteId and exposes no extra method keys", () => {
     expect(routesByRpcMethod).toBe(rpcMethodsByRoute);
+    const namedRpcRouteIds = ROUTES.filter(({ id }) => transportForRoute(id) === "any").map(
+      ({ id }) => id,
+    );
+    expect(new Set(Object.keys(rpcMethodsByRoute))).toEqual(new Set(namedRpcRouteIds));
+    expect(ROUTE_CONTRACTS.stashEvents.transport).toBe("fetch-only");
+    expect(rpcMethodsByRoute).not.toHaveProperty("stashEvents");
   });
 
   it("accepts an omitted rotation grace period at the public RPC boundary", () => {

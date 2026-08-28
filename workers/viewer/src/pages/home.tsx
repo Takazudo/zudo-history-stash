@@ -139,7 +139,6 @@ function HomeContents({ me }: { me: MeResponse }) {
   function handleShowDeleted(event: ChangeEvent<HTMLInputElement>) {
     setShowDeleted(event.currentTarget.checked);
     setRestoreError(null);
-    stashes.reset();
   }
 
   async function handleRestore(stash: StashSummary) {
@@ -154,7 +153,7 @@ function HomeContents({ me }: { me: MeResponse }) {
     try {
       await clientValue(client.withSignal(controller.signal).stashes.restore(stash.name));
       if (controller.signal.aborted || restoreGenerationRef.current !== generation) return;
-      stashes.reset();
+      await stashes.reset(controller.signal);
     } catch (error: unknown) {
       if (!controller.signal.aborted && restoreGenerationRef.current === generation) {
         setRestoreError(error);
@@ -209,7 +208,12 @@ function HomeContents({ me }: { me: MeResponse }) {
               ) : null}
             </div>
             {stashes.initialLoading ? <p className="loading-copy">Loading stashes…</p> : null}
-            {stashes.error ? <ErrorBanner error={stashes.error} onRetry={stashes.retry} /> : null}
+            {stashes.error ? (
+              <ErrorBanner
+                error={stashes.error}
+                onRetry={() => void stashes.retry().catch(() => undefined)}
+              />
+            ) : null}
             {!stashes.initialLoading && !stashes.error && stashes.items.length === 0 ? (
               <p className="empty-copy">No stashes yet. Create the first one.</p>
             ) : null}
@@ -240,7 +244,12 @@ function HomeContents({ me }: { me: MeResponse }) {
               </div>
             </div>
             {changes.initialLoading ? <p className="loading-copy">Loading changes…</p> : null}
-            {changes.error ? <ErrorBanner error={changes.error} onRetry={changes.retry} /> : null}
+            {changes.error ? (
+              <ErrorBanner
+                error={changes.error}
+                onRetry={() => void changes.retry().catch(() => undefined)}
+              />
+            ) : null}
             {!changes.initialLoading && !changes.error && newestChanges.length === 0 ? (
               <p className="empty-copy">No changes have been recorded.</p>
             ) : null}
@@ -267,7 +276,7 @@ function HomeContents({ me }: { me: MeResponse }) {
         onClose={() => setCreateOpen(false)}
         onCreated={() => {
           setCreateOpen(false);
-          stashes.reset();
+          void stashes.reset().catch(() => undefined);
         }}
       />
     </Page>
@@ -294,7 +303,7 @@ export default function HomePage() {
   if (me.state === "error") {
     return (
       <Page title="Stashes" description="Browse every stash and the latest activity.">
-        <ErrorBanner error={me.error} onRetry={me.reload} />
+        <ErrorBanner error={me.error} onRetry={() => void me.reload().catch(() => undefined)} />
       </Page>
     );
   }

@@ -45,7 +45,7 @@ export interface ImportBatchInput {
 
 export interface ImportBatch {
   statements: D1PreparedStatement[];
-  firstVersionStatementIndex: number;
+  versionStatementIndexes: number[];
 }
 
 function operationFence(input: ImportBatchInput): SqlFragment {
@@ -162,19 +162,19 @@ export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch 
   if (input.versions.length === 0) throw new Error("Import batch requires versions");
   const importFence = operationFence(input);
   const statements: D1PreparedStatement[] = [];
-  let firstVersionStatementIndex = -1;
+  const versionStatementIndexes: number[] = [];
 
   for (const entry of input.versions) {
     const before = statements.length;
     if (entry.kind === "put") {
       statements.push(...putStatements(db, input, entry, importFence));
-      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before + 1;
+      versionStatementIndexes.push(before + 1);
     } else if (entry.kind === "delete") {
       statements.push(deleteStatement(db, input, entry, importFence));
-      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before;
+      versionStatementIndexes.push(before);
     } else {
       statements.push(rollbackStatement(db, input, entry, importFence));
-      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before;
+      versionStatementIndexes.push(before);
     }
   }
 
@@ -234,5 +234,5 @@ export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch 
     );
   }
 
-  return { statements, firstVersionStatementIndex };
+  return { statements, versionStatementIndexes };
 }

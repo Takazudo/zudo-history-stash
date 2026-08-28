@@ -1,6 +1,8 @@
 import { Notice, ProposalList } from "@takazudo/zudo-history-stash-ui";
+import { useCallback, useRef } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { proposalListHref, proposalListStatusFrom } from "../app/proposal-routes.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
 import { Page } from "../app/shell/page.js";
 import { ErrorBanner } from "../components/error-banner.js";
 
@@ -10,6 +12,29 @@ export default function ProposalsPage() {
   const status = proposalListStatusFrom(searchParams);
   const pathParam = searchParams.get("path");
   const path = pathParam === null || pathParam.length === 0 ? undefined : pathParam;
+  const refreshRef = useRef<((signal: AbortSignal) => Promise<void>) | null>(null);
+  const registerLiveRefresh = useCallback((refresh: (signal: AbortSignal) => Promise<void>) => {
+    refreshRef.current = refresh;
+    return () => {
+      if (refreshRef.current === refresh) refreshRef.current = null;
+    };
+  }, []);
+  useViewerLiveRefresh(
+    useCallback(
+      async ({ signal }) => {
+        const refresh = refreshRef.current;
+        if (refresh === null) {
+          throw new Error(
+            `The ${status} proposal list${path === undefined ? "" : ` for ${path}`} in ${stash ?? "the active stash"} is not ready to refresh.`,
+          );
+        }
+        await refresh(signal);
+      },
+      // Scope the provider listener to the keyed ProposalList consumer lifecycle. Its signal must
+      // abort an old filter/path command even when that command's transport ignores cancellation.
+      [path, stash, status],
+    ),
+  );
 
   if (!stash) {
     return (
@@ -51,7 +76,12 @@ export default function ProposalsPage() {
             <Link to={proposalListHref(stash, { status })}>Clear path filter</Link>
           </Notice>
         )}
-        <ProposalList path={path} stash={stash} status={status} />
+        <ProposalList
+          path={path}
+          registerLiveRefresh={registerLiveRefresh}
+          stash={stash}
+          status={status}
+        />
       </div>
     </Page>
   );

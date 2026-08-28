@@ -114,7 +114,8 @@ Routes reachable by stash principals use three Cloudflare rate-limit buckets. `R
 600 operations per 60 seconds, `RL_WRITE` permits 60 per 60 seconds, and `RL_DIFF` permits 120 per
 60 seconds. Stored, candidate, and proposal diff routes use `RL_DIFF`; write-capability file
 routes plus proposal create/approve/reject use `RL_WRITE`; `/v1/me`, stash metadata, file
-reads/lists/history, proposal list/get, and the per-stash change feed use `RL_READ`.
+reads/lists/history, proposal list/get, the per-stash change feed, and each live-events connection
+use `RL_READ`.
 
 Each request checks `p:<tokenId>` first and then `s:<principal-stash>`. Lifecycle routes and
 `POST /v1/admin/gc` use the write class; `GET /v1/admin/gc/runs` uses the read class. A failed principal check
@@ -251,6 +252,12 @@ callers should catch that boundary. The RPC client transport preserves `Content-
 `Idempotency-Key`, and `If-None-Match`; its responses retain `ETag` and `Idempotent-Replayed`
 behavior. A rejected binding call through the client instead throws `StashHttpError` with
 `status === 0`.
+
+The live events route is deliberately fetch-only and has no named `StashRpc` method. SSE is a
+long-lived HTTP response rather than a structured-clone RPC result; consumers that need live
+events use the fetch transport, including an HTTP service binding. The generic
+`STASH_RPC.request()` bridge remains total for low-level HTTP-shaped dispatch, but it does not make
+the route part of the typed named-method surface.
 
 Cloudflare RPC serialisation is capped at 32 MiB. Independently, this API limits text bodies to
 5,000,000 UTF-8 bytes and encoded HTTP requests to 32 MiB, so the API limits still apply before an
@@ -525,6 +532,18 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
   `409 proposal-closed` for an applied proposal, `413 payload-too-large`, `429 rate-limited` with
   `Retry-After: 60`.
 
+### `GET /v1/stashes/:stash/events`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token. This route is
+  fetch-only and one `RL_READ` charge is applied when the connection opens.
+- **Request:** Optional `since=<change-id>`, a non-negative integer replay checkpoint. No body.
+- **Response:** `200 text/event-stream` with `Cache-Control: no-store` and
+  `X-Accel-Buffering: no`. The stream uses `event:`, `id:`, and `data:` fields for `ready`,
+  `change`, `proposal`, and `reconnect` events; heartbeat comments are not events. See
+  [Live change events](#live-change-events).
+- **Errors:** Before any stream bytes: `401 unauthorized`, `403 scope`, `404 not-found` for an
+  unknown, deleted, or foreign stash, and `429 rate-limited` with `Retry-After: 60`.
+
 ### `GET /v1/stashes/:stash/files`
 
 - **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
@@ -664,6 +683,65 @@ Moving the head never changes the displayed diff. An applied proposal normally r
 `stale: true` afterward because approval advanced the head; consumers should read `status` before
 interpreting that flag.
 
+## Live change events
+
+`GET /v1/stashes/:stash/events?since=<changeId>` is an advisory Server-Sent Events (SSE) channel.
+Callers still refetch the existing file list, history, change-feed, and proposal surfaces; the live
+channel is never the source of truth. It is intentionally fetch-only. Browser `EventSource`
+cannot attach the required bearer `Authorization` header, so clients use `fetch` and read the
+response stream. The named RPC table mechanically excludes this route.
+
+Each SSE frame uses an `event:` name, optional `id:`, and one JSON `data:` object. Change frame IDs
+equal their exact `changeId`; heartbeats are the comment `: ping` every 25 seconds and do not
+produce `StashEvent` values.
+
+```text
+event: change
+id: 42
+data: {"type":"change","changeId":42,"stash":"demo","path":"docs/guide.md","version":7,"kind":"put","origin":"viewer-1","createdAt":"2026-08-28T00:00:00.000Z"}
+```
+
+The validated event union is:
+
+- `ready { type, head: number | null, checkpoint: number | null }`, emitted after replay;
+- `change { type, changeId, stash, path, version, kind, origin: string | null, createdAt }`;
+- `proposal { type, proposalId, stash, path, status, origin: string | null }`;
+- `reconnect { type, reason: "lifetime" | "replay-limit" | "shutdown" }`.
+
+The server authorizes the credential, resolves a live stash, and charges `RL_READ` before sending
+bytes. It then subscribes to the stash Durable Object first and buffers live frames while replaying
+`listChanges(stash, { since, limit: 200 })`, for at most five pages. After replay it emits `ready`,
+drains the buffered live frames, and passes new live frames through. Subscribing before replay
+closes the commit-between-read-and-subscribe gap. When more than five replay pages remain, the
+server emits `reconnect { reason: "replay-limit" }` after those pages and closes so the client can
+continue from the returned checkpoint.
+
+`ready.checkpoint` is the last change ID replayed, or the current `head` on a fresh connection.
+The client reconnects with that replay checkpoint (or the last replayed change ID), not merely the
+latest live ID: Durable Object delivery can arrive out of order, so advancing the checkpoint from
+a live frame could skip a D1 change. Duplicates across the replay/live boundary are valid and the
+client removes them by exact ID over a bounded recent-ID set. Proposal events are live-only and do
+not advance the replay cursor; focus/visibility refresh and polling recover any missed proposal
+state.
+
+Healthy streams rotate after a bounded lifetime (300 seconds by default). A clean close or
+`reconnect` reason is normal rotation, not a failure; clients reconnect immediately with at most
+250 ms jitter. Network failures use bounded exponential backoff separately. Revoking or expiring a
+token, or soft-deleting a stash, stops delivery no later than the next forced reconnect; the bound
+is the lesser of the configured maximum stream lifetime and any earlier token-expiry boundary.
+Reauthorization then returns `401` or `404` before a new stream opens.
+
+Mutations may send `X-Stash-Client-Id` with a stable client identifier matching
+`^[!-~](?:[ -~]{0,62}[!-~])?$`: 1–64 printable ASCII characters with no leading or trailing
+whitespace. The client sends it on mutation operations, and live events echo it as `origin`;
+absent identifiers produce `null` and the value is advisory, never authorization. Replayed changes
+always have `origin: null`.
+
+The fan-out Durable Object uses SQLite-backed Durable Objects, which are available on Cloudflare's
+free plan. An open SSE response keeps the object active and non-hibernating, so an always-open
+viewer accrues Durable Object duration continuously even though each connection rotates every five
+minutes.
+
 ## Diff results
 
 Stored and candidate diffs return one of three states:
@@ -797,8 +875,9 @@ including escaping, stays at or below 32 MiB.
 ## CORS and browser tokens
 
 Browser origins must appear in the Worker's `ALLOWED_ORIGINS` allow-list. Preflight is open. The
-API accepts `Authorization`, `Content-Type`, `If-None-Match`, and `Idempotency-Key`, and exposes
-`ETag`, `X-Stash-Version`, `Idempotent-Replayed`, and `Retry-After`.
+API accepts `Authorization`, `Content-Type`, `If-None-Match`, `Idempotency-Key`, and
+`X-Stash-Client-Id`, and exposes `ETag`, `X-Stash-Version`, `Idempotent-Replayed`, and
+`Retry-After`. `X-Stash-Client-Id` is a request header only and is not exposed in responses.
 
 > **Browser-token warning:** only put `read` tokens in client-side code. A `write` token is a
 > full-stash credential: anyone who extracts it can replace, delete, or roll back every path in

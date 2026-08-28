@@ -86,6 +86,7 @@ describe("rate-limit route buckets", () => {
       getProposalDiff: "RL_DIFF",
       approveProposal: "RL_WRITE",
       rejectProposal: "RL_WRITE",
+      stashEvents: "RL_READ",
       listFiles: "RL_READ",
       getFile: "RL_READ",
       putFile: "RL_WRITE",
@@ -96,6 +97,24 @@ describe("rate-limit route buckets", () => {
       diffCandidate: "RL_DIFF",
       getStashChanges: "RL_READ",
     });
+  });
+
+  it("charges an events connection to RL_READ before the skeleton handler", async () => {
+    await seedStash("alpha");
+    const token = await mintToken("alpha", "read");
+    const read = createLimiter(() => Promise.resolve({ success: false }));
+    const bindings = createTestEnv({ env: { RL_READ: read } }).env;
+
+    const response = await request(
+      app,
+      "http://stash.test/v1/stashes/alpha/events?since=0",
+      { headers: bearer(token.token) },
+      bindings,
+    );
+
+    await expectRateLimited(response);
+    expect(read.limit).toHaveBeenCalledOnce();
+    expect(read.limit).toHaveBeenCalledWith({ key: `p:${token.id}` });
   });
 
   it("uses the diff bucket instead of the read bucket", async () => {

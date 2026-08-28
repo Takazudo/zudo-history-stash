@@ -1,6 +1,11 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { R2_SPILL_BYTES, sha256Hex, type ImportBody } from "@takazudo/zudo-history-stash-core";
+import {
+  R2_SPILL_BYTES,
+  sha256Hex,
+  utf8ByteLength,
+  type ImportBody,
+} from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../../src/env.js";
 import { blobKey, parseBlobKey, type BlobGenerationFactory } from "../../src/d1/blobs.js";
 import { createImport } from "../../src/d1/import.js";
@@ -440,18 +445,36 @@ describe("history import store", () => {
       versions: [{ kind: "rollback", body: null, rollbackOf: 1, createdAt: 1_003 }],
     });
     expect(continued).toMatchObject({ ok: true, value: { headVersion: 3 } });
+    if (!continued.ok) throw new Error("Expected continuation rollback to commit");
+    const expectedSize = utf8ByteLength(body);
+    expect(expectedSize).toBeGreaterThan(0);
+    expect(continued.createdVersions).toEqual([
+      expect.objectContaining({ version: 3, kind: "rollback", size: expectedSize }),
+    ]);
     expect(continuationCalls).toEqual({ get: 0, put: 0 });
     expect(await counts(stash)).toEqual({ blobs: 1, versions: 3, files: 1, idempotency: 0 });
     const versions = await env.DB.prepare(
-      `SELECT version, kind, blob_hash, rollback_of FROM versions
+      `SELECT version, kind, blob_hash, size_bytes, rollback_of FROM versions
        WHERE stash_name = ? AND path = ? ORDER BY version`,
     )
       .bind(stash, "history.txt")
       .all();
     expect(versions.results).toEqual([
-      { version: 1, kind: "put", blob_hash: hash, rollback_of: null },
-      { version: 2, kind: "rollback", blob_hash: hash, rollback_of: 1 },
-      { version: 3, kind: "rollback", blob_hash: hash, rollback_of: 1 },
+      { version: 1, kind: "put", blob_hash: hash, size_bytes: expectedSize, rollback_of: null },
+      {
+        version: 2,
+        kind: "rollback",
+        blob_hash: hash,
+        size_bytes: expectedSize,
+        rollback_of: 1,
+      },
+      {
+        version: 3,
+        kind: "rollback",
+        blob_hash: hash,
+        size_bytes: expectedSize,
+        rollback_of: 1,
+      },
     ]);
     const [row] = (
       await env.DB.prepare("SELECT r2_key FROM blobs WHERE stash_name = ? AND hash = ?")

@@ -1,11 +1,19 @@
 import { createStashClient, type StashClient, type StashFetch } from "@takazudo/zudo-history-stash";
 import { createFakeStash, type FakeStash } from "@takazudo/zudo-history-stash/testing";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, Outlet, RouterProvider, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "@takazudo/zudo-history-stash-ui";
+import {
+  StashClientProvider,
+  type ViewerStashClientFactory,
+} from "../app/auth/stash-client-provider.js";
+import { TOKEN_STORAGE_KEY } from "../app/auth/token-store.js";
+import { ViewerLiveUpdatesProvider } from "../app/live-updates.js";
 import { hasProposalCreatedFlash, PROPOSAL_CREATED_FLASH } from "../app/proposal-routes.js";
+import { ViewerStashUiProvider } from "../app/viewer-stash-ui-provider.js";
+import { createFakeBackedViewerClient } from "../test/fake-viewer-client.js";
 import EditPage from "./edit.js";
 
 const BASE_URL = "https://stash.test";
@@ -17,6 +25,7 @@ interface Fixture {
   fake: FakeStash;
   client: StashClient;
   clientForSignal: (signal: AbortSignal) => StashClient;
+  remoteClient: StashClient;
   requests: Request[];
 }
 
@@ -57,6 +66,7 @@ async function createFixture(token = ADMIN_TOKEN): Promise<Fixture> {
     client: createStashClient({ baseUrl: BASE_URL, token, fetch }),
     clientForSignal: (signal) =>
       createStashClient({ baseUrl: BASE_URL, token, fetch: withSignal(fetch, signal) }),
+    remoteClient: seedClient,
     requests,
   };
 }
@@ -107,6 +117,46 @@ function renderEditRoute(initialEntry: string, fixture: Fixture) {
   return { router, ...render(<RouterProvider router={router} />) };
 }
 
+function renderLiveEditRoute(
+  initialEntry: string,
+  fixture: Fixture,
+  suppliedFactory?: ViewerStashClientFactory,
+) {
+  sessionStorage.setItem(TOKEN_STORAGE_KEY, ADMIN_TOKEN);
+  let clientId = "";
+  const clientFactory: ViewerStashClientFactory = (options) => {
+    clientId = options.clientId;
+    return (
+      suppliedFactory?.(options) ??
+      createFakeBackedViewerClient(fixture.fake, ADMIN_TOKEN, options.clientId)
+    );
+  };
+  const router = createMemoryRouter(
+    [
+      {
+        element: (
+          <StashClientProvider clientFactory={clientFactory}>
+            <ViewerStashUiProvider>
+              <ViewerLiveUpdatesProvider>
+                <Outlet />
+              </ViewerLiveUpdatesProvider>
+            </ViewerStashUiProvider>
+          </StashClientProvider>
+        ),
+        children: [{ path: "/s/:stash/edit/*", element: <EditPage /> }],
+      },
+    ],
+    { initialEntries: [initialEntry] },
+  );
+  return { clientId: () => clientId, router, ...render(<RouterProvider router={router} />) };
+}
+
+async function flushMicrotasks(rounds = 8): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < rounds; index += 1) await Promise.resolve();
+  });
+}
+
 function mockWideViewport(): void {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
@@ -131,6 +181,300 @@ beforeEach(() => {
 });
 
 describe("EditPage", () => {
+  it("marks only an authoritative foreign same-path live change stale without replacing the draft", async () => {
+    const fixture = await createFixture();
+    const rendered = renderLiveEditRoute("/s/notes/edit/docs/readme.txt", fixture);
+    const editor = (await screen.findByRole("textbox", {
+      name: "Draft body",
+    })) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "keep my dirty draft\n" } });
+    await waitFor(() => expect(fixture.fake.events.subscriberCount(STASH)).toBe(1));
+    await flushMicrotasks();
+
+    const unrelated = await fixture.remoteClient.files(STASH).put("docs/other.txt", {
+      body: "unrelated",
+      expectedVersion: null,
+      author: "Peer",
+      message: "Unrelated",
+    });
+    if (!unrelated.ok) throw new Error(unrelated.error.message);
+    await flushMicrotasks();
+    expect(screen.queryByText(/Head moved to v/u)).toBeNull();
+    expect(editor.value).toBe("keep my dirty draft\n");
+
+    const ownClient = createStashClient({
+      baseUrl: BASE_URL,
+      token: ADMIN_TOKEN,
+      clientId: rendered.clientId(),
+      fetch: fixture.fake.fetch,
+    });
+    const own = await ownClient.files(STASH).put(PATH, {
+      body: "own tab write\n",
+      expectedVersion: 2,
+      author: "Me",
+      message: "Own origin",
+    });
+    if (!own.ok) throw new Error(own.error.message);
+    await flushMicrotasks();
+    expect(screen.queryByText(/Head moved to v/u)).toBeNull();
+    expect(editor.value).toBe("keep my dirty draft\n");
+
+    const foreign = await fixture.remoteClient.files(STASH).put(PATH, {
+      body: "foreign write\n",
+      expectedVersion: own.value.version,
+      author: "Peer",
+      message: "Foreign same path",
+    });
+    if (!foreign.ok) throw new Error(foreign.error.message);
+    expect(await screen.findByText(`Head moved to v${foreign.value.version} by Peer`)).toBeTruthy();
+    expect(editor.value).toBe("keep my dirty draft\n");
+    expect(screen.getByText(/remains fenced to v2/u)).toBeTruthy();
+  });
+
+  it("retains a ready refresh until the edit workbench registers during its initial load", async () => {
+    const fixture = await createFixture();
+    let releaseInitialHead!: () => void;
+    let markInitialHeadStarted!: () => void;
+    const initialHeadGate = new Promise<void>((resolve) => {
+      releaseInitialHead = resolve;
+    });
+    const initialHeadStarted = new Promise<void>((resolve) => {
+      markInitialHeadStarted = resolve;
+    });
+    let initialHeadCaptured = false;
+    let changesFeedCalls = 0;
+
+    const factory: ViewerStashClientFactory = ({ token, clientId }) => {
+      const create = (signal?: AbortSignal): StashClient =>
+        createStashClient({
+          baseUrl: BASE_URL,
+          token,
+          clientId,
+          fetch: async (input, init) => {
+            const requestInit = signal && !init?.signal ? { ...init, signal } : init;
+            const request = new Request(input, requestInit);
+            const url = new URL(request.url);
+            if (url.pathname === "/v1/stashes/notes/changes") changesFeedCalls += 1;
+            if (
+              !initialHeadCaptured &&
+              request.method === "GET" &&
+              url.pathname === "/v1/stashes/notes/files/docs/readme.txt" &&
+              !url.searchParams.has("version")
+            ) {
+              initialHeadCaptured = true;
+              const response = await fixture.fake.fetch(input, requestInit);
+              markInitialHeadStarted();
+              await initialHeadGate;
+              return response;
+            }
+            return fixture.fake.fetch(input, requestInit);
+          },
+        });
+      const client = create();
+      return {
+        ...client,
+        me: ({ signal } = {}) => create(signal).me(),
+        withSignal: (signal) => create(signal),
+      };
+    };
+
+    renderLiveEditRoute("/s/notes/edit/docs/readme.txt", fixture, factory);
+    await initialHeadStarted;
+    await waitFor(() => expect(changesFeedCalls).toBeGreaterThan(0));
+
+    const foreign = await fixture.remoteClient.files(STASH).put(PATH, {
+      body: "foreign during workbench gate\n",
+      expectedVersion: 2,
+      author: "Peer",
+      message: "Ready gap",
+    });
+    if (!foreign.ok) throw new Error(foreign.error.message);
+    await flushMicrotasks(32);
+    releaseInitialHead();
+
+    const editor = (await screen.findByRole("textbox", {
+      name: "Draft body",
+    })) as HTMLTextAreaElement;
+    expect(editor.value).toBe("head body\n");
+    expect(await screen.findByText(`Head moved to v${foreign.value.version} by Peer`)).toBeTruthy();
+    expect(editor.value).toBe("head body\n");
+    expect(screen.getByText(/remains fenced to v2/u)).toBeTruthy();
+  });
+
+  it("aborts a blocked old edit refresh so navigation can reconcile the new stash", async () => {
+    const fixture = await createFixture();
+    fixture.fake.createStash("archive");
+    const archived = await fixture.remoteClient.files("archive").put(PATH, {
+      body: "archived body\n",
+      expectedVersion: null,
+      author: "Fixture",
+      message: "Archive",
+    });
+    if (!archived.ok) throw new Error(archived.error.message);
+
+    let blockNotesHead = false;
+    let blockedSignal: AbortSignal | undefined;
+    let markBlocked!: () => void;
+    let markArchiveFeed!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      markBlocked = resolve;
+    });
+    const archiveFeed = new Promise<void>((resolve) => {
+      markArchiveFeed = resolve;
+    });
+    const never = new Promise<Response>(() => undefined);
+
+    const factory: ViewerStashClientFactory = ({ token, clientId }) => {
+      const create = (signal?: AbortSignal): StashClient =>
+        createStashClient({
+          baseUrl: BASE_URL,
+          token,
+          clientId,
+          fetch: async (input, init) => {
+            const requestInit = signal && !init?.signal ? { ...init, signal } : init;
+            const request = new Request(input, requestInit);
+            const url = new URL(request.url);
+            if (
+              blockNotesHead &&
+              request.method === "GET" &&
+              url.pathname === "/v1/stashes/notes/files/docs/readme.txt" &&
+              !url.searchParams.has("version")
+            ) {
+              blockedSignal = requestInit?.signal ?? request.signal;
+              markBlocked();
+              return never;
+            }
+            if (url.pathname === "/v1/stashes/archive/changes") markArchiveFeed();
+            return fixture.fake.fetch(input, requestInit);
+          },
+        });
+      const client = create();
+      return {
+        ...client,
+        me: ({ signal } = {}) => create(signal).me(),
+        withSignal: (signal) => create(signal),
+      };
+    };
+
+    const rendered = renderLiveEditRoute("/s/notes/edit/docs/readme.txt", fixture, factory);
+    const editor = (await screen.findByRole("textbox", {
+      name: "Draft body",
+    })) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "keep the blocked draft\n" } });
+    await waitFor(() => expect(fixture.fake.events.subscriberCount(STASH)).toBe(1));
+
+    blockNotesHead = true;
+    const foreign = await fixture.remoteClient.files(STASH).put(PATH, {
+      body: "foreign while blocked\n",
+      expectedVersion: 2,
+      author: "Peer",
+      message: "Block reconciliation",
+    });
+    if (!foreign.ok) throw new Error(foreign.error.message);
+    await blocked;
+
+    await act(async () => {
+      await rendered.router.navigate("/s/archive/edit/docs/readme.txt");
+    });
+    await archiveFeed;
+
+    await waitFor(() => expect(blockedSignal?.aborted).toBe(true));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("textbox", { name: "Draft body" }) as HTMLTextAreaElement).value,
+      ).toBe("archived body\n"),
+    );
+    await waitFor(() => {
+      expect(fixture.fake.events.subscriberCount(STASH)).toBe(0);
+      expect(fixture.fake.events.subscriberCount("archive")).toBe(1);
+    });
+  });
+
+  it("aborts a blocked edit verification when the path changes within the same stash", async () => {
+    const fixture = await createFixture();
+    const otherPath = "docs/other.txt";
+    const other = await fixture.remoteClient.files(STASH).put(otherPath, {
+      body: "other body\n",
+      expectedVersion: null,
+      author: "Fixture",
+      message: "Other path",
+    });
+    if (!other.ok) throw new Error(other.error.message);
+
+    let blockOldHead = false;
+    let blockedSignal: AbortSignal | undefined;
+    let markBlocked!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      markBlocked = resolve;
+    });
+    const never = new Promise<Response>(() => undefined);
+    let notesFeedCalls = 0;
+
+    const factory: ViewerStashClientFactory = ({ token, clientId }) => {
+      const create = (signal?: AbortSignal): StashClient =>
+        createStashClient({
+          baseUrl: BASE_URL,
+          token,
+          clientId,
+          fetch: async (input, init) => {
+            const requestInit = signal && !init?.signal ? { ...init, signal } : init;
+            const request = new Request(input, requestInit);
+            const url = new URL(request.url);
+            if (url.pathname === "/v1/stashes/notes/changes") notesFeedCalls += 1;
+            if (
+              blockOldHead &&
+              request.method === "GET" &&
+              url.pathname === "/v1/stashes/notes/files/docs/readme.txt" &&
+              !url.searchParams.has("version")
+            ) {
+              blockedSignal = requestInit?.signal ?? request.signal;
+              markBlocked();
+              return never;
+            }
+            return fixture.fake.fetch(input, requestInit);
+          },
+        });
+      const client = create();
+      return {
+        ...client,
+        me: ({ signal } = {}) => create(signal).me(),
+        withSignal: (signal) => create(signal),
+      };
+    };
+
+    const rendered = renderLiveEditRoute("/s/notes/edit/docs/readme.txt", fixture, factory);
+    const editor = (await screen.findByRole("textbox", {
+      name: "Draft body",
+    })) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "keep the abandoned draft\n" } });
+    await waitFor(() => expect(fixture.fake.events.subscriberCount(STASH)).toBe(1));
+    await waitFor(() => expect(notesFeedCalls).toBeGreaterThan(0));
+
+    blockOldHead = true;
+    const foreign = await fixture.remoteClient.files(STASH).put(PATH, {
+      body: "foreign while path A is blocked\n",
+      expectedVersion: 2,
+      author: "Peer",
+      message: "Block old path",
+    });
+    if (!foreign.ok) throw new Error(foreign.error.message);
+    await blocked;
+    const feedCallsBeforeNavigation = notesFeedCalls;
+
+    await act(async () => {
+      await rendered.router.navigate(`/s/notes/edit/${otherPath}`);
+    });
+
+    await waitFor(() => expect(blockedSignal?.aborted).toBe(true));
+    await waitFor(() => expect(notesFeedCalls).toBeGreaterThan(feedCallsBeforeNavigation));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("textbox", { name: "Draft body" }) as HTMLTextAreaElement).value,
+      ).toBe("other body\n"),
+    );
+    expect(fixture.fake.events.subscriberCount(STASH)).toBe(1);
+  });
+
   it("reads stash, wildcard path, and from=N into the package workbench", async () => {
     const fixture = await createFixture();
     renderEditRoute("/s/notes/edit/docs/readme.txt?from=1", fixture);
@@ -161,6 +505,7 @@ describe("EditPage", () => {
           token: readToken,
           fetch: withSignal(fetch, signal),
         }),
+      remoteClient: admin.remoteClient,
       requests,
     };
     renderEditRoute("/s/notes/edit/docs/readme.txt", fixture);

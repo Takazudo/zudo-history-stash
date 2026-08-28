@@ -1,16 +1,22 @@
+import {
+  createStashClient,
+  type ClientResult,
+  type FileListResponse,
+  type FileSummary,
+  type ListChangesResult,
+  type ProposalListResponse,
+  type StashFilesClient,
+  type StashProposalsClient,
+} from "@takazudo/zudo-history-stash";
+import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type {
-  ClientResult,
-  FileListResponse,
-  FileSummary,
-  ListChangesResult,
-  ProposalListResponse,
-  StashFilesClient,
-  StashProposalsClient,
-} from "@takazudo/zudo-history-stash";
 import { describe, expect, it, vi } from "vitest";
-import { change, createFakeViewerClient } from "../test/fake-viewer-client.js";
+import {
+  change,
+  createFakeBackedViewerClient,
+  createFakeViewerClient,
+} from "../test/fake-viewer-client.js";
 import { renderViewerRoute } from "../test/render-viewer-route.js";
 
 function file(overrides: Partial<FileSummary> = {}): FileSummary {
@@ -54,6 +60,52 @@ function clientWithProposalList(list: StashProposalsClient["list"], readOnly = f
 }
 
 describe("StashPage", () => {
+  it("refreshes files, changes, and proposal count from the shared live provider", async () => {
+    const token = "viewer-stash-live";
+    const fake = createFakeStash({ adminToken: token });
+    fake.createStash("notes");
+    const seed = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "fixture",
+      fetch: fake.fetch,
+    });
+    const first = await seed
+      .files("notes")
+      .put("docs/first.txt", { body: "first", expectedVersion: null });
+    if (!first.ok) throw new Error(first.error.message);
+    renderViewerRoute("/s/notes", createFakeBackedViewerClient(fake, token, "viewer-live-tab"));
+
+    const filesRegion = screen.getByRole("region", { name: "Files" });
+    expect(await within(filesRegion).findByRole("link", { name: "docs/first.txt" })).toBeTruthy();
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(1));
+
+    const peer = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "peer-tab",
+      fetch: fake.fetch,
+    });
+    const second = await peer
+      .files("notes")
+      .put("docs/second.txt", { body: "second", expectedVersion: null });
+    if (!second.ok) throw new Error(second.error.message);
+    expect(await within(filesRegion).findByRole("link", { name: "docs/second.txt" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByText("Recent changes").closest("section")?.textContent).toContain(
+        "docs/second.txt",
+      ),
+    );
+
+    const proposal = await peer.proposals("notes").create({
+      path: "docs/second.txt",
+      body: "candidate",
+      baseVersion: 1,
+    });
+    if (!proposal.ok) throw new Error(proposal.error.message);
+    expect(await screen.findByRole("link", { name: "Proposals (1 open)" })).toBeTruthy();
+  });
+
   it("shows the loading state", () => {
     const client = clientWithFiles({
       list: vi.fn(

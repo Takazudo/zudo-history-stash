@@ -43,12 +43,24 @@ import type {
   RollbackResult,
   RestoreStashResult,
   StashListResponse,
+  StashChangeEvent,
+  StashEvent,
+  StashProposalEvent,
+  StashReadyEvent,
+  StashReconnectEvent,
   StashRecord,
   StashSummary,
   TokenListResponse,
   TokenRecord,
   VersionRecord,
 } from "../types.js";
+import {
+  StashChangeEventSchema,
+  StashEventSchema,
+  StashProposalEventSchema,
+  StashReadyEventSchema,
+  StashReconnectEventSchema,
+} from "../schemas.js";
 
 const TimestampSchema = z.iso.datetime();
 const HashSchema = z.string().regex(/^sha256-[0-9a-f]{64}$/);
@@ -437,6 +449,11 @@ interface ResponseTypeMap {
   RestoreStashResult: RestoreStashResult;
   GcRunResult: GcRunResult;
   GcRunsResponse: GcRunsResponse;
+  StashReadyEvent: StashReadyEvent;
+  StashChangeEvent: StashChangeEvent;
+  StashProposalEvent: StashProposalEvent;
+  StashReconnectEvent: StashReconnectEvent;
+  StashEvent: StashEvent;
   ProposalRecord: ProposalRecord;
   ProposalWithBody: ProposalWithBody;
   ProposalListResponse: ProposalListResponse;
@@ -489,6 +506,11 @@ export const RESPONSE_SCHEMAS = {
   RestoreStashResult: StashRecordSchema,
   GcRunResult: GcRunResultSchema,
   GcRunsResponse: GcRunsResponseSchema,
+  StashReadyEvent: StashReadyEventSchema,
+  StashChangeEvent: StashChangeEventSchema,
+  StashProposalEvent: StashProposalEventSchema,
+  StashReconnectEvent: StashReconnectEventSchema,
+  StashEvent: StashEventSchema,
   ProposalRecord: ProposalRecordSchema,
   ProposalWithBody: ProposalWithBodySchema,
   ProposalListResponse: ProposalListResponseSchema,

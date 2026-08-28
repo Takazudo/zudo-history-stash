@@ -32,4 +32,26 @@ describe("API reference route coverage", () => {
     expect(deferred).toContain("download endpoints");
     expect(deferred).not.toContain("R2 spill");
   });
+
+  it("documents the fetch-only live-events framing, handoff, recovery, and cost contract", () => {
+    const live = section("Live change events");
+    for (const phrase of [
+      "Server-Sent Events",
+      "EventSource",
+      "Authorization",
+      "subscribes to the stash Durable Object first",
+      "ready.checkpoint",
+      "latest live ID",
+      "exact ID",
+      "Proposal events are live-only",
+      'reason: "lifetime" | "replay-limit" | "shutdown"',
+      ": ping",
+      "token-expiry boundary",
+      "X-Stash-Client-Id",
+      "non-hibernating",
+      "duration continuously",
+    ]) {
+      expect(live).toContain(phrase);
+    }
+  });
 });

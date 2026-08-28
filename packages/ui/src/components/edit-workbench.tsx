@@ -23,7 +23,7 @@ import {
   type SourceLoadResult,
   type WorkbenchState,
 } from "../hooks/use-workbench.js";
-import { useCanWrite, useMe, useStashClient } from "../provider/hooks.js";
+import { useCanWrite, useMe, useStashClient, useStashClientForSignal } from "../provider/hooks.js";
 import { Button } from "../primitives/button.js";
 import { Notice, type NoticeVariant } from "../primitives/notice.js";
 import { Textarea } from "../primitives/textarea.js";
@@ -41,12 +41,20 @@ export interface EditWorkbenchSaved {
   record: FileRecord;
 }
 
+export interface EditWorkbenchLiveRefreshOptions {
+  reconcileCurrentHead: boolean;
+  signal: AbortSignal;
+}
+
+export type EditWorkbenchLiveRefresh = (options: EditWorkbenchLiveRefreshOptions) => Promise<void>;
+
 export interface EditWorkbenchProps {
   stash: string;
   path: string;
   initialSource?: number;
   onSaved?: (result: EditWorkbenchSaved) => void;
   onProposed?: (record: ProposalRecord) => void;
+  registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
 }
 
 interface WorkbenchFlash {
@@ -104,6 +112,7 @@ function EditWorkbenchAllowed({
   initialSource,
   onSaved,
   onProposed,
+  registerLiveRefresh,
 }: EditWorkbenchProps) {
   const workbench = useWorkbench({ stash, path, initialSource });
 
@@ -129,6 +138,7 @@ function EditWorkbenchAllowed({
       onProposed={onProposed}
       onSaved={onSaved}
       path={path}
+      registerLiveRefresh={registerLiveRefresh}
       stash={stash}
       workbench={workbench}
     />
@@ -195,6 +205,20 @@ function bannerFor({
     };
   }
 
+  if (machine.state === "error" && machine.verification === true) {
+    return {
+      variant: "error",
+      content: (
+        <>
+          <strong>Could not verify the current file head.</strong>
+          <span>{machine.message}</span>
+          <span>Your draft remains unchanged and fenced to head v{headVersion}.</span>
+          {supplement}
+        </>
+      ),
+    };
+  }
+
   if (completionError !== null) {
     return {
       variant: "error",
@@ -255,14 +279,17 @@ function EditWorkbenchReady({
   workbench,
   onSaved,
   onProposed,
+  registerLiveRefresh,
 }: {
   stash: string;
   path: string;
   workbench: WorkbenchState;
   onSaved?: (result: EditWorkbenchSaved) => void;
   onProposed?: (record: ProposalRecord) => void;
+  registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
 }) {
   const client = useStashClient();
+  const clientForSignal = useStashClientForSignal();
   const titleId = useId();
   const preferences = useDiffViewPreferences();
   const [railOpen, setRailOpen] = useState(true);
@@ -286,12 +313,34 @@ function EditWorkbenchReady({
 
   const machine = useSaveMachine({
     client,
+    clientForSignal,
     stash,
     path,
     head,
     draft: workbench.draft,
     lineEnding: workbench.lineEnding,
   });
+  const liveRefreshRuntimeRef = useRef({ machine, workbench });
+  useLayoutEffect(() => {
+    liveRefreshRuntimeRef.current = { machine, workbench };
+  }, [machine, workbench]);
+
+  useEffect(() => {
+    if (registerLiveRefresh === undefined) return;
+    return registerLiveRefresh(async ({ reconcileCurrentHead, signal }) => {
+      const current = liveRefreshRuntimeRef.current;
+      const results = await Promise.allSettled([
+        current.workbench.reloadHistory(signal).then((reloaded) => {
+          if (!reloaded) throw new Error("The edit history refresh did not complete.");
+        }),
+        reconcileCurrentHead ? current.machine.verifyCurrentHead(signal) : Promise.resolve(),
+      ]);
+      const failed = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failed !== undefined) throw failed.reason;
+    });
+  }, [registerLiveRefresh]);
 
   const reloadAndCompare = useCallback(async () => {
     const record = await machine.reloadAndCompare();
