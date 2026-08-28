@@ -12,6 +12,7 @@ export interface Env {
 
 export const DEMO_STASH = "example-rpc-demo";
 export const DEMO_PATH = "demo.txt";
+export const BINARY_DEMO_PATH = "demo.bin";
 const DEMO_BODY = "Written by the example RPC consumer.\n";
 
 function versionForPut(get: FileGetResult): number | null | undefined {
@@ -31,7 +32,8 @@ function rollbackTarget(get: FileGetResult, putVersion: number): number {
  */
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  if (url.pathname !== "/demo") return new Response("Not found", { status: 404 });
+  if (url.pathname !== "/demo" && url.pathname !== "/binary-demo")
+    return new Response("Not found", { status: 404 });
   if (request.method !== "GET") {
     return new Response("Method not allowed", { status: 405, headers: { Allow: "GET" } });
   }
@@ -39,6 +41,28 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   const client = createStashClient({
     transport: { kind: "rpc", binding: env.STASH_RPC, token: env.STASH_TOKEN },
   });
+  if (url.pathname === "/binary-demo") {
+    const files = client.files(DEMO_STASH);
+    const current = await files.get(BINARY_DEMO_PATH);
+    const expectedVersion = versionForPut(current);
+    if (expectedVersion === undefined) return Response.json({ current }, { status: 500 });
+    const uploaded = await files.upload(
+      BINARY_DEMO_PATH,
+      new Uint8Array([0x89, 0x50, 0x00, 0xff, 0x0d, 0x0a]),
+      {
+        expectedVersion,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        idempotencyKey: `example-rpc-binary-${expectedVersion ?? "new"}`,
+      },
+    );
+    if (!uploaded.ok) return Response.json({ uploaded }, { status: uploaded.error.status });
+    const downloaded = await files.raw.get(BINARY_DEMO_PATH);
+    if (!downloaded.ok || "notModified" in downloaded)
+      return Response.json({ downloaded }, { status: 500 });
+    const bytes = await downloaded.value.bytes(64);
+    return Response.json({ uploaded, bytes: [...bytes] });
+  }
   const files = client.files(DEMO_STASH);
   const get = await files.get(DEMO_PATH);
   const expectedVersion = versionForPut(get);

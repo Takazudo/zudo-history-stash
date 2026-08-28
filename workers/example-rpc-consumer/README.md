@@ -5,6 +5,9 @@ This private Worker demonstrates a consumer of the History Stash named `StashRpc
 rolls back through the typed RPC transport. It is intended as a deployment and integration
 example, not a public API.
 
+`GET /binary-demo` uploads arbitrary bytes and streams them back through the flow-controlled
+`Request`/`Response` RPC bridge. The bytes never become a serialized/base64 RPC value.
+
 `STASH_TOKEN` is deliberately an empty placeholder in `wrangler.toml` so the binding shape is
 visible. In a real deployment, replace it with a Worker secret:
 

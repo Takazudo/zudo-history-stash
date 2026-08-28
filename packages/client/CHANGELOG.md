@@ -12,3 +12,6 @@ The format is based on Keep a Changelog, and release notes are generated from th
   routes with typed business outcomes.
 - Add representation-cache handling, automatic idempotency keys, replay metadata, and bounded
   `putLatest` conflict retries.
+- Add capability-selected binary/large-object uploads, streamed current/historical downloads,
+  resumable session controls, bounded materializers, observed progress, and Request/Response RPC
+  stream flow control.

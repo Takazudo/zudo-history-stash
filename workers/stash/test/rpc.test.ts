@@ -483,6 +483,25 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("StashRpc request construction", () => {
+  it("passes Request and Response streams through the flow-controlled bridge", async () => {
+    const upstream = new Response(new Uint8Array([0x00, 0xff, 0x50, 0x4b]), {
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+    const fetchSpy = vi.spyOn(app, "fetch").mockResolvedValueOnce(upstream);
+    const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
+    const request = new Request("https://stash.internal/v1/stashes/demo/uploads/upl_1/content", {
+      method: "PUT",
+      body: new Uint8Array([0x89, 0x50, 0x00, 0xff]),
+    });
+
+    const response = await rpc.requestStream(request, "winner");
+    const [forwarded] = fetchSpy.mock.calls[0]!;
+    expect(forwarded.headers.get("authorization")).toBe("Bearer winner");
+    expect([...new Uint8Array(await forwarded.arrayBuffer())]).toEqual([0x89, 0x50, 0x00, 0xff]);
+    expect(response).toBe(upstream);
+    expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([0x00, 0xff, 0x50, 0x4b]);
+  });
+
   it("dispatches the exact Request, Env, and context to the singleton app and returns its Response", async () => {
     const expected = new Response("same response", {
       status: 202,

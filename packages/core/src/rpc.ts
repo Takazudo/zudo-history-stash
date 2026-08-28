@@ -1,6 +1,6 @@
 import type { RouteMethod } from "./routes.js";
 
-/** A structured-clone-friendly request sent through the stash RPC entrypoint. */
+/** Legacy structured request accepted by the stash RPC entrypoint. */
 export interface RpcRequest {
   method: RouteMethod;
   /** A `/v1/...` path with route parameters substituted and left unencoded. */

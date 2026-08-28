@@ -1,6 +1,9 @@
 import type {
   GcKind,
   GcRunResult,
+  CapabilitiesResponse,
+  ContentAccess,
+  Current,
   JsonValue,
   ProposalStatus,
   ReconnectReason,
@@ -10,8 +13,13 @@ import type {
   StashProposalEvent,
   TokenScope,
   VersionKind,
+  Representation,
+  StorageTier,
+  UploadMode,
+  UploadCompletionResult,
+  UploadSessionState,
 } from "@takazudo/zudo-history-stash-core";
-import type { StashFetch } from "../client.js";
+import type { StashFetch } from "../transport.js";
 
 export type RateLimitCapability = "read" | "write" | "diff";
 
@@ -41,6 +49,8 @@ export interface FakeStashOptions {
   gcOrphanMinAgeMs?: number;
   /** Number of days before a proposal expires. Defaults to the Worker value of fourteen. */
   proposalTtlDays?: number;
+  /** Binary settings advertised by the fake; useful for deterministic mode-selection tests. */
+  capabilities?: CapabilitiesResponse;
 }
 
 export interface FakeMintTokenOptions {
@@ -75,7 +85,9 @@ export interface FakeTokenRow {
 export interface FakeBlobRow {
   stash: string;
   hash: string;
-  body: string;
+  body: string | null;
+  /** Exact immutable content bytes, including invalid UTF-8. */
+  bytes: Uint8Array;
   /** Exact immutable R2 generation referenced by the logical blob row, or null for inline data. */
   r2Key: string | null;
   size: number;
@@ -110,11 +122,41 @@ export interface FakeVersionRow {
   hash: string | null;
   size: number;
   contentType: string;
+  representation?: Representation;
+  contentAccess?: ContentAccess;
   rollbackOf: number | null;
   author: string;
   message: string;
   meta: Record<string, JsonValue>;
   createdAt: number;
+}
+
+export interface FakeUploadSessionRow {
+  id: string;
+  stash: string;
+  path: string;
+  principal: { kind: "admin" } | { kind: "stash"; tokenId: string };
+  state: UploadSessionState;
+  expectedVersion: number | null;
+  declaredSize: number;
+  declaredHash: string | null;
+  representation: Representation;
+  contentType: string;
+  mode: UploadMode;
+  storageTier: StorageTier;
+  partSize: number | null;
+  expiresAt: number;
+  attemptGeneration: number;
+  uploadedBytes: Uint8Array | null;
+  uploadedHash: string | null;
+  parts: Map<number, Uint8Array>;
+  result: UploadCompletionResult | null;
+  createKey: string | null;
+  completeKey: string | null;
+  uploadKey: string | null;
+  abortKey: string | null;
+  terminalCurrent: Current | null;
+  skipIfUnchanged: boolean;
 }
 
 /** Stored proposal state. Expiry is projected at read time and is never persisted as a status. */
@@ -171,6 +213,7 @@ export interface FakeStashState {
   idempotency: Map<string, Map<string, FakeIdempotencyRow>>;
   gcJobs: Map<GcKind, FakeGcJobRow>;
   gcRuns: GcRunResult[];
+  uploadSessions: Map<string, FakeUploadSessionRow>;
 }
 
 /** Controllable in-memory source backing the fake's authenticated SSE route. */
