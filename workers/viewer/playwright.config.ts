@@ -10,14 +10,44 @@ export function resolveWorkers(value: string | undefined): number | `${number}%`
 
 const externalBaseUrl = process.env.PW_BASE_URL;
 const liveHarness = process.env.PW_LIVE === "1";
-const baseURL = resolveViewerBaseUrl(externalBaseUrl, liveHarness);
+const previewHarness = process.env.PW_PREVIEW === "1";
+if (liveHarness && previewHarness) throw new Error("PW_LIVE and PW_PREVIEW are mutually exclusive");
+
+export function resolvePreviewBaseUrl(value: string | undefined): string {
+  if (!value) throw new Error("chromium-preview requires PW_BASE_URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("chromium-preview requires PW_BASE_URL to be an HTTPS origin");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== ""
+  ) {
+    throw new Error("chromium-preview requires PW_BASE_URL to be an HTTPS origin");
+  }
+  return parsed.origin;
+}
+
+if (previewHarness && !/^zhs_[A-Za-z0-9_-]+$/u.test(process.env.PW_STASH_TOKEN ?? "")) {
+  throw new Error("chromium-preview requires PW_STASH_TOKEN");
+}
+
+const baseURL = previewHarness
+  ? resolvePreviewBaseUrl(externalBaseUrl)
+  : resolveViewerBaseUrl(externalBaseUrl, liveHarness);
 
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
-  workers: resolveWorkers(process.env.PW_WORKERS),
+  workers: previewHarness ? 1 : resolveWorkers(process.env.PW_WORKERS),
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
   webServer: externalBaseUrl
     ? undefined
@@ -41,15 +71,29 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      grepInvert: /@live|@local-only|@flaky/u,
+      testIgnore: /preview\.smoke\.spec\.ts/u,
+      grepInvert: /@live|@preview|@local-only|@flaky/u,
       use: { ...devices["Desktop Chrome"] },
     },
     {
       name: "chromium-live",
       testMatch: /live\.spec\.ts/u,
+      testIgnore: /preview\.smoke\.spec\.ts/u,
       grep: /@live/u,
-      grepInvert: /@local-only|@flaky/u,
+      grepInvert: /@preview|@local-only|@flaky/u,
       use: { ...devices["Desktop Chrome"], trace: "retain-on-failure" },
     },
+    ...(previewHarness
+      ? [
+          {
+            name: "chromium-preview",
+            testMatch: /preview\.smoke\.spec\.ts/u,
+            grep: /@preview/u,
+            retries: 0,
+            fullyParallel: false,
+            use: { ...devices["Desktop Chrome"], trace: "off" as const },
+          },
+        ]
+      : []),
   ],
 });
