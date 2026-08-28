@@ -1,4 +1,4 @@
-import { IDEMPOTENCY_KEY_MAX_CHARS } from "@takazudo/zudo-history-stash-core";
+import { IDEMPOTENCY_KEY_MAX_CHARS, sha256Hex } from "@takazudo/zudo-history-stash-core";
 import type {
   AbortUploadResult,
   CapabilitiesResponse,
@@ -10,6 +10,7 @@ import type {
   UploadMode,
   UploadPartRecord,
   UploadSessionRecord,
+  PutResult,
 } from "@takazudo/zudo-history-stash-core";
 import { parseClientResponse, StashHttpError } from "./parse.js";
 import type { ClientResult, NotModifiedResult } from "./client.js";
@@ -205,7 +206,7 @@ export function selectUploadMode(
   if (selected === "json" && !eligibleJson) {
     throw new TypeError("JSON upload requires replayable UTF-8 text within jsonInlineMaxBytes");
   }
-  if (selected === "single" && options.resumable) {
+  if (options.resumable && selected !== "multipart") {
     throw new TypeError("A resumable upload must use multipart mode");
   }
   if (selected === "single" && source.size > capabilities.limits.singleUploadMaxBytes) {
@@ -561,7 +562,7 @@ export async function upload(
   sourceValue: UploadSource,
   options: UploadOptions,
   capabilities: CapabilitiesResponse,
-  putJson: (body: string, idempotencyKey: string) => Promise<ClientResult<CompleteUploadResult>>,
+  putJson: (body: string, idempotencyKey: string) => Promise<ClientResult<PutResult>>,
 ): Promise<ClientResult<CompleteUploadResult>> {
   const source = normalizeSource(sourceValue, options.size);
   const text =
@@ -575,7 +576,28 @@ export async function upload(
   );
   const retries = Math.max(0, options.retries ?? 0);
   const key = await context.mintKey(options.idempotencyKey);
-  if (mode === "json") return putJson(text!, key);
+  if (mode === "json") {
+    const result = await putJson(text!, key);
+    if (!result.ok) return result;
+    const hash = await sha256Hex(text!);
+    return {
+      ...result,
+      value:
+        "unchanged" in result.value
+          ? {
+              ...result.value,
+              hash,
+              size: source.size,
+              representation: "text",
+              contentType: options.contentType,
+            }
+          : {
+              ...result.value,
+              representation: "text",
+              contentType: options.contentType,
+            },
+    };
+  }
 
   const sessions = createUploadSessionsClient(context, stash);
   const created = await attempt(async () => {

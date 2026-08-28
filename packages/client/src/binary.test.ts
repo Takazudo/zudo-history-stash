@@ -92,6 +92,16 @@ describe("binary SDK", () => {
   it("keeps oversized valid UTF-8 text as text while selecting raw transfer", async () => {
     const { client } = fixture({ jsonInlineMaxBytes: 3, singleUploadMaxBytes: 16 });
     await expect(
+      client.files("demo").upload("docs/small.txt", "hi", {
+        expectedVersion: null,
+        representation: "text",
+        contentType: "text/plain; charset=utf-8",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { representation: "text", contentType: "text/plain; charset=utf-8", size: 2 },
+    });
+    await expect(
       client.files("demo").upload("docs/large.txt", "hello", {
         expectedVersion: null,
         representation: "text",
@@ -184,6 +194,13 @@ describe("binary SDK", () => {
         { representation: "binary" },
       ),
     ).toBe("multipart");
+    expect(() =>
+      selectUploadMode({ size: 2, replayable: true, text: true }, capabilities(), {
+        representation: "text",
+        mode: "json",
+        resumable: true,
+      }),
+    ).toThrow("resumable upload must use multipart");
   });
 
   it("requires exact stream size and never replays a consumed one-shot stream", async () => {

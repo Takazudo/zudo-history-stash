@@ -1102,6 +1102,14 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         hash: version.hash,
         rollbackOf: version.rollbackOf,
         identicalToHead: previous.hash === version.hash,
+        ...(version.representation === undefined
+          ? {}
+          : {
+              representation: version.representation,
+              contentType: version.contentType,
+              byteSize: version.size,
+              etag: version.hash,
+            }),
       };
     } else {
       if (version.hash === null) return fail("internal", "The fake put ledger row is invalid.");
@@ -2279,7 +2287,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     id: row.id,
     stash: row.stash,
     path: row.path,
-    principal: { kind: "admin" as const },
+    principal: row.principal,
     state: row.state,
     expectedVersion: row.expectedVersion,
     declaredSize: row.declaredSize,
@@ -2292,15 +2300,20 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     expiresAt: iso(row.expiresAt),
     attemptGeneration: row.attemptGeneration,
     uploadedSize: row.uploadedBytes?.byteLength ?? null,
-    uploadedHash: null,
+    uploadedHash: row.uploadedHash,
     finalizationLeaseOwner: null,
     finalizationLeaseExpiresAt: null,
     result: row.result,
   });
 
-  const requireUpload = (stash: string, id: string): FakeUploadSessionRow => {
+  const requireUpload = (stash: string, id: string, principal: Principal): FakeUploadSessionRow => {
     const row = state.uploadSessions.get(id);
-    if (row === undefined || row.stash !== stash)
+    const owned =
+      row !== undefined &&
+      (row.principal.kind === "admin"
+        ? principal.kind === "admin"
+        : principal.kind === "stash" && row.principal.tokenId === principal.tokenId);
+    if (row === undefined || row.stash !== stash || !owned)
       return fail("not-found", "Upload session not found.");
     if (row.state === "open" && row.expiresAt <= now()) row.state = "expired";
     return row;
@@ -2320,6 +2333,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     request: Request,
     stash: string,
     path: string,
+    principal: Principal,
   ): Promise<Response> => {
     const parsed = CreateUploadSessionBody.safeParse(await requestJson(request));
     if (!parsed.success) return fail("validation", "Invalid upload session input.");
@@ -2333,9 +2347,15 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const existing = [...state.uploadSessions.values()].find(
       (row) => row.stash === stash && row.createKey === key && key !== null,
     );
+    const samePrincipal =
+      existing === undefined ||
+      (existing.principal.kind === "admin"
+        ? principal.kind === "admin"
+        : principal.kind === "stash" && existing.principal.tokenId === principal.tokenId);
     if (
       existing !== undefined &&
-      (existing.path !== path ||
+      (!samePrincipal ||
+        existing.path !== path ||
         existing.expectedVersion !== parsed.data.expectedVersion ||
         existing.declaredSize !== parsed.data.size ||
         existing.declaredHash !== (parsed.data.hash ?? null) ||
@@ -2370,6 +2390,10 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       id: `upl_fake_${String(nextUploadSession++).padStart(8, "0")}`,
       stash,
       path,
+      principal:
+        principal.kind === "admin"
+          ? { kind: "admin" }
+          : { kind: "stash", tokenId: principal.tokenId },
       state: "open",
       expectedVersion: parsed.data.expectedVersion,
       declaredSize: parsed.data.size,
@@ -2385,6 +2409,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       expiresAt: now() + capabilities.limits.uploadSessionTtlSeconds * 1_000,
       attemptGeneration: 0,
       uploadedBytes: null,
+      uploadedHash: null,
       parts: new Map(),
       result: null,
       createKey: key,
@@ -2421,7 +2446,21 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (partNumber === undefined) {
       if (row.mode !== "single" || bytes.byteLength !== row.declaredSize)
         return fail("upload-size-mismatch", "Upload size does not match its declaration.");
+      const hash = await sha256Hex(bytes.slice().buffer);
+      if (row.declaredHash !== null && row.declaredHash !== hash) {
+        row.state = "failed";
+        return fail("upload-hash-mismatch", "Upload hash does not match its declaration.");
+      }
+      if (row.representation === "text") {
+        try {
+          new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        } catch {
+          row.state = "failed";
+          return fail("unsupported-representation", "Text uploads must contain valid UTF-8.");
+        }
+      }
       row.uploadedBytes = bytes;
+      row.uploadedHash = hash;
       row.uploadKey = key;
       row.state = "uploaded";
       return json(uploadRecord(row), 202);
@@ -2463,7 +2502,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (row.state === "committed") {
       if (row.completeKey !== key)
         return fail("idempotency-key-reused", "Idempotency-Key was reused.");
-      return json(resume ? uploadRecord(row) : row.result, resume ? 200 : 201, {
+      const status = row.result !== null && "unchanged" in row.result ? 200 : 201;
+      return json(resume ? uploadRecord(row) : row.result, resume ? 200 : status, {
         "Idempotent-Replayed": "true",
       });
     }
@@ -2540,12 +2580,25 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         message: "",
         meta: {},
       });
+      const r2Key =
+        row.storageTier === "r2"
+          ? `v2/${row.stash}/${hash}/00000000-0000-4000-8000-${String(nextR2ObjectSerial++).padStart(12, "0")}`
+          : null;
+      if (r2Key !== null) {
+        state.r2Objects.set(r2Key, {
+          key: r2Key,
+          stash: row.stash,
+          hash,
+          size: bytes.byteLength,
+          createdAt: version.createdAt,
+        });
+      }
       const blob: FakeBlobRow = {
         stash: row.stash,
         hash,
         body: text,
         bytes: bytes.slice(),
-        r2Key: null,
+        r2Key,
         size: bytes.byteLength,
         createdAt: version.createdAt,
       };
@@ -2562,7 +2615,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     row.state = "committed";
     row.completeKey = key;
-    return json(resume ? uploadRecord(row) : row.result, resume ? 200 : 201);
+    const status = row.result !== null && "unchanged" in row.result ? 200 : 201;
+    return json(resume ? uploadRecord(row) : row.result, resume ? 200 : status);
   };
 
   const handleRaw = (
@@ -2805,35 +2859,35 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         case "headRawVersion":
           return handleRaw(request, stash ?? "", path ?? "", match.version);
         case "createUploadSession":
-          return await handleCreateUpload(request, stash ?? "", path ?? "");
+          return await handleCreateUpload(request, stash ?? "", path ?? "", principal);
         case "getUploadSession": {
-          const session = requireUpload(stash ?? "", match.sessionId ?? "");
+          const session = requireUpload(stash ?? "", match.sessionId ?? "", principal);
           return json({ ...uploadRecord(session), parts: sessionParts(session) });
         }
         case "uploadSingleContent":
           return await handleUploadBytes(
             request,
-            requireUpload(stash ?? "", match.sessionId ?? ""),
+            requireUpload(stash ?? "", match.sessionId ?? "", principal),
           );
         case "uploadPart":
           return await handleUploadBytes(
             request,
-            requireUpload(stash ?? "", match.sessionId ?? ""),
+            requireUpload(stash ?? "", match.sessionId ?? "", principal),
             match.partNumber,
           );
         case "completeUploadSession":
           return await handleCompleteUpload(
             request,
-            requireUpload(stash ?? "", match.sessionId ?? ""),
+            requireUpload(stash ?? "", match.sessionId ?? "", principal),
           );
         case "resumeUploadSession":
           return await handleCompleteUpload(
             request,
-            requireUpload(stash ?? "", match.sessionId ?? ""),
+            requireUpload(stash ?? "", match.sessionId ?? "", principal),
             true,
           );
         case "abortUploadSession": {
-          const session = requireUpload(stash ?? "", match.sessionId ?? "");
+          const session = requireUpload(stash ?? "", match.sessionId ?? "", principal);
           const key = idempotencyKey(request) ?? null;
           const parsed = AbortUploadSessionBody.safeParse(await requestJson(request));
           if (!parsed.success || parsed.data.generation !== session.attemptGeneration)

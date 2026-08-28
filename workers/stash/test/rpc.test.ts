@@ -491,14 +491,8 @@ describe("StashRpc request construction", () => {
     const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
     const request = new Request("https://stash.internal/v1/stashes/demo/uploads/upl_1/content", {
       method: "PUT",
-      body: new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new Uint8Array([0x89, 0x50, 0x00, 0xff]));
-          controller.close();
-        },
-      }),
-      duplex: "half",
-    } as RequestInit);
+      body: new Uint8Array([0x89, 0x50, 0x00, 0xff]),
+    });
 
     const response = await rpc.requestStream(request, "winner");
     const [forwarded] = fetchSpy.mock.calls[0]!;

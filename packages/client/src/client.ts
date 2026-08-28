@@ -695,7 +695,7 @@ export function createStashClient(options: StashClientOptions): StashClient {
               contentType: uploadOptions.contentType,
             },
             idempotencyKey,
-          )) as ClientResult<CompleteUploadResult>,
+          )) as ClientResult<PutResult>,
       );
     },
     uploads: createUploadSessionsClient(binaryContext, stash),

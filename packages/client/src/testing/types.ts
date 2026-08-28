@@ -135,6 +135,7 @@ export interface FakeUploadSessionRow {
   id: string;
   stash: string;
   path: string;
+  principal: { kind: "admin" } | { kind: "stash"; tokenId: string };
   state: UploadSessionState;
   expectedVersion: number | null;
   declaredSize: number;
@@ -147,6 +148,7 @@ export interface FakeUploadSessionRow {
   expiresAt: number;
   attemptGeneration: number;
   uploadedBytes: Uint8Array | null;
+  uploadedHash: string | null;
   parts: Map<number, Uint8Array>;
   result: UploadCompletionResult | null;
   createKey: string | null;
