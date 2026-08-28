@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkHtmlLinksAndTrailing, extractHtmlIds, extractHtmlLinks } from "./check-links.js";
+import {
+  checkHtmlLinksAndTrailing,
+  checkMdxAnchors,
+  checkMdxLinks,
+  extractHtmlIds,
+  extractHtmlLinks,
+} from "./check-links.js";
 
 test("extractHtmlLinks accepts quoted and valid unquoted href attributes", () => {
   const html = [
@@ -62,4 +68,36 @@ test("the dist checker rejects and then resolves an unquoted href", async (t) =>
   const present = await checkHtmlLinksAndTrailing(dist, root);
   assert.deepEqual(present.broken, []);
   assert.deepEqual(present.anchors, []);
+});
+
+test("source checks reject absolute Docs paths and invalid anchors", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "zhs-check-source-links-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const docs = join(root, "src/content/docs");
+  await mkdir(docs, { recursive: true });
+  await writeFile(
+    join(docs, "index.mdx"),
+    "[absolute](/docs/target)\n[bad anchor](./target.mdx#missing)\n",
+  );
+  await writeFile(join(docs, "target.mdx"), "## Present heading\n");
+
+  assert.deepEqual(await checkMdxLinks([docs], root, null, "/", []), [
+    { file: "src/content/docs/index.mdx", line: 1, href: "/docs/target" },
+  ]);
+  assert.deepEqual(await checkMdxAnchors([docs], root, "/", []), [
+    {
+      file: "src/content/docs/index.mdx",
+      line: 2,
+      href: "./target.mdx#missing",
+      fragment: "missing",
+      reason: "missing target id",
+    },
+  ]);
+
+  await writeFile(
+    join(docs, "index.mdx"),
+    "[relative](./target.mdx)\n[good anchor](./target.mdx#present-heading)\n",
+  );
+  assert.deepEqual(await checkMdxLinks([docs], root, null, "/", []), []);
+  assert.deepEqual(await checkMdxAnchors([docs], root, "/", []), []);
 });

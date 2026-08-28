@@ -9,12 +9,16 @@
   },
   "scripts": {
     "// ── Workspace ───────────────────────": "",
-    "build": "pnpm -r --if-present build",
+    "build": "pnpm -r --filter \"!zudo-history-stash-doc\" --if-present build",
     "build:libs": "pnpm --filter \"./packages/*\" build",
+    "build:doc": "pnpm --filter zudo-history-stash-doc build",
     "build:viewer": "pnpm --filter zudo-history-stash-viewer exec vite build",
-    "test": "node --test scripts/*.test.mjs && pnpm -r --if-present test",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "lint": "pnpm -r --if-present lint",
+    "dev:doc": "pnpm --filter zudo-history-stash-doc dev",
+    "check:doc": "pnpm --filter zudo-history-stash-doc check",
+    "b4push:doc": "pnpm --filter zudo-history-stash-doc b4push",
+    "test": "node --test scripts/*.test.mjs && pnpm -r --filter \"!zudo-history-stash-doc\" --if-present test",
+    "typecheck": "pnpm -r --filter \"!zudo-history-stash-doc\" --if-present typecheck",
+    "lint": "pnpm -r --filter \"!zudo-history-stash-doc\" --if-present lint",
     "// ── Quality ──────────────────────────": "",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -28,7 +32,8 @@
     "release:test": "bash -c 'set -euo pipefail; for t in scripts/release/tests/*.test.sh; do bash \"$t\"; done'",
     "preview:config": "node scripts/preview-config.mjs",
     "preview:resources": "node scripts/preview-resources.mjs",
-    "format:md": "pnpm exec mdx-formatter --write .",
+    "format:md": "pnpm exec mdx-formatter --write --config .mdx-formatter.json \"**/*.{md,mdx}\"",
+    "format:md:check": "pnpm exec mdx-formatter --check --config .mdx-formatter.json \"**/*.{md,mdx}\"",
     "lint:tokens": "pnpm --filter zudo-history-stash-viewer --filter @takazudo/zudo-history-stash-ui lint:tokens",
     "check:b4push-ci-parity": "node scripts/check-b4push-ci-parity.mjs",
     "b4push": "bash scripts/run-b4push.sh",
@@ -60,6 +65,6 @@
     "smol-toml": "^1.8.0",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.0.0",
-    "wrangler": "^4.125.0"
+    "wrangler": "4.125.0"
   }
 }

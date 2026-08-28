@@ -25,9 +25,9 @@ pnpm-debug.log*
 .zudo-doc/
 
 # Generated doc-lookup skill
-.claude/skills/doc-wisdom/SKILL.md
-.claude/skills/doc-wisdom/docs
-.codex/skills/doc-wisdom/SKILL.md
-.codex/skills/doc-wisdom/docs
-.claude/skills/doc-wisdom/docs-ja
-.codex/skills/doc-wisdom/docs-ja
+.claude/skills/zudo-history-stash-wisdom/SKILL.md
+.claude/skills/zudo-history-stash-wisdom/docs
+.codex/skills/zudo-history-stash-wisdom/SKILL.md
+.codex/skills/zudo-history-stash-wisdom/docs
+.claude/skills/zudo-history-stash-wisdom/docs-ja
+.codex/skills/zudo-history-stash-wisdom/docs-ja
