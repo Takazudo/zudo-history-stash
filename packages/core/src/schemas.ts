@@ -265,6 +265,7 @@ export const CreateUploadSessionBody = z.strictObject({
   contentType: boundedString(1_024),
   mode: z.enum(["auto", "single", "multipart"]).default("auto"),
   resumable: z.boolean().default(false),
+  skipIfUnchanged: z.boolean().default(false),
 });
 
 export const CompleteUploadSessionBody = z.strictObject({

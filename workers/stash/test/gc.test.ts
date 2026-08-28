@@ -354,6 +354,58 @@ async function ledgerKeys(): Promise<string[]> {
 }
 
 describe("ledger collection", () => {
+  it("protects active upload staging and reclaims terminal R2 and D1 staging after the safety age", async () => {
+    const activeKey = "uploads/upl_active/0/object-a";
+    const abortedKey = "uploads/upl_aborted/0/object-b";
+    const activeObject = await putObject(activeKey, "active");
+    const abortedObject = await putObject(abortedKey, "aborted");
+    for (const [id, state, key] of [
+      ["upl_active", "uploaded", activeKey],
+      ["upl_aborted", "aborted", abortedKey],
+    ] as const) {
+      await env.DB.prepare(
+        `INSERT INTO upload_sessions
+          (id, stash_name, path, principal_kind, declared_size, representation, content_type,
+           upload_mode, storage_tier, state, expires_at, create_fingerprint, staged_r2_key,
+           uploaded_size, uploaded_hash, reservation_released_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'admin', 7, 'binary', 'application/octet-stream', 'single', 'r2', ?,
+           9999999999999, ?, ?, 7, ?, ?, 1, 1)`,
+      )
+        .bind(
+          id,
+          STASH,
+          `${id}.bin`,
+          state,
+          `create-${id}`,
+          key,
+          HASH_A,
+          state === "aborted" ? 1 : null,
+        )
+        .run();
+      await env.DB.prepare(
+        `INSERT INTO upload_objects (object_key, session_id, generation, purpose, created_at, completed_at)
+         VALUES (?, ?, 0, 'staging', 1, 1)`,
+      )
+        .bind(key, id)
+        .run();
+    }
+    await env.DB.prepare(
+      `INSERT INTO upload_staged_bytes (session_id, generation, body_bytes, size_bytes, hash, created_at)
+       VALUES ('upl_aborted', 0, ?, 1, ?, 1)`,
+    )
+      .bind(new Uint8Array([1]).buffer, HASH_A)
+      .run();
+    const now = Math.max(futureNow(activeObject), futureNow(abortedObject));
+    const engine = createGcEngine(env, { now: () => now });
+    await engine.run(input({ kind: "r2-orphans", maxObjects: 10 }));
+    await expect(env.BLOBS.head(activeKey)).resolves.not.toBeNull();
+    await expect(env.BLOBS.head(abortedKey)).resolves.toBeNull();
+    await engine.run(input({ kind: "ledger", maxObjects: 10 }));
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM upload_staged_bytes").first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
   it.each([
     { label: "default", count: 100, maxObjects: undefined, deleteStatements: 2 },
     { label: "maximum", count: 500, maxObjects: 500, deleteStatements: 6 },
@@ -382,9 +434,9 @@ describe("ledger collection", () => {
         error: null,
       });
       expect(await ledgerKeys()).toEqual([]);
-      expect(calls.d1BatchSizes).toEqual([deleteStatements, 4]);
+      expect(calls.d1BatchSizes).toEqual([deleteStatements, 2, 4]);
       expect(calls.d1).toBe(budget.used);
-      expect(budget.used).toBe(6);
+      expect(budget.used).toBe(7);
     },
   );
 
@@ -493,8 +545,8 @@ describe("ledger collection", () => {
     expect(orphanRun).toMatchObject({ scanned: 24, eligible: 24, deleted: 24 });
     expect(ledgerRun).toMatchObject({ scanned: 500, eligible: 500, deleted: 500 });
     expect(calls).toEqual({
-      d1: 11,
-      d1BatchSizes: [4, 6, 4],
+      d1: 12,
+      d1BatchSizes: [4, 6, 2, 4],
       list: 1,
       head: 24,
       delete: 1,

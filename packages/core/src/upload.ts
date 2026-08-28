@@ -41,7 +41,7 @@ export interface UploadSessionRecord extends UploadSessionIdentity {
   finalizationLeaseOwner: string | null;
   finalizationLeaseExpiresAt: string | null;
   /** Replayable successful or terminal completion payload, never an R2 credential/key. */
-  result: UploadCommitResult | null;
+  result: UploadCompletionResult | null;
 }
 
 export interface UploadCommitResult {
@@ -53,6 +53,17 @@ export interface UploadCommitResult {
   changeId: number;
   createdAt: string;
 }
+
+export interface UploadUnchangedResult {
+  unchanged: true;
+  version: number;
+  hash: string;
+  size: number;
+  representation: Representation;
+  contentType: string;
+}
+
+export type UploadCompletionResult = UploadCommitResult | UploadUnchangedResult;
 
 export interface UploadPartRecord {
   partNumber: number;

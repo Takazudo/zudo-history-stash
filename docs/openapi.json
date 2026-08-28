@@ -393,50 +393,86 @@
         ]
       },
       "CompleteUploadResult": {
-        "additionalProperties": false,
-        "properties": {
-          "changeId": {
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "type": "integer"
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "changeId": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "contentType": {
+                "type": "string"
+              },
+              "createdAt": {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              "hash": {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "representation": {
+                "enum": ["text", "binary"],
+                "type": "string"
+              },
+              "size": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "version": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version",
+              "hash",
+              "size",
+              "representation",
+              "contentType",
+              "changeId",
+              "createdAt"
+            ],
+            "type": "object"
           },
-          "contentType": {
-            "type": "string"
-          },
-          "createdAt": {
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-            "type": "string"
-          },
-          "hash": {
-            "pattern": "^sha256-[0-9a-f]{64}$",
-            "type": "string"
-          },
-          "representation": {
-            "enum": ["text", "binary"],
-            "type": "string"
-          },
-          "size": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "version": {
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "type": "integer"
+          {
+            "additionalProperties": false,
+            "properties": {
+              "contentType": {
+                "type": "string"
+              },
+              "hash": {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "representation": {
+                "enum": ["text", "binary"],
+                "type": "string"
+              },
+              "size": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unchanged": {
+                "const": true,
+                "type": "boolean"
+              },
+              "version": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": ["unchanged", "version", "hash", "size", "representation", "contentType"],
+            "type": "object"
           }
-        },
-        "required": [
-          "version",
-          "hash",
-          "size",
-          "representation",
-          "contentType",
-          "changeId",
-          "createdAt"
-        ],
-        "type": "object"
+        ]
       },
       "CreateStashResult": {
         "additionalProperties": false,
@@ -8794,6 +8830,10 @@
                     "maximum": 9007199254740991,
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "skipIfUnchanged": {
+                    "default": false,
+                    "type": "boolean"
                   }
                 },
                 "required": ["expectedVersion", "size", "representation", "contentType"],

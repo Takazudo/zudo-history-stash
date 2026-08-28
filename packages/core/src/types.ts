@@ -7,7 +7,7 @@ import type {
   UploadMode,
   ResolvedContent,
 } from "./binary.js";
-import type { UploadCommitResult, UploadPartRecord, UploadSessionRecord } from "./upload.js";
+import type { UploadCompletionResult, UploadPartRecord, UploadSessionRecord } from "./upload.js";
 
 export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
@@ -372,7 +372,7 @@ export type GetDiffResult = FileDiffResult;
 export type CandidateDiffResult = DiffResult;
 export type CreateUploadSessionResult = UploadSessionRecord;
 export type GetUploadSessionResult = UploadSessionRecord & { parts: UploadPartRecord[] };
-export type CompleteUploadResult = UploadCommitResult;
+export type CompleteUploadResult = UploadCompletionResult;
 export interface AbortUploadResult {
   id: string;
   state: "aborted";
@@ -385,6 +385,7 @@ export interface CreateUploadSessionInput {
   contentType: string;
   mode?: UploadMode | "auto";
   resumable?: boolean;
+  skipIfUnchanged?: boolean;
 }
 export type CreateProposalResult = ProposalRecord;
 export type ListProposalsResult = ProposalListResponse;

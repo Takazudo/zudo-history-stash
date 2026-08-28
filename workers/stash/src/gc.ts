@@ -3,6 +3,7 @@ import {
   type GcRunResult,
   type ParsedRunGcBody,
 } from "@takazudo/zudo-history-stash-core";
+import { isStagingObjectKey } from "./byte-writes.js";
 import { parseBlobKey } from "./d1/blobs.js";
 import {
   GcBudgetExhaustedError,
@@ -199,7 +200,9 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
         : invalidCursor()
       : null;
 
-    const valid = listed.objects.filter(({ key }) => parseBlobKey(key) !== null);
+    const valid = listed.objects.filter(
+      ({ key }) => parseBlobKey(key) !== null || isStagingObjectKey(key),
+    );
     const referenced = await store.referencedR2Keys(valid.map(({ key }) => key));
     await dependencies.hooks.afterReferences?.();
     const cutoff = dependencies.now() - orphanMinAgeMs;
@@ -255,7 +258,11 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
         ? encodeLedgerCursor(boundary.created_at, boundary.rowid)
         : null;
     await store.heartbeat(run, dependencies.now());
-    const deleted = run.dryRun ? 0 : await store.deleteLedger(page, cutoff);
+    const ledgerDeleted = run.dryRun ? 0 : await store.deleteLedger(page, cutoff);
+    const stagingDeleted = run.dryRun
+      ? 0
+      : await store.cleanupUploadStaging(dependencies.now() - orphanMinAgeMs);
+    const deleted = ledgerDeleted + stagingDeleted;
     return store.finish(run, {
       nextCursor,
       scanned: page.length,

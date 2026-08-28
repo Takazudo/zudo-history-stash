@@ -212,20 +212,45 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
       if (keys.length === 0) return new Set();
       const found = new Set<string>();
       const session = env.DB.withSession("first-primary");
-      for (let offset = 0; offset < keys.length; offset += 100) {
-        const chunk = keys.slice(offset, offset + 100);
+      for (let offset = 0; offset < keys.length; offset += 30) {
+        const chunk = keys.slice(offset, offset + 30);
         budget.charge();
         const sql = selectReferencedR2Keys.replace(
-          "__PLACEHOLDERS__",
+          /__PLACEHOLDERS__/g,
           chunk.map(() => "?").join(", "),
         );
         const rows = await session
           .prepare(sql)
-          .bind(...chunk)
+          .bind(...chunk, ...chunk, ...chunk)
           .all<{ r2_key: string }>();
         for (const row of rows.results) found.add(row.r2_key);
       }
       return found;
+    },
+
+    async cleanupUploadStaging(cutoff: number): Promise<number> {
+      budget.charge();
+      const results = await env.DB.batch([
+        env.DB.prepare(
+          `DELETE FROM upload_staged_bytes
+           WHERE created_at < ? AND EXISTS (
+             SELECT 1 FROM upload_sessions sessions
+             WHERE sessions.id = upload_staged_bytes.session_id
+               AND sessions.attempt_generation = upload_staged_bytes.generation
+               AND sessions.state IN ('committed','aborted','expired','stale','failed')
+           )`,
+        ).bind(cutoff),
+        env.DB.prepare(
+          `DELETE FROM upload_parts
+           WHERE recorded_at < ? AND EXISTS (
+             SELECT 1 FROM upload_sessions sessions
+             WHERE sessions.id = upload_parts.session_id
+               AND sessions.attempt_generation = upload_parts.generation
+               AND sessions.state IN ('committed','aborted','expired','stale','failed')
+           )`,
+        ).bind(cutoff),
+      ]);
+      return results.reduce((total, result) => total + changed(result), 0);
     },
 
     async ledgerPage(
