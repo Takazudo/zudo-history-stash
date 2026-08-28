@@ -103,6 +103,7 @@ describe("preview PR comment", () => {
     const body = JSON.parse(fixture.calls[1].options.input).body;
     assert.equal(body.split("\n")[0], PREVIEW_COMMENT_MARKER);
     assert.match(body, /have been torn down/u);
+    assert.match(body, /pull request #157/u);
     assert.equal(body.includes(INPUT.token), false);
     assert.equal(body.includes(INPUT.viewerUrl), false);
     assert.equal(body.includes(INPUT.stashUrl), false);

@@ -92,7 +92,10 @@ describe("preview workflow security boundary", () => {
   it("uses the event fork decision before the gate probe and step-local deploy credentials", async () => {
     const source = await readFile(WORKFLOW, "utf8");
     assert.equal(source.includes("pull_request_target"), false);
-    assert.match(source, /group: preview-\$\{\{ github\.event\.pull_request\.number \}\}/u);
+    assert.match(
+      source,
+      /group: preview-\$\{\{ github\.event\.pull_request\.number \|\| github\.event\.inputs\.pr \|\| github\.run_id \}\}/u,
+    );
     assert.match(source, /cancel-in-progress: true/u);
 
     const secretLines = source

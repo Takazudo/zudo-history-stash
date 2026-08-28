@@ -78,7 +78,7 @@ export function renderPreviewComment(input) {
       PREVIEW_COMMENT_MARKER,
       "## PR preview",
       "",
-      "Preview resources for this pull request have been torn down.",
+      `Preview resources for pull request #${values.pr} have been torn down.`,
     ].join("\n");
   }
   return [
