@@ -138,12 +138,16 @@ async function subscriberCount(bindings: Env, stash: string): Promise<number> {
 function instrumentSubscriptionCancellation(
   bindings: Env,
   stash: string,
+  options: { rejectCancel?: boolean } = {},
 ): {
   bindings: Env;
   canceled: Promise<void>;
   cancelCalls: () => number;
+  capturedSignal: () => AbortSignal | undefined;
   lifetimeHeader: () => string | null;
   namespaceCalls: () => number;
+  requestAborted: Promise<void>;
+  signalAbortedAtCancel: () => readonly (boolean | undefined)[];
   subscribeCalls: () => number;
 } {
   // The DO suite proves that its source cancel hook removes the subscriber. Current Miniflare
@@ -153,8 +157,14 @@ function instrumentSubscriptionCancellation(
   const canceled = new Promise<void>((resolve) => {
     resolveCanceled = resolve;
   });
+  let resolveRequestAborted: () => void = () => undefined;
+  const requestAborted = new Promise<void>((resolve) => {
+    resolveRequestAborted = resolve;
+  });
   let cancelCalls = 0;
+  let capturedSignal: AbortSignal | undefined;
   let namespaceCalls = 0;
+  const signalAbortedAtCancel: (boolean | undefined)[] = [];
   let subscribeCalls = 0;
   let lifetimeHeader: string | null = null;
   const namespace = new Proxy(bindings.STASH_EVENTS, {
@@ -172,6 +182,13 @@ function instrumentSubscriptionCancellation(
                   const url = new URL(input instanceof Request ? input.url : String(input));
                   if (url.pathname !== "/subscribe") return stubTarget.fetch(...fetchArgs);
                   subscribeCalls += 1;
+                  const requestSignal = input instanceof Request ? input.signal : undefined;
+                  capturedSignal = requestSignal;
+                  if (requestSignal?.aborted === true) {
+                    resolveRequestAborted();
+                  } else {
+                    requestSignal?.addEventListener("abort", resolveRequestAborted, { once: true });
+                  }
                   lifetimeHeader =
                     input instanceof Request
                       ? input.headers.get("X-Stash-Events-Max-Stream-Ms")
@@ -181,7 +198,11 @@ function instrumentSubscriptionCancellation(
                       new ReadableStream<Uint8Array>({
                         cancel() {
                           cancelCalls += 1;
+                          signalAbortedAtCancel.push(requestSignal?.aborted);
                           resolveCanceled();
+                          if (options.rejectCancel === true) {
+                            return Promise.reject(new Error("fixture subscription cancel failed"));
+                          }
                         },
                       }),
                       { headers: { "Content-Type": "text/event-stream" } },
@@ -203,8 +224,11 @@ function instrumentSubscriptionCancellation(
     bindings: { ...bindings, STASH_EVENTS: namespace },
     canceled,
     cancelCalls: () => cancelCalls,
+    capturedSignal: () => capturedSignal,
     lifetimeHeader: () => lifetimeHeader,
     namespaceCalls: () => namespaceCalls,
+    requestAborted,
+    signalAbortedAtCancel: () => signalAbortedAtCancel,
     subscribeCalls: () => subscribeCalls,
   };
 }
@@ -798,6 +822,9 @@ describe("stash events route", () => {
       await reader.expectDone();
       await probe.canceled;
       expect(probe.cancelCalls()).toBe(1);
+      await probe.requestAborted;
+      expect(probe.capturedSignal()?.aborted).toBe(true);
+      expect(probe.signalAbortedAtCancel()).toEqual([true]);
     } finally {
       gate.release();
       nowSpy.mockRestore();
@@ -1068,13 +1095,18 @@ describe("stash events route", () => {
     await seedStash(stash);
     const baseBindings = createTestEnv().env;
     const failingBindings = { ...baseBindings, DB: rejectingChangesDatabase(baseBindings.DB) };
-    const probe = instrumentSubscriptionCancellation(failingBindings, stash);
+    const probe = instrumentSubscriptionCancellation(failingBindings, stash, {
+      rejectCancel: true,
+    });
 
     const response = await connect(stash, "", "test-admin", probe.bindings);
 
     await expectError(response, 500, "internal");
     await probe.canceled;
     expect(probe.cancelCalls()).toBe(1);
+    expect(probe.signalAbortedAtCancel()).toEqual([false]);
+    await probe.requestAborted;
+    expect(probe.capturedSignal()?.aborted).toBe(true);
   });
 
   it("lets the authenticated deadline beat an unread replay-limit prefix", async () => {
@@ -1138,6 +1170,9 @@ describe("stash events route", () => {
       await reader.expectDone();
       await probe.canceled;
       expect(probe.cancelCalls()).toBe(1);
+      expect(probe.signalAbortedAtCancel()).toEqual([false]);
+      await probe.requestAborted;
+      expect(probe.capturedSignal()?.aborted).toBe(true);
     } finally {
       await reader.close();
     }
@@ -1157,5 +1192,8 @@ describe("stash events route", () => {
     }
     await probe.canceled;
     expect(probe.cancelCalls()).toBe(1);
+    expect(probe.signalAbortedAtCancel()).toEqual([false]);
+    await probe.requestAborted;
+    expect(probe.capturedSignal()?.aborted).toBe(true);
   });
 });

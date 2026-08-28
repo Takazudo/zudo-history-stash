@@ -350,18 +350,23 @@ export async function subscribeToStashEvents(
   }
 
   const liveReader = response.body.getReader();
-  let liveClosed = false;
+  let liveClosePromise: Promise<void> | undefined;
   const live: LiveSubscription = {
     reader: liveReader,
     async close(reason) {
-      if (liveClosed) return;
-      liveClosed = true;
-      subscriptionAbort.abort(reason);
-      try {
-        await liveReader.cancel(reason);
-      } catch {
-        // The Durable Object may have closed the stream concurrently.
-      }
+      liveClosePromise ??= (async () => {
+        try {
+          await liveReader.cancel(reason);
+        } catch {
+          // The Durable Object may have closed the stream concurrently.
+        } finally {
+          // Cancel the response reader first so the Durable Object's body cancellation removes the
+          // subscriber before the request abort races its stream cleanup. The public deadline may
+          // already have aborted the combined request signal; this remains safe and idempotent.
+          subscriptionAbort.abort(reason);
+        }
+      })();
+      await liveClosePromise;
     },
   };
   // Start one read before touching D1. The resolved chunk is the route's bounded handoff buffer;
