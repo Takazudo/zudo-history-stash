@@ -110,6 +110,12 @@ secret. See the [UI package guide](packages/ui/README.md), complete [API referen
 generated [OpenAPI document](docs/openapi.json), [Cloudflare setup guide](docs/cloudflare-setup.md),
 and [Viewer operations runbook](docs/viewer-operations.md).
 
+Once repository Cloudflare credentials are provisioned, same-repository pull requests receive
+isolated stash and Viewer Workers plus D1, R2, and Worker-owned Durable Object resources, with
+automatic close teardown and orphan reaping; see
+[Cloudflare setup](docs/cloudflare-setup.md#pull-request-previews) and
+[Testing](TESTING.md#pull-request-preview-lane).
+
 ## Quick start
 
 ```bash
