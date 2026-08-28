@@ -1,0 +1,89 @@
+---
+title: Deploy the Stash Worker
+description: Provision bindings, migrations, secrets, and safe operating checks for the storage API.
+sidebar_position: 102
+category: guides
+---
+
+Treat `workers/stash/wrangler.toml` as the deployment contract. Copy its environment shape, replace
+resource placeholders, and keep the R2 bucket private. Cloudflare environments do not inherit many
+binding and variable keys, while Durable Object `migrations` are inheritable. Repeat and verify each
+non-inheritable entry, and verify the selected environment's inherited migration chain rather than
+treating all keys alike.
+
+## Bind every resource
+
+| Kind | Binding or class | Purpose |
+| --- | --- | --- |
+| D1 | `DB` | Authoritative stashes, files, versions, tokens, changes, and proposals. |
+| private R2 | `BLOBS` | Spilled file bodies; object keys and generations are not public URLs. |
+| Durable Object | `STASH_EVENTS` → `StashEvents` | Per-stash synchronous live-event fanout. |
+| rate limiter | `RL_READ` | Read-route classification. |
+| rate limiter | `RL_WRITE` | Mutation-route classification. |
+| rate limiter | `RL_DIFF` | Diff-route classification. |
+
+Install `STASH_ADMIN_TOKEN` as a Worker secret, never as a plain `[vars]` value. Move its plaintext
+directly from a password manager or CI secret store to Wrangler's secret input, and keep it out of
+command history and logs.
+
+The checked variables and their committed defaults are:
+
+| Variable | Default and unit |
+| --- | --- |
+| `ALLOWED_ORIGINS` | Empty allowlist; set the intended browser origins explicitly. |
+| `STASH_DELETE_GRACE_DAYS` | `30` days. |
+| `GC_ORPHAN_MIN_AGE_MS` | `900000` milliseconds. |
+| `GC_LEASE_TTL_MS` | `300000` milliseconds. |
+| `PROPOSAL_TTL_DAYS` | `14` days. |
+| `STASH_EVENTS_MAX_STREAM_MS` | `300000` milliseconds. |
+
+Use the exact names and units accepted by `workers/stash/src/env.ts`; a renamed or unit-converted
+variable is not equivalent.
+
+## Apply two distinct migration tracks
+
+D1 schema migrations live under `workers/stash/migrations` and currently run in order from
+`0001_init.sql` through `0004_proposals.sql`. Apply them to the selected remote `DB` before the
+application deploy.
+
+The Wrangler `[[migrations]]` entry tagged `v1` is different: it registers the SQLite-backed
+`StashEvents` Durable Object class. Keep that migration and its matching binding in every deployed
+environment. It does not replace the D1 SQL sequence, and the event object does not become the
+authoritative history store.
+
+## Deploy in a verifiable order
+
+For each environment:
+
+1. Provision D1 and private R2 and resolve their exact IDs or names.
+2. Fill all D1, R2, Durable Object, rate-limiter, variable, route, and trigger entries.
+3. Apply the D1 migrations remotely with the selected Wrangler config.
+4. Install `STASH_ADMIN_TOKEN` from a protected secret input.
+5. Deploy the Worker with that same config.
+6. Run read-only health and authenticated identity/read checks against the intended origin.
+
+Production schedules garbage collection at `17 3 * * *`. The committed preview environment and
+generated per-PR application configs use an empty cron list. Do not let a copied production trigger
+run against disposable preview storage.
+
+Wrangler's environment model makes `vars`, Durable Object bindings, D1, R2, and other bindings
+non-inheritable. Durable Object `migrations` are inheritable; this repository still repeats the exact
+`v1` entry in its checked preview configuration so that class registration remains explicit there.
+Compare the selected environment as a complete unit before deployment; see Cloudflare's current
+[environment](https://developers.cloudflare.com/workers/wrangler/environments/) and
+[configuration](https://developers.cloudflare.com/workers/wrangler/configuration/) references.
+
+## Bound exposure and metering
+
+Keep `BLOBS` private and avoid logging R2 keys, generations, document bodies, or bearer tokens.
+Live event streams keep the non-hibernating Durable Object active while a response is in flight.
+Configured stream lifetime and authenticated expiry rotate connections so reconnect and revocation
+can take effect, but active requests, duration, storage, and operations can still be metered.
+Review current [Durable Objects](https://developers.cloudflare.com/durable-objects/),
+[D1](https://developers.cloudflare.com/d1/), [R2](https://developers.cloudflare.com/r2/), and
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) for the account in
+use; do not assume a universal free tier, zero cost, hibernation, or instant cleanup.
+
+Cloudflare's [secrets guide](https://developers.cloudflare.com/workers/configuration/secrets/)
+describes encrypted secret bindings and CI-safe input options. The repository's checked config and
+deployment workflows remain the source of truth for this Worker.

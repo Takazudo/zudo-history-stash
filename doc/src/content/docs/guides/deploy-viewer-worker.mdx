@@ -1,0 +1,66 @@
+---
+title: Deploy the Viewer Worker
+description: Build and deploy the operator UI with an explicit streaming proxy security boundary.
+sidebar_position: 103
+category: guides
+---
+
+The Viewer Worker serves the built single-page application and proxies only the Stash API namespace.
+Protect the Viewer as a trusted operator surface, while retaining the Stash API's independent
+bearer-token and scope enforcement.
+
+## Build assets and configure routing
+
+Build the libraries and Viewer assets before deploying `workers/viewer/wrangler.toml`. Its `ASSETS`
+binding points at `./dist` relative to that config. Keep
+`not_found_handling = "single-page-application"` so client routes reach the app, and keep
+`run_worker_first = ["/api", "/api/*"]` so API traffic reaches the Worker before asset fallback.
+
+The upstream selection order is exact:
+
+1. A non-empty, trimmed `STASH_BASE_URL` is used first.
+2. Otherwise the `STASH` service binding is used.
+3. If neither is available, the Worker fails instead of serving a deceptive proxy response.
+
+`STASH_BASE_URL` therefore is not a lower-priority fallback to a configured service binding. Use it
+when the deployment intentionally targets an HTTP Stash origin; use `STASH` for a service-bound
+deployment.
+
+## Keep the proxy narrow
+
+The Worker proxies `/api/v1/*` and rejects other `/api` paths. It preserves the request method,
+query string, and body, and forwards exactly these lowercased headers:
+
+- `authorization`
+- `content-type`
+- `if-none-match`
+- `idempotency-key`
+- `x-stash-client-id`
+
+Cookies and arbitrary browser headers are not forwarded. The Viewer does not store
+`STASH_ADMIN_TOKEN`; the browser supplies its validated bearer token. Cloudflare Access or another
+outer perimeter does not replace `/v1/me` scope checks.
+
+The response remains untouched so Server-Sent Events can stream their first chunk without response
+buffering. Downstream abort and body cancellation propagate to the chosen `fetch` or service-binding
+upstream. Preserve that behavior when adding middleware, observability, or error handling.
+
+## Align origins and verify safely
+
+Choose one browser transport deliberately. The normal Viewer flow calls its same-origin `/api`
+proxy. If a browser also calls the Stash origin directly, include only the intended Viewer or host
+origins in Stash `ALLOWED_ORIGINS`; do not use CORS as authentication. Keep the Viewer origin,
+Stash route, and CORS policy consistent with the selected topology.
+
+Deploy in this order:
+
+1. Build fresh Viewer assets.
+2. Verify the selected config's assets, route, service/base-URL, and environment bindings.
+3. Deploy with the selected Wrangler config.
+4. Fetch `/login` as a browser navigation and require the built HTML shell.
+5. Fetch `/api/v1/health` through the Viewer and require the Stash health contract.
+6. Use a least-privilege test credential for further read-only identity and known-good reads.
+
+Do not test a deployment by pasting a bearer token into a URL or by issuing a convenient mutation.
+Use [Troubleshooting](./troubleshooting.mdx) to separate asset, upstream-selection, origin, and
+authentication failures.

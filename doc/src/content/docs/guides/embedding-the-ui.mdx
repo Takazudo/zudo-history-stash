@@ -1,0 +1,210 @@
+---
+title: Embed the UI package
+description: Host public UI components with explicit routing, credentials, capabilities, and lifecycle ownership.
+sidebar_position: 101
+category: guides
+---
+
+`@takazudo/zudo-history-stash-ui` supplies React UI components, not an application shell. It does
+not own routing, authentication, bearer-token storage, login, or Viewer flash state. Your host owns
+those boundaries and passes a preconfigured `StashClient` into `StashUiProvider`.
+
+## Supply the provider boundary
+
+The provider accepts `client`, optional `clientForSignal`, optional `hrefFor`, and optional
+`Anchor`. The public `StashClient` interface does not have `withSignal`; inject a factory that can
+construct an equivalent client for an `AbortSignal` when cancellable reads matter.
+
+The package route union contains exactly `home`, `stash`, `file`, `diff`, `edit`, `proposal`,
+`new-file`, and `tokens`. A host may map those route values into its own router. The hosted Viewer
+has a proposal-list URL, but there is no package-level `proposals` route kind.
+
+This complete host component mounts the public `HistoryList` below the provider. Its imports use
+only public package roots.
+
+{/* zhs-example: ops-ui-host */}
+
+```tsx
+import type { HistoryPage, StashClient } from "@takazudo/zudo-history-stash";
+import {
+  defaultStashHrefFor,
+  HistoryList,
+  StashUiProvider,
+  type StashAnchorProps,
+  type StashHrefFor,
+} from "@takazudo/zudo-history-stash-ui";
+
+const hrefFor: StashHrefFor = (route) => `/operator${defaultStashHrefFor(route)}`;
+
+function Anchor({ children, href, ...props }: StashAnchorProps) {
+  return (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  );
+}
+
+export interface OpsHistoryHostProps {
+  client: StashClient;
+  clientForSignal: (signal: AbortSignal) => StashClient;
+  stash: string;
+  path: string;
+  page: HistoryPage;
+  onLoadMore: () => void;
+}
+
+export function OpsHistoryHost({
+  client,
+  clientForSignal,
+  stash,
+  path,
+  page,
+  onLoadMore,
+}: OpsHistoryHostProps) {
+  return (
+    <StashUiProvider
+      client={client}
+      clientForSignal={clientForSignal}
+      hrefFor={hrefFor}
+      Anchor={Anchor}
+    >
+      <HistoryList stash={stash} path={path} page={page} onLoadMore={onLoadMore} />
+    </StashUiProvider>
+  );
+}
+```
+
+The provider resolves capabilities from the authenticated client's `/v1/me` response. Capability
+gates deny controls synchronously while that identity is unresolved or changing. Routing and
+hidden buttons do not grant authority.
+
+## Own credential cleanup explicitly
+
+Credential-bound workbench drafts must not cross principals. Validate a replacement first, clear
+drafts through `clearWorkbenchDraftsForCredentialChange()`, confirm persistence, and only then
+install it. On logout or `401`, attempt draft cleanup and persisted-credential removal
+independently, but deactivate the current runtime in all cases. A failed cleanup makes the boundary
+uncertain; block later authentication until the user clears the tab's site data.
+
+{/* zhs-example: ops-ui-credential-boundary */}
+
+```ts
+import type { StashClient } from "@takazudo/zudo-history-stash";
+import { clearWorkbenchDraftsForCredentialChange } from "@takazudo/zudo-history-stash-ui";
+
+export type CredentialChangeResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "validation-failed"
+        | "draft-cleanup-failed"
+        | "persistence-failed"
+        | "site-data-clear-required";
+    };
+
+export interface CredentialBoundaryHost<Candidate> {
+  validate(candidate: Candidate): Promise<StashClient | null>;
+  persist(candidate: Candidate): boolean;
+  install(client: StashClient): void;
+  removePersisted(): boolean;
+  deactivate(): void;
+}
+
+export interface LogoutResult {
+  draftsCleared: boolean;
+  persistedCredentialRemoved: boolean;
+  runtimeDeactivated: boolean;
+  safeToAuthenticate: boolean;
+}
+
+function confirmed(operation: () => boolean): boolean {
+  try {
+    return operation();
+  } catch {
+    return false;
+  }
+}
+
+export function createCredentialBoundary<Candidate>(host: CredentialBoundaryHost<Candidate>) {
+  let siteDataClearRequired = false;
+
+  return {
+    async replace(candidate: Candidate): Promise<CredentialChangeResult> {
+      if (siteDataClearRequired) {
+        return { ok: false, reason: "site-data-clear-required" };
+      }
+
+      let client: StashClient | null;
+      try {
+        client = await host.validate(candidate);
+      } catch {
+        return { ok: false, reason: "validation-failed" };
+      }
+      if (client === null) return { ok: false, reason: "validation-failed" };
+
+      if (!confirmed(clearWorkbenchDraftsForCredentialChange)) {
+        siteDataClearRequired = true;
+        return { ok: false, reason: "draft-cleanup-failed" };
+      }
+      if (!confirmed(() => host.persist(candidate))) {
+        siteDataClearRequired = true;
+        return { ok: false, reason: "persistence-failed" };
+      }
+
+      try {
+        host.install(client);
+      } catch {
+        siteDataClearRequired = true;
+        confirmed(() => {
+          host.deactivate();
+          return true;
+        });
+        return { ok: false, reason: "site-data-clear-required" };
+      }
+      return { ok: true };
+    },
+
+    logout(): LogoutResult {
+      let draftsCleared = false;
+      let persistedCredentialRemoved = false;
+      let runtimeDeactivated = false;
+      try {
+        draftsCleared = confirmed(clearWorkbenchDraftsForCredentialChange);
+        persistedCredentialRemoved = confirmed(() => host.removePersisted());
+      } finally {
+        runtimeDeactivated = confirmed(() => {
+          host.deactivate();
+          return true;
+        });
+      }
+
+      const safeToAuthenticate = draftsCleared && persistedCredentialRemoved && runtimeDeactivated;
+      siteDataClearRequired ||= !safeToAuthenticate;
+      return {
+        draftsCleared,
+        persistedCredentialRemoved,
+        runtimeDeactivated,
+        safeToAuthenticate,
+      };
+    },
+  };
+}
+```
+
+The transition result deliberately exposes no bearer token. Keep real credentials out of logs,
+URLs, analytics, screenshots, fixtures, and returned display state.
+
+Default a browser-direct integration to a stash-scoped read credential. If the host intentionally
+offers write or admin controls, operate it as a trusted, access-controlled operator surface; never
+embed an administrator secret in static assets.
+
+## Load styles and own live lifecycle
+
+Load host token overrides before `@takazudo/zudo-history-stash-ui/styles.css`. Use the packaged
+`@takazudo/zudo-history-stash-ui/styles/tokens.example.css` only as a starting point for overrides,
+not as another canonical token table.
+
+Own one visibility-scoped live subscription per active stash and fan reconciled refreshes and
+status to consumers. Do not open one stream per widget. Event path/origin values are advisory;
+apply state only after an authoritative changes request or refetch.

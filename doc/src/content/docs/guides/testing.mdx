@@ -1,0 +1,71 @@
+---
+title: Test safely
+description: Choose the right evidence level and environment without turning tests into accidental production mutations.
+sidebar_position: 105
+category: guides
+---
+
+Test evidence is cumulative. A fast fake proves deterministic client behavior; it does not prove a
+network, Worker binding, browser, or deployed platform. Record the first red result and its fix—a
+green retry does not erase it.
+
+## Evidence levels
+
+| Level | Evidence |
+| --- | --- |
+| L1 unit | Pure validators, schemas, hashes, SDK behavior, and deterministic helpers. |
+| L2 DOM/component | React components and routes with Testing Library and controlled clients. |
+| L3 build/static | Package bundles, generated assets, Worker dry-runs, `publint`, and `attw`. |
+| L4 browser | Chromium navigation and interaction through Playwright. |
+| L5 live/infrastructure | Running Workers, D1/R2/DO bindings, service proxying, SSE, and deployed smoke. |
+
+Local `pnpm b4push` is the T0 repository gate: frozen dependency parity, library builds, format,
+types, lint, unit tests, application builds, and checked Worker dry-runs. CI is T1 and adds package
+publication checks and browser work. T0 does not start the server-backed HTTP contract, checked-in
+live SDK conformance, guarded mock/live browser lanes, or the deployed PR-preview lane; record those
+separately when they are acceptance evidence.
+
+Use the focused package test and typecheck while developing, then the root gate for integration.
+Docs changes have one aggregate entry point: `pnpm b4push:doc`. Its internal stages are owned by the
+Docs tooling and should not be copied into another checklist.
+
+## Local full-stack topology
+
+`pnpm dev:full` builds libraries and Viewer assets, applies local D1 migrations, and serves the
+Viewer at `http://localhost:8787`. Requests under `/api` reach the Stash Worker through the `STASH`
+service binding in the same Wrangler runtime. Local D1, R2, and the SQLite-backed `StashEvents`
+Durable Object use the worktree's persisted Wrangler state. Seed and contract commands go through
+`http://localhost:8787/api`, not a separately assumed Stash port.
+
+The seed creates the known `demo` fixture. Destructive contract and conformance work must create
+isolated names and remain loopback-only. A manually managed `dev:full` process and the one-command
+live browser lane must not compete for the same ports or persisted state.
+
+## Environment safety matrix
+
+| Environment | Allowed mutation |
+| --- | --- |
+| isolated local | Full CRUD, fault injection, seed, and teardown inside the worktree's local resources. |
+| per-PR application preview | Only the workflow's explicitly disposable provision and `demo` seed; read evidence afterward. |
+| shared preview or staging | Read-only unless a separately reviewed disposable namespace and cleanup contract exists. |
+| production | Read-only health, identity, and known-good reads. Never run mutation or live-conformance setup. |
+
+Credentials belong in ignored local files or CI secret stores, never fixtures, snapshots, docs
+output, screenshots, or artifacts. Browser and infrastructure commands remain guarded; do not
+weaken a loopback, tier, URL, or token precondition merely to collect a green result.
+
+## Know what each live lane proves
+
+The HTTP contract exercises health, auth, reads, history, diffs, changes, and a bounded SSE-ready
+handshake at every tier. Persisting cases run only for the loopback local tier. The SDK live
+conformance runner is also loopback-only and mutating. Worker/RPC tests cover isolated bindings and
+transport parity without claiming a deployed origin.
+
+Mock browser tests prove UI behavior with routed responses. Guarded live browser tests prove the
+local Viewer, service binding, storage, and SSE composition. The PR-preview browser proof is exactly
+one `@preview` test over real HTTPS with a generated read token, no mocks, strict console checks,
+and no write affordances; missing or invalid URL/token input fails before collection instead of
+skipping green.
+
+See the repository `TESTING.md` for the current commands and topology. Keep new tests aligned with
+the existing environment-tiered and Vitest patterns rather than creating a second source of truth.
