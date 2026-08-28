@@ -1,0 +1,50 @@
+{
+  "name": "zudo-history-stash-doc",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "run-p dev:zfb dev:history",
+    "build": "zfb build",
+    "preview": "zfb preview",
+    "check": "zfb check",
+    "test": "node --test scripts/check-links.test.mjs plugins/normalize-generated-skill-links.test.mjs",
+    "check:links": "node scripts/check-links.js",
+    "generate:ogp": "node scripts/generate-ogp.mjs",
+    "dev:zfb": "zfb dev",
+    "dev:zfb:network": "zfb dev --host 0.0.0.0",
+    "dev:network": "run-p dev:zfb:network dev:history",
+    "dev:history": "doc-history-server --port 4322 --content-dir src/content/docs --locale ja:src/content/docs-ja",
+    "setup:doc-skill": "bash scripts/setup-doc-skill.sh",
+    "setup:doc-skill-silent": "bash scripts/setup-doc-skill.sh --silent",
+    "setup:doc-skill:claude": "bash scripts/setup-doc-skill.sh --target claude",
+    "setup:doc-skill:codex": "bash scripts/setup-doc-skill.sh --target codex",
+    "setup:doc-skill:both": "bash scripts/setup-doc-skill.sh --target both"
+  },
+  "dependencies": {
+    "@takazudo/zfb": "2.12.0",
+    "@takazudo/zfb-runtime": "2.12.0",
+    "@takazudo/zfb-md-wasm": "2.12.0",
+    "@takazudo/zudo-doc": "^5.13.0",
+    "zod": "^4.3.6",
+    "preact": "^10.29.1",
+    "preact-render-to-string": "^6.6.6",
+    "katex": "^0.16.38",
+    "diff": "^8.0.3",
+    "@takazudo/zdtp": "0.4.12",
+    "minisearch": "^7.2.0",
+    "@takazudo/zudo-doc-history-server": "^5.13.0"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@takazudo/zfb-adapter-cloudflare": "2.12.0",
+    "typescript": "^5.9.0",
+    "@types/node": "^22.0.0",
+    "pagefind": "^1.4.0",
+    "npm-run-all2": "^7.0.2",
+    "wrangler": "4.125.0"
+  }
+}

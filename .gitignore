@@ -3,6 +3,15 @@ dist/
 .zfb/
 .zfb-build/
 .wrangler/
+doc/dist/
+doc/.zfb/
+doc/.zfb-build/
+doc/.zudo-doc/
+doc/.wrangler/
+doc/public/openapi.json
+doc/src/content/docs/claude*/
+.claude/skills/zudo-history-stash-wisdom/docs
+.claude/skills/zudo-history-stash-wisdom/docs-ja
 worktrees/
 test-results/
 playwright-report/

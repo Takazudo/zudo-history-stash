@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
   - "workers/*"
+  - "doc"
 
 # pnpm 10 keeps workspace policy here so every package gets the same install
 # behaviour. Workspace links are intentional: feature packages consume the
