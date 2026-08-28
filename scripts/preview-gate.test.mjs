@@ -156,7 +156,7 @@ describe("preview workflow security boundary", () => {
       "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
       "pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320",
       "actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444",
-      "actions/cache@5a3ec84eff668545956fd18022155c47e93e2684",
+      "actions/cache@caa296126883cff596d87d8935842f9db880ef25",
       "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     ]);
     assert.equal(uses.length, 6);
