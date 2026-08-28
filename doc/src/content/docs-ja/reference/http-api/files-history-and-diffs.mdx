@@ -1,0 +1,67 @@
+---
+title: ファイル、履歴、差分
+description: ファイル head、フェンス付き書き込み、tombstone、rollback、履歴、上限付き diff です。
+sidebar_position: 190
+category: reference
+---
+
+### `GET /v1/stashes/{stash}/files`
+
+**Contract:** operation `listFiles`; principal `read`; transport `any`.
+
+任意の tombstone、上限付きの `limit`、path keyset の `after` cursor とともに、ファイル summary を昇順で
+一覧表示します。各 summary は head version、hash、size、deletion state、update time を報告します。
+
+### `GET /v1/stashes/{stash}/files/{path}`
+
+**Contract:** operation `getFile`; principal `read`; transport `any`.
+
+head または正の履歴 `version` を読み取ります。読み取りに成功すると `ETag` と `X-Stash-Version` が含まれ、
+`If-None-Match` によって body なしの `304` を返すことがあります。明示的に要求した tombstone は削除済みの
+内容として返しますが、tombstone になっている head は `404 file-deleted` になります。
+
+### `PUT /v1/stashes/{stash}/files/{path}`
+
+**Contract:** operation `putFile`; principal `write`; transport `any`.
+
+`expectedVersion` を使ってテキストを書き込みます。`null` は作成専用で、それ以外は現在の head と一致する
+必要があります。通常の成功は version/hash/change metadata を含む `201` です。`skipIfUnchanged` では
+履歴を追加せずに `200` を返すことがあります。冪等な replay は元の status を保持します。フェンスで負けると
+`409 stale`、作成専用の場合は `409 exists` です。
+
+### `POST /v1/stashes/{stash}/delete/{path}`
+
+**Contract:** operation `deleteFile`; principal `write`; transport `any`.
+
+`expectedVersion` と任意の authorship を使用して tombstone を追加します。これは `POST` です。
+intermediary が `DELETE` の request body を確実には保持しないためです。成功は `200`、tombstone の削除は
+`409 already-deleted` です。
+
+### `POST /v1/stashes/{stash}/rollback/{path}`
+
+**Contract:** operation `rollbackFile`; principal `write`; transport `any`.
+
+live な `toVersion` から、`expectedVersion` でフェンスした新しい version を追加します。`201` とともに
+`rollbackOf` と、byte が古い head と一致したかどうかを返します。履歴を過去へ戻すことも、tombstone へ rollback する
+こともありません。
+
+### `GET /v1/stashes/{stash}/history/{path}`
+
+**Contract:** operation `getHistory`; principal `read`; transport `any`.
+
+metadata だけの version を新しい順で返します。現在の head、deletion state、total、`before` cursor が
+含まれます。version の body は引き続きファイル読み取り route で取得します。
+
+### `GET /v1/stashes/{stash}/diff/{path}`
+
+**Contract:** operation `getDiff`; principal `read`; transport `any`.
+
+必須の `from` と、正の `to` または `head` を比較します。任意の context と unified-output の上限が結果を
+制限します。存在しない version とサーバー側 diff の失敗は、明示的なままです。
+
+### `POST /v1/stashes/{stash}/diff/{path}`
+
+**Contract:** operation `diffCandidate`; principal `read`; transport `any`.
+
+提供された候補 body を version または head と、完全に memory 内で比較します。この read ケイパビリティの
+POST は body、blob、version、変更を一切永続化せず、通常の上限付き diff model を返します。

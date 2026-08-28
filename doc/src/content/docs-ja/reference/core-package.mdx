@@ -1,0 +1,26 @@
+---
+title: Core パッケージ
+description: "@takazudo/zudo-history-stash-core が公開する契約です。"
+sidebar_position: 20
+category: reference
+---
+
+`@takazudo/zudo-history-stash-core` は runtime に依存しない契約パッケージです。
+[バージョンと互換性](./versions.mdx)に示す Node.js が必要ですが、Worker binding を開いたり、D1 や R2 に
+アクセスしたりすることはありません。
+
+## ルートエントリーポイント
+
+パッケージルートは、runtime schema と validator、正規パス helper、hash と ETag、route/error/limit の
+契約、diff model と engine helper、RPC request/response 型を公開します。一部の export は TypeScript
+専用です。型を runtime 値として扱う前に、公開された宣言を確認してください。
+
+閉じた契約をアプリケーションコードへコピーするのではなく、ソースから導出された
+[HTTP route リファレンス](./http-api/index.mdx)、[エラー表](./error-codes.mdx)、
+[上限表](./limits.mdx)を使用してください。
+
+## OpenAPI エントリーポイント
+
+`@takazudo/zudo-history-stash-core/openapi` は `ROUTE_CONTRACTS`、`transportForRoute`、
+`buildOpenApiDocument`、`RESPONSE_SCHEMAS`、`SAMPLES` を公開します。これはコミット済み OpenAPI
+ドキュメントを生成する境界であり、サーバー実装ではありません。

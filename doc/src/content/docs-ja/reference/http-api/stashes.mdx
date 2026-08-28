@@ -1,0 +1,44 @@
+---
+title: stash
+description: 管理者による stash の一覧、作成、削除、復元、scope 付き読み取りです。
+sidebar_position: 120
+category: reference
+---
+
+### `GET /v1/stashes`
+
+**Contract:** operation `listStashes`; principal `admin`; transport `any`.
+
+上限付きの `limit`、stash 名の `after` cursor、`includeDeleted` を受け入れます。`200` で summary と
+`nextAfter` を返し、復元 field は有効な期間を反映します。stash 認証情報には管理者向け一覧を
+返さず、存在を隠す `404` を返します。
+
+### `POST /v1/stashes`
+
+**Contract:** operation `createStash`; principal `admin`; transport `any`.
+
+`{ name, description?, meta? }` を作成し、record を `201` で返します。name は小文字英数字と hyphen から
+なる 63 文字以下の識別子です。無効な入力は `400`、name の再利用は `409 exists`、encode 済みリクエストが
+大きすぎる場合は `413` です。
+
+### `GET /v1/stashes/{stash}`
+
+**Contract:** operation `getStash`; principal `admin-or-stash`; transport `any`.
+
+admin またはこの stash に属する認証情報に、件数、最終変更 metadata、ライフサイクル timestamp、復元の
+可否を返します。未知の stash と他者の stash は開示しません。
+
+### `DELETE /v1/stashes/{stash}`
+
+**Contract:** operation `deleteStash`; principal `admin`; transport `any`.
+
+stash を論理削除し、削除/復元 timestamp と失効させた stash token 数を `200` で返します。履歴と blob は
+延期された cleanup のために残り、name は再利用されません。既存の tombstone を削除すると
+`409 already-deleted` を返します。
+
+### `POST /v1/stashes/{stash}/restore`
+
+**Contract:** operation `restoreStash`; principal `admin`; transport `any`.
+
+期間内に論理削除された stash を復元し、`200` を返します。データはそのままですが、失効した token は
+復活しません。未知、live、復元可能期間を過ぎた stash は、同じく存在を隠す `404` になります。

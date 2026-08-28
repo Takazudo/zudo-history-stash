@@ -1,0 +1,20 @@
+---
+title: インポート
+description: 既存 version 履歴をフェンス付きで順序どおりに移行します。
+sidebar_position: 140
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/import`
+
+**Contract:** operation `importHistory`; principal `admin`; transport `any`.
+
+`{ path, expectedVersion, versions }` を受け入れます。ドキュメント化された最大数までの、順序付き `put`、
+`delete`、`rollback` entry を一つ以上含めます。`expectedVersion: null` は作成専用です。
+それ以外では現在の head と一致する必要があります。entry の timestamp は減少してはならず、rollback の
+対象は import chain 内でそれより前にある live version でなければなりません。
+
+batch に成功すると、`201` とともに `headVersion` と `firstChangeId` を返します。より長い履歴を移行するには、
+上限付きの連続する batch を送信し、返された head で次の各 request をフェンスしてください。
+`409 stale`/`exists` では正本との照合が必要です。失敗した batch が一部だけ import されたと仮定しては
+いけません。

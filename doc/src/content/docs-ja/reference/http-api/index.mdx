@@ -1,0 +1,45 @@
+---
+title: HTTP API
+description: 認証、ケイパビリティ、pagination、path、conditional read、転送方式です。
+sidebar_position: 100
+category: reference
+---
+
+<OpenApiLink>提供される OpenAPI ドキュメント</OpenApiLink>は、機械可読な request/response 契約です。
+route ページでは、そのソースを置き換えずに運用上の意味を追加します。
+
+## 認証と principal
+
+認証情報は `Authorization: Bearer <token>` として送信します。公開される principal の語彙は次のとおりです。
+
+| Principal | Meaning |
+| --- | --- |
+| `open` | 認証情報は不要です。 |
+| `any` | 有効な admin または stash 認証情報。 |
+| `admin` | 管理者認証情報のみ。 |
+| `admin-or-stash` | 管理者、または指定された stash に属する token。 |
+| `read` | 管理者、または一致する read/write stash token。 |
+| `write` | 管理者、または一致する write stash token。 |
+
+同一性が一致しても、すべてのケイパビリティを持つとは限りません。`401` は同一性がないか無効、`403` は
+scope 不足、意図的に隠された `404` response は非開示として扱ってください。
+
+## 共通リクエスト契約
+
+- list endpoint は上限付きの `limit` 値と、keyset または opaque cursor を使用します。opaque cursor の値を
+  組み立てたり、排他的な方向を組み合わせたりしないでください。
+- ファイルパスは終端 wildcard を占めます。各 segment を個別に percent-encode し、`/` は区切りとして
+  残してください。HTTP path は `{stash}`、`{id}`、`{path}` の表記を使用します。
+- conditional file read は `If-None-Match` を使用します。読み取りに成功すると `ETag` と
+  `X-Stash-Version` が公開されます。
+- mutation request には、変更元を示す `X-Stash-Client-Id` を含められます。冪等な操作は
+  `Idempotency-Key` を受け入れます。replay には同じ正規リクエストが必要です。
+- エラーは正規の `{ error: { code, message, successorId? }, current? }` envelope を使用します。
+  `error.code` と `error.message` は必須の文字列です。任意の `error.successorId` は token rotation で確定した
+  後継を識別します。一部の競合 response には、復旧用のルートレベル `current` state が含まれます。
+  [閉じたエラーコード表](../error-codes.mdx)を参照してください。
+
+ほとんどの操作は、Client パッケージを通じて fetch と RPC の両方をサポートします。`fetch-only` と記された
+route には streaming response などの HTTP semantics が必要であり、RPC 経由で呼び出してはいけません。
+
+<CategoryTreeNav category="reference" />
