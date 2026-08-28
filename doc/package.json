@@ -7,7 +7,9 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "predev": "pnpm copy:openapi",
     "dev": "run-p dev:zfb dev:history",
+    "prebuild": "pnpm copy:openapi",
     "build": "zfb build",
     "preview": "zfb preview",
     "check": "zfb check",
@@ -19,9 +21,11 @@
     "check:template-drift": "node scripts/check-template-drift.mjs",
     "check:pin-parity": "node scripts/check-pin-parity.mjs",
     "check:wrangler-pin": "node scripts/check-wrangler-pin.mjs",
-    "check:contract": "bash -c 'if [[ -f scripts/check-contract.mjs ]]; then node scripts/check-contract.mjs; else echo \"SKIP check:contract pending #165\"; fi'",
+    "check:contract": "node scripts/check-contract.mjs --locale en",
     "check:versions": "node scripts/check-versions.mjs",
-    "check:examples": "bash -c 'if [[ -f scripts/check-examples.mjs ]]; then node scripts/check-examples.mjs; else echo \"SKIP check:examples pending #165\"; fi'",
+    "check:examples": "tsc --noEmit -p examples-check/tsconfig.json && node scripts/check-examples.mjs",
+    "write:examples-manifest": "node scripts/check-examples.mjs --write",
+    "copy:openapi": "node scripts/copy-openapi.mjs",
     "check:locale-parity": "bash -c 'if [[ -f scripts/check-locale-parity.mjs ]]; then node scripts/check-locale-parity.mjs; else echo \"SKIP check:locale-parity pending #168\"; fi'",
     "check:html": "html-validate \"dist/**/*.html\"",
     "check:links": "node scripts/check-links.js --strict-broken --strict-absolute --strict-anchors --allowlist=.check-links-allowlist",

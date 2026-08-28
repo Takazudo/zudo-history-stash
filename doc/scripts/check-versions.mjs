@@ -75,7 +75,9 @@ export async function checkVersions(repositoryRoot) {
   ) {
     throw new Error("chrome bindings are not wired to the shared version model");
   }
-  if (!/mdxExtras\s*:\s*\{\s*VersionValue\s*\}/s.test(chrome)) {
+  const mdxExtras = /mdxExtras\s*:\s*\{([^{}]*)\}/s.exec(chrome)?.[1];
+  const extraNames = mdxExtras?.split(",").map((entry) => entry.trim()) ?? [];
+  if (!extraNames.includes("VersionValue")) {
     throw new Error("chrome bindings do not expose VersionValue to both MDX trees");
   }
   for (let index = 0; index < pageSources.length; index += 1) {

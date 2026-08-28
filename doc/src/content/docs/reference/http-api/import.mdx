@@ -1,0 +1,20 @@
+---
+title: Import
+description: Fenced, ordered migration of an existing version history.
+sidebar_position: 140
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/import`
+
+**Contract:** operation `importHistory`; principal `admin`; transport `any`.
+
+Accepts `{ path, expectedVersion, versions }` with one through the documented maximum number of
+ordered `put`, `delete`, or `rollback` entries. `expectedVersion: null` is create-only; otherwise it
+must equal the current head. Entry timestamps are non-decreasing, and rollback targets must be an
+earlier live version in the imported chain.
+
+A successful batch returns `201` with `headVersion` and `firstChangeId`. To migrate a longer
+history, submit bounded consecutive batches and fence each next request with the returned head.
+`409 stale`/`exists` require authoritative reconciliation; a failed batch must not be assumed
+partially imported.

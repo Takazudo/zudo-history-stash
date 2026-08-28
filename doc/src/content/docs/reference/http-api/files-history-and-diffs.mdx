@@ -1,0 +1,67 @@
+---
+title: Files, history, and diffs
+description: File heads, fenced writes, tombstones, rollback, history, and bounded diffs.
+sidebar_position: 190
+category: reference
+---
+
+### `GET /v1/stashes/{stash}/files`
+
+**Contract:** operation `listFiles`; principal `read`; transport `any`.
+
+Lists ascending file summaries with optional tombstones, bounded `limit`, and a path-keyset `after`
+cursor. Each summary reports head version, hash, size, deletion state, and update time.
+
+### `GET /v1/stashes/{stash}/files/{path}`
+
+**Contract:** operation `getFile`; principal `read`; transport `any`.
+
+Reads the head or a positive historical `version`. Successful reads include `ETag` and
+`X-Stash-Version`; `If-None-Match` can produce bodyless `304`. An explicitly requested tombstone is
+returned as deleted content, while a tombstoned head produces `404 file-deleted`.
+
+### `PUT /v1/stashes/{stash}/files/{path}`
+
+**Contract:** operation `putFile`; principal `write`; transport `any`.
+
+Writes text with `expectedVersion`: `null` is create-only, otherwise it must equal the current head.
+The usual success is `201` with version/hash/change metadata. `skipIfUnchanged` can return `200`
+without history. An idempotent replay preserves the original status; a lost fence is `409 stale` or
+create-only `409 exists`.
+
+### `POST /v1/stashes/{stash}/delete/{path}`
+
+**Contract:** operation `deleteFile`; principal `write`; transport `any`.
+
+Appends a tombstone using `expectedVersion` and optional authorship. This is `POST`, because request
+bodies on `DELETE` are not reliably preserved by intermediaries. Success is `200`; deleting a
+tombstone is `409 already-deleted`.
+
+### `POST /v1/stashes/{stash}/rollback/{path}`
+
+**Contract:** operation `rollbackFile`; principal `write`; transport `any`.
+
+Appends a new version from live `toVersion`, fenced by `expectedVersion`, and returns `201` with
+`rollbackOf` and whether bytes matched the old head. It never moves history backward or rolls back
+to a tombstone.
+
+### `GET /v1/stashes/{stash}/history/{path}`
+
+**Contract:** operation `getHistory`; principal `read`; transport `any`.
+
+Returns newest-first metadata-only versions with the current head, deletion state, total, and
+`before` cursor. Version bodies remain on the file read route.
+
+### `GET /v1/stashes/{stash}/diff/{path}`
+
+**Contract:** operation `getDiff`; principal `read`; transport `any`.
+
+Compares required `from` with a positive `to` or `head`. Optional context and unified-output limits
+bound the result; missing versions and server-side diff failures remain explicit.
+
+### `POST /v1/stashes/{stash}/diff/{path}`
+
+**Contract:** operation `diffCandidate`; principal `read`; transport `any`.
+
+Compares a supplied candidate body with a version or head entirely in memory. This read-capability
+POST persists no body, blob, version, or mutation and returns the normal bounded diff model.

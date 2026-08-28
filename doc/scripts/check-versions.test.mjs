@@ -61,7 +61,8 @@ async function versionFixture(t) {
     [
       'import { projectVersions } from "./data/versions.ts";',
       "function VersionValue({ name }) { return projectVersions[name]; }",
-      "export const chromeBindings = defineChromeBindings({ mdxExtras: { VersionValue } });",
+      "function OpenApiLink({ children }) { return children; }",
+      "export const chromeBindings = defineChromeBindings({ mdxExtras: { OpenApiLink, VersionValue } });",
     ].join("\n"),
   );
   const page = fields.map((name) => `<VersionValue name="${name}" />`).join("\n");
@@ -125,5 +126,14 @@ test("version checker rejects wrong source, missing field, detached locale, copi
     const path = join(root, "doc/src/data/versions.ts");
     await writeFile(path, `import fs from "node:fs";\n${await readFile(path, "utf8")}`);
     await assert.rejects(checkVersions(root), /must not use runtime node:fs/);
+  });
+  await t.test("similarly named extra", async (t) => {
+    const root = await versionFixture(t);
+    const path = join(root, "doc/src/chrome-bindings.tsx");
+    await writeFile(
+      path,
+      (await readFile(path, "utf8")).replace("VersionValue }", "OtherVersionValue }"),
+    );
+    await assert.rejects(checkVersions(root), /do not expose VersionValue/);
   });
 });

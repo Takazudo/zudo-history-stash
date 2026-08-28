@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@takazudo/zudo-history-stash": ["packages/client/dist/index.d.ts"],
+      "@takazudo/zudo-history-stash/testing": ["packages/client/dist/testing/index.d.ts"],
+      "@takazudo/zudo-history-stash-core": ["packages/core/dist/index.d.ts"],
+      "@takazudo/zudo-history-stash-core/openapi": ["packages/core/dist/openapi/index.d.ts"],
+      "@takazudo/zudo-history-stash-ui": ["packages/ui/dist/index.d.ts"]
+    },
+    "skipLibCheck": false,
+    "typeRoots": ["../node_modules/@types", "../../packages/ui/node_modules/@types"],
+    "types": ["node", "react", "react-dom"]
+  },
+  "include": ["./**/*.ts", "./**/*.tsx"]
+}

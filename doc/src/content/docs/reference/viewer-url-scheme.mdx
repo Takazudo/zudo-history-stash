@@ -1,0 +1,32 @@
+---
+title: Viewer URL scheme
+description: Stable Viewer routes, query semantics, encoding, and credential-safe navigation.
+sidebar_position: 50
+category: reference
+---
+
+These are React Router patterns, not public HTTP API paths. Here `:stash` and `:id` are named route
+parameters and `*path` is a Viewer wildcard; HTTP references use OpenAPI braces such as `{stash}`
+and `{path}`.
+
+| Viewer route | Query or state | Gate |
+| --- | --- | --- |
+| `/login` | Optional safe same-origin `next`. | Open. |
+| `/` | Principal-aware home. | Authenticated. |
+| `/s/:stash` | Stash overview. | Matching stash credential or admin. |
+| `/s/:stash/f/*path` | Optional positive `version`. | Read. |
+| `/s/:stash/diff/*path` | Positive `from` (default 1), positive `to` or `head`, and accepted `context`. | Read. |
+| `/s/:stash/edit/*path` | Optional positive `from` source version. | Write. |
+| `/s/:stash/proposals` | `status=open|all` (default `open`), optional `path`. | Read; decisions are capability-gated. |
+| `/s/:stash/proposals/:id` | Immutable proposal ID. | Read; decision controls require write. |
+| `/s/:stash/new` | No query. | Write. |
+| `/s/:stash/tokens` | No query. | Admin. |
+
+Encode stash and proposal IDs with `encodeURIComponent`. Encode file paths one segment at a time so
+slashes remain separators. Preserve the full query string when sharing historical and diff links.
+`defaultStashHref` covers the core destinations; proposal filters use `proposalListHref`, so no one
+helper claims every stable URL.
+
+An unauthenticated deep link redirects to `/login?next=<encoded path+query+hash>`. Login accepts
+only a safe same-origin application path on return. Credentials live in tab-scoped session storage,
+never in a path, query, fragment, log, or shared link.

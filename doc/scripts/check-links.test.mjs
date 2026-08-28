@@ -9,6 +9,7 @@ import {
   checkMdxLinks,
   extractHtmlIds,
   extractHtmlLinks,
+  parseZfbConfig,
 } from "./check-links.js";
 
 test("extractHtmlLinks accepts quoted and valid unquoted href attributes", () => {
@@ -100,4 +101,30 @@ test("source checks reject absolute Docs paths and invalid anchors", async (t) =
   );
   assert.deepEqual(await checkMdxLinks([docs], root, null, "/", []), []);
   assert.deepEqual(await checkMdxAnchors([docs], root, "/", []), []);
+});
+
+test("parseZfbConfig resolves one relative imported string constant without executing it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "zhs-check-config-base-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "src/data"), { recursive: true });
+  await writeFile(
+    join(root, "zfb.config.ts"),
+    [
+      'import { DOC_BASE_PATH } from "./src/data/site-paths.ts";',
+      "zudoDoc({ base: DOC_BASE_PATH });",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(join(root, "src/data/site-paths.ts"), 'export const DOC_BASE_PATH = "/docs/";\n');
+
+  assert.equal((await parseZfbConfig(join(root, "zfb.config.ts"))).basePath, "/docs/");
+
+  await writeFile(
+    join(root, "src/data/site-paths.ts"),
+    "export const DOC_BASE_PATH = process.env.DOC_BASE_PATH;\n",
+  );
+  await assert.rejects(
+    parseZfbConfig(join(root, "zfb.config.ts")),
+    /imported constant must be a literal string/,
+  );
 });
