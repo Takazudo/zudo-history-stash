@@ -6,6 +6,9 @@ import type {
 } from "@takazudo/zudo-history-stash";
 import {
   Button,
+  FileContent,
+  fileContentAccess,
+  fileRepresentation,
   Bytes,
   DeleteFileDialog,
   HistoryList,
@@ -125,19 +128,24 @@ function FileActions({
 
   if (file.deleted) return null;
 
+  const textEditorAvailable =
+    file.representation !== "binary" && file.contentAccess !== "raw" && file.body !== null;
+
   return (
     <div className="form-actions">
-      <Link
-        className="zhs-button zhs-button--primary"
-        to={hrefFor({
-          kind: "edit",
-          stash,
-          path,
-          from: currentHead ? undefined : file.version,
-        })}
-      >
-        {currentHead ? "Edit" : "Edit from this version"}
-      </Link>
+      {textEditorAvailable ? (
+        <Link
+          className="zhs-button zhs-button--primary"
+          to={hrefFor({
+            kind: "edit",
+            stash,
+            path,
+            from: currentHead ? undefined : file.version,
+          })}
+        >
+          {currentHead ? "Edit" : "Edit from this version"}
+        </Link>
+      ) : null}
       {currentHead ? (
         <>
           <Button variant="danger" onClick={() => setDeleteOpen(true)}>
@@ -180,11 +188,9 @@ function FileDetails({
   onChanged: () => void;
 }) {
   const hrefFor = useStashHref();
-  const [wrapLongLines, setWrapLongLines] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
 
   useEffect(() => {
-    setWrapLongLines(false);
     setCopyState("idle");
   }, [file.hash, file.version, path]);
 
@@ -201,6 +207,9 @@ function FileDetails({
 
   const author = file.author || "unknown author";
   const viewingHistoricalVersion = requestedVersion !== null;
+  const representation = fileRepresentation(file);
+  const contentAccess = fileContentAccess(file);
+  const contentType = file.contentType || "unknown";
   return (
     <>
       {viewingHistoricalVersion ? (
@@ -246,7 +255,13 @@ function FileDetails({
         <div className="section-card__heading">
           <div>
             <h2 id="file-metadata-title">File metadata</h2>
-            <p>{file.deleted ? "Tombstone representation." : "Stored text representation."}</p>
+            <p>
+              {contentAccess === "deleted"
+                ? "Tombstone representation."
+                : contentAccess === "raw"
+                  ? `Raw ${representation} content is fetched only when requested.`
+                  : "Inline text representation."}
+            </p>
           </div>
         </div>
         <dl className="file-metadata">
@@ -280,9 +295,27 @@ function FileDetails({
             </dd>
           </div>
           <div className="file-metadata__item">
+            <dt>Representation</dt>
+            <dd>{representation}</dd>
+          </div>
+          <div className="file-metadata__item">
+            <dt>Content access</dt>
+            <dd>{contentAccess}</dd>
+          </div>
+          <div className="file-metadata__item">
+            <dt>Content type</dt>
+            <dd>{contentType}</dd>
+          </div>
+          <div className="file-metadata__item">
+            <dt>ETag</dt>
+            <dd>
+              <code>{file.etag || "—"}</code>
+            </dd>
+          </div>
+          <div className="file-metadata__item">
             <dt>Size</dt>
             <dd>
-              <Bytes value={file.size} />
+              <Bytes value={file.byteSize ?? file.size} />
             </dd>
           </div>
           <div className="file-metadata__item">
@@ -309,33 +342,22 @@ function FileDetails({
           <div>
             <h2 id="file-body-title">Body</h2>
             <p>
-              {file.deleted
-                ? "Deleted versions do not contain text."
-                : "Stored exactly as written."}
+              {contentAccess === "deleted"
+                ? "Deleted versions do not contain content."
+                : contentAccess === "raw"
+                  ? representation === "text"
+                    ? "Raw UTF-8 text is bounded before preview."
+                    : "Binary content is never decoded as text."
+                  : "Stored exactly as written."}
             </p>
           </div>
-          {!file.deleted ? (
-            <label className="toggle-field">
-              <input
-                checked={wrapLongLines}
-                type="checkbox"
-                onChange={(event) => setWrapLongLines(event.currentTarget.checked)}
-              />
-              Wrap long lines
-            </label>
-          ) : null}
         </div>
-        {file.deleted ? (
-          <p className="file-body-empty">This version is a tombstone; it has no body.</p>
-        ) : (
-          <pre
-            className={`file-body-pane${wrapLongLines ? " file-body-pane--wrap" : ""}`}
-            data-wrap-long-lines={wrapLongLines ? "true" : "false"}
-            tabIndex={0}
-          >
-            {file.body ?? ""}
-          </pre>
-        )}
+        <FileContent
+          file={file}
+          path={path}
+          stash={stash}
+          version={viewingHistoricalVersion ? file.version : undefined}
+        />
       </section>
     </>
   );

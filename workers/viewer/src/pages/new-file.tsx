@@ -1,7 +1,9 @@
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  BinaryUploadForm,
   ErrorBanner,
   NewFileForm,
+  type BinaryUploadCreated,
   useStashHref,
   type NewFileCreated,
 } from "@takazudo/zudo-history-stash-ui";
@@ -17,10 +19,18 @@ export default function NewFilePage() {
     navigate(hrefFor({ kind: "file", stash, path: created.path }));
   }
 
+  function handleUploaded(created: BinaryUploadCreated) {
+    if (!stash) return;
+    navigate(hrefFor({ kind: "file", stash, path: created.path }));
+  }
+
   return (
     <Page title="New file" description={stash ? `Create a file in ${stash}.` : "Create a file."}>
       {stash ? (
-        <NewFileForm stash={stash} onCreated={handleCreated} />
+        <>
+          <NewFileForm stash={stash} onCreated={handleCreated} />
+          <BinaryUploadForm stash={stash} onUploaded={handleUploaded} />
+        </>
       ) : (
         <ErrorBanner error={new Error("The stash name is missing from this URL.")} />
       )}

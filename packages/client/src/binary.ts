@@ -137,6 +137,24 @@ function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
   });
 }
 
+function blobStream(blob: Blob): ReadableStream<Uint8Array> {
+  if (typeof blob.stream === "function") return blob.stream();
+  // Blob.stream() is available in supported browsers, but a few fetch/DOM
+  // implementations (including older test environments) only expose
+  // arrayBuffer(). Keep the source replayable without changing upload mode
+  // selection; this fallback is used per slice, not for the whole file.
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        controller.enqueue(new Uint8Array(await blob.arrayBuffer()));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+}
+
 function normalizeSource(source: UploadSource, declaredSize?: number): NormalizedSource {
   if (typeof source === "string") {
     const bytes = new TextEncoder().encode(source);
@@ -151,7 +169,7 @@ function normalizeSource(source: UploadSource, declaredSize?: number): Normalize
     return {
       size: source.size,
       replayable: true,
-      stream: (start = 0, end = source.size) => source.slice(start, end).stream(),
+      stream: (start = 0, end = source.size) => blobStream(source.slice(start, end)),
     };
   }
   if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
@@ -302,7 +320,11 @@ async function materialize(response: Response, maxBytes: number): Promise<Uint8A
       if (next.done) break;
       size += next.value.byteLength;
       if (size > maxBytes) {
-        await reader.cancel("materialization limit exceeded");
+        // Do not await cancellation of a cloned Response body. Some
+        // ReadableStream tee implementations leave that promise pending even
+        // after the limit has been observed; the caller needs the bounded
+        // RangeError immediately and the rejection is still handled here.
+        void reader.cancel("materialization limit exceeded").catch(() => undefined);
         throw new RangeError(`Download exceeds the ${maxBytes} byte materialization limit`);
       }
       chunks.push(next.value);

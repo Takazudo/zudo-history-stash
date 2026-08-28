@@ -22,6 +22,7 @@ export { useSaveMachine } from "./hooks/use-save-machine.js";
 export { clearWorkbenchDraftsForCredentialChange, useWorkbench } from "./hooks/use-workbench.js";
 
 export { Bytes } from "./components/bytes.js";
+export { BinaryUploadForm, defaultUploadRepresentation } from "./components/binary-upload-form.js";
 export { ChangeRow } from "./components/change-row.js";
 export { CreateStashDialog } from "./components/create-stash-dialog.js";
 export { DeleteFileDialog } from "./components/delete-file-dialog.js";
@@ -30,6 +31,7 @@ export { DiffControls } from "./components/diff-controls.js";
 export { DiffPane } from "./components/diff-pane.js";
 export { EditWorkbench } from "./components/edit-workbench.js";
 export { ErrorBanner } from "./components/error-banner.js";
+export { FileContent, fileContentAccess, fileRepresentation } from "./components/file-content.js";
 export { HistoryList } from "./components/history-list.js";
 export { HistoryRail } from "./components/history-rail.js";
 export { GcPanel } from "./components/gc-panel.js";
@@ -104,6 +106,10 @@ export type {
   WorkbenchState,
 } from "./hooks/use-workbench.js";
 export type { BytesProps } from "./components/bytes.js";
+export type {
+  BinaryUploadCreated,
+  BinaryUploadFormProps,
+} from "./components/binary-upload-form.js";
 export type { ChangeRowProps } from "./components/change-row.js";
 export type { CreateStashDialogProps } from "./components/create-stash-dialog.js";
 export type { DeleteFileDialogProps } from "./components/delete-file-dialog.js";
@@ -117,6 +123,11 @@ export type {
   EditWorkbenchSaved,
 } from "./components/edit-workbench.js";
 export type { ErrorBannerProps, ErrorDetails } from "./components/error-banner.js";
+export type {
+  FileContentAccess,
+  FileContentProps,
+  FileRepresentation,
+} from "./components/file-content.js";
 export type { HistoryListProps } from "./components/history-list.js";
 export type { HistoryRailProps } from "./components/history-rail.js";
 export type { GcPanelProps } from "./components/gc-panel.js";

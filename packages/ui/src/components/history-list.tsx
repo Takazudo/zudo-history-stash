@@ -29,7 +29,7 @@ export interface HistoryListProps {
 }
 
 type DiffStatsState =
-  | { state: "idle" | "loading" | "initial" | "oversized" | "error" }
+  | { state: "idle" | "loading" | "initial" | "oversized" | "binary" | "error" }
   | { state: "ready"; added: number; removed: number };
 
 function newestFirst(versions: readonly VersionRecord[]): VersionRecord[] {
@@ -100,6 +100,8 @@ function LazyDiffStats({ stash, path, version }: { stash: string; path: string; 
           });
         } else if (result.value.state === "same") {
           setStats({ state: "ready", added: 0, removed: 0 });
+        } else if (result.value.state === "binary") {
+          setStats({ state: "binary" });
         } else {
           setStats({ state: "oversized" });
         }
@@ -117,6 +119,7 @@ function LazyDiffStats({ stash, path, version }: { stash: string; path: string; 
   if (stats.state === "loading") label = "Loading change stats";
   if (stats.state === "initial") label = "Initial version";
   if (stats.state === "oversized") label = "Diff too large";
+  if (stats.state === "binary") label = "Binary — metadata only";
   if (stats.state === "error") label = "Stats unavailable";
   if (stats.state === "ready") label = `+${stats.added} −${stats.removed}`;
 
@@ -160,6 +163,10 @@ function HistoryRow({
 }: HistoryRowProps) {
   const hrefFor = useStashHref();
   const rollbackDisabled = !rollbackReady || !rollbackAllowed || version.kind === "delete";
+  const textEditorAvailable =
+    version.kind !== "delete" &&
+    version.representation !== "binary" &&
+    version.contentAccess !== "raw";
   const rollbackTitle = !rollbackReady
     ? "Checking write access"
     : !rollbackAllowed
@@ -200,6 +207,12 @@ function HistoryRow({
           {version.kind === "delete" ? (
             <span className="zhs-history-table__deleted-label">deleted</span>
           ) : null}
+          {version.representation || version.contentAccess || version.contentType ? (
+            <span className="zhs-history-table__content-meta">
+              {version.representation ?? "unknown"} · {version.contentAccess ?? "unknown"}
+              {version.contentType ? ` · ${version.contentType}` : ""}
+            </span>
+          ) : null}
         </div>
       </TableCell>
       <TableCell className="zhs-history-table__stats">
@@ -210,7 +223,7 @@ function HistoryRow({
         {version.message || <span className="zhs-muted">No message</span>}
       </TableCell>
       <TableCell className="zhs-history-table__size">
-        <Bytes value={version.size} />
+        <Bytes value={version.byteSize ?? version.size} />
       </TableCell>
       <TableCell className="zhs-history-table__time">
         <RelativeTime value={version.createdAt} />
@@ -231,7 +244,7 @@ function HistoryRow({
           >
             Diff vs head
           </Anchor>
-          {rollbackReady && rollbackAllowed && version.kind !== "delete" ? (
+          {rollbackReady && rollbackAllowed && textEditorAvailable ? (
             <Anchor
               href={hrefFor({
                 kind: "edit",
@@ -312,6 +325,19 @@ function HistoryListForTarget({
       message: effectiveMessage,
       meta: {},
       createdAt: result.createdAt,
+      ...(result.representation !== undefined || target.representation !== undefined
+        ? { representation: result.representation ?? target.representation }
+        : {}),
+      ...(target.contentAccess !== undefined ? { contentAccess: target.contentAccess } : {}),
+      ...(result.contentType !== undefined || target.contentType !== undefined
+        ? { contentType: result.contentType ?? target.contentType }
+        : {}),
+      ...(result.byteSize !== undefined || target.byteSize !== undefined
+        ? { byteSize: result.byteSize ?? target.byteSize }
+        : {}),
+      ...(result.etag !== undefined || target.etag !== undefined
+        ? { etag: result.etag ?? target.etag }
+        : {}),
     };
     setConfirmedVersions((current) => mergeVersions(current, [created]));
     setConfirmedTotal((current) => Math.max(current + 1, result.version));
