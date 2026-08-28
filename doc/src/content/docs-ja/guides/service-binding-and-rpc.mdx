@@ -1,0 +1,88 @@
+---
+title: Service Binding と RPC
+description: 認証済みの Fetch または型付き RPC トランスポートを使い、同一アカウントの Worker を接続します。
+sidebar_position: 20
+category: guides
+---
+
+同じアカウントの Cloudflare Worker は、公開ルートを使わずに Stash Worker へ接続できます。公開
+クライアントは、HTTP Fetch Binding と `StashRpc` という名前の entrypoint の二種類の認証済み
+Binding に対応しています。Worker RPC を利用する Worker には、互換性日付 `2024-04-03` 以降が
+必要です。
+
+## Fetch Service Binding
+
+コンシューマーに Stash サービスを Binding し、その `fetch` メソッドを SDK に渡します。Binding が
+内部ディスパッチを行うため、ベース URL は構文上有効で何も処理しない HTTPS オリジンで十分です。
+それでも認証は必須です。
+
+{/* zhs-example: consumer-fetch-binding */}
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+export interface StashFetchBinding {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
+
+export function createFetchBindingClient(input: { binding: StashFetchBinding; token: string }) {
+  return createStashClient({
+    baseUrl: "https://stash.internal",
+    token: input.token,
+    fetch: (request, init) => input.binding.fetch(request, init),
+  });
+}
+```
+
+## 名前付き RPC entrypoint
+
+型付きの方法を使うには、entrypoint が `StashRpc` の Service Binding を設定し、
+`StashRpcEntrypoint` として型を付け、SDK の判別可能な RPC トランスポートを選択します。ビジネス
+レスポンスは引き続き `ClientResult` の union です。レスポンスが存在する前に外側の Binding 呼び出しが
+reject された場合、SDK は `StashHttpError` を throw し、その `status === 0` となります。Binding を直接
+呼び出す場合も、外側に reject 境界が必要です。
+
+{/* zhs-example: consumer-rpc-binding */}
+
+```ts
+import {
+  createStashClient,
+  StashHttpError,
+  type StashRpcEntrypoint,
+} from "@takazudo/zudo-history-stash";
+
+export async function readThroughRpc(input: {
+  binding: StashRpcEntrypoint;
+  token: string;
+  stash: string;
+  path: string;
+}) {
+  const client = createStashClient({
+    transport: { kind: "rpc", binding: input.binding, token: input.token },
+  });
+
+  try {
+    const result = await client.files(input.stash).get(input.path);
+    if (result.ok && "notModified" in result) {
+      return { kind: "not-modified" as const };
+    }
+    if (!result.ok) {
+      return { kind: "business-failure" as const, failure: result };
+    }
+    return { kind: "file" as const, value: result.value };
+  } catch (error) {
+    if (error instanceof StashHttpError && error.status === 0) {
+      throw new Error("The RPC binding call was rejected before an HTTP response existed.", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
+```
+
+名前付き RPC の公開面は、意図的にライブイベント操作を含みません。助言的な SSE は、
+`GET /v1/stashes/{stash}/events` に対する Fetch 専用のままです。これには HTTP クライアントまたは
+Fetch Service Binding を使用してください。Binding の汎用 `request()` メソッドを使っても、SSE が
+名前付きの構造化 RPC メソッドに変わるわけではありません。ストリームのライフサイクルについては、
+[ライブ更新](./live-updates.mdx)を参照してください。

@@ -1,0 +1,91 @@
+---
+title: ライブ更新
+description: 助言的で再接続可能なイベントストリームをもとに、正本の状態を調整します。
+sidebar_position: 50
+category: guides
+---
+
+`files(stash).events()` は、認証済みの Fetch 専用 SSE ストリームを開きます。そのイベントは助言的な
+ヒントであり、ファイルや提案の正本の状態ではありません。ファイル一覧、ファイル履歴、変更フィード、
+提案リソースは、通常の読み取りを通じて調整してください。
+
+`ready` の到着時と、`change` または `proposal` の各ヒントの後に、正本の状態を更新します。クライアントは、
+再生チェックポイントを順不同になり得る live の変更 ID から分離し、再生と live の重複を排除し、
+保留イベントキューを一つのヒントに制限します。これらの規則は、バッファされたイベントのパスや
+ペイロードを正しい状態として扱うより、新しい読み取りを意図的に優先します。
+
+{/* zhs-example: consumer-live-updates */}
+
+```ts
+import {
+  createStashClient,
+  type StashEvent,
+  type StashEventStream,
+  type StashLiveStatus,
+} from "@takazudo/zudo-history-stash";
+
+export function openAdvisoryUpdates(input: {
+  baseUrl: string;
+  readToken: string;
+  stash: string;
+  clientId: string;
+  refreshAuthoritativeState: (event: StashEvent) => Promise<void>;
+  onRemoteHint: (event: StashEvent) => void;
+  onStatus: (status: StashLiveStatus, failureCount: number) => void;
+}): { stream: StashEventStream; done: Promise<void>; close: () => void } {
+  const client = createStashClient({
+    baseUrl: input.baseUrl,
+    token: input.readToken,
+    clientId: input.clientId,
+  });
+  const abort = new AbortController();
+  const stream = client.files(input.stash).events({ signal: abort.signal });
+  const unsubscribe = stream.onStatus((status) => {
+    input.onStatus(status, stream.failureCount);
+  });
+
+  const done = (async () => {
+    try {
+      for await (const event of stream) {
+        if (event.type === "ready" || event.type === "change" || event.type === "proposal") {
+          await input.refreshAuthoritativeState(event);
+        }
+        if (
+          (event.type === "change" || event.type === "proposal") &&
+          event.origin !== input.clientId
+        ) {
+          input.onRemoteHint(event);
+        }
+      }
+    } finally {
+      unsubscribe();
+      stream.close();
+    }
+  })();
+
+  return {
+    stream,
+    done,
+    close() {
+      abort.abort();
+      stream.close();
+      unsubscribe();
+    },
+  };
+}
+```
+
+この例では、`origin` を使って呼び出し側自身の UI エコーだけを抑制する前に、正本の状態を更新します。
+再生された変更イベントの `origin: null` と、安定した `clientId` は、変更リクエストからそのまま返される
+助言的なラベルにすぎません。認証や認可には決して使用されません。
+
+ソケットが live だと仮定せず、`status`、連続した `failureCount`、`onStatus` を監視してください。通常の
+有効期間によるローテーションでは `reconnect` イベントが発生し、直ちに再接続します。再試行可能な
+障害では backoff し、終端となる 401、403、404 レスポンスでは failed 状態に移行します。再接続の
+たびに再認証され、正常な各レスポンスは、設定されたストリーム有効期間またはトークンのより早い
+有効期限までに終了します。
+
+返された `done` promise を監視し続けてください。終了処理では abort して `stream.close()` を呼び出します。
+iterator の `finally` ブロックでもステータス購読を解除し、ストリームを閉じます。これにより、
+コンシューマーが更新を必要としなくなった後に、隠れた再接続ループが残ることを防ぎます。認証情報の
+配置については、引き続き[セキュリティガイド](./security.mdx)に従ってください。

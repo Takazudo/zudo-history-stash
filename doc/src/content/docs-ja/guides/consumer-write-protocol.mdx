@@ -1,0 +1,99 @@
+---
+title: コンシューマーの書き込みプロトコル
+description: 並行処理による変更を上書きせずに、compare-and-set フェンスと冪等性キーを使用します。
+sidebar_position: 10
+category: guides
+---
+
+ファイルの変更操作は、すべて compare-and-set です。現在の表現を読み、そのスナップショットを
+もとに書き込む内容を決定し、正のバージョン番号を `expectedVersion` として送信します。
+`expectedVersion: null` は、存在しないパスを作成するときだけ使用してください。tombstone（削除状態）
+になったパスにも正の現在バージョンがあるため、復元時には `null` ではなく、そのバージョンを
+フェンスにする必要があります。
+
+この例では、`files.get()` が返す ETag キャッシュヒット固有の形式も処理します。明示的な
+`stableIdempotencyKey` は、まったく同じトランスポート再試行にわたる一つの正規リクエストを
+識別します。
+
+{/* zhs-example: consumer-write-protocol */}
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+export async function writeWithCompareAndSet(input: {
+  baseUrl: string;
+  writeToken: string;
+  stash: string;
+  path: string;
+  body: string;
+  stableIdempotencyKey: string;
+  ifNoneMatch?: string;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.writeToken });
+  const files = client.files(input.stash);
+  const snapshot = await files.get(input.path, { ifNoneMatch: input.ifNoneMatch });
+
+  if (snapshot.ok && "notModified" in snapshot) {
+    return { kind: "not-modified" as const };
+  }
+
+  let expectedVersion: number | null;
+  if (snapshot.ok) {
+    expectedVersion = snapshot.value.version;
+  } else if (snapshot.error.code === "not-found") {
+    expectedVersion = null;
+  } else if (snapshot.error.code === "file-deleted" && snapshot.current) {
+    expectedVersion = snapshot.current.version;
+  } else {
+    return { kind: "read-failed" as const, failure: snapshot };
+  }
+
+  const written = await files.put(
+    input.path,
+    { body: input.body, expectedVersion },
+    { idempotencyKey: input.stableIdempotencyKey },
+  );
+  if (!written.ok && written.error.code === "stale") {
+    return { kind: "stale" as const, current: written.current };
+  }
+  if (!written.ok) {
+    return { kind: "write-failed" as const, failure: written };
+  }
+  return { kind: "written" as const, value: written.value, replayed: written.replayed === true };
+}
+
+export async function replaceLatestForSimpleIntent(input: {
+  baseUrl: string;
+  writeToken: string;
+  stash: string;
+  path: string;
+  body: string;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.writeToken });
+  const result = await client.putLatest(input.stash, input.path, input.body, { retries: 3 });
+  if (!result.ok) {
+    return { kind: "failed" as const, failure: result };
+  }
+  return { kind: "written" as const, value: result.value };
+}
+```
+
+書き込みが `stale` を返した場合は、ルートレベルの `current` を確認して勝者の内容から再計算するか、
+ユーザーに判断を求めてください。敗者側の本文をそのまま再送してはいけません。新しい本文または
+フェンスは新しい正規操作であり、新しい冪等性キーが必要です。異なるリクエストに同じキーを
+再利用すると `422 idempotency-key-reused` が返ります。
+
+SDK は通常の put、delete、rollback、proposal-create の各呼び出しに対して、キーを自動生成します。
+曖昧なトランスポート障害から復旧するときは、安定したキーを指定して保持し、まったく同じリクエストを
+再生できるようにしてください。冪等性台帳は七日間保持されます。再生時には元の結果が再構成され、
+成功結果に `replayed` が現れます。
+
+`putLatest` は、意図的に単純な最新 head 更新のための、試行回数が制限された補助機能です。読み取りを
+行い、デフォルトでは stale を最大三回再試行します。複数ステップの判断をアトミックにすることも、
+競合をなくすこともありません。永続的な再試行 ID または独自の競合ポリシーが重要な場合は、
+明示的な `files.put` を使用してください。
+
+履歴は追記専用のままです。削除は tombstone を追記し、ロールバックは現在の正の head をフェンスとして
+要求しながら、さらに一つのバージョンを追記します。tombstone をロールバック先にはできません。
+候補をバージョンにする前にレビューする必要がある場合は、
+[提案ガイド](./proposals-and-approval.mdx)を参照してください。

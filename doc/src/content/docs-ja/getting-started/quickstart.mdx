@@ -1,0 +1,103 @@
+---
+title: クイックスタート
+description: 新しい stash を作成し、2 つのバージョンを追記して確認し、安全にロールバックします。
+sidebar_position: 3
+category: getting-started
+---
+
+この関数は、信頼できるサーバーまたは Worker で実行してください。デプロイ済み Stash Worker の
+URL と管理者トークンは、そのランタイムのシークレット機構を通じて渡します。この例は有効かつ
+一意な stash 名を生成するため、stash もファイルパスも存在しない状態から始まります。
+
+この処理では、管理者クライアントを構築し、stash を作成し、有効期限が一時間の書き込みトークンを
+発行します。一度だけ返されるトークンのシークレットは、出力せず直ちに書き込みクライアントへ
+渡します。その後、存在しないパスのフェンス `expectedVersion: null` でバージョン 1 を作成し、
+次にバージョン 2 を、バージョン 1 をフェンスとして作成します。続いて履歴を読み、両バージョンの
+diff を取得し、バージョン 1 へのロールバックを、バージョン 2 をフェンスとして追記します。
+
+{/* zhs-example: consumer-quickstart */}
+
+```ts
+import {
+  createStashClient,
+  type ClientResult,
+  validatePath,
+  validateStashName,
+} from "@takazudo/zudo-history-stash";
+
+function valueOf<T>(result: ClientResult<T>, step: string): T {
+  if (!result.ok) {
+    throw new Error(`${step} failed: ${result.error.code}`);
+  }
+  return result.value;
+}
+
+export async function runFreshStashQuickstart(input: { baseUrl: string; adminToken: string }) {
+  const admin = createStashClient({ baseUrl: input.baseUrl, token: input.adminToken });
+  const stash = `guide-${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
+  const path = "docs/guide.md";
+
+  if (!validateStashName(stash).ok || !validatePath(path).ok) {
+    throw new Error("The generated quickstart target is invalid.");
+  }
+
+  const created = valueOf(
+    await admin.stashes.create({ name: stash, description: "Fresh SDK quickstart" }),
+    "create stash",
+  );
+  const credential = valueOf(
+    await admin.stashes.tokens(stash).create({
+      label: "quickstart",
+      scope: "write",
+      ttlSeconds: 3_600,
+    }),
+    "create write token",
+  );
+
+  const writer = createStashClient({ baseUrl: input.baseUrl, token: credential.token });
+  const files = writer.files(stash);
+  const version1 = valueOf(
+    await files.put(path, {
+      body: "# Guide\n\nFirst version.\n",
+      expectedVersion: null,
+      message: "Create the guide",
+    }),
+    "write version 1",
+  );
+  const version2 = valueOf(
+    await files.put(path, {
+      body: "# Guide\n\nSecond version.\n",
+      expectedVersion: version1.version,
+      message: "Revise the guide",
+    }),
+    "write version 2",
+  );
+
+  const history = valueOf(await files.history(path), "read history");
+  const diff = valueOf(
+    await files.diff(path, { from: version1.version, to: version2.version }),
+    "diff versions",
+  );
+  const rollback = valueOf(
+    await files.rollback(path, {
+      toVersion: version1.version,
+      expectedVersion: version2.version,
+      message: "Restore the first version",
+    }),
+    "roll back",
+  );
+
+  return { created, history, diff, rollback };
+}
+```
+
+想定される HTTP 4xx のビジネス上の結果はすべて `ClientResult` の値として返るため、この例では
+`ok` で絞り込んでから `value` を読みます。一方、ネットワーク障害、レスポンスの解析失敗、
+HTTP 500 レスポンスでは `StashHttpError` が throw されます。ファイル読み取りには、さらに
+`{ ok: true, notModified: true }` という成功形式があります。ETag を指定して `files.get()` を
+使う場合は、ファイルの値を読む前にこの形式を確認してください。
+
+サーバーは削除済みの stash 名を再利用しません。固定名での作成を繰り返し可能なループとみなさず、
+再実行時は新しい名前を生成してください。管理者トークンと返されたトークンのシークレットは、
+いずれもログやレスポンス本文に含めないでください。本番環境での競合と再試行を判断する方法は、
+[コンシューマーの書き込みプロトコル](../guides/consumer-write-protocol.mdx)に進んでください。

@@ -1,0 +1,90 @@
+---
+title: 提案と承認
+description: 不変の候補を保存し、その正確なベースが現在の状態である間だけ適用します。
+sidebar_position: 40
+category: guides
+---
+
+提案は、不変の候補本文を正確な `baseVersion` に対応付けて保存します。`null` は、パスが存在しては
+ならないことを意味します。作成には書き込み認証情報が必要で、安定した冪等性キーも指定できます。
+候補は、承認が成功するまでファイル履歴にはなりません。
+
+提案の diff は、live の head が移動した後でも、保存済みのベースと保存済みの候補を常に比較します。
+別個の `current` フィールドと `stale` フィールドが、その live 状態を示します。承認では同じ正確な
+head フェンスが再び適用され、候補が rebase されることはありません。
+
+{/* zhs-example: consumer-proposals */}
+
+```ts
+import {
+  createStashClient,
+  isProposalClosedResult,
+  isProposalExpiredResult,
+  isProposalStaleResult,
+  type ClientResult,
+} from "@takazudo/zudo-history-stash";
+
+function valueOf<T>(result: ClientResult<T>, step: string): T {
+  if (!result.ok) {
+    throw new Error(`${step} failed: ${result.error.code}`);
+  }
+  return result.value;
+}
+
+export async function proposeAndApprove(input: {
+  baseUrl: string;
+  writeToken: string;
+  stash: string;
+  path: string;
+  body: string;
+  baseVersion: number | null;
+  stableIdempotencyKey: string;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.writeToken });
+  const proposals = client.proposals(input.stash);
+  const proposal = valueOf(
+    await proposals.create(
+      {
+        path: input.path,
+        body: input.body,
+        baseVersion: input.baseVersion,
+        message: "Candidate content",
+      },
+      { idempotencyKey: input.stableIdempotencyKey },
+    ),
+    "create proposal",
+  );
+  const diff = valueOf(await proposals.diff(proposal.id), "diff proposal");
+  const approval = await proposals.approve(proposal.id, { message: "Approved" });
+
+  if (isProposalStaleResult(approval)) {
+    return { kind: "stale" as const, current: approval.current, proposal, diff };
+  }
+  if (isProposalExpiredResult(approval)) {
+    return { kind: "expired" as const, proposal, diff };
+  }
+  if (isProposalClosedResult(approval)) {
+    return { kind: "closed" as const, proposal, diff };
+  }
+  if (!approval.ok) {
+    return { kind: "failed" as const, failure: approval, proposal, diff };
+  }
+  return { kind: "applied" as const, value: approval.value, proposal, diff };
+}
+```
+
+`stale` になった承認でも、提案は open のままです。候補が引き続き妥当であれば、新しい head を
+取得して新しい提案を作成してください。上書きや自動 rebase をしてはいけません。承認に成功すると、
+プラットフォームが所有する提案 ID をメタデータに含む通常のバージョンが追記されます。すでに成功した
+承認を繰り返すと、保存済みの勝者が再構成されます。
+
+open の提案は、有効期限がサーバーの現在時刻と同じか、それより前になると expired になります。
+期限切れの open 提案は承認できませんが、却下はできます。すでに却下された提案の却下は冪等ですが、
+反対側の終端判断が先に行われていると `proposal-closed` が返ります。
+
+一致する stash の書き込み認証情報であれば、どれでも承認できます。必須レビュー担当者、ロール、
+レビューコメント、人間と認証情報の関係は、利用側アプリケーションが担います。`decidedBy` は認証済み
+ID から設定されるもので、呼び出し側の入力ではありません。作成者フィールドとメッセージフィールドは
+監査メタデータであり、認可ではありません。
+[コンシューマーの書き込みプロトコル](./consumer-write-protocol.mdx)で説明しているものと同じ再試行規則を
+適用してください。

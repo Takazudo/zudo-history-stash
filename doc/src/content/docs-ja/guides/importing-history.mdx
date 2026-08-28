@@ -1,0 +1,90 @@
+---
+title: 履歴のインポート
+description: 管理者専用の履歴インポートを使い、順序付けされた既存のバージョンを保持します。
+sidebar_position: 30
+category: guides
+---
+
+管理者専用のインポート操作は、既存の作成者、メッセージ、メタデータ、操作種別、エポックミリ秒の
+タイムスタンプを保持します。既存の履歴を一連の新しい通常 put に平坦化するよりも、この操作を
+使用してください。
+
+一回のリクエストには 1〜20 個のバージョンを指定できます。タイムスタンプは非負で、減少せず、
+未来であってはいけません。put エントリはテキストを持ち、delete と rollback のエントリは
+`body: null` を持ちます。rollback では、同じバッチ内または以前のバッチにある、より古い live
+バージョンを指定する必要があります。この例は存在しないパスから始め、tombstone（削除状態）の後にバージョン
+2 を復元し、返された `headVersion` を変更せずに次のバッチのフェンスとして渡します。
+
+{/* zhs-example: consumer-import-history */}
+
+```ts
+import {
+  createStashClient,
+  type ClientResult,
+  type ImportVersion,
+  validatePath,
+} from "@takazudo/zudo-history-stash";
+
+function valueOf<T>(result: ClientResult<T>, step: string): T {
+  if (!result.ok) {
+    throw new Error(`${step} failed: ${result.error.code}`);
+  }
+  return result.value;
+}
+
+export async function importOrderedHistory(input: {
+  baseUrl: string;
+  adminToken: string;
+  stash: string;
+  path: string;
+  firstCreatedAt: number;
+}) {
+  if (!validatePath(input.path).ok) {
+    throw new Error("The import path is invalid.");
+  }
+  if (
+    !Number.isSafeInteger(input.firstCreatedAt) ||
+    input.firstCreatedAt < 0 ||
+    input.firstCreatedAt + 4 > Date.now()
+  ) {
+    throw new Error("firstCreatedAt must leave five historical millisecond timestamps.");
+  }
+
+  const admin = createStashClient({ baseUrl: input.baseUrl, token: input.adminToken });
+  const firstBatch: ImportVersion[] = [
+    { kind: "put", body: "first\n", createdAt: input.firstCreatedAt },
+    { kind: "put", body: "second\n", createdAt: input.firstCreatedAt + 1 },
+    { kind: "delete", body: null, createdAt: input.firstCreatedAt + 2 },
+    {
+      kind: "rollback",
+      body: null,
+      rollbackOf: 2,
+      createdAt: input.firstCreatedAt + 3,
+    },
+  ];
+  const first = valueOf(
+    await admin.stashes.import(input.stash, {
+      path: input.path,
+      expectedVersion: null,
+      versions: firstBatch,
+    }),
+    "import first batch",
+  );
+
+  const second = valueOf(
+    await admin.stashes.import(input.stash, {
+      path: input.path,
+      expectedVersion: first.headVersion,
+      versions: [{ kind: "put", body: "third\n", createdAt: input.firstCreatedAt + 4 }],
+    }),
+    "import second batch",
+  );
+
+  return { first, second };
+}
+```
+
+各テキスト本文には、それぞれ 5,000,000 UTF-8 バイトの上限があります。エンコード済み HTTP
+リクエスト全体も 32 MiB に収まる必要があるため、大きな本文を含む名目上 20 エントリのバッチでも
+上限を超える可能性があります。stale フェンスは競合として扱い、新しく検証した head からのみ
+処理を再開してください。
