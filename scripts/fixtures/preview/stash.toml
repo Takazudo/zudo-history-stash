@@ -1,0 +1,109 @@
+name = "fixture-stash-production"
+main = "./fixture-src/stash.ts"
+compatibility_date = "2026-08-25"
+workers_dev = false
+preview_urls = true
+
+[triggers]
+crons = ["5 4 * * *"]
+
+[observability]
+enabled = true
+
+[[routes]]
+pattern = "fixture-stash.example.com"
+custom_domain = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fixture-production"
+database_id = "production-d1-id"
+migrations_dir = "./wrong-production-migrations"
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "fixture-production-blobs"
+
+[[durable_objects.bindings]]
+name = "STASH_EVENTS"
+class_name = "WrongProductionEvents"
+
+[[migrations]]
+tag = "production-v1"
+new_sqlite_classes = ["WrongProductionEvents"]
+
+[vars]
+ALLOWED_ORIGINS = "https://production.invalid"
+SOURCE = "production"
+
+[secrets]
+required = ["PRODUCTION_SECRET"]
+
+[[ratelimits]]
+name = "RL_READ"
+namespace_id = "101"
+
+[ratelimits.simple]
+limit = 1
+period = 10
+
+[env.staging.vars]
+SOURCE = "staging"
+
+[env.preview]
+routes = []
+
+[env.preview.triggers]
+crons = ["9 9 * * *"]
+
+[env.preview.observability]
+enabled = false
+
+[env.preview.vars]
+ALLOWED_ORIGINS = "https://old-preview.invalid"
+SOURCE = "preview"
+
+[env.preview.secrets]
+required = ["PREVIEW_SECRET"]
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "fixture-preview"
+database_id = "old-preview-d1-id"
+migrations_dir = "./fixture-migrations"
+
+[[env.preview.r2_buckets]]
+binding = "BLOBS"
+bucket_name = "fixture-preview-blobs"
+
+[[env.preview.durable_objects.bindings]]
+name = "STASH_EVENTS"
+class_name = "FixtureEvents"
+
+[[env.preview.migrations]]
+tag = "v1"
+new_sqlite_classes = ["FixtureEvents"]
+
+[[env.preview.ratelimits]]
+name = "RL_READ"
+namespace_id = "201"
+
+[env.preview.ratelimits.simple]
+limit = 600
+period = 60
+
+[[env.preview.ratelimits]]
+name = "RL_WRITE"
+namespace_id = "202"
+
+[env.preview.ratelimits.simple]
+limit = 60
+period = 60
+
+[[env.preview.ratelimits]]
+name = "RL_DIFF"
+namespace_id = "203"
+
+[env.preview.ratelimits.simple]
+limit = 120
+period = 60

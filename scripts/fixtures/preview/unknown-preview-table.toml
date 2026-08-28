@@ -1,0 +1,10 @@
+name = "fixture-unknown-preview"
+main = "./fixture-src/stash.ts"
+compatibility_date = "2026-08-25"
+
+[env.preview]
+routes = []
+
+[[env.preview.queues.producers]]
+binding = "QUEUE"
+queue = "preview-queue"
