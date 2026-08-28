@@ -1,0 +1,42 @@
+---
+title: Security
+description: Place credentials safely and treat audit identity, CORS, and concealment correctly.
+sidebar_position: 90
+category: guides
+---
+
+Keep the administrator token and stash write tokens in trusted server or Worker secrets. A browser
+that calls the Stash Worker directly should receive only a least-privilege, expiring read token. A
+write token grants read access and can replace, delete, or roll back every path in its stash; the
+administrator can operate across all stashes.
+
+Token creation and rotation expose a plaintext secret once. Pass it directly to a secret store,
+never log it, and rotate or revoke it deliberately. See
+[Tokens, expiry, and rate limits](./tokens-expiry-and-rate-limits.mdx) for the complete lifecycle.
+
+## Authentication and concealment
+
+A missing, malformed, revoked, or expired bearer token returns the same unauthorized behavior. A
+valid stash credential asking about a foreign stash receives the same 404 shape as missing data, so
+the response does not disclose whether that stash exists. Do not turn this concealment into a
+client-side existence probe.
+
+Service bindings are routing capabilities, not application credentials. Both fetch and RPC binding
+clients must still present the administrator or stash token required by the operation. Keep the
+authentication boundary described in [Service bindings and RPC](./service-binding-and-rpc.mdx).
+
+## Browser boundary
+
+Browser origins must match one of the exact origins in the Worker's `ALLOWED_ORIGINS` setting.
+Preflight is open, but a disallowed origin receives no CORS permission and a permitted origin must
+still authenticate. CORS is a browser response policy, not authorization, and a wildcard origin is
+not a safe replacement for the allowlist.
+
+A `clientId` only labels mutation origin for advisory live-update suppression. Proposal author and
+message fields, UI identity, and other consumer-supplied audit text likewise grant no capability.
+Required reviewers, roles, and human identity checks must be enforced by the consuming application
+before it uses a write credential to approve.
+
+Finally, never expose R2 object keys or treat the private bucket as a download service. Consumers
+should read versioned text through the authenticated API and use authoritative metadata and hashes
+returned by that contract.
