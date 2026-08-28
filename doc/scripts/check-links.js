@@ -457,20 +457,124 @@ export async function parseContentDirs(configPath) {
 // Shared link and anchor logic
 // ---------------------------------------------------------------------------
 
+function findHtmlTagEnd(html, start) {
+  let quote = null;
+  for (let index = start + 1; index < html.length; index += 1) {
+    const character = html[index];
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === ">") return index;
+  }
+  return -1;
+}
+
+function parseHtmlTag(raw, index) {
+  const match = raw.match(/^<\s*(\/?)\s*([A-Za-z][A-Za-z0-9:-]*)\b/);
+  if (match === null) return null;
+  return {
+    closing: match[1] === "/",
+    name: match[2].toLowerCase(),
+    raw,
+    index,
+    selfClosing: /\/\s*>$/.test(raw),
+  };
+}
+
+function findRawTextEnd(html, start, name) {
+  const close = new RegExp(`<\\/\\s*${name}[\\t\\n\\f\\r ]*>`, "gi");
+  close.lastIndex = start;
+  const match = close.exec(html);
+  return match === null ? html.length : match.index + match[0].length;
+}
+
+function findTemplateEnd(html, start) {
+  let depth = 1;
+  let index = start;
+  while (index < html.length) {
+    const open = html.indexOf("<", index);
+    if (open === -1) return html.length;
+    if (html.startsWith("<!--", open)) {
+      const close = html.indexOf("-->", open + 4);
+      index = close === -1 ? html.length : close + 3;
+      continue;
+    }
+    const end = findHtmlTagEnd(html, open);
+    if (end === -1) return html.length;
+    const tag = parseHtmlTag(html.slice(open, end + 1), open);
+    if (tag === null) {
+      index = end + 1;
+      continue;
+    }
+    if (!tag.closing && !tag.selfClosing && (tag.name === "script" || tag.name === "style")) {
+      index = findRawTextEnd(html, end + 1, tag.name);
+      continue;
+    }
+    if (tag.name === "template") {
+      if (tag.closing) depth -= 1;
+      else if (!tag.selfClosing) depth += 1;
+      if (depth === 0) return end + 1;
+    }
+    index = end + 1;
+  }
+  return html.length;
+}
+
+function* htmlStartTags(html) {
+  let index = 0;
+  while (index < html.length) {
+    const open = html.indexOf("<", index);
+    if (open === -1) return;
+    if (html.startsWith("<!--", open)) {
+      const close = html.indexOf("-->", open + 4);
+      index = close === -1 ? html.length : close + 3;
+      continue;
+    }
+    const end = findHtmlTagEnd(html, open);
+    if (end === -1) return;
+    const tag = parseHtmlTag(html.slice(open, end + 1), open);
+    index = end + 1;
+    if (tag === null || tag.closing) continue;
+    yield tag;
+    if (tag.selfClosing) continue;
+    if (tag.name === "script" || tag.name === "style") {
+      index = findRawTextEnd(html, index, tag.name);
+    } else if (tag.name === "template") {
+      index = findTemplateEnd(html, index);
+    }
+  }
+}
+
 export function extractHtmlLinks(html) {
   const links = [];
-  const regex = /<a\s[^>]*?href=(?:"([^"]*)"|'([^']*)')[^>]*>/gi;
-  let match;
+  const hrefRegex =
+    /(?:^|[\t\n\f\r ])href[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r "'`=<>]+))/i;
   let lastIndex = 0;
   let line = 1;
-  while ((match = regex.exec(html)) !== null) {
-    const href = match[1] ?? match[2];
-    if (/^(?:https?:|mailto:|javascript:|data:|tel:)/i.test(href)) continue;
-    for (let i = lastIndex; i < match.index; i += 1) if (html[i] === "\n") line += 1;
-    lastIndex = match.index;
+  for (const tag of htmlStartTags(html)) {
+    if (tag.name !== "a") continue;
+    for (let index = lastIndex; index < tag.index; index += 1) if (html[index] === "\n") line += 1;
+    lastIndex = tag.index;
+    const hrefMatch = tag.raw.match(hrefRegex);
+    if (hrefMatch === null) continue;
+    const href = hrefMatch[1] ?? hrefMatch[2] ?? hrefMatch[3];
+    if (/^(?:https?:|mailto:|javascript:|data:|tel:|\/\/)/i.test(href)) continue;
     links.push({ href, line });
   }
   return links;
+}
+
+export function extractHtmlIds(html) {
+  const ids = new Set();
+  const idRegex =
+    /(?:^|[\t\n\f\r ])id[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r "'`=<>]+))/i;
+  for (const tag of htmlStartTags(html)) {
+    const idMatch = tag.raw.match(idRegex);
+    if (idMatch !== null) ids.add(idMatch[1] ?? idMatch[2] ?? idMatch[3]);
+  }
+  return ids;
 }
 
 function safeDecodePath(path) {
@@ -801,10 +905,7 @@ export async function checkHtmlLinksAndTrailing(
           let ids = idCache.get(detail.targetFile);
           if (ids === undefined) {
             const targetHtml = await readFile(detail.targetFile, "utf-8");
-            ids = new Set();
-            const idRegex = /\bid\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
-            let idMatch;
-            while ((idMatch = idRegex.exec(targetHtml)) !== null) ids.add(idMatch[1] ?? idMatch[2]);
+            ids = extractHtmlIds(targetHtml);
             idCache.set(detail.targetFile, ids);
           }
           if (!ids.has(detail.fragment)) reason = "missing target id";

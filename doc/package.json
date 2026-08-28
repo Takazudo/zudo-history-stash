@@ -11,6 +11,7 @@
     "build": "zfb build",
     "preview": "zfb preview",
     "check": "zfb check",
+    "test": "node --test scripts/check-links.test.mjs plugins/normalize-generated-skill-links.test.mjs",
     "check:links": "node scripts/check-links.js",
     "generate:ogp": "node scripts/generate-ogp.mjs",
     "dev:zfb": "zfb dev",
