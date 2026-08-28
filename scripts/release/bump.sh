@@ -111,25 +111,23 @@ for changelog_path in "${release_changelog_paths[@]}"; do
   heading_count=$(release_changelog_heading_count "$changelog" "$next")
   if [[ "$heading_count" != '1' ]]; then
     relative_changelog=${changelog#"$RELEASE_ROOT/"}
-    release_error "$relative_changelog must contain exactly one '## $next — YYYY-MM-DD' heading (found $heading_count)."
+    release_error "$relative_changelog must contain exactly one '## [$next] - YYYY-MM-DD' heading (found $heading_count)."
     exit 1
   fi
 done
 
-version_files=(
-  "${release_package_manifest_paths[@]}"
-  "${release_version_source_paths[@]}"
-  'docs/openapi.json'
-)
+mapfile -t atomic_paths < <(release_atomic_commit_paths_for_version "$next")
 
 if ((dry_run)); then
   printf 'NEXT=%s\n' "$next"
-  printf '%s\n' "${version_files[@]}"
+  printf '%s\n' "${atomic_paths[@]}"
   exit 0
 fi
 
-require_bump_tree
+require_bump_tree "$next"
 
+# `release_package_manifest_paths` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
 for package_path in "${release_package_manifest_paths[@]}"; do
   package_file="$RELEASE_ROOT/$package_path"
   node -e '
@@ -142,6 +140,8 @@ fs.writeFileSync(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
 ' "$package_file" "$next"
 done
 
+# `release_version_source_paths` is assigned by the sourced lib.sh.
+# shellcheck disable=SC2154
 for source_path in "${release_version_source_paths[@]}"; do
   source_file="$RELEASE_ROOT/$source_path"
   node -e '

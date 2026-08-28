@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${GATE_COMMAND_LOG:?GATE_COMMAND_LOG must be set}"
+: "${GATE_SHIM_ROOT:?GATE_SHIM_ROOT must be set}"
+gate_version=${GATE_VERSION:-0.0.0}
+
+log() {
+  printf '%s\n' "$1" >>"$GATE_COMMAND_LOG"
+}
+
+write_package_manifest() {
+  local path=$1
+  local name=$2
+  local dependencies=${3:-}
+  if [[ -n "$dependencies" ]]; then
+    printf '{"name":"%s","version":"%s","type":"module","dependencies":{%s}}\n' \
+      "$name" "$gate_version" "$dependencies" >"$path"
+  else
+    printf '{"name":"%s","version":"%s","type":"module"}\n' \
+      "$name" "$gate_version" >"$path"
+  fi
+}
+
+create_tarball() {
+  local destination=$1
+  local label=${PWD##*/}
+  local stage
+  stage=$(mktemp -d "$GATE_SHIM_ROOT/pack-$label.XXXXXX")
+  mkdir -p "$stage/package/dist"
+  printf '# README\n' >"$stage/package/README.md"
+  printf '# Changelog\n' >"$stage/package/CHANGELOG.md"
+  printf 'MIT\n' >"$stage/package/LICENSE"
+  printf 'export const VERSION = "%s";\n' "$gate_version" >"$stage/package/dist/index.js"
+  case "$label" in
+    core)
+      write_package_manifest "$stage/package/package.json" '@takazudo/zudo-history-stash-core'
+      ;;
+    client)
+      write_package_manifest "$stage/package/package.json" '@takazudo/zudo-history-stash' \
+        '"@takazudo/zudo-history-stash-core":"'"$gate_version"'"'
+      ;;
+    ui)
+      mkdir -p "$stage/package/styles"
+      printf '.zhs-button {}\n' >"$stage/package/dist/styles.css"
+      printf ':root {}\n' >"$stage/package/styles/tokens.example.css"
+      write_package_manifest "$stage/package/package.json" '@takazudo/zudo-history-stash-ui' \
+        '"@takazudo/zudo-history-stash-core":"'"$gate_version"'","@takazudo/zudo-history-stash":"'"$gate_version"'"'
+      ;;
+    *) printf 'unexpected package directory: %s\n' "$label" >&2; exit 64 ;;
+  esac
+  mkdir -p "$destination"
+  tar -czf "$destination/$label-fixture.tgz" -C "$stage" package
+  rm -rf -- "$stage"
+  log "pack:$label"
+}
+
+create_smoke_package() {
+  local directory=$1
+  local name=$2
+  local style_export=${3:-0}
+  mkdir -p "$directory/dist"
+  printf 'export const VERSION = "%s";\n' "$gate_version" >"$directory/dist/index.js"
+  if [[ "$style_export" == '1' ]]; then
+    printf '.zhs-button {}\n' >"$directory/dist/styles.css"
+    printf '{"name":"%s","version":"%s","type":"module","exports":{".":"./dist/index.js","./styles.css":"./dist/styles.css"}}\n' \
+      "$name" "$gate_version" >"$directory/package.json"
+  else
+    printf '{"name":"%s","version":"%s","type":"module","exports":{".":"./dist/index.js"}}\n' \
+      "$name" "$gate_version" >"$directory/package.json"
+  fi
+}
+
+case "${1:-}" in
+  --filter)
+    [[ "${2:-}" == 'zudo-history-stash-doc' && "${3:-}" == 'check:changelog-drift' && $# -eq 3 ]]
+    log drift
+    if [[ -n "${GATE_DRIFT_STATUS:-}" ]]; then
+      printf 'GATE_DRIFT_FAILURE_SENTINEL\n' >&2
+      exit "$GATE_DRIFT_STATUS"
+    fi
+    ;;
+  build:libs)
+    [[ $# -eq 1 ]]
+    log build:libs
+    ;;
+  pack)
+    [[ "${2:-}" == '--pack-destination' && -n "${3:-}" && $# -eq 3 ]]
+    create_tarball "$3"
+    ;;
+  run)
+    [[ "${2:-}" == 'lint:pkg' && "${3:-}" == '--' && -n "${4:-}" && $# -eq 4 ]]
+    log "lint:${PWD##*/}"
+    ;;
+  init)
+    [[ $# -eq 1 ]]
+    printf '{"name":"gate-smoke","version":"1.0.0","private":true,"type":"module"}\n' >package.json
+    log init
+    ;;
+  add)
+    [[ $# -eq 4 ]]
+    create_smoke_package "$PWD/node_modules/@takazudo/zudo-history-stash-core" \
+      '@takazudo/zudo-history-stash-core'
+    create_smoke_package "$PWD/node_modules/@takazudo/zudo-history-stash" \
+      '@takazudo/zudo-history-stash'
+    create_smoke_package "$PWD/node_modules/@takazudo/zudo-history-stash-ui" \
+      '@takazudo/zudo-history-stash-ui' 1
+    log add
+    ;;
+  publish)
+    [[ -n "${2:-}" && "${3:-}" == '--dry-run' && "${4:-}" == '--no-git-checks' && $# -eq 4 ]]
+    log "publish:$(basename "$2")"
+    ;;
+  *)
+    printf 'unexpected pnpm invocation:' >&2
+    printf ' %q' "$@" >&2
+    printf '\n' >&2
+    exit 64
+    ;;
+esac

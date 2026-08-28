@@ -63,18 +63,40 @@ Run from the repository root on `main`.
    TAG="v$VERSION"
    ```
 
-3. **Write all three changelogs.** Add a concise English `## X.Y.Z — YYYY-MM-DD` section to
-   `packages/core/CHANGELOG.md`, `packages/client/CHANGELOG.md`, and `packages/ui/CHANGELOG.md`.
-   Categorise relevant entries
-   under `### Breaking`, `### Features`, `### Fixed`, and `### Other`; omit empty categories.
-   Describe each package's user-visible changes, not merely commit subjects.
+3. **Write the six bilingual changelog source pages.** Create or update exactly these pages for
+   `$VERSION`:
 
-   Before adding a heading, search the complete file. If that exact version already has a section,
-   reuse and update it instead of adding another. This is required for the first release: all three
-   changelogs already contain `0.1.0`, so reuse those sections. Never create a duplicate heading,
-   reorder sections, or rewrite an older release section.
+   ```text
+   doc/src/content/docs/changelog/core/$VERSION.mdx
+   doc/src/content/docs/changelog/client/$VERSION.mdx
+   doc/src/content/docs/changelog/ui/$VERSION.mdx
+   doc/src/content/docs-ja/changelog/core/$VERSION.mdx
+   doc/src/content/docs-ja/changelog/client/$VERSION.mdx
+   doc/src/content/docs-ja/changelog/ui/$VERSION.mdx
+   ```
 
-4. **Bump the six version-bearing files and regenerate the OpenAPI artifact.** The generated
+   Reuse the six migrated `0.1.0.mdx` pages for the first release. English is the source for the
+   generated package changelogs; Japanese is an equal site source. Keep the locale twins aligned in
+   structure and frontmatter, use `Released: YYYY-MM-DD` in English and `リリース日: YYYY-MM-DD`
+   in Japanese, and describe each package's user-visible changes rather than merely copying commit
+   subjects. Format the six source pages, run the locale-parity check, and inspect both languages.
+   Never edit `packages/*/CHANGELOG.md` by hand.
+
+   ```bash
+   pnpm --filter zudo-history-stash-doc format:md
+   pnpm --filter zudo-history-stash-doc check:locale-parity
+   ```
+
+4. **Build the Docs site and generated changelogs.** Run:
+
+   ```bash
+   pnpm build:doc
+   ```
+
+   This is the normal writer for all three package changelogs. Inspect the generated bracket
+   heading for `$VERSION` in each output before continuing.
+
+5. **Bump the six version-bearing files and regenerate the OpenAPI artifact.** The generated
    document's `info.version` is intentionally pinned to the core package version, so it is part of
    the atomic release diff. Run the requested mode or explicit version exactly:
 
@@ -86,30 +108,40 @@ Run from the repository root on `main`.
    `docs/openapi.json`, installs dependencies, and stops if the lockfile changes. Do not hand-edit
    these six version values or the generated OpenAPI artifact.
 
-5. **Gate before committing.** Run both checks after the changelog and version changes and before
+6. **Gate before committing.** Run all checks after the changelog and version changes and before
    creating the release commit:
 
    ```bash
    pnpm release:gate
    pnpm format:check
+   pnpm format:md:check
    ```
 
-   Fix only release-scope failures, then rerun both commands. The gate builds, inspects, installs,
+   Fix only release-scope failures, then rerun all three commands. The gate builds, inspects, installs,
    and dry-runs publication of the package tarballs; it does not publish.
 
-6. **Create one atomic release commit.** Stage exactly these ten paths and commit once:
+7. **Create one atomic release commit.** Stage exactly these sixteen paths and commit once:
 
    ```bash
    git add packages/core/package.json packages/client/package.json packages/ui/package.json \
      packages/core/src/index.ts packages/client/src/index.ts packages/ui/src/index.ts \
+     doc/src/content/docs/changelog/core/$VERSION.mdx \
+     doc/src/content/docs/changelog/client/$VERSION.mdx \
+     doc/src/content/docs/changelog/ui/$VERSION.mdx \
+     doc/src/content/docs-ja/changelog/core/$VERSION.mdx \
+     doc/src/content/docs-ja/changelog/client/$VERSION.mdx \
+     doc/src/content/docs-ja/changelog/ui/$VERSION.mdx \
      packages/core/CHANGELOG.md packages/client/CHANGELOG.md packages/ui/CHANGELOG.md \
      docs/openapi.json
    git commit -m "chore(release): bump to v$VERSION"
    ```
 
+   The staging allowlist is exact (sixteen paths total), even when reused clean source pages do not
+   appear in the resulting diff.
+
    Lefthook may reformat and re-stage Markdown. Do not use `--amend`.
 
-7. **Inspect the committed diff.** Run:
+8. **Inspect the committed diff.** Run:
 
    ```bash
    git status --short
@@ -118,17 +150,24 @@ Run from the repository root on `main`.
    git show --stat --oneline HEAD
    git diff HEAD^ HEAD -- packages/core/package.json packages/client/package.json packages/ui/package.json \
      packages/core/src/index.ts packages/client/src/index.ts packages/ui/src/index.ts \
+     doc/src/content/docs/changelog/core/$VERSION.mdx \
+     doc/src/content/docs/changelog/client/$VERSION.mdx \
+     doc/src/content/docs/changelog/ui/$VERSION.mdx \
+     doc/src/content/docs-ja/changelog/core/$VERSION.mdx \
+     doc/src/content/docs-ja/changelog/client/$VERSION.mdx \
+     doc/src/content/docs-ja/changelog/ui/$VERSION.mdx \
      packages/core/CHANGELOG.md packages/client/CHANGELOG.md packages/ui/CHANGELOG.md \
      docs/openapi.json
    ```
 
-   Require an empty status and exactly the six version-bearing files, the three changelogs, and the
-   generated OpenAPI document in the name-only output (ten paths total). Confirm all six versions and
-   `docs/openapi.json`'s `info.version` equal `X.Y.Z`, each changelog has exactly one heading for
-   it, older sections are unchanged, and no hook touched another file. If any other path changed,
-   stop; do not push.
+   Require an empty status and no path outside the sixteen-path staging allowlist. Clean reused
+   source pages need not appear in the commit diff. Confirm all six versions and
+   `docs/openapi.json`'s `info.version` equal `X.Y.Z`, all release artifacts and source updates that
+   apply are present, each generated changelog has exactly one bracket heading for it, older
+   sections are unchanged, and no hook touched another file. If any other path changed, stop; do
+   not push.
 
-8. **Push `main` and wait for CI.** Run:
+9. **Push `main` and wait for CI.** Run:
 
    ```bash
    git push origin main
@@ -137,7 +176,7 @@ Run from the repository root on `main`.
    Wait for CI on the pushed `HEAD` to succeed. `release:tag` independently checks that local
    `HEAD` equals `origin/main` and polls the latest `ci.yml` run for that commit.
 
-9. **Create and push the guarded tag.** Run:
+10. **Create and push the guarded tag.** Run:
 
    ```bash
    pnpm release:tag
@@ -146,7 +185,7 @@ Run from the repository root on `main`.
    This creates `vX.Y.Z` at `HEAD` only after CI succeeds and pushes the tag to `origin`. The tag
    push starts `release.yml`.
 
-10. **Watch the tag's release workflow.** Resolve the run by workflow, push event, and tagged
+11. **Watch the tag's release workflow.** Resolve the run by workflow, push event, and tagged
     commit, then watch that exact run:
 
     ```bash
@@ -166,25 +205,28 @@ Run from the repository root on `main`.
     waits for it to become visible, publishes client, waits for it, and then publishes UI;
     exact-version safeguards make reruns idempotent.
 
-11. **Create release notes and the GitHub release.** Extract only this version's core changelog
+12. **Create release notes and the GitHub release.** Extract only this version's core changelog
     body into a temporary file, inspect it, then create the release:
 
     ```bash
     NOTES_FILE="$(mktemp)"
     trap 'rm -f -- "$NOTES_FILE"' EXIT
-    awk -v version="$VERSION" '
-      index($0, "## " version " — ") == 1 { in_section = 1; next }
-      in_section && /^## / { exit }
-      in_section { print }
+    awk -v heading="## [$VERSION] - " '
+      index($0, heading) == 1 { in_section = 1; next }
+      in_section && index($0, "## [") == 1 { exit }
+      in_section {
+        print
+        if ($0 ~ /[^[:space:]]/) has_content = 1
+      }
+      END { if (!in_section || !has_content) exit 1 }
     ' packages/core/CHANGELOG.md >"$NOTES_FILE"
-    test -s "$NOTES_FILE"
     gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES_FILE"
     ```
 
     The extracted notes must contain only the intended `X.Y.Z` section body. Remove the temporary
     file after the release is created.
 
-12. **Verify npm and report.** Run:
+13. **Verify npm and report.** Run:
 
     ```bash
     pnpm release:verify
@@ -207,7 +249,7 @@ Run from the repository root on `main`.
 | Core and client published, but UI failed                                  | Rerun the same workflow for the immutable tag; exact-version safeguards skip core and client and retry UI. If a code or workflow fix is required, fix forward and cut a new patch release. Never republish, unpublish, or retag the existing versions.                                                                                                                                                                                          |
 | The wrong version was tagged or published                                 | Never delete a published version. Correct the files and changelogs on `main`, then publish a new patch release through the complete flow.                                                                                                                                                                                                                                                                                                       |
 | CI is red on the bump commit before the tag exists                        | Fix forward on `main`, push, wait for CI on the new `HEAD`, then run `pnpm release:tag` again.                                                                                                                                                                                                                                                                                                                                                  |
-| `release:check` finds the bump commit at current `HEAD` with no tag       | Verify its ten-path committed diff and that `origin/main` reaches the same commit, then resume at `pnpm release:tag`. If `HEAD` moved, block as specified above.                                                                                                                                                                                                                                                                                |
+| `release:check` finds the bump commit at current `HEAD` with no tag       | Verify that its committed diff is a valid subset of the sixteen-path allowlist and that `origin/main` reaches the same commit, then resume at `pnpm release:tag`. If `HEAD` moved, block as specified above.                                                                                                                                                                                                                                      |
 
 Do not “repair” release state by deleting registry versions, rewriting `main`, moving a tag, or
 force-pushing. Preserve the failed run URL and command output in the recovery report.

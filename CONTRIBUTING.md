@@ -29,7 +29,18 @@ publishing workflow, which publishes core, client, and UI in that order using th
 only; each dependent package waits for the preceding version to become visible. `next` is never
 used. The bump also regenerates `docs/openapi.json`, whose `info.version` must be committed
 atomically with all three package manifests, all three exported `VERSION` constants, and all three
-changelogs.
+generated changelogs.
+
+Package changelog output is generated from the English release pages under
+`doc/src/content/docs/changelog/`; never edit `packages/*/CHANGELOG.md` directly. Add the matching
+Japanese page under `doc/src/content/docs-ja/changelog/` with the same frontmatter and structural
+contract, format both sources, then run `pnpm build:doc` and
+`pnpm --filter zudo-history-stash-doc check:changelog-drift`. A hand edit to a generated output is
+rejected and should be repaired by rebuilding from the English source. Release bump validates the
+generated bracket headings. Its exact sixteen-path staging allowlist covers six version-bearing
+files, six bilingual version pages, three generated changelogs, and `docs/openapi.json`; the
+committed diff may be a subset when a reused source page is already clean, but it must never contain
+a path outside that allowlist.
 
 To re-run a partial release after a transient failure, re-run the workflow for the same tag push.
 Its exact-version safeguards recognize packages that are already published and skip them, so the

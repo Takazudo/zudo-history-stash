@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${DRY_RUN_COMMAND_LOG:?DRY_RUN_COMMAND_LOG must be set}"
+printf '%s' "${0##*/}" >>"$DRY_RUN_COMMAND_LOG"
+printf ' %q' "$@" >>"$DRY_RUN_COMMAND_LOG"
+printf '\n' >>"$DRY_RUN_COMMAND_LOG"
+exit 97
