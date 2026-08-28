@@ -1,0 +1,15 @@
+---
+title: 0.1.0
+description: isomorphic client パッケージの初回リリースです。
+sidebar_position: 1
+category: changelog
+---
+
+リリース日: 2026-08-25
+
+- Node.js、ブラウザー、および Cloudflare Worker の service binding で利用できる isomorphic な `createStashClient`
+  API を追加しました。
+- 管理者、token、import、file、history、change-feed、stored-diff、および candidate-diff の各ルートに、型付きのビジネス結果で
+  対応しました。
+- representation cache の処理、自動的な idempotency key、replay メタデータ、および回数制限付きの `putLatest`
+  競合リトライを追加しました。

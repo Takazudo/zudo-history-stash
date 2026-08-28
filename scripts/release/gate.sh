@@ -12,6 +12,8 @@ fi
 
 cd "$RELEASE_ROOT"
 
+pnpm --filter zudo-history-stash-doc check:changelog-drift
+
 gate_tmp=$(mktemp -d "${TMPDIR:-/tmp}/zudo-history-stash-release-gate.XXXXXX")
 cleanup() {
   local status=$?

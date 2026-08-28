@@ -1,5 +1,6 @@
 import { defineConfig } from "zfb/config";
 import { zudoDoc } from "@takazudo/zudo-doc/config";
+import { CHANGELOGS } from "./changelog-config.mjs";
 import { DEFAULT_LOCALE_ONLY_PREFIXES } from "./locale-contract.mjs";
 import { DOC_BASE_PATH } from "./src/data/site-paths.ts";
 
@@ -33,6 +34,11 @@ const config = zudoDoc({
   dynamicPageTransition: true,
   docHistory: true,
   versions: [],
+  changelogs: CHANGELOGS.map(({ sourceDir, outputFile, packageName }) => ({
+    sourceDir,
+    outputFile,
+    packageName,
+  })),
   claudeResources: {
     claudeDir: "../.claude",
     projectRoot: ".",

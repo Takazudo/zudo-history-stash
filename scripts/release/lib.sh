@@ -34,13 +34,33 @@ release_package_names=(
   '@takazudo/zudo-history-stash'
   '@takazudo/zudo-history-stash-ui'
 )
-# shellcheck disable=SC2034
-release_atomic_commit_paths=(
-  "${release_package_manifest_paths[@]}"
-  "${release_version_source_paths[@]}"
-  "${release_changelog_paths[@]}"
-  'docs/openapi.json'
-)
+
+release_changelog_source_paths_for_version() {
+  local version=$1
+  if [[ ! "$version" =~ $plain_semver_re ]]; then
+    release_error "Cannot derive changelog source paths for invalid version '$version'."
+    return 1
+  fi
+  printf 'doc/src/content/docs/changelog/%s/%s.mdx\n' core "$version"
+  printf 'doc/src/content/docs/changelog/%s/%s.mdx\n' client "$version"
+  printf 'doc/src/content/docs/changelog/%s/%s.mdx\n' ui "$version"
+  printf 'doc/src/content/docs-ja/changelog/%s/%s.mdx\n' core "$version"
+  printf 'doc/src/content/docs-ja/changelog/%s/%s.mdx\n' client "$version"
+  printf 'doc/src/content/docs-ja/changelog/%s/%s.mdx\n' ui "$version"
+}
+
+release_atomic_commit_paths_for_version() {
+  local version=$1
+  if [[ ! "$version" =~ $plain_semver_re ]]; then
+    release_error "Cannot derive atomic release paths for invalid version '$version'."
+    return 1
+  fi
+  printf '%s\n' "${release_package_manifest_paths[@]}"
+  printf '%s\n' "${release_version_source_paths[@]}"
+  release_changelog_source_paths_for_version "$version"
+  printf '%s\n' "${release_changelog_paths[@]}"
+  printf '%s\n' 'docs/openapi.json'
+}
 
 release_error() {
   printf '::error::%s\n' "$*" >&2
@@ -134,17 +154,24 @@ require_clean_tree() {
   fi
 }
 
-# The release skill edits all three changelogs before invoking `release:bump`. Keep
-# the guard strict for every other path (including staged, deleted, renamed,
-# copied, and untracked entries), while allowing the three intended changelog
-# edits in either the index or the worktree.
 require_bump_tree() {
+  local version=$1
   local changes
   local line
   local status
   local path
-  local allowed_changelog
+  local allowed
+  local source_path
   local changelog_path
+  local -a source_paths
+
+  mapfile -t source_paths < <(release_changelog_source_paths_for_version "$version")
+  for source_path in "${source_paths[@]}"; do
+    if [[ ! -f "$RELEASE_ROOT/$source_path" || -L "$RELEASE_ROOT/$source_path" ]]; then
+      release_error "Release changelog source is missing or is not a regular file: $source_path."
+      return 1
+    fi
+  done
 
   changes=$(git status --porcelain=v1 --untracked-files=all)
   [[ -n "$changes" ]] || return 0
@@ -159,25 +186,25 @@ require_bump_tree() {
 
     status=${line:0:2}
     path=${line:3}
-    case "$status" in
-      ' M'|'M '|'MM')
-        ;;
-      *)
-        release_error 'Only modified release changelogs may be changed before a release bump.'
-        printf '%s\n' "$changes" >&2
-        return 1
-        ;;
-    esac
-
-    allowed_changelog=0
-    for changelog_path in "${release_changelog_paths[@]}"; do
-      if [[ "$path" == "$changelog_path" ]]; then
-        allowed_changelog=1
+    allowed=0
+    for source_path in "${source_paths[@]}"; do
+      if [[ "$path" == "$source_path" ]]; then
+        case "$status" in
+          '??'|'A '|'AM'|' M'|'M '|'MM') allowed=1 ;;
+        esac
         break
       fi
     done
-    if ((!allowed_changelog)); then
-      release_error 'Only package changelogs may be changed before a release bump.'
+    for changelog_path in "${release_changelog_paths[@]}"; do
+      if [[ "$path" == "$changelog_path" ]]; then
+        case "$status" in
+          ' M'|'M '|'MM') allowed=1 ;;
+        esac
+        break
+      fi
+    done
+    if ((!allowed)); then
+      release_error "Release bump found a disallowed path or status: $status $path."
       printf '%s\n' "$changes" >&2
       return 1
     fi
@@ -228,14 +255,10 @@ release_changelog_heading_count() {
   fi
 
   awk -v version="$version" '
-    BEGIN { delimiter = " — " }
-    /^## / {
-      heading = substr($0, 4)
-      separator = index(heading, delimiter)
-      if (separator == 0) next
-      heading_version = substr(heading, 1, separator - 1)
-      date = substr(heading, separator + length(delimiter))
-      if (heading_version == version && date ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) count++
+    BEGIN { prefix = "## [" version "] - " }
+    index($0, prefix) == 1 && length($0) == length(prefix) + 10 {
+      date = substr($0, length(prefix) + 1)
+      if (date ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) count++
     }
     END { print count + 0 }
   ' "$changelog"
