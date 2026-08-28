@@ -18,7 +18,11 @@ export function eventOrigin(request: Request): string | null {
   return isStashClientId(value) ? value : null;
 }
 
-async function deliver(env: Env, stash: string, events: readonly StashEvent[]): Promise<void> {
+export async function deliverEvents(
+  env: Env,
+  stash: string,
+  events: readonly StashEvent[],
+): Promise<void> {
   const stub = env.STASH_EVENTS.getByName(stash);
   for (const event of events) {
     const response = await stub.fetch(
@@ -44,7 +48,7 @@ export function publishEvents(
 ): void {
   if (events.length === 0) return;
   ctx.waitUntil(
-    deliver(env, stash, events).catch((error: unknown) => {
+    deliverEvents(env, stash, events).catch((error: unknown) => {
       console.error(
         JSON.stringify({
           message: "stash event publication failed",

@@ -97,6 +97,13 @@ describe("single raw upload lifecycle", () => {
     const value = await committed.json<{ version: number; hash: string; changeId: number }>();
     expect(value).toMatchObject({ version: 1, hash });
     expect(value.changeId).toBeGreaterThan(0);
+    const downloaded = await request(
+      createApp(),
+      `http://stash.test/v1/stashes/${STASH}/raw/asset.bin`,
+      { headers: bearer("test-admin") },
+      bindings(),
+    );
+    expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes);
 
     const replay = await complete(session.id);
     expect(replay.status).toBe(201);
@@ -144,6 +151,13 @@ describe("single raw upload lifecycle", () => {
     expect(blob?.body_bytes).toBeNull();
     expect(blob?.r2_key).toMatch(/^uploads\//);
     await expect(custom.BLOBS.get(blob!.r2_key)).resolves.not.toBeNull();
+    const downloaded = await request(
+      createApp(),
+      `http://stash.test/v1/stashes/${STASH}/raw/asset.bin`,
+      { headers: bearer("test-admin") },
+      custom,
+    );
+    expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes);
   });
 
   it("validates split UTF-8 fatally while arbitrary binary bytes succeed", async () => {
@@ -419,6 +433,7 @@ describe("single raw upload lifecycle", () => {
   it("recovers response gaps after staging and after commit and publishes once", async () => {
     let stageFault = true;
     let commitFault = true;
+    let eventFault = true;
     const application = createApp({
       uploadHooks: {
         afterStage() {
@@ -442,6 +457,10 @@ describe("single raw upload lifecycle", () => {
         if (property !== "getByName") return Reflect.get(target, property, receiver);
         return () => ({
           fetch: async (input: Request) => {
+            if (eventFault) {
+              eventFault = false;
+              throw new Error("event delivery");
+            }
             events.push((await input.json()) as StashEvent);
             return new Response(null, { status: 204 });
           },
@@ -478,6 +497,14 @@ describe("single raw upload lifecycle", () => {
     expect(uploadReplay.headers.get("Idempotent-Replayed")).toBe("true");
     expect((await complete(id, "complete-fault", custom, application)).status).toBe(500);
     expect(events).toHaveLength(0);
+    expect((await complete(id, "complete-fault", custom, application)).status).toBe(500);
+    await expect(
+      env.DB.prepare(
+        "SELECT event_published_at, event_publish_owner FROM upload_sessions WHERE id = ?",
+      )
+        .bind(id)
+        .first(),
+    ).resolves.toEqual({ event_published_at: null, event_publish_owner: null });
     const recovered = await complete(id, "complete-fault", custom, application);
     expect(recovered.status).toBe(201);
     expect(recovered.headers.get("Idempotent-Replayed")).toBe("true");
@@ -487,6 +514,66 @@ describe("single raw upload lifecycle", () => {
     await expect(env.DB.prepare("SELECT COUNT(*) AS count FROM versions").first()).resolves.toEqual(
       { count: 1 },
     );
+  });
+
+  it("fails finalization without a stale result when durable R2 staging disappears", async () => {
+    const custom = bindings({ D1_INLINE_MAX_BYTES: "1" });
+    const created = await create(
+      {
+        expectedVersion: null,
+        size: 2,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-missing-stage",
+      custom,
+    );
+    const id = (await created.json<{ id: string }>()).id;
+    await raw(id, new Uint8Array([1, 2]), "upload-missing-stage", {}, custom);
+    const session = await env.DB.prepare("SELECT staged_r2_key FROM upload_sessions WHERE id = ?")
+      .bind(id)
+      .first<{ staged_r2_key: string }>();
+    await custom.BLOBS.delete(session!.staged_r2_key);
+    expect((await complete(id, "complete-missing-stage", custom)).status).toBe(500);
+    await expect(
+      env.DB.prepare("SELECT state, error_code FROM upload_sessions WHERE id = ?").bind(id).first(),
+    ).resolves.toEqual({ state: "failed", error_code: "staging-unavailable" });
+    await expect(env.DB.prepare("SELECT COUNT(*) AS count FROM versions").first()).resolves.toEqual(
+      {
+        count: 0,
+      },
+    );
+  });
+
+  it("selects multipart for resumable auto sessions and rejects resumable single mode", async () => {
+    const automatic = await create(
+      {
+        expectedVersion: null,
+        size: 1,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "auto",
+        resumable: true,
+      },
+      "create-resumable-auto",
+    );
+    expect(automatic.status).toBe(201);
+    await expect(automatic.json()).resolves.toMatchObject({ mode: "multipart" });
+    const single = await create(
+      {
+        expectedVersion: null,
+        size: 1,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: true,
+      },
+      "create-resumable-single",
+    );
+    expect(single.status).toBe(400);
+    await expect(single.json()).resolves.toMatchObject({ error: { code: "validation" } });
   });
 
   it("takes over an expired finalization lease but fences an early retry", async () => {
@@ -524,6 +611,46 @@ describe("single raw upload lifecycle", () => {
     expect((await complete(id, "complete-lease", custom, application)).status).toBe(409);
     now += 11;
     expect((await complete(id, "complete-lease", custom, application)).status).toBe(201);
+  });
+
+  it("returns current state for open resume and finalizes durable uploaded staging", async () => {
+    const custom = bindings();
+    const application = createApp();
+    const created = await create(
+      {
+        expectedVersion: null,
+        size: 1,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-resume",
+      custom,
+      application,
+    );
+    const id = (await created.json<{ id: string }>()).id;
+    const resumeRequest = () =>
+      request(
+        application,
+        `${BASE}/${id}/resume`,
+        {
+          method: "POST",
+          headers: jsonHeaders("resume-key"),
+          body: JSON.stringify({ generation: 0 }),
+        },
+        custom,
+      );
+    const open = await resumeRequest();
+    expect(open.status).toBe(200);
+    await expect(open.json()).resolves.toMatchObject({ state: "open" });
+    await raw(id, new Uint8Array([7]), "upload-resume", {}, custom, application);
+    const committed = await resumeRequest();
+    expect(committed.status).toBe(200);
+    await expect(committed.json()).resolves.toMatchObject({
+      state: "committed",
+      result: { version: 1 },
+    });
   });
 
   it("gives complete versus abort exactly one terminal winner", async () => {

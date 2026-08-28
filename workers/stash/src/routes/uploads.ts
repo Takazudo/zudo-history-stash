@@ -17,7 +17,7 @@ import type { AppEnv, Principal } from "../context.js";
 import { finalizeUnchanged, finalizeUpload } from "../d1/upload-finalize.js";
 import { D1UploadSessionStore } from "../d1/upload-sessions.js";
 import type { UploadSessionRow } from "../d1/schema.js";
-import { eventOrigin, publishEvents } from "../events/publish.js";
+import { deliverEvents, eventOrigin } from "../events/publish.js";
 
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(?:;.*)?$/i;
 const uploads = new Hono<AppEnv>();
@@ -133,6 +133,7 @@ function sameCreate(
   row: UploadSessionRow,
   candidate: ReturnType<typeof CreateUploadSessionBody.parse>,
   path: string,
+  mode: "single" | "multipart",
 ): boolean {
   return (
     row.path === path &&
@@ -141,7 +142,8 @@ function sameCreate(
     row.declared_hash === (candidate.hash ?? null) &&
     row.representation === candidate.representation &&
     row.content_type === candidate.contentType &&
-    row.skip_if_unchanged === (candidate.skipIfUnchanged ? 1 : 0)
+    row.skip_if_unchanged === (candidate.skipIfUnchanged ? 1 : 0) &&
+    row.upload_mode === mode
   );
 }
 
@@ -171,20 +173,26 @@ async function createSession(c: Context<AppEnv>) {
   }
   const mode =
     parsed.data.mode === "auto"
-      ? parsed.data.size <= settings.singleUploadMaxBytes
+      ? !parsed.data.resumable && parsed.data.size <= settings.singleUploadMaxBytes
         ? "single"
         : "multipart"
       : parsed.data.mode;
+  if (mode === "single" && parsed.data.resumable) {
+    throw new StashError("validation", "A resumable upload must use multipart mode.");
+  }
   if (mode === "single" && parsed.data.size > settings.singleUploadMaxBytes) {
     throw new StashError("payload-too-large", "The declared single upload size is too large.");
   }
   const stash = c.get("routeStash").name;
   const principal = principalColumns(c.get("principal"));
-  const createFingerprint = await fingerprint(c, "create", `${stash}/${path}`, parsed.data);
+  const createFingerprint = await fingerprint(c, "create", stash, parsed.data);
   const store = new D1UploadSessionStore(c.env.DB);
   const existing = await store.getByCreateFingerprint(stash, createFingerprint);
   if (existing !== null) {
-    if (!owns(existing, c.get("principal"), stash) || !sameCreate(existing, parsed.data, path)) {
+    if (
+      !owns(existing, c.get("principal"), stash) ||
+      !sameCreate(existing, parsed.data, path, mode)
+    ) {
       throw new StashError("idempotency-key-reused", "Idempotency-Key was reused.");
     }
     c.header("Idempotent-Replayed", "true");
@@ -218,7 +226,7 @@ async function createSession(c: Context<AppEnv>) {
     if (
       raced !== null &&
       owns(raced, c.get("principal"), stash) &&
-      sameCreate(raced, parsed.data, path)
+      sameCreate(raced, parsed.data, path, mode)
     ) {
       c.header("Idempotent-Replayed", "true");
       return c.json(record(raced), 201);
@@ -367,24 +375,59 @@ async function publishCommitted(c: Context<AppEnv>, row: UploadSessionRow): Prom
   if ("unchanged" in committed) return;
   await c.get("deps").uploadHooks.beforeEventPublish?.();
   const now = c.get("deps").now();
+  const owner = c.get("deps").createId();
   const claimed = await c.env.DB.prepare(
-    "UPDATE upload_sessions SET event_published_at = ? WHERE id = ? AND state = 'committed' AND event_published_at IS NULL",
+    `UPDATE upload_sessions SET event_publish_owner = ?, event_publish_until = ?
+     WHERE id = ? AND state = 'committed' AND event_published_at IS NULL
+       AND (event_publish_owner IS NULL OR event_publish_until <= ?)`,
   )
-    .bind(now, row.id)
+    .bind(owner, now + c.get("deps").uploadLeaseMs, row.id, now)
     .run();
   if (claimed.meta.changes !== 1) return;
-  publishEvents(c.env, c.executionCtx, row.stash_name, [
-    {
-      type: "change",
-      changeId: committed.changeId,
-      stash: row.stash_name,
-      path: row.path,
-      version: committed.version,
-      kind: "put",
-      origin: eventOrigin(c.req.raw),
-      createdAt: committed.createdAt,
-    },
-  ]);
+  try {
+    await deliverEvents(c.env, row.stash_name, [
+      {
+        type: "change",
+        changeId: committed.changeId,
+        stash: row.stash_name,
+        path: row.path,
+        version: committed.version,
+        kind: "put",
+        origin: row.event_origin,
+        createdAt: committed.createdAt,
+      },
+    ]);
+    const published = await c.env.DB.prepare(
+      `UPDATE upload_sessions SET event_published_at = ?, event_publish_owner = NULL,
+         event_publish_until = NULL, updated_at = ?
+       WHERE id = ? AND state = 'committed' AND event_published_at IS NULL
+         AND event_publish_owner = ?`,
+    )
+      .bind(c.get("deps").now(), c.get("deps").now(), row.id, owner)
+      .run();
+    if (published.meta.changes !== 1) throw new Error("Upload event publication lease was lost");
+  } catch (error) {
+    await c.env.DB.prepare(
+      `UPDATE upload_sessions SET event_publish_owner = NULL, event_publish_until = NULL
+       WHERE id = ? AND event_published_at IS NULL AND event_publish_owner = ?`,
+    )
+      .bind(row.id, owner)
+      .run()
+      .catch(() => undefined);
+    throw error;
+  }
+}
+
+async function verifyR2Staging(c: Context<AppEnv>, row: UploadSessionRow): Promise<boolean> {
+  if (row.storage_tier !== "r2") return true;
+  if (row.staged_r2_key === null || row.uploaded_size === null) return false;
+  const object = await c.env.BLOBS.head(row.staged_r2_key);
+  return (
+    object !== null &&
+    object.size === row.uploaded_size &&
+    object.customMetadata?.session === row.id &&
+    object.customMetadata.generation === String(row.attempt_generation)
+  );
 }
 
 async function complete(c: Context<AppEnv>): Promise<Response> {
@@ -430,14 +473,29 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
   }
   row = requireOwned(await store.get(row.id), c);
   await c.get("deps").uploadHooks.duringFinalizing?.();
-  const unchanged = await finalizeUnchanged(c.env.DB, { session: row, lease, createdAt: now });
+  if (!(await verifyR2Staging(c, row))) {
+    await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
+    throw new StashError("internal", "Durable upload staging is unavailable.");
+  }
+  const origin = eventOrigin(c.req.raw);
+  const unchanged = await finalizeUnchanged(c.env.DB, {
+    session: row,
+    lease,
+    createdAt: now,
+    eventOrigin: origin,
+  });
   if (unchanged !== null) {
     return new Response(JSON.stringify(unchanged), {
       status: 200,
       headers: { "Content-Type": "application/json; charset=UTF-8" },
     });
   }
-  const committed = await finalizeUpload(c.env.DB, { session: row, lease, createdAt: now });
+  const committed = await finalizeUpload(c.env.DB, {
+    session: row,
+    lease,
+    createdAt: now,
+    eventOrigin: origin,
+  });
   if (committed !== null) {
     await c.get("deps").uploadHooks.afterCommit?.();
     const committedRow = requireOwned(await store.get(row.id), c);
@@ -448,11 +506,54 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     });
   }
   const current = await c.env.DB.withSession("first-primary")
-    .prepare("SELECT head_version FROM files WHERE stash_name = ? AND path = ?")
-    .bind(row.stash_name, row.path)
-    .first<{ head_version: number }>();
+    .prepare(
+      `SELECT files.head_version, files.head_hash, files.deleted, versions.kind,
+         versions.author, versions.created_at, stashes.deleted_at
+       FROM stashes LEFT JOIN files ON files.stash_name = stashes.name AND files.path = ?
+       LEFT JOIN versions ON versions.stash_name = files.stash_name
+         AND versions.path = files.path AND versions.version = files.head_version
+       WHERE stashes.name = ?`,
+    )
+    .bind(row.path, row.stash_name)
+    .first<{
+      head_version: number | null;
+      head_hash: string | null;
+      deleted: 0 | 1 | null;
+      kind: "put" | "delete" | "rollback" | null;
+      author: string | null;
+      created_at: number | null;
+      deleted_at: number | null;
+    }>();
+  if (current === null || current.deleted_at !== null) {
+    await store.finish({ lease, state: "failed", errorCode: "stash-unavailable", now });
+    throw new StashError("not-found", "The requested resource was not found.");
+  }
+  const casIsStale =
+    row.expected_version === null
+      ? current.head_version !== null
+      : current.head_version !== row.expected_version;
+  if (!casIsStale) {
+    await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
+    throw new StashError("internal", "Upload finalization could not reference durable staging.");
+  }
   const staleJson = JSON.stringify({
     error: { code: "stale", message: "Expected version is stale." },
+    ...(current.head_version !== null &&
+    current.deleted !== null &&
+    current.kind !== null &&
+    current.author !== null &&
+    current.created_at !== null
+      ? {
+          current: {
+            version: current.head_version,
+            hash: current.head_hash,
+            deleted: current.deleted === 1,
+            kind: current.kind,
+            author: current.author,
+            createdAt: new Date(current.created_at).toISOString(),
+          },
+        }
+      : {}),
   });
   const stale = await store.finish({
     lease,
@@ -464,7 +565,6 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
   });
   if (!stale)
     throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
-  void current;
   return new Response(staleJson, {
     status: 409,
     headers: { "Content-Type": "application/json; charset=UTF-8" },
@@ -472,7 +572,35 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
 }
 
 uploads.post("/v1/stashes/:stash/uploads/:sessionId/complete", complete);
-uploads.post("/v1/stashes/:stash/uploads/:sessionId/resume", complete);
+uploads.post("/v1/stashes/:stash/uploads/:sessionId/resume", async (c) => {
+  const store = new D1UploadSessionStore(c.env.DB);
+  const before = requireOwned(await store.get(sessionId(c)), c);
+  if (before.state === "open") {
+    idempotencyKey(c);
+    if (!JSON_CONTENT_TYPE.test(c.req.header("Content-Type") ?? "")) {
+      throw new StashError("validation", "The request body must be JSON.");
+    }
+    let candidate: unknown;
+    try {
+      candidate = await c.req.json<unknown>();
+    } catch {
+      throw new StashError("validation", "The request body must be valid JSON.");
+    }
+    const parsed = CompleteUploadSessionBody.safeParse(candidate);
+    if (!parsed.success || parsed.data.generation !== before.attempt_generation) {
+      throw new StashError("validation", "Invalid upload resume input.");
+    }
+    return c.json(record(before), 200);
+  }
+  const completion = await complete(c);
+  if (completion.status !== 200 && completion.status !== 201) return completion;
+  const after = requireOwned(await store.get(before.id), c);
+  const headers = new Headers({ "Content-Type": "application/json; charset=UTF-8" });
+  if (completion.headers.get("Idempotent-Replayed") === "true") {
+    headers.set("Idempotent-Replayed", "true");
+  }
+  return new Response(JSON.stringify(record(after)), { status: 200, headers });
+});
 
 uploads.delete("/v1/stashes/:stash/uploads/:sessionId", async (c) => {
   const parsed = AbortUploadSessionBody.safeParse(await json(c));

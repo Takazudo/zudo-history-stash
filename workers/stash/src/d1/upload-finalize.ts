@@ -8,6 +8,7 @@ export interface UploadFinalizeInput {
   session: UploadSessionRow;
   lease: FinalizationLease;
   createdAt: number;
+  eventOrigin: string | null;
 }
 
 function leaseFence(input: UploadFinalizeInput): { sql: string; params: unknown[] } {
@@ -214,7 +215,7 @@ export function uploadFinalizeBatch(
              'changeId', (SELECT id FROM versions
                WHERE stash_name = ? AND path = ? AND version = ?),
              'createdAt', ?),
-           reservation_released_at = ?, finalization_lease_owner = NULL,
+           event_origin = ?, reservation_released_at = ?, finalization_lease_owner = NULL,
            finalization_lease_until = NULL, updated_at = ?
          WHERE id = ? AND state = 'finalizing' AND attempt_generation = ?
            AND finalization_lease_owner = ? AND finalization_lease_until = ?
@@ -226,6 +227,7 @@ export function uploadFinalizeBatch(
         input.session.path,
         version,
         new Date(input.createdAt).toISOString(),
+        input.eventOrigin,
         input.createdAt,
         input.createdAt,
         input.session.id,

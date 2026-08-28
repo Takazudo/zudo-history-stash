@@ -160,7 +160,6 @@ export async function stageSingleBytes(env: Env, input: StageSingleInput): Promi
   } catch (error) {
     await writer.abort(error).catch(() => undefined);
     await put.catch(() => undefined);
-    await env.BLOBS.delete(objectKey).catch(() => undefined);
     throw error;
   } finally {
     reader.releaseLock();

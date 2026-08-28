@@ -86,10 +86,10 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
          WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
            AND (SELECT COUNT(*) FROM upload_sessions
                 WHERE stash_name = ? AND reservation_released_at IS NULL
-                  AND state IN ('open','uploaded','finalizing')) < ?
+                  AND state IN ('open','uploaded','finalizing') AND expires_at > ?) < ?
            AND COALESCE((SELECT SUM(declared_size) FROM upload_sessions
                          WHERE stash_name = ? AND reservation_released_at IS NULL
-                           AND state IN ('open','uploaded','finalizing')), 0) + ? <= ?`,
+                           AND state IN ('open','uploaded','finalizing') AND expires_at > ?), 0) + ? <= ?`,
       )
       .bind(
         input.id,
@@ -112,8 +112,10 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
         input.skipIfUnchanged ? 1 : 0,
         input.stash,
         input.stash,
+        input.now,
         input.maxOpenSessions,
         input.stash,
+        input.now,
         input.declaredSize,
         input.maxReservedBytes,
       )

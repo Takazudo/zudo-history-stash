@@ -228,9 +228,14 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
       return found;
     },
 
-    async cleanupUploadStaging(cutoff: number): Promise<number> {
+    async cleanupUploadStaging(cutoff: number, now: number): Promise<number> {
       budget.charge();
       const results = await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE upload_sessions SET state = 'expired', reservation_released_at = ?,
+               updated_at = ?
+             WHERE state IN ('open','uploaded') AND expires_at <= ?`,
+        ).bind(now, now, now),
         env.DB.prepare(
           `DELETE FROM upload_staged_bytes
            WHERE created_at < ? AND EXISTS (
@@ -250,7 +255,7 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
            )`,
         ).bind(cutoff),
       ]);
-      return results.reduce((total, result) => total + changed(result), 0);
+      return results.slice(1).reduce((total, result) => total + changed(result), 0);
     },
 
     async ledgerPage(
