@@ -6,9 +6,9 @@ category: guides
 ---
 
 Stash tokens have `read` or `write` scope. A write token includes reads and can mutate every path in
-its stash. Creation and rotation return the plaintext secret once; later listings retain an
-identifier, hash, and metadata but never the secret. Pass each response directly to a secret-store
-boundary and never print it.
+its stash. Creation and rotation return the plaintext secret once. The server retains the secret
+only as a hash; later listings expose the token identifier and lifecycle metadata, never the hash
+or secret. Pass each response directly to a secret-store boundary and never print it.
 
 {/* zhs-example: consumer-token-lifecycle */}
 
