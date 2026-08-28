@@ -210,11 +210,64 @@ const currentHead = {
   createdAt: UPDATED_AT,
 } as const;
 
+const uploadCommitResult = {
+  version: 4,
+  hash: HASH_A,
+  size: 13,
+  representation: "binary",
+  contentType: "application/octet-stream",
+  changeId: 8,
+  createdAt: UPDATED_AT,
+} as const;
+
+const uploadSession = {
+  id: "upl_1787702400000deadbeef",
+  stash: "demo",
+  path: "assets/archive.bin",
+  principal: { kind: "stash", tokenId: tokenRecord.id },
+  state: "open",
+  expectedVersion: null,
+  declaredSize: 13,
+  declaredHash: HASH_A,
+  representation: "binary",
+  contentType: "application/octet-stream",
+  mode: "single",
+  storageTier: "d1",
+  partSize: null,
+  expiresAt: EXPIRES_AT,
+  attemptGeneration: 0,
+  uploadedSize: null,
+  uploadedHash: null,
+  finalizationLeaseOwner: null,
+  finalizationLeaseExpiresAt: null,
+  result: null,
+} as const;
+const noUploadParts: { partNumber: number; size: number; generation: number; etag: string }[] = [];
+
 const responseSamples = {
   HealthResponse: {
     ok: true,
     service: "zudo-history-stash",
     marker: "ZHS_HEALTH_OK",
+  },
+  CapabilitiesResponse: {
+    representations: ["text", "binary"],
+    contentAccess: ["inline", "raw", "deleted"],
+    transferModes: ["json", "single", "multipart"],
+    storageTiers: ["d1", "r2"],
+    limits: {
+      jsonInlineMaxBytes: 5_000_000,
+      d1InlineMaxBytes: 524_288,
+      httpRequestMaxBytes: 100_000_000,
+      singleUploadMaxBytes: 33_554_432,
+      maxFileBytes: 100_000_000,
+      diffMaxBytesPerSide: 524_288,
+      multipartPartBytes: 8_388_608,
+      maxMultipartParts: 10_000,
+      maxOpenUploadSessionsPerStash: 8,
+      maxReservedUploadBytesPerStash: 500_000_000,
+      uploadSessionTtlSeconds: 86_400,
+    },
   },
   MeResponse: {
     principal: "stash",
@@ -308,6 +361,10 @@ const responseSamples = {
     error: { code: "stale", message: "Expected version is stale" },
     current: currentHead,
   },
+  CreateUploadSessionResult: uploadSession,
+  GetUploadSessionResult: { ...uploadSession, parts: noUploadParts },
+  CompleteUploadResult: uploadCommitResult,
+  AbortUploadResult: { id: uploadSession.id, state: "aborted" },
   ListStashesResult: { stashes: oneStash, nextAfter: null },
   ListTokensResult: { tokens: oneToken },
   ListFilesResult: { files: oneFile, nextAfter: null },

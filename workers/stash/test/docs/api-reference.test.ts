@@ -27,9 +27,9 @@ describe("API reference route coverage", () => {
     expect(limits).toContain("future GC");
 
     const deferred = section("Deferred");
-    expect(deferred).toContain("binary request bodies");
-    expect(deferred).toContain("byte-range reads");
-    expect(deferred).toContain("download endpoints");
+    expect(deferred).not.toContain("binary request bodies");
+    expect(deferred).not.toContain("byte-range reads");
+    expect(deferred).not.toContain("download endpoints");
     expect(deferred).not.toContain("R2 spill");
   });
 

@@ -16,6 +16,7 @@ export interface DiffStats {
 
 export type DiffResult =
   | { state: "same" }
+  | { state: "binary" }
   | { state: "oversized"; reason: "bytes" | "complexity" }
   | { state: "ready"; unified: string; truncated: boolean; hunks: DiffHunk[]; stats: DiffStats };
 

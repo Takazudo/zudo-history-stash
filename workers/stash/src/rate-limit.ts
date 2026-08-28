@@ -9,6 +9,7 @@ type RateLimitVerdict = "allowed" | "limited" | "unavailable";
 
 export const RATE_LIMIT_BINDING_BY_ROUTE = {
   health: null,
+  getCapabilities: null,
   me: "RL_READ",
   listStashes: null,
   createStash: null,
@@ -39,6 +40,17 @@ export const RATE_LIMIT_BINDING_BY_ROUTE = {
   getDiff: "RL_DIFF",
   diffCandidate: "RL_DIFF",
   getStashChanges: "RL_READ",
+  getRawFile: "RL_READ",
+  headRawFile: "RL_READ",
+  getRawVersion: "RL_READ",
+  headRawVersion: "RL_READ",
+  createUploadSession: "RL_WRITE",
+  getUploadSession: "RL_WRITE",
+  uploadSingleContent: "RL_WRITE",
+  uploadPart: "RL_WRITE",
+  completeUploadSession: "RL_WRITE",
+  resumeUploadSession: "RL_WRITE",
+  abortUploadSession: "RL_WRITE",
 } as const satisfies Record<RouteId, RateLimitBindingName | null>;
 
 const RATE_LIMITED_BODY = {

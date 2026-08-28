@@ -28,12 +28,17 @@ export async function seedStash(name: string): Promise<void> {
 export async function resetDatabase(): Promise<void> {
   const { DB: db, BLOBS: blobs } = createTestEnv().env;
   for (const table of [
+    "upload_parts",
+    "upload_staged_bytes",
+    "upload_objects",
+    "upload_sessions",
     "gc_runs",
     "proposals",
     "idempotency",
     "versions",
     "files",
     "blobs",
+    "byte_blobs",
     "tokens",
     "stashes",
   ]) {

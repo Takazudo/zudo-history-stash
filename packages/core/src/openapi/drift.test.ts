@@ -53,7 +53,7 @@ async function formatOpenApi(document: OpenApiDocument): Promise<string> {
 }
 
 function apiSections(): ApiSection[] {
-  const headings = [...apiReference.matchAll(/^### `(GET|POST|PUT|DELETE) (\/v1\/[^`]+)`$/gm)];
+  const headings = [...apiReference.matchAll(/^### `(GET|HEAD|POST|PUT|DELETE) (\/v1\/[^`]+)`$/gm)];
   return headings.map((heading, index) => {
     const method = heading[1];
     const template = heading[2];

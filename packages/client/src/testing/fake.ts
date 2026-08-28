@@ -140,6 +140,7 @@ const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
 
 const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
   health: null,
+  getCapabilities: null,
   me: "read",
   listStashes: null,
   createStash: null,
@@ -170,6 +171,17 @@ const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
   getDiff: "diff",
   diffCandidate: "diff",
   getStashChanges: "read",
+  getRawFile: "read",
+  headRawFile: "read",
+  getRawVersion: "read",
+  headRawVersion: "read",
+  createUploadSession: "write",
+  getUploadSession: "write",
+  uploadSingleContent: "write",
+  uploadPart: "write",
+  completeUploadSession: "write",
+  resumeUploadSession: "write",
+  abortUploadSession: "write",
 } as const satisfies Record<RouteId, "read" | "write" | "diff" | null>;
 
 type Principal =

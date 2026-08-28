@@ -23,6 +23,12 @@ const clientIdentityRouteIds = [
   "putFile",
   "deleteFile",
   "rollbackFile",
+  "createUploadSession",
+  "abortUploadSession",
+  "uploadSingleContent",
+  "uploadPart",
+  "completeUploadSession",
+  "resumeUploadSession",
 ] as const;
 
 function operations(document: ReturnType<typeof buildOpenApiDocument>): ObjectValue[] {
@@ -54,7 +60,7 @@ describe("buildOpenApiDocument", () => {
   it("contains every operation with the route identity and short principal", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
-    expect(all).toHaveLength(31);
+    expect(all).toHaveLength(43);
     expect(all.map((operation) => operation.operationId)).toEqual(ROUTES.map((route) => route.id));
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);
@@ -62,6 +68,9 @@ describe("buildOpenApiDocument", () => {
       expect(operation?.description, route.id).toContain(ROUTE_CONTRACTS[route.id].principalNote);
     }
     expect(all.find((operation) => operation.operationId === "health")?.security).toEqual([]);
+    expect(all.find((operation) => operation.operationId === "getCapabilities")?.security).toEqual(
+      [],
+    );
   });
 
   it("documents the canonical client identity on exactly mutation operations", () => {
@@ -95,11 +104,11 @@ describe("buildOpenApiDocument", () => {
     }
   });
 
-  it("marks all seven wildcard operations and warns about client generation", () => {
+  it("marks all byte-path wildcard operations and warns about client generation", () => {
     const wildcardOperations = operations(buildOpenApiDocument({ version: "test" })).filter(
       (operation) => operation["x-wildcard"] === true,
     );
-    expect(wildcardOperations).toHaveLength(7);
+    expect(wildcardOperations).toHaveLength(12);
     for (const operation of wildcardOperations) {
       expect(operation.description).toContain("unescaped `/`");
       const parameters = operation.parameters as ObjectValue[];
@@ -120,6 +129,18 @@ describe("buildOpenApiDocument", () => {
       expect(responses[status]?.headers).toHaveProperty("ETag");
       expect(responses[status]?.headers).toHaveProperty("X-Stash-Version");
     }
+  });
+
+  it("emits raw upload bodies as binary octet streams", () => {
+    const operation = buildOpenApiDocument({ version: "test" }).paths[
+      "/v1/stashes/{stash}/uploads/{sessionId}/content"
+    ]?.put;
+    expect(operation?.requestBody).toEqual({
+      required: true,
+      content: {
+        "application/octet-stream": { schema: { type: "string", format: "binary" } },
+      },
+    });
   });
 
   it("emits resolvable references and no local-definition references", () => {
@@ -175,7 +196,7 @@ describe("buildOpenApiDocument", () => {
       const responses = operation.responses as Record<string, ObjectValue>;
       return responses["429"] !== undefined;
     });
-    expect(rateLimited).toHaveLength(18);
+    expect(rateLimited).toHaveLength(29);
     for (const operation of rateLimited) {
       const responses = operation.responses as Record<string, ObjectValue>;
       expect(responses["429"]?.headers).toHaveProperty("Retry-After");
@@ -215,9 +236,10 @@ describe("buildOpenApiDocument", () => {
     ]) {
       expect(document.components.schemas[name], name).toBeDefined();
     }
-    const nonFetchOnly = operations(document).filter(
-      (candidate) => candidate.operationId !== "stashEvents",
-    );
+    const nonFetchOnly = operations(document).filter((candidate) => {
+      const route = ROUTES.find(({ id }) => id === candidate.operationId);
+      return route === undefined || !("transport" in route) || route.transport !== "fetch-only";
+    });
     for (const candidate of nonFetchOnly) expect(candidate["x-transport"]).toBeUndefined();
   });
 

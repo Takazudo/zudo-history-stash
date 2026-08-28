@@ -109,24 +109,27 @@ function requestHeaderParameter(name: RequestHeader): OpenApiObject {
 }
 
 function responseHeader(name: ResponseHeader): OpenApiObject {
+  const descriptions: Record<ResponseHeader, string> = {
+    ETag: "Strong application SHA-256 entity tag for this exact file version.",
+    "X-Stash-Version": "Numeric stash file version.",
+    "Idempotent-Replayed": "Whether the server replayed an idempotent response.",
+    "Retry-After": "Seconds to wait before retrying a rate-limited request.",
+    "Cache-Control": "Response cache policy.",
+    "X-Accel-Buffering": "Reverse-proxy response buffering policy.",
+    "Accept-Ranges": "Supported range unit; always bytes for raw content.",
+    "Content-Length": "Exact response content bytes.",
+    "Content-Range": "Selected byte range or the complete size for an unsatisfied range.",
+    "Content-Type": "Stored media type.",
+    "Content-Disposition": "Safely encoded inline or attachment disposition.",
+    "X-Content-Type-Options": "Prevents MIME sniffing of stored content.",
+  };
   return {
-    description:
-      name === "ETag"
-        ? "Entity tag for this exact file version."
-        : name === "X-Stash-Version"
-          ? "Numeric stash file version."
-          : name === "Idempotent-Replayed"
-            ? "Whether the server replayed an idempotent response."
-            : name === "Retry-After"
-              ? "Seconds to wait before retrying a rate-limited request."
-              : name === "Cache-Control"
-                ? "Disables storage of the live stream response."
-                : "Disables reverse-proxy response buffering.",
+    description: descriptions[name],
     schema: {
       type:
         name === "Idempotent-Replayed"
           ? "boolean"
-          : name === "X-Stash-Version" || name === "Retry-After"
+          : name === "X-Stash-Version" || name === "Retry-After" || name === "Content-Length"
             ? "integer"
             : "string",
       ...(name === "Retry-After" ? { minimum: 0 } : {}),
@@ -134,7 +137,11 @@ function responseHeader(name: ResponseHeader): OpenApiObject {
         ? { const: "no-store" }
         : name === "X-Accel-Buffering"
           ? { const: "no" }
-          : {}),
+          : name === "Accept-Ranges"
+            ? { const: "bytes" }
+            : name === "X-Content-Type-Options"
+              ? { const: "nosniff" }
+              : {}),
     },
   };
 }
@@ -159,7 +166,13 @@ function successResponses(contract: RouteContract): Record<string, OpenApiObject
               },
             },
           }
-        : {};
+        : response.mediaType === "application/octet-stream"
+          ? {
+              content: {
+                "application/octet-stream": { schema: { type: "string", format: "binary" } },
+              },
+            }
+          : {};
       return [status, { description: response.description, ...headers, ...content }];
     }),
   );
@@ -217,13 +230,19 @@ function buildOperation(
     "x-principal": route.principal,
     ...(contract.transport === "fetch-only" ? { "x-transport": "fetch-only" } : {}),
     ...(wildcard ? { "x-wildcard": true } : {}),
-    ...(route.id === "health" ? { security: [] } : {}),
+    ...(route.principal === "open" ? { security: [] } : {}),
     ...(parameters.length ? { parameters } : {}),
-    ...(contract.body
+    ...(contract.body || contract.rawBody
       ? {
           requestBody: {
             required: true,
-            content: { "application/json": { schema: projectRequestSchema(contract.body) } },
+            content: {
+              [contract.requestMediaType ?? "application/json"]: {
+                schema: contract.rawBody
+                  ? { type: "string", format: "binary" }
+                  : projectRequestSchema(contract.body as ZodType),
+              },
+            },
           },
         }
       : {}),
