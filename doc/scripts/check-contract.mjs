@@ -3,6 +3,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseFrontmatter } from "@takazudo/zfb/frontmatter";
 
 const OPENAPI_METHODS = new Map(
   ["get", "post", "put", "delete", "patch", "head", "options", "trace"].map((method) => [
@@ -13,6 +14,10 @@ const OPENAPI_METHODS = new Map(
 const HTTP_METHODS = new Set(OPENAPI_METHODS.values());
 const PRINCIPALS = new Set(["open", "any", "admin", "admin-or-stash", "read", "write"]);
 const TRANSPORTS = new Set(["any", "fetch-only"]);
+const GUIDE_FACT_PATHS = [
+  "guides/consumer-write-protocol.mdx",
+  "guides/service-binding-and-rpc.mdx",
+];
 
 export const REFERENCE_PAGES = new Set([
   "architecture.mdx",
@@ -327,6 +332,135 @@ function visibleLines(source) {
     result.push({ line, number: index + 1 });
   }
   return result;
+}
+
+function anchoredFrontmatter(source) {
+  const opener = /^(?:\uFEFF)?---(\r\n|\n|\r)/u.exec(source);
+  if (opener === null) return null;
+  const newline = opener[1];
+  const escapedNewline = newline.replace(/\r/gu, "\\r").replace(/\n/gu, "\\n");
+  const closerPattern = new RegExp(`${escapedNewline}---(?:${escapedNewline}|$)`, "gu");
+  closerPattern.lastIndex = opener[0].length;
+  const closer = closerPattern.exec(source);
+  if (closer === null) return null;
+  const header = source.slice(opener[0].length, closer.index);
+  const descriptionKeys = header
+    .split(/\r\n|\n|\r/gu)
+    .filter((line) => /^description\s*:/u.test(line));
+  if (descriptionKeys.length !== 1) return null;
+  try {
+    return parseFrontmatter(source).data;
+  } catch {
+    return null;
+  }
+}
+
+function formattedCoreLimit(core, name, expected, diagnostics) {
+  const value = core?.[name];
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    diagnostics.add(`core: ${name} must be a positive safe integer for guide facts`);
+    return new Intl.NumberFormat("en-US").format(expected);
+  }
+  if (value !== expected) {
+    diagnostics.add(`core: ${name} guide fact value must be ${expected}, received ${value}`);
+  }
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function guideFactContracts(core, locale, diagnostics) {
+  const bodyLimit = core?.BODY_LIMIT_BYTES;
+  const bodyLimitBytes = formattedCoreLimit(
+    core,
+    "BODY_LIMIT_BYTES",
+    32 * 1_024 * 1_024,
+    diagnostics,
+  );
+  const maxBodyBytes = formattedCoreLimit(core, "MAX_BODY_BYTES", 5_000_000, diagnostics);
+  const bodyLimitMiB =
+    Number.isSafeInteger(bodyLimit) && bodyLimit > 0 ? bodyLimit / (1_024 * 1_024) : 32;
+  if (!Number.isInteger(bodyLimitMiB)) {
+    diagnostics.add(`core: BODY_LIMIT_BYTES must resolve to a whole MiB guide fact`);
+  }
+
+  if (locale === "en") {
+    return [
+      {
+        name: "search-discoverability",
+        path: GUIDE_FACT_PATHS[0],
+        frontmatter: {
+          field: "description",
+          value:
+            "Use putLatest, compare-and-set fences, and idempotency keys without overwriting concurrent work.",
+        },
+      },
+      {
+        name: "idempotency-ledger-ownership",
+        path: GUIDE_FACT_PATHS[0],
+        text: "A write refused before commit does not create a new ledger record, and a successful `skipIfUnchanged` no-op does not claim its key. A transport or `internal` outcome can be ambiguous; keep the same canonical request under the same key until resolved.",
+      },
+      {
+        name: "rpc-payload-boundaries",
+        path: GUIDE_FACT_PATHS[1],
+        text: `RPC raises neither the platform nor API limits. Cloudflare's outer serialized RPC call is capped at ${bodyLimitMiB} MiB, including envelope overhead, so an application payload of exactly ${bodyLimitBytes} bytes is not guaranteed to reach dispatch. Independently, Stash caps the complete encoded \`Request\` body with \`BODY_LIMIT_BYTES\` at ${bodyLimitBytes} bytes (${bodyLimitMiB} MiB), while each stored text body is capped with \`MAX_BODY_BYTES\` at ${maxBodyBytes} UTF-8 bytes.`,
+      },
+    ];
+  }
+  if (locale === "ja") {
+    return [
+      {
+        name: "search-discoverability",
+        path: GUIDE_FACT_PATHS[0],
+        frontmatter: {
+          field: "description",
+          value:
+            "putLatest、compare-and-set フェンス、冪等性キーを使用し、並行処理による変更を上書きせずに書き込みます。",
+        },
+      },
+      {
+        name: "idempotency-ledger-ownership",
+        path: GUIDE_FACT_PATHS[0],
+        text: "コミット前に拒否された書き込みでは新しい台帳レコードは作成されず、成功した `skipIfUnchanged` の no-op でも、そのキーは確保されません。トランスポート障害または `internal` の結果は完了したかどうかが曖昧なことがあるため、解決するまでは同じ正規リクエストを同じキーで維持してください。",
+      },
+      {
+        name: "rpc-payload-boundaries",
+        path: GUIDE_FACT_PATHS[1],
+        text: `RPC を使用しても、プラットフォームと API のどちらの上限も引き上げられません。Cloudflare の外側のシリアライズ済み RPC 呼び出しは、エンベロープのオーバーヘッドを含めて ${bodyLimitMiB} MiB に制限されるため、ちょうど ${bodyLimitBytes} バイトのアプリケーションペイロードがディスパッチまで到達するとは限りません。これとは独立して、Stash はエンコード済み \`Request\` 本文全体を \`BODY_LIMIT_BYTES\` により ${bodyLimitBytes} バイト（${bodyLimitMiB} MiB）に制限し、保存される各テキスト本文を \`MAX_BODY_BYTES\` により ${maxBodyBytes} UTF-8 バイトに制限します。`,
+      },
+    ];
+  }
+  diagnostics.add(`${locale}: guide fact contracts are not configured`);
+  return [];
+}
+
+async function checkGuideFacts(contentRoot, core, locale, diagnostics) {
+  const sources = new Map();
+  for (const path of GUIDE_FACT_PATHS) {
+    try {
+      sources.set(path, await readFile(resolve(contentRoot, path), "utf8"));
+    } catch (error) {
+      diagnostics.add(`${locale}: guide fact source ${path} is unavailable: ${error.message}`);
+    }
+  }
+  for (const fact of guideFactContracts(core, locale, diagnostics)) {
+    const source = sources.get(fact.path);
+    if (source === undefined) continue;
+    if (fact.frontmatter !== undefined) {
+      const data = anchoredFrontmatter(source);
+      if (data?.[fact.frontmatter.field] !== fact.frontmatter.value) {
+        diagnostics.add(
+          `${locale}: guide fact ${fact.name} is missing or inverted in ${fact.path}`,
+        );
+      }
+      continue;
+    }
+    const visible = visibleLines(source)
+      .map(({ line }) => line)
+      .join("")
+      .replace(/\s+/gu, "");
+    if (!visible.includes(fact.text.replace(/\s+/gu, ""))) {
+      diagnostics.add(`${locale}: guide fact ${fact.name} is missing or inverted in ${fact.path}`);
+    }
+  }
 }
 
 const ROUTE_HEADING = /^###\s+`([A-Z]+)\s+([^`]+)`\s*$/;
@@ -687,6 +821,7 @@ export async function checkContract({
       diagnostics.add(`${locale}: content root is not configured`);
       continue;
     }
+    await checkGuideFacts(contentRoot, resolvedCore, locale, diagnostics);
     const referenceRoot = resolve(contentRoot, "reference");
     let files;
     try {

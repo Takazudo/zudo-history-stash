@@ -1,6 +1,6 @@
 ---
 title: Consumer Write Protocol
-description: Use compare-and-set fences and idempotency keys without overwriting concurrent work.
+description: Use putLatest, compare-and-set fences, and idempotency keys without overwriting concurrent work.
 sidebar_position: 10
 category: guides
 ---
@@ -85,6 +85,10 @@ The SDK creates keys automatically for ordinary put, delete, rollback, and propo
 When recovering from an ambiguous transport failure, provide and retain a stable key so the exact
 same request can be replayed. The idempotency ledger lasts seven days; a replay reconstructs the
 original result and exposes `replayed` on success.
+
+A write refused before commit does not create a new ledger record, and a successful
+`skipIfUnchanged` no-op does not claim its key. A transport or `internal` outcome can be ambiguous;
+keep the same canonical request under the same key until resolved.
 
 `putLatest` is a bounded convenience for deliberately simple last-head updates. It performs a read
 and, by default, up to three stale retries; it does not make a multi-step decision atomic or remove

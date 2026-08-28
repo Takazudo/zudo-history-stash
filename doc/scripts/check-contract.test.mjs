@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -8,6 +8,10 @@ import { checkContract, ContractCheckError } from "./check-contract.mjs";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const REFERENCE_ROOT = resolve(REPOSITORY_ROOT, "doc/src/content/docs/reference");
+const GUIDE_ROOTS = {
+  en: resolve(REPOSITORY_ROOT, "doc/src/content/docs/guides"),
+  ja: resolve(REPOSITORY_ROOT, "doc/src/content/docs-ja/guides"),
+};
 const CORE_PATH = resolve(REPOSITORY_ROOT, "packages/core/dist/index.js");
 const OPENAPI_PATH = resolve(REPOSITORY_ROOT, "docs/openapi.json");
 const core = await import(pathToFileURL(CORE_PATH).href);
@@ -17,7 +21,20 @@ async function fixture(t, locale = "en") {
   const root = await mkdtemp(join(tmpdir(), "zhs-contract-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const contentRoot = join(root, "content");
-  await cp(REFERENCE_ROOT, join(contentRoot, "reference"), { recursive: true });
+  const guideRoot = GUIDE_ROOTS[locale];
+  if (guideRoot === undefined) throw new Error(`No guide fixture root for locale ${locale}`);
+  await mkdir(join(contentRoot, "guides"), { recursive: true });
+  await Promise.all([
+    cp(REFERENCE_ROOT, join(contentRoot, "reference"), { recursive: true }),
+    cp(
+      join(guideRoot, "consumer-write-protocol.mdx"),
+      join(contentRoot, "guides/consumer-write-protocol.mdx"),
+    ),
+    cp(
+      join(guideRoot, "service-binding-and-rpc.mdx"),
+      join(contentRoot, "guides/service-binding-and-rpc.mdx"),
+    ),
+  ]);
   return {
     root,
     options: {
@@ -29,6 +46,9 @@ async function fixture(t, locale = "en") {
     },
     reference(path) {
       return join(contentRoot, "reference", path);
+    },
+    guide(path) {
+      return join(contentRoot, "guides", path);
     },
   };
 }
@@ -56,6 +76,69 @@ test("production English reference matches fresh Core and OpenAPI contracts", as
     limits: 17,
     locales: ["en"],
   });
+});
+
+test("bilingual guide facts reject search, idempotency, and RPC boundary drift", async (t) => {
+  for (const locale of ["en", "ja"]) {
+    await t.test(`${locale} search discoverability omission`, async (t) => {
+      const value = await fixture(t, locale);
+      await checkContract(value.options);
+      await mutate(value.guide("consumer-write-protocol.mdx"), (source) =>
+        source.replace(/^(description:[^\r\n]*?)putLatest/imu, "$1putNewest"),
+      );
+      await expectDiagnostic(
+        value.options,
+        new RegExp(
+          `${locale}: guide fact search-discoverability is missing or inverted in guides/consumer-write-protocol\\.mdx`,
+        ),
+      );
+    });
+
+    await t.test(`${locale} idempotency ownership inversion`, async (t) => {
+      const value = await fixture(t, locale);
+      await checkContract(value.options);
+      await mutate(value.guide("consumer-write-protocol.mdx"), (source) =>
+        locale === "en"
+          ? source.replace("does not claim its key", "claims its key")
+          : source.replace("そのキーは確保されません", "そのキーは確保されます"),
+      );
+      await expectDiagnostic(
+        value.options,
+        new RegExp(
+          `${locale}: guide fact idempotency-ledger-ownership is missing or inverted in guides/consumer-write-protocol\\.mdx`,
+        ),
+      );
+    });
+
+    await t.test(`${locale} RPC boundary swap`, async (t) => {
+      const value = await fixture(t, locale);
+      await checkContract(value.options);
+      await mutate(value.guide("service-binding-and-rpc.mdx"), (source) => {
+        if (locale === "en") {
+          const bodyLimit = /`BODY_LIMIT_BYTES` at\s+33,554,432 bytes/u;
+          const maxBody = /`MAX_BODY_BYTES` at\s+5,000,000 UTF-8 bytes/u;
+          assert.match(source, bodyLimit);
+          assert.match(source, maxBody);
+          return source
+            .replace(bodyLimit, "`BODY_LIMIT_BYTES` at 5,000,000 bytes")
+            .replace(maxBody, "`MAX_BODY_BYTES` at 33,554,432 UTF-8 bytes");
+        }
+        const bodyLimit = /`BODY_LIMIT_BYTES` により\s+33,554,432 バイト/u;
+        const maxBody = /`MAX_BODY_BYTES` により\s+5,000,000 UTF-8 バイト/u;
+        assert.match(source, bodyLimit);
+        assert.match(source, maxBody);
+        return source
+          .replace(bodyLimit, "`BODY_LIMIT_BYTES` により 5,000,000 バイト")
+          .replace(maxBody, "`MAX_BODY_BYTES` により 33,554,432 UTF-8 バイト");
+      });
+      await expectDiagnostic(
+        value.options,
+        new RegExp(
+          `${locale}: guide fact rpc-payload-boundaries is missing or inverted in guides/service-binding-and-rpc\\.mdx`,
+        ),
+      );
+    });
+  }
 });
 
 test("the reference inventory rejects a missing or unexpected page", async (t) => {

@@ -42,6 +42,13 @@ export function createFetchBindingClient(input: { binding: StashFetchBinding; to
 reject された場合、SDK は `StashHttpError` を throw し、その `status === 0` となります。Binding を直接
 呼び出す場合も、外側に reject 境界が必要です。
 
+RPC を使用しても、プラットフォームと API のどちらの上限も引き上げられません。Cloudflare の外側の
+シリアライズ済み RPC 呼び出しは、エンベロープのオーバーヘッドを含めて 32 MiB に制限されるため、
+ちょうど 33,554,432 バイトのアプリケーションペイロードがディスパッチまで到達するとは限りません。
+これとは独立して、Stash はエンコード済み `Request` 本文全体を `BODY_LIMIT_BYTES` により
+33,554,432 バイト（32 MiB）に制限し、保存される各テキスト本文を `MAX_BODY_BYTES` により
+5,000,000 UTF-8 バイトに制限します。
+
 {/* zhs-example: consumer-rpc-binding */}
 
 ```ts
