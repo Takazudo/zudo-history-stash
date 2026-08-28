@@ -258,11 +258,14 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
         ? encodeLedgerCursor(boundary.created_at, boundary.rowid)
         : null;
     await store.heartbeat(run, dependencies.now());
-    const ledgerDeleted = run.dryRun ? 0 : await store.deleteLedger(page, cutoff);
-    const stagingDeleted = run.dryRun
+    const deleted = run.dryRun
       ? 0
-      : await store.cleanupUploadStaging(dependencies.now() - orphanMinAgeMs, dependencies.now());
-    const deleted = ledgerDeleted + stagingDeleted;
+      : await store.deleteLedgerAndCleanupUploadStaging(
+          page,
+          cutoff,
+          dependencies.now() - orphanMinAgeMs,
+          dependencies.now(),
+        );
     return store.finish(run, {
       nextCursor,
       scanned: page.length,
@@ -276,7 +279,7 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
   return {
     budget: dependencies.budget,
     async run(input: ParsedRunGcBody): Promise<GcRunResult> {
-      if (!dependencies.budget.canCharge(input.kind === "r2-orphans" ? 8 : 7)) {
+      if (!dependencies.budget.canCharge(input.kind === "r2-orphans" ? 8 : 6)) {
         throw new GcBudgetExhaustedError();
       }
       const explicit = input.cursor === undefined ? null : decodeGcCursor(input.kind, input.cursor);

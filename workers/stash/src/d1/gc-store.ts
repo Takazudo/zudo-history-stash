@@ -228,15 +228,24 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
       return found;
     },
 
-    async cleanupUploadStaging(cutoff: number, now: number): Promise<number> {
+    async deleteLedgerAndCleanupUploadStaging(
+      rows: readonly LedgerRow[],
+      ledgerCutoff: number,
+      stagingCutoff: number,
+      now: number,
+    ): Promise<number> {
       budget.charge();
-      const results = await env.DB.batch([
-        env.DB.prepare(
+      const session = env.DB.withSession("first-primary");
+      const ledgerStatements =
+        rows.length === 0 ? [] : deleteLedgerRows(session, rows, ledgerCutoff);
+      const results = await session.batch([
+        ...ledgerStatements,
+        session.prepare(
           `UPDATE upload_sessions SET state = 'expired', reservation_released_at = ?,
                updated_at = ?
              WHERE state IN ('open','uploaded') AND expires_at <= ?`,
         ).bind(now, now, now),
-        env.DB.prepare(
+        session.prepare(
           `DELETE FROM upload_staged_bytes
            WHERE created_at < ? AND EXISTS (
              SELECT 1 FROM upload_sessions sessions
@@ -244,8 +253,8 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
                AND sessions.attempt_generation = upload_staged_bytes.generation
                AND sessions.state IN ('committed','aborted','expired','stale','failed')
            )`,
-        ).bind(cutoff),
-        env.DB.prepare(
+        ).bind(stagingCutoff),
+        session.prepare(
           `DELETE FROM upload_parts
            WHERE recorded_at < ? AND EXISTS (
              SELECT 1 FROM upload_sessions sessions
@@ -253,9 +262,12 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
                AND sessions.attempt_generation = upload_parts.generation
                AND sessions.state IN ('committed','aborted','expired','stale','failed')
            )`,
-        ).bind(cutoff),
+        ).bind(stagingCutoff),
       ]);
-      return results.slice(1).reduce((total, result) => total + changed(result), 0);
+      return [...results.slice(0, ledgerStatements.length), ...results.slice(-2)].reduce(
+        (total, result) => total + changed(result),
+        0,
+      );
     },
 
     async ledgerPage(
@@ -271,14 +283,6 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
         .bind(cutoff, createdAt, createdAt, rowid, limit)
         .all<LedgerRow>();
       return rows.results;
-    },
-
-    async deleteLedger(rows: readonly LedgerRow[], cutoff: number): Promise<number> {
-      if (rows.length === 0) return 0;
-      budget.charge();
-      const session = env.DB.withSession("first-primary");
-      const results = await session.batch(deleteLedgerRows(session, rows, cutoff));
-      return results.reduce((total, result) => total + changed(result), 0);
     },
 
     async listRuns(kind: GcJobKind | undefined, limit: number): Promise<GcRunResult[]> {
