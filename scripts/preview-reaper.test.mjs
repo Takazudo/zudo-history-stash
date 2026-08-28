@@ -40,7 +40,10 @@ function cfFailure(status, message) {
   );
 }
 
-function workerPage(names, { page = 1, totalPages = 1 } = {}) {
+function workerPage(
+  names,
+  { page = 1, perPage = 100, totalCount = names.length, totalPages = 1 } = {},
+) {
   return cfSuccess(
     names.map((scriptName, index) => ({
       id: `worker-${String(page)}-${String(index)}`,
@@ -49,8 +52,8 @@ function workerPage(names, { page = 1, totalPages = 1 } = {}) {
     {
       count: names.length,
       page,
-      per_page: 100,
-      total_count: names.length,
+      per_page: perPage,
+      total_count: totalCount,
       total_pages: totalPages,
     },
   );
@@ -227,13 +230,15 @@ describe("complete preview inventory", () => {
             "zudo-history-stash-viewer-pr-2",
             "zudo-history-stash-pr-02",
           ],
-          { page: 1, totalPages: 2 },
+          { page: 1, perPage: 3, totalCount: 5, totalPages: 2 },
         ),
       },
       {
         path: "/workers/scripts-search?page=2&per_page=100",
         response: workerPage(["zudo-history-stash-viewer-pr-10", "zudo-history-stash-pr-3"], {
           page: 2,
+          perPage: 3,
+          totalCount: 5,
           totalPages: 2,
         }),
       },
@@ -296,6 +301,53 @@ describe("complete preview inventory", () => {
         ],
         /invalid worker entry/u,
       ],
+      [
+        "worker total-count drift",
+        [
+          {
+            path: "/workers/scripts-search?page=1&per_page=100",
+            response: workerPage(["zudo-history-stash-pr-1"], {
+              page: 1,
+              totalCount: 2,
+              totalPages: 2,
+            }),
+          },
+          {
+            path: "/workers/scripts-search?page=2&per_page=100",
+            response: workerPage(["zudo-history-stash-pr-2"], {
+              page: 2,
+              totalCount: 3,
+              totalPages: 2,
+            }),
+          },
+        ],
+        /total_count changed/u,
+      ],
+      [
+        "worker total-count truncation",
+        [
+          {
+            path: "/workers/scripts-search?page=1&per_page=100",
+            response: workerPage([], { totalCount: 1, totalPages: 0 }),
+          },
+        ],
+        /total_count did not match/u,
+      ],
+      [
+        "worker missing total-count",
+        [
+          {
+            path: "/workers/scripts-search?page=1&per_page=100",
+            response: cfSuccess([], {
+              count: 0,
+              page: 1,
+              per_page: 100,
+              total_pages: 0,
+            }),
+          },
+        ],
+        /omitted total_count/u,
+      ],
     ]) {
       const fetches = fetchFixture(expected);
       const reaper = createPreviewReaper({
@@ -319,6 +371,30 @@ describe("complete preview inventory", () => {
     });
     await assert.rejects(repeated.discover(), /repeated cursor/u);
     repeatedCursor.assertDone();
+
+    for (const [name, response, pattern] of [
+      ["missing buckets", cfSuccess({}, { per_page: 1_000 }), /invalid buckets/u],
+      ["missing result info", cfSuccess({ buckets: [] }, undefined), /invalid result_info/u],
+      ["null result info", cfSuccess({ buckets: [] }, null), /invalid result_info/u],
+      ["array result info", cfSuccess({ buckets: [] }, []), /invalid result_info/u],
+      [
+        "non-string cursor",
+        cfSuccess({ buckets: [] }, { cursor: 42, per_page: 1_000 }),
+        /non-string cursor/u,
+      ],
+    ]) {
+      const fetches = fetchFixture([
+        { path: "/workers/scripts-search?page=1&per_page=100", response: workerPage([]) },
+        { path: "/r2/buckets?per_page=1000", response },
+      ]);
+      const reaper = createPreviewReaper({
+        env: CF_ENV,
+        fetchImpl: fetches.fetchImpl,
+        runWrangler: async () => "[]",
+      });
+      await assert.rejects(reaper.discover(), pattern, name);
+      fetches.assertDone();
+    }
 
     const badD1Fetch = fetchFixture([
       { path: "/workers/scripts-search?page=1&per_page=100", response: workerPage([]) },
@@ -346,6 +422,23 @@ describe("complete preview inventory", () => {
       runWrangler: async () => JSON.stringify(databases),
     });
     await assert.rejects(reaper.discover(), /more than 256 candidates/u);
+    fetches.assertDone();
+  });
+
+  it("does not compare filtered Worker rows with the unfiltered total_count", async () => {
+    const name = "zudo-history-stash-pr-18";
+    const fetches = fetchFixture([
+      {
+        path: `/workers/scripts-search?name=${name}&page=1&per_page=100`,
+        response: workerPage([], { totalCount: 47, totalPages: 0 }),
+      },
+    ]);
+    const reaper = createPreviewReaper({
+      env: CF_ENV,
+      fetchImpl: fetches.fetchImpl,
+      runWrangler: async () => assert.fail("Wrangler must not run"),
+    });
+    assert.equal(await reaper.deleteWorkerVerified(name), "absent");
     fetches.assertDone();
   });
 });

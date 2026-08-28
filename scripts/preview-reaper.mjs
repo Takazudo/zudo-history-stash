@@ -166,10 +166,13 @@ function parseWorkerPage(response, requestedPage) {
       throw new Error("Cloudflare Worker search per_page exceeded the requested maximum");
     }
   }
-  if (info.total_count !== undefined) {
-    safeInteger(info.total_count, "Cloudflare Worker search total_count", { allowZero: true });
-  }
-  return { totalPages, workers };
+  const totalCount =
+    info.total_count === undefined
+      ? undefined
+      : safeInteger(info.total_count, "Cloudflare Worker search total_count", {
+          allowZero: true,
+        });
+  return { totalCount, totalPages, workers };
 }
 
 function parseD1Databases(result) {
@@ -195,10 +198,12 @@ function parseR2Buckets(result) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("Cloudflare R2 bucket list returned an invalid result");
   }
-  const buckets = result.buckets ?? [];
-  if (!Array.isArray(buckets)) throw new Error("Cloudflare R2 bucket list returned a non-array");
+  if (!Object.hasOwn(result, "buckets") || !Array.isArray(result.buckets)) {
+    throw new Error("Cloudflare R2 bucket list returned invalid buckets");
+  }
+  const buckets = result.buckets;
   return buckets.map((bucket) => {
-    if (!bucket || typeof bucket !== "object" || typeof bucket.name !== "string") {
+    if (!bucket || typeof bucket !== "object" || typeof bucket.name !== "string" || !bucket.name) {
       throw new Error("Cloudflare R2 bucket list returned an invalid bucket entry");
     }
     return bucket;
@@ -206,12 +211,18 @@ function parseR2Buckets(result) {
 }
 
 function nextR2Cursor(resultInfo, seen) {
-  if (resultInfo === undefined || resultInfo === null) return undefined;
-  if (typeof resultInfo !== "object" || Array.isArray(resultInfo)) {
+  if (!resultInfo || typeof resultInfo !== "object" || Array.isArray(resultInfo)) {
     throw new Error("Cloudflare R2 bucket list returned invalid result_info");
   }
+  if (resultInfo.per_page !== undefined) {
+    const perPage = safeInteger(resultInfo.per_page, "Cloudflare R2 bucket list per_page");
+    if (perPage > R2_PAGE_SIZE) {
+      throw new Error("Cloudflare R2 bucket list per_page exceeded the requested maximum");
+    }
+  }
+  if (!Object.hasOwn(resultInfo, "cursor")) return undefined;
   const cursor = resultInfo.cursor;
-  if (cursor === undefined || cursor === null || cursor === "") return undefined;
+  if (cursor === "") return undefined;
   if (typeof cursor !== "string") {
     throw new Error("Cloudflare R2 bucket list returned a non-string cursor");
   }
@@ -261,6 +272,7 @@ export function createPreviewReaper({
 
   async function listWorkers(name) {
     const workers = [];
+    let expectedTotalCount;
     let expectedTotalPages;
     for (let page = 1; ; page += 1) {
       const path = queryPath("/workers/scripts-search", [
@@ -273,8 +285,20 @@ export function createPreviewReaper({
       else if (parsed.totalPages !== expectedTotalPages) {
         throw new Error("Cloudflare Worker search total_pages changed during pagination");
       }
+      if (name === undefined) {
+        if (parsed.totalCount === undefined) {
+          throw new Error("Cloudflare Worker search omitted total_count during discovery");
+        }
+        if (expectedTotalCount === undefined) expectedTotalCount = parsed.totalCount;
+        else if (parsed.totalCount !== expectedTotalCount) {
+          throw new Error("Cloudflare Worker search total_count changed during pagination");
+        }
+      }
       workers.push(...parsed.workers);
       if (parsed.totalPages === 0 || page === parsed.totalPages) break;
+    }
+    if (name === undefined && workers.length !== expectedTotalCount) {
+      throw new Error("Cloudflare Worker search total_count did not match the complete result");
     }
     return workers;
   }
