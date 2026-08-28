@@ -1,0 +1,211 @@
+---
+title: UI の組み込み
+description: ルーティング、認証情報、ケイパビリティ、ライフサイクルの所有者を明示して、公開 UI コンポーネントをホストします。
+sidebar_position: 101
+category: guides
+---
+
+`@takazudo/zudo-history-stash-ui` が提供するのは React UI コンポーネントであり、アプリケーションシェルでは
+ありません。ルーティング、認証、Bearer トークンの保存、ログイン、Viewer のフラッシュ状態は管理しません。
+これらの境界はホストが所有し、事前に設定した `StashClient` を `StashUiProvider` へ渡します。
+
+## プロバイダーの境界を用意する
+
+プロバイダーは `client`、任意の `clientForSignal`、任意の `hrefFor`、任意の `Anchor` を受け取ります。公開
+`StashClient` インターフェースには `withSignal` がありません。キャンセル可能な読み取りが必要な場合は、
+`AbortSignal` に対して同等のクライアントを構築できるファクトリーを注入してください。
+
+パッケージのルート共用体に含まれるのは、正確に `home`、`stash`、`file`、`diff`、`edit`、`proposal`、
+`new-file`、`tokens` です。ホストは、これらのルート値を独自のルーターへ割り当てられます。ホストされた
+Viewer には提案一覧の URL がありますが、パッケージレベルの `proposals` ルート種別はありません。
+
+次の完全なホストコンポーネントは、プロバイダーの下に公開 `HistoryList` をマウントします。
+インポートには公開のパッケージルートだけを使っています。
+
+{/* zhs-example: ops-ui-host */}
+
+```tsx
+import type { HistoryPage, StashClient } from "@takazudo/zudo-history-stash";
+import {
+  defaultStashHrefFor,
+  HistoryList,
+  StashUiProvider,
+  type StashAnchorProps,
+  type StashHrefFor,
+} from "@takazudo/zudo-history-stash-ui";
+
+const hrefFor: StashHrefFor = (route) => `/operator${defaultStashHrefFor(route)}`;
+
+function Anchor({ children, href, ...props }: StashAnchorProps) {
+  return (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  );
+}
+
+export interface OpsHistoryHostProps {
+  client: StashClient;
+  clientForSignal: (signal: AbortSignal) => StashClient;
+  stash: string;
+  path: string;
+  page: HistoryPage;
+  onLoadMore: () => void;
+}
+
+export function OpsHistoryHost({
+  client,
+  clientForSignal,
+  stash,
+  path,
+  page,
+  onLoadMore,
+}: OpsHistoryHostProps) {
+  return (
+    <StashUiProvider
+      client={client}
+      clientForSignal={clientForSignal}
+      hrefFor={hrefFor}
+      Anchor={Anchor}
+    >
+      <HistoryList stash={stash} path={path} page={page} onLoadMore={onLoadMore} />
+    </StashUiProvider>
+  );
+}
+```
+
+プロバイダーは、認証済みクライアントの `/v1/me` レスポンスからケイパビリティを解決します。
+そのプリンシパルが未解決か切り替え中の間、ケイパビリティゲートは同期的にコントロールを拒否します。
+ルーティングや非表示のボタンが権限を与えることはありません。
+
+## 認証情報の消去を明示的に所有する
+
+認証情報に紐づくワークベンチのドラフトがプリンシパルをまたいではなりません。置換候補を先に検証し、
+`clearWorkbenchDraftsForCredentialChange()` でドラフトを消去し、永続化を確認してから有効にしてください。
+ログアウトまたは `401` の発生時には、ドラフトの消去と永続化した認証情報の削除をそれぞれ試みますが、
+現在のランタイムはどの場合でも無効にします。消去に失敗すると境界の状態が不確かになります。ユーザーが
+タブのサイトデータを消去するまで、その後の認証を遮断してください。
+
+{/* zhs-example: ops-ui-credential-boundary */}
+
+```ts
+import type { StashClient } from "@takazudo/zudo-history-stash";
+import { clearWorkbenchDraftsForCredentialChange } from "@takazudo/zudo-history-stash-ui";
+
+export type CredentialChangeResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "validation-failed"
+        | "draft-cleanup-failed"
+        | "persistence-failed"
+        | "site-data-clear-required";
+    };
+
+export interface CredentialBoundaryHost<Candidate> {
+  validate(candidate: Candidate): Promise<StashClient | null>;
+  persist(candidate: Candidate): boolean;
+  install(client: StashClient): void;
+  removePersisted(): boolean;
+  deactivate(): void;
+}
+
+export interface LogoutResult {
+  draftsCleared: boolean;
+  persistedCredentialRemoved: boolean;
+  runtimeDeactivated: boolean;
+  safeToAuthenticate: boolean;
+}
+
+function confirmed(operation: () => boolean): boolean {
+  try {
+    return operation();
+  } catch {
+    return false;
+  }
+}
+
+export function createCredentialBoundary<Candidate>(host: CredentialBoundaryHost<Candidate>) {
+  let siteDataClearRequired = false;
+
+  return {
+    async replace(candidate: Candidate): Promise<CredentialChangeResult> {
+      if (siteDataClearRequired) {
+        return { ok: false, reason: "site-data-clear-required" };
+      }
+
+      let client: StashClient | null;
+      try {
+        client = await host.validate(candidate);
+      } catch {
+        return { ok: false, reason: "validation-failed" };
+      }
+      if (client === null) return { ok: false, reason: "validation-failed" };
+
+      if (!confirmed(clearWorkbenchDraftsForCredentialChange)) {
+        siteDataClearRequired = true;
+        return { ok: false, reason: "draft-cleanup-failed" };
+      }
+      if (!confirmed(() => host.persist(candidate))) {
+        siteDataClearRequired = true;
+        return { ok: false, reason: "persistence-failed" };
+      }
+
+      try {
+        host.install(client);
+      } catch {
+        siteDataClearRequired = true;
+        confirmed(() => {
+          host.deactivate();
+          return true;
+        });
+        return { ok: false, reason: "site-data-clear-required" };
+      }
+      return { ok: true };
+    },
+
+    logout(): LogoutResult {
+      let draftsCleared = false;
+      let persistedCredentialRemoved = false;
+      let runtimeDeactivated = false;
+      try {
+        draftsCleared = confirmed(clearWorkbenchDraftsForCredentialChange);
+        persistedCredentialRemoved = confirmed(() => host.removePersisted());
+      } finally {
+        runtimeDeactivated = confirmed(() => {
+          host.deactivate();
+          return true;
+        });
+      }
+
+      const safeToAuthenticate = draftsCleared && persistedCredentialRemoved && runtimeDeactivated;
+      siteDataClearRequired ||= !safeToAuthenticate;
+      return {
+        draftsCleared,
+        persistedCredentialRemoved,
+        runtimeDeactivated,
+        safeToAuthenticate,
+      };
+    },
+  };
+}
+```
+
+遷移結果は、意図的に Bearer トークンを一切公開しません。実際の認証情報をログ、URL、分析、
+スクリーンショット、フィクスチャ、返却する表示状態に含めないでください。
+
+ブラウザーから直接接続する構成では、デフォルトで stash スコープの読み取り認証情報を使ってください。
+ホストが書き込みまたは管理者コントロールを意図的に提供する場合は、アクセス制御された信頼済みの
+オペレーター画面として運用します。管理者シークレットを静的アセットへ埋め込んではなりません。
+
+## スタイルを読み込み、ライブ更新のライフサイクルを所有する
+
+ホストのデザイントークン上書きを `@takazudo/zudo-history-stash-ui/styles.css` より先に読み込んでください。
+パッケージ同梱の `@takazudo/zudo-history-stash-ui/styles/tokens.example.css` は上書きの出発点としてだけ使い、
+別の正本となるトークン表として扱わないでください。
+
+アクティブな stash ごとに、可視性スコープのライブ購読を一つだけ管理し、正本と調整した更新内容と
+ステータスをコンシューマーへ分配してください。ウィジェットごとにストリームを開いてはなりません。
+イベントのパスと発生元の値は助言的です。正本となる変更フィードのリクエストまたは再取得の後にのみ、
+状態を適用してください。
