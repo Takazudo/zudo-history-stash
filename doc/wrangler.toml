@@ -1,0 +1,16 @@
+name = "zudo-history-stash-docs"
+main = "./dist/_worker.js"
+compatibility_date = "2026-08-25"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "404-page"
+run_worker_first = false
+
+[[routes]]
+pattern = "zudo-history-stash.zudolab.dev"
+custom_domain = true
