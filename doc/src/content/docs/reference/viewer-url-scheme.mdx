@@ -17,7 +17,7 @@ represents the file path; HTTP references use OpenAPI braces such as `{stash}` a
 | `/s/:stash/f/*` | Optional positive `version`. | Read. |
 | `/s/:stash/diff/*` | Positive `from` (default 1), positive `to` or `head`, and accepted `context`. | Read. |
 | `/s/:stash/edit/*` | Optional positive `from` source version. | Write. |
-| `/s/:stash/proposals` | `status=open|all` (default `open`), optional `path`. | Read; decisions are capability-gated. |
+| `/s/:stash/proposals` | `status=open` or `status=all` (default `open`), optional `path`. | Read; decisions are capability-gated. |
 | `/s/:stash/proposals/:id` | Immutable proposal ID. | Read; decision controls require write. |
 | `/s/:stash/new` | No query. | Write. |
 | `/s/:stash/tokens` | No query. | Admin. |
