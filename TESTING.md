@@ -214,6 +214,55 @@ in that run cannot be reclassified as provisioning skips.
 
 Use Chromium and title tags: `@smoke`, `@live`, `@local-only`, and `@flaky` (a flaky tag requires a linked issue). Keep a console-error fixture enabled, use reduced motion, and do not use `waitForTimeout` or `networkidle`. Mock API calls with `page.route('**/api/**')` in the mock lane.
 
+### Pull-request preview lane
+
+The pull-request preview is a real, isolated deployed L5 boundary. It is wiring evidence for the
+same read contract, not a replacement for unit/local tests, and it must never target production.
+Only same-repository PRs receive this lane; the workflow supplies its generated per-deployment
+admin credential without publishing it.
+
+Provisioning seeds the disposable `demo` stash through the Viewer proxy:
+
+```bash
+node scripts/seed-dev.mjs --base-url '<viewer>/api' --ci
+```
+
+`--ci` changes disclosure only: it suppresses the newly minted write-token log while preserving
+the same API calls, failure behavior, and idempotent existing-stash path. It is not permission to
+seed shared or production data. The workflow then runs the HTTP contract with
+`TEST_TIER=preview`, `API_BASE_URL=<viewer>/api`, and the generated admin token. The cross-tier
+health, identity, read, history, diff, change-feed, and SSE assertions run; every persisting case
+remains skipped by the existing tier fence. The one seed is acceptable because the complete
+per-PR database is isolated and disposable.
+
+Browser proof is opt-in through the `chromium-preview` project and its single `@preview` test in
+`preview.smoke.spec.ts`. It requires an external HTTPS `PW_BASE_URL` and the masked, generated
+stash-scoped read token in `PW_STASH_TOKEN`. The test uses real API and SSE traffic with the strict
+console-error fixture and no request mocks; it verifies the seeded guide and history and proves
+that edit/delete controls are absent while rollback controls are disabled. The default `chromium`
+mock project and `chromium-live` project both exclude this file and collect zero `@preview` tests.
+Missing or invalid preview URL/token configuration fails before collection instead of skipping
+green.
+
+To inspect the preview selection locally without starting a browser or contacting the example
+origin:
+
+```bash
+PW_PREVIEW=1 \
+PW_BASE_URL=https://viewer.example.invalid \
+PW_STASH_TOKEN=zhs_fixture \
+pnpm --filter zudo-history-stash-viewer exec playwright test \
+  --list --project=chromium-preview
+```
+
+This selects exactly one test in one file. Ordinary `pnpm b4push` includes the committed Worker
+build dry-runs, but it does not run this remote preview lane, the separately pinned
+actionlint/ShellCheck workflow gate, or the explicit PR-999 proof that generates both flattened
+configs and passes each to repository-pinned
+[Wrangler with `deploy --dry-run`](https://developers.cloudflare.com/workers/wrangler/commands/workers/#deploy).
+Record those lanes independently; see
+[Cloudflare setup](docs/cloudflare-setup.md#pull-request-previews).
+
 ### Local live topology and fixture
 
 Copy `workers/stash/.dev.vars.example` to `workers/stash/.dev.vars` before starting local Workers.
