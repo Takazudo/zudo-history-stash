@@ -35,8 +35,7 @@ function errorResponse(status: number, message: string, allow?: string): Respons
   return new Response(JSON.stringify({ error: message }), { status, headers });
 }
 
-function parseLifetimeMs(request: Request, fallback: string): number | null {
-  const value = request.headers.get(STASH_EVENTS_MAX_STREAM_MS_HEADER) ?? fallback;
+export function parseStashEventsLifetimeMs(value: string): number | null {
   if (!/^[1-9]\d*$/.test(value)) return null;
   const milliseconds = Number(value);
   return Number.isSafeInteger(milliseconds) && milliseconds <= MAX_TIMER_DELAY_MS
@@ -218,7 +217,9 @@ export class StashEvents extends DurableObject<Env> {
   }
 
   private subscribe(request: Request): Response {
-    const lifetimeMs = parseLifetimeMs(request, this.env.STASH_EVENTS_MAX_STREAM_MS);
+    const lifetimeMs = parseStashEventsLifetimeMs(
+      request.headers.get(STASH_EVENTS_MAX_STREAM_MS_HEADER) ?? this.env.STASH_EVENTS_MAX_STREAM_MS,
+    );
     if (lifetimeMs === null) return errorResponse(400, "Invalid stream lifetime.");
 
     if (this.subscribers.size >= MAX_SUBSCRIBERS) {
