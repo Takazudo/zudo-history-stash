@@ -1,0 +1,38 @@
+---
+title: トークン
+description: 作成、一覧、一度限りのローテーション、有効期限、失効です。
+sidebar_position: 130
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/tokens`
+
+**Contract:** operation `createToken`; principal `admin`; transport `any`.
+
+`read` または `write` token を、任意の label と、`expiresAt` または `ttlSeconds` のいずれかを指定して
+作成します。`201` を返します。ストレージには hash だけが保持されるため、`zhs_…` secret が現れるのは
+この response だけです。
+
+### `GET /v1/stashes/{stash}/tokens`
+
+**Contract:** operation `listTokens`; principal `admin`; transport `any`.
+
+rotation、revocation、expiry、last-use field を含む token metadata を新しい順で返しますが、secret は
+決して返しません。
+
+### `POST /v1/stashes/{stash}/tokens/{id}/rotate`
+
+**Contract:** operation `rotateToken`; principal `admin`; transport `any`.
+
+一つの後継を作成し、その一度限りの secret を `201` で返します。`graceSeconds` は前の token と重なる
+期間を制限し、任意の expiry override には作成時の規則が適用されます。rotation は一度限りです。同時実行
+では一つだけが成功し、後からの試行は `409 already-rotated`、期限切れの前 token は
+`409 token-expired` になります。response の secret を失った場合は、特定された後継を失効させて、別の
+token を作成してください。
+
+### `DELETE /v1/stashes/{stash}/tokens/{id}`
+
+**Contract:** operation `revokeToken`; principal `admin`; transport `any`.
+
+token の revocation timestamp を設定し、body なしの `204` を返します。その後、この認証情報では認証
+できません。未知の stash/token 組み合わせには `404` を返します。

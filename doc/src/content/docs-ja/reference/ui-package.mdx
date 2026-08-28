@@ -1,0 +1,63 @@
+---
+title: UI パッケージ
+description: Provider、hook、workflow、component、style 統合の契約です。
+sidebar_position: 40
+category: reference
+---
+
+`@takazudo/zudo-history-stash-ui` は React および React DOM 19 以降と一緒にインストールし、
+`@takazudo/zudo-history-stash-ui/styles.css` をホストアプリケーションで一度だけ import します。
+
+このパッケージには、provider、データとケイパビリティの hook、変更 workflow、組み立て済み component、
+低レベルの primitive が含まれます。ライブ変更の状態と indicator surface も含みますが、router、認証情報
+store、完全な application shell ではありません。
+
+## ホスト境界
+
+ホストは、認証済み client、中止 signal に紐づいた `clientForSignal` factory、`hrefFor` route 生成、
+`Anchor` adapter を提供します。また、認証情報の永続化と消去、route guard、未保存 draft の判断もホストが
+所有します。
+
+{/* zhs-example: reference-ui-provider */}
+
+```tsx
+import type { StashClient } from "@takazudo/zudo-history-stash";
+import {
+  StashUiProvider,
+  type StashAnchorProps,
+  type StashHrefFor,
+} from "@takazudo/zudo-history-stash-ui";
+import type { ReactNode } from "react";
+
+function Anchor({ href, ...props }: StashAnchorProps) {
+  return <a href={href} {...props} />;
+}
+
+export function ReferenceUiProvider({
+  children,
+  client,
+  clientForSignal,
+  hrefFor,
+}: {
+  children: ReactNode;
+  client: StashClient;
+  clientForSignal: (signal: AbortSignal) => StashClient;
+  hrefFor: StashHrefFor;
+}) {
+  return (
+    <StashUiProvider
+      Anchor={Anchor}
+      client={client}
+      clientForSignal={clientForSignal}
+      hrefFor={hrefFor}
+    >
+      {children}
+    </StashUiProvider>
+  );
+}
+```
+
+書き込み操作と管理操作を提示するかどうかは、ケイパビリティ hook で決めるべきです。route に紐づいた
+client を中止すると、不要になった読み取りを停止できます。認証情報の交換やログアウトでは、機密性のある
+draft と cache 状態も消去する必要があります。完全なホスト統合については、関連ページが揃った時点で、
+UI の埋め込みと認証情報境界に関する運用ガイドを参照してください。

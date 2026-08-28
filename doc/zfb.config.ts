@@ -1,9 +1,11 @@
 import { defineConfig } from "zfb/config";
 import { zudoDoc } from "@takazudo/zudo-doc/config";
+import { DEFAULT_LOCALE_ONLY_PREFIXES } from "./locale-contract.mjs";
 import { DOC_BASE_PATH } from "./src/data/site-paths.ts";
 
 const config = zudoDoc({
   base: DOC_BASE_PATH,
+  trailingSlash: false,
   themePack: "drift",
   siteName: "zudo-history-stash",
   siteUrl: "https://zudo-history-stash.zudolab.dev",
@@ -36,12 +38,7 @@ const config = zudoDoc({
     projectRoot: ".",
     scanRoot: "..",
   },
-  defaultLocaleOnlyPrefixes: [
-    "/docs/claude-md/",
-    "/docs/claude-skills/",
-    "/docs/claude-agents/",
-    "/docs/claude-commands/",
-  ],
+  defaultLocaleOnlyPrefixes: [...DEFAULT_LOCALE_ONLY_PREFIXES],
   footer: {
     links: [],
     copyright: "Copyright © 2026 Takeshi Takatsudo. Built with zudo-doc.",

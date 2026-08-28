@@ -1,0 +1,69 @@
+---
+title: Client パッケージ
+description: Fetch/RPC client、結果の境界、同一性、テスト支援です。
+sidebar_position: 30
+category: reference
+---
+
+パッケージルート `@takazudo/zudo-history-stash` は型付き client を構築します。転送方式は判別可能な
+選択肢です。HTTP ではベース URL と、必要に応じて互換性のある `fetch` を使用します。Worker 内から
+呼び出す場合は Cloudflare RPC binding を使用します。`stashEvents` は fetch 専用です。RPC client は、
+RPC 経由でストリーミングするふりをせず、その転送方式の制約を報告します。
+
+{/* zhs-example: reference-client-transports */}
+
+```ts
+import {
+  createStashClient,
+  type StashClient,
+  type StashFetch,
+  type StashRpcBinding,
+} from "@takazudo/zudo-history-stash";
+
+export function createFetchClient(options: {
+  baseUrl: string;
+  token: string;
+  clientId: string;
+  fetch?: StashFetch;
+}): StashClient {
+  return createStashClient({
+    baseUrl: options.baseUrl,
+    token: options.token,
+    clientId: options.clientId,
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+  });
+}
+
+export function createRpcClient(options: {
+  binding: StashRpcBinding;
+  token: string;
+  clientId: string;
+}): StashClient {
+  return createStashClient({
+    clientId: options.clientId,
+    transport: {
+      kind: "rpc",
+      binding: options.binding,
+      token: options.token,
+    },
+  });
+}
+```
+
+## 結果と失敗
+
+想定される業務上の 4xx レスポンスは型付きの結果値であるため、呼び出し側はエラーコードで分岐できます。
+転送の失敗、無効なサーバーデータ、5xx レスポンス、RPC 境界の失敗では reject されることがあります。
+アプリケーションのエラー処理には両方の分岐を残してください。
+
+安定した `clientId` は変更元を示し、ライブ利用側が自身の助言的イベントを抑制できるようにします。
+冪等性キーによって書き込みを安全に再試行できるのは、正規リクエストが変わらない場合だけです。stash ごとの
+client は、ファイル、履歴、提案、変更フィード、トークン、イベントの操作をまとめます。ライブ iterator の
+所有者がアンマウントされるか対象を変えた場合は、iterator を閉じるか中止してください。公開基底
+`StashClient` に `withSignal` メソッドはありません。サポートされる fetch オプションとイベント iterator の
+ライフサイクルを通じて中止処理を組み合わせてください。
+
+## テスト用エントリーポイント
+
+`@takazudo/zudo-history-stash/testing` は fake と conformance helper を提供します。これは決定論的な
+テスト支援であり、本番サーバー、Worker runtime、D1 emulator、R2 emulator ではありません。

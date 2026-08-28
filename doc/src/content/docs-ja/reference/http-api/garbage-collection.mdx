@@ -1,0 +1,28 @@
+---
+title: ガベージコレクション
+description: 上限と世代フェンスを備えた orphan/ledger maintenance です。
+sidebar_position: 160
+category: reference
+---
+
+### `POST /v1/admin/gc`
+
+**Contract:** operation `runGc`; principal `admin`; transport `any`.
+
+上限付きの `r2-orphans` または `ledger` page を一つ、任意の `dryRun`、`maxObjects`、kind に紐づいた
+opaque cursor とともに実行します。同期的に完了した実行結果を返します。`null` cursor は pass の完了を
+表し、その後に cursor なしで呼び出すと新しい pass が始まります。
+
+dry run は同じ五分間の世代フェンス付きリースを取得し、counter を記録しますが、削除や進捗の永続化は
+決して行いません。dry run でない実行者が heartbeat/finalize できるのは、現在のリースを所有している間
+だけです。アクティブな所有者がいる場合は `409 gc-busy` になります。R2 key と generation は response や
+log に決して公開しません。手動操作は dry run から始め、counter を確認してから、上限付きの非 dry-run
+page を実行してください。
+
+### `GET /v1/admin/gc/runs`
+
+**Contract:** operation `listGcRuns`; principal `admin`; transport `any`.
+
+必要に応じて kind で絞り込み、`limit` で上限を設けた実行 record を、決定論的な新しい順で返します。
+counter が表すのは要求された page だけです。呼び出しの安全予算が先に尽きると、`maxObjects` より少ない
+ところで停止することがあります。

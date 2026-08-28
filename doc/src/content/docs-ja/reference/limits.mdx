@@ -1,0 +1,35 @@
+---
+title: 上限
+description: Core が公開する正確な数値上限、単位、境界の意味です。
+sidebar_position: 70
+category: reference
+---
+
+正確な十進数の列は、ビルド済み Core パッケージが公開する有限な各数値に対して検査されます。人が読みやすい
+単位は、それらの byte、character、item、millisecond、day を置き換えるものではありません。
+
+## Public numeric exports
+
+| Constant | Exact decimal | Display | Meaning |
+| --- | ---: | ---: | --- |
+| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | 保存する UTF-8 テキスト本文の最大値。 |
+| `MAX_PATH_BYTES` | `512` | 512 bytes | 正規化された UTF-8 ファイルパスの最大値。 |
+| `MAX_META_BYTES` | `4096` | 4 KiB | encode 済み metadata payload の最大値。 |
+| `MAX_AUTHOR_BYTES` | `200` | 200 bytes | UTF-8 author 値の最大値。 |
+| `MAX_MESSAGE_BYTES` | `2000` | 2,000 bytes | UTF-8 message 値の最大値。 |
+| `LIST_LIMIT_DEFAULT` | `50` | 50 items | limit が指定されていない場合のデフォルト page size。 |
+| `LIST_LIMIT_MAX` | `200` | 200 items | 一般的な list page size の最大値。 |
+| `DIFF_MAX_BYTES` | `524288` | 512 KiB per side | diff の各 side に対する入力サイズの最大値。 |
+| `R2_SPILL_BYTES` | `524288` | 512 KiB | この境界以下の本文は inline に留まり、それより大きい本文は R2 へ退避します。 |
+| `DIFF_TIMEOUT_MS` | `2000` | 2 seconds | diff 計算の時間予算。 |
+| `DIFF_MAX_EDIT_LENGTH` | `50000` | 50,000 units | diff engine が考慮する edit span の最大値。 |
+| `DIFF_MAX_INTRALINE_LENGTH` | `800` | 800 units | intraline 処理における一行の長さの最大値。 |
+| `DIFF_MAX_INTRALINE_CHARS` | `200000` | 200,000 characters | intraline 処理全体の上限。 |
+| `IDEMPOTENCY_KEY_MAX_CHARS` | `200` | 200 characters | 冪等性キーの長さの最大値。 |
+| `IDEMPOTENCY_TTL_DAYS` | `7` | 7 days | 冪等性台帳の保持期間。 |
+| `BODY_LIMIT_BYTES` | `33554432` | 32 MiB | 保存テキストとは別の、encode 済み HTTP request body の上限。 |
+| `MAX_IMPORT_VERSIONS` | `20` | 20 versions | 一つの import request に含められる entry の最大数。 |
+
+ストレージの閾値と diff 入力上限は現在同じ数値ですが、別々の契約です。同様に、byte 上限は encode 済み
+byte 数を測る一方、冪等性キーの上限は character 数を数えます。呼び出し側は偶然一致する数値ではなく、
+名前で示された境界を適用する必要があります。

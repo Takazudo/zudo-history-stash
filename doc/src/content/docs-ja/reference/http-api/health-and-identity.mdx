@@ -1,0 +1,21 @@
+---
+title: ヘルスチェックと認証主体
+description: 公開ヘルスチェックと、認証済み principal の確認です。
+sidebar_position: 110
+category: reference
+---
+
+### `GET /v1/health`
+
+**Contract:** operation `health`; principal `open`; transport `any`.
+
+認証情報、body、query は不要です。正常な service は `200` とともに `ok: true`、service 名、安定した
+health marker を返します。network または infrastructure の失敗は route レベルの業務エラー契約の
+範囲外です。
+
+### `GET /v1/me`
+
+**Contract:** operation `me`; principal `any`; transport `any`.
+
+admin principal、または認証済み stash principal の情報（stash、token ID、scope、有効期限）を `200` で
+返します。無効な認証情報では `401`、read 分類の throttling では `429` とともに `Retry-After` を返します。
