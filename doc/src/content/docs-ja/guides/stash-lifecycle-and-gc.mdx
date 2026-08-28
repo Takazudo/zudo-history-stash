@@ -1,0 +1,93 @@
+---
+title: stash のライフサイクルと GC
+description: stash を論理削除および復元し、ページ分割された GC を安全に運用します。
+sidebar_position: 80
+category: guides
+---
+
+stash の削除は論理削除です。設定された復元期間中はデータが保持されますが、通常のルートでは
+存在が秘匿され、有効な stash トークンはすべて失効します。名前が解放されたり再利用されたりする
+ことはありません。期間内に復元すると、保存済みのファイルと履歴は維持されますが、認証情報は
+復活しません。復元後に新しいトークンを発行してください。
+
+コミット済みのデプロイ設定では、現在 `STASH_DELETE_GRACE_DAYS` が 30 に設定されています。
+レスポンスの `restoreUntil` を正しい期限として扱ってください。この設定は変更可能であり、永続的な
+プラットフォーム定数ではありません。不明な stash、live の stash、復元期限と同時か期限後の
+削除済み stash は、復元操作から意図的に区別できません。
+
+## GC の実行
+
+GC は管理者専用でページ分割され、種別ごとにフェンスされた lease で保護されます。`r2-orphans` は
+古くて参照されていない非公開オブジェクトを削除し、`ledger` は期限切れの冪等性行を削除します。
+種別ごとに関数を別々に実行してください。この関数は dry-run の全ページを完了し、呼び出し側が
+各ページのカウンターを確認できるようにしてから、live の削除を開始します。
+
+{/* zhs-example: consumer-gc */}
+
+```ts
+import {
+  createStashClient,
+  type GcKind,
+  type GcRunResult,
+  type StashClient,
+} from "@takazudo/zudo-history-stash";
+
+async function runPass(input: {
+  client: StashClient;
+  kind: GcKind;
+  dryRun: boolean;
+  maxObjects: number;
+  inspect: (page: GcRunResult) => void;
+}) {
+  let cursor: string | undefined;
+  do {
+    const result = await input.client.admin.gc.run({
+      kind: input.kind,
+      dryRun: input.dryRun,
+      maxObjects: input.maxObjects,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    if (!result.ok && result.error.code === "gc-busy") {
+      return { kind: "busy" as const };
+    }
+    if (!result.ok) {
+      return { kind: "failed" as const, failure: result };
+    }
+
+    input.inspect(result.value);
+    if (result.value.error !== null) {
+      return { kind: "failed-page" as const, error: result.value.error };
+    }
+    cursor = result.value.cursor ?? undefined;
+  } while (cursor !== undefined);
+
+  return { kind: "complete" as const };
+}
+
+export async function collectGarbageSafely(input: {
+  baseUrl: string;
+  adminToken: string;
+  kind: GcKind;
+  maxObjects: number;
+  inspect: (page: GcRunResult) => void;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.adminToken });
+  const dryRun = await runPass({ ...input, client, dryRun: true });
+  if (dryRun.kind !== "complete") {
+    return { phase: "dry-run" as const, outcome: dryRun };
+  }
+
+  const live = await runPass({ ...input, client, dryRun: false });
+  return { phase: "live" as const, outcome: live };
+}
+```
+
+返された cursor はすべて不透明で GC 種別に結び付いているものとして扱い、バイト単位で変更せずに
+渡し直してください。null の cursor で、その pass は完了です。`maxObjects` がそれより大きくても、
+R2 の各ページは 24 オブジェクトが上限ですが、入力には最大 500 を指定できます。成功レスポンスにも
+ページ単位の `error` が記録される場合があるため、続行する前に確認してください。
+
+`gc-busy` は、その種別を現在の別のフェンス済み lease が所有していることを意味します。迂回しようと
+せずに処理を停止し、後で再試行してください。dry-run も同じ lease を取得して実行履歴を記録しますが、
+データを削除したり進捗を永続化したりすることはありません。実行結果にもログにも、非公開 R2 のキーや
+generation は含まれません。

@@ -1,0 +1,62 @@
+---
+title: ストレージ階層と上限
+description: 公開テキストモデル、D1 と R2 への配置、整合性検証、各種上限を理解します。
+sidebar_position: 70
+category: guides
+---
+
+公開モデルが扱うのは、バージョン管理された正しい形式の UTF-8 テキストです。R2 への直接アクセス、
+バイナリストレージ、汎用ファイルシステムではありません。一つの本文には 5,000,000 UTF-8 バイト
+以下を含められます。この上限値自体も有効です。エンコード済み HTTP リクエスト全体は 32 MiB
+（33,554,432 バイト）以下です。JSON エンコード後のメタデータは 4,096 UTF-8 バイト、作成者は
+200 バイト、メッセージは 2,000 バイトに制限されます。
+
+524,288 バイト以下の本文は D1 にインラインで保存されます。それより大きなファイル本文と提案本文は、
+非公開のコンテンツアドレス方式 R2 オブジェクトを使用します。一方、head、履歴、ハッシュ、サイズ、
+オブジェクトポインターの正本は D1 のままです。読み取り時には、R2 オブジェクトをデコードする前に、
+raw バイト長と SHA-256 ハッシュを検証します。非公開オブジェクトのキーと generation が API
+レスポンスやログに現れることはありません。
+
+保存済み diff を利用できるのは、両側がそれぞれ 524,288 バイト以下の場合だけです。どちらかが
+大きい場合は、unified text の代わりに `oversized` の diff 結果が返ります。コンシューマーの
+インターフェースは、いずれかのストレージ階層ではなく、この公開結果に対応させてください。
+
+## 名前、パス、ページ
+
+stash 名は、小文字の ASCII 英字、数字、ハイフンからなる 1〜63 文字です。先頭は英字または数字で、
+アンダースコアや大文字を含められません。ファイルパスは最大 512 UTF-8 バイトです。スラッシュで
+区切られた各セグメントは、英字、数字、ドット、アンダースコア、ハイフンに一致する必要があり、
+空文字、`.`、`..` は使用できません。
+
+アプリケーションの入力を構築する前に、export された validator を使用してください。
+
+{/* zhs-example: consumer-path-validation */}
+
+```ts
+import { validatePath, validateStashName } from "@takazudo/zudo-history-stash";
+
+export function validateFileTarget(stash: string, path: string) {
+  const stashResult = validateStashName(stash);
+  if (!stashResult.ok) {
+    return { ok: false as const, field: "stash" as const, error: stashResult };
+  }
+
+  const pathResult = validatePath(path);
+  if (!pathResult.ok) {
+    return { ok: false as const, field: "path" as const, error: pathResult };
+  }
+
+  return { ok: true as const, stash, path };
+}
+```
+
+公開 wildcard 書き込みテンプレートは `PUT /v1/stashes/{stash}/files/{path}` です。ここで `{path}` は
+スラッシュで区切られた残りのセグメントをすべて取り込みます。`docs/guide.md` のような実際のパスは、
+そのスラッシュを維持し、`%2F` としてエンコードしてはいけません。OpenAPI 3.1 では複数セグメントの
+wildcard を完全には表現できないため、生成したクライアントがこの動作を維持していることを確認して
+ください。
+
+一覧操作はデフォルトで 50 件を返し、最大 200 件まで指定できます。200 より大きな値は検証エラーであり、
+ページを上限に丸めるリクエストではありません。返された cursor が null になるまで、各 cursor を
+たどってください。参照されなくなった大きな本文を意図的にクリーンアップする方法については、
+[stash のライフサイクルと GC](./stash-lifecycle-and-gc.mdx)を参照してください。
