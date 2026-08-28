@@ -196,7 +196,7 @@ describe("spilled file reads", () => {
       formatEtag({ version: 2, hash: headVersion.hash, deleted: false }),
     );
     expect(headResponse.headers.get("X-Stash-Version")).toBe("2");
-    await expect(headResponse.json()).resolves.toEqual({
+    await expect(headResponse.json()).resolves.toMatchObject({
       path: "exact.txt",
       version: 2,
       hash: headVersion.hash,
@@ -223,7 +223,7 @@ describe("spilled file reads", () => {
     );
     expect(versionResponse.headers.get("X-Stash-Version")).toBe("1");
     const historical = await versionResponse.json<Record<string, unknown>>();
-    expect(historical).toEqual({
+    expect(historical).toMatchObject({
       path: "exact.txt",
       version: 1,
       hash: oldVersion.hash,
@@ -239,7 +239,13 @@ describe("spilled file reads", () => {
     expect(historical.body?.toString().codePointAt(0)).toBe(0xfeff);
     expect(historical).not.toHaveProperty("r2_key");
     expect(historical).not.toHaveProperty("blob");
-    expect(historical).not.toHaveProperty("contentType");
+    expect(historical).toMatchObject({
+      representation: "text",
+      contentAccess: "inline",
+      contentType: "text/plain; charset=utf-8",
+      byteSize: oldVersion.size,
+      etag: oldVersion.hash,
+    });
     expect(versionCounts).toEqual({ get: 1, put: 0 });
   });
 
@@ -340,7 +346,7 @@ describe("metadata-first spilled diffs", () => {
 
     const response = await api("/diff/equal.txt?from=1&to=2", {}, read.bindings);
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    await expect(response.json()).resolves.toMatchObject({
       state: "same",
       from: { version: 1, hash: from.hash, deleted: false },
       to: { version: 2, hash: to.hash, deleted: false },
@@ -356,7 +362,7 @@ describe("metadata-first spilled diffs", () => {
 
     const response = await api("/diff/oversized.txt?from=1&to=2", {}, read.bindings);
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    await expect(response.json()).resolves.toMatchObject({
       state: "oversized",
       reason: "bytes",
       from: { version: 1, hash: from.hash, deleted: false },

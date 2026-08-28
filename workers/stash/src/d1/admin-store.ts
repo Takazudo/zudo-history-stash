@@ -22,6 +22,7 @@ import {
   type TokenRecord,
 } from "@takazudo/zudo-history-stash-core";
 import { mintToken, sha256Hex } from "../auth.js";
+import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
 import type { StashRow, TokenRow } from "./schema.js";
 
@@ -165,10 +166,14 @@ const CHANGES_ASC = `
     v.path,
     v.version,
     v.kind,
+    v.blob_hash AS hash,
     v.author,
     v.message,
     v.size_bytes AS size,
-    v.created_at
+    v.created_at,
+    v.content_type,
+    v.representation,
+    v.application_etag
   FROM versions AS v
   INNER JOIN stashes AS s ON s.name = v.stash_name AND s.deleted_at IS NULL
   WHERE v.id > ?
@@ -183,10 +188,14 @@ const CHANGES_BEFORE = `
     v.path,
     v.version,
     v.kind,
+    v.blob_hash AS hash,
     v.author,
     v.message,
     v.size_bytes AS size,
-    v.created_at
+    v.created_at,
+    v.content_type,
+    v.representation,
+    v.application_etag
   FROM versions AS v
   INNER JOIN stashes AS s ON s.name = v.stash_name AND s.deleted_at IS NULL
   WHERE v.id < ?
@@ -201,10 +210,14 @@ const CHANGES_NEWEST = `
     v.path,
     v.version,
     v.kind,
+    v.blob_hash AS hash,
     v.author,
     v.message,
     v.size_bytes AS size,
-    v.created_at
+    v.created_at,
+    v.content_type,
+    v.representation,
+    v.application_etag
   FROM versions AS v
   INNER JOIN stashes AS s ON s.name = v.stash_name AND s.deleted_at IS NULL
   ORDER BY v.id DESC
@@ -249,10 +262,14 @@ interface ChangeRow {
   path: string;
   version: number;
   kind: "put" | "delete" | "rollback";
+  hash: string | null;
   author: string;
   message: string;
   size: number;
   created_at: number;
+  content_type: string;
+  representation: "text" | "binary";
+  application_etag: string | null;
 }
 
 export interface AdminStoreDependencies {
@@ -423,7 +440,12 @@ function mapToken(row: TokenListRow): TokenRecord | null {
   };
 }
 
-function mapChange(row: ChangeRow): ChangeItem {
+function mapChange(row: ChangeRow, jsonInlineMaxBytes: number): ChangeItem {
+  const deleted = row.kind === "delete";
+  const etag = deleted ? null : (row.application_etag ?? row.hash);
+  if ((!deleted && (row.hash === null || etag !== row.hash)) || (deleted && row.hash !== null)) {
+    throw new StashError("internal", "Stored change metadata is invalid.");
+  }
   return {
     changeId: row.change_id,
     stash: row.stash,
@@ -434,6 +456,15 @@ function mapChange(row: ChangeRow): ChangeItem {
     message: row.message,
     size: row.size,
     createdAt: toIso(row.created_at),
+    representation: row.representation,
+    contentAccess: deleted
+      ? "deleted"
+      : row.representation === "text" && row.size <= jsonInlineMaxBytes
+        ? "inline"
+        : "raw",
+    contentType: row.content_type,
+    byteSize: row.size,
+    etag,
   };
 }
 
@@ -442,6 +473,7 @@ export function createAdminStore(
   dependencies: Partial<AdminStoreDependencies> = {},
 ): AdminStore {
   const deps = { ...defaultDependencies, ...dependencies };
+  const { jsonInlineMaxBytes } = parseBinarySettings(env);
 
   return {
     async listStashes(query) {
@@ -729,7 +761,7 @@ export function createAdminStore(
       const result = await statement.all<ChangeRow>();
       const hasMore = result.results.length > limit;
       const rows = result.results.slice(0, limit);
-      const changes = rows.map(mapChange);
+      const changes = rows.map((row) => mapChange(row, jsonInlineMaxBytes));
       if (since !== undefined) {
         return {
           changes,

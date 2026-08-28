@@ -865,7 +865,7 @@ describe("cross-stash changes", () => {
     expect(newest.changes.map(({ changeId }) => changeId)).toEqual(descending.slice(0, 2));
     expect(newest).toMatchObject({ nextBefore: descending[1], hasMore: true });
     expect(newest).not.toHaveProperty("nextSince");
-    expect(newest.changes[0]).toEqual({
+    expect(newest.changes[0]).toMatchObject({
       changeId: ids[4],
       stash: "alpha",
       path: "five.txt",
@@ -875,6 +875,11 @@ describe("cross-stash changes", () => {
       message: "message",
       size: 5,
       createdAt: new Date(5_000).toISOString(),
+      representation: "text",
+      contentAccess: "inline",
+      contentType: "text/plain; charset=utf-8",
+      byteSize: 5,
+      etag: "sha256-five.txt",
     });
 
     const olderResponse = await adminRequest(

@@ -17,19 +17,26 @@ export const SELECT_FILE_HEAD = `
     v.meta_json AS meta_json,
     v.created_at AS created_at,
     v.content_type AS content_type,
+    v.representation AS representation,
+    v.application_etag AS application_etag,
+    v.content_storage AS content_storage,
     CASE WHEN v.kind = 'delete' THEN 1 ELSE 0 END AS deleted,
-    b.hash AS blob_hash,
-    b.body AS blob_body,
-    b.r2_key AS blob_r2_key,
-    b.size_bytes AS blob_size
+    CASE v.content_storage WHEN 'legacy' THEN lb.hash ELSE bb.hash END AS stored_hash,
+    CASE v.content_storage WHEN 'legacy' THEN lb.size_bytes ELSE bb.size_bytes END AS stored_size,
+    CASE v.content_storage WHEN 'legacy' THEN lb.r2_key ELSE bb.r2_key END AS stored_r2_key
   FROM files AS f
   JOIN versions AS v
     ON v.stash_name = f.stash_name
    AND v.path = f.path
    AND v.version = f.head_version
-  LEFT JOIN blobs AS b
-    ON b.stash_name = v.stash_name
-   AND b.hash = v.blob_hash
+  LEFT JOIN blobs AS lb
+    ON v.content_storage = 'legacy'
+   AND lb.stash_name = v.stash_name
+   AND lb.hash = v.blob_hash
+  LEFT JOIN byte_blobs AS bb
+    ON v.content_storage = 'bytes'
+   AND bb.stash_name = v.stash_name
+   AND bb.hash = v.blob_hash
   WHERE f.stash_name = ?
     AND f.path = ?
   LIMIT 1
@@ -48,18 +55,25 @@ export const SELECT_FILE_VERSION = `
     v.meta_json AS meta_json,
     v.created_at AS created_at,
     v.content_type AS content_type,
+    v.representation AS representation,
+    v.application_etag AS application_etag,
+    v.content_storage AS content_storage,
     CASE WHEN v.kind = 'delete' THEN 1 ELSE 0 END AS deleted,
-    b.hash AS blob_hash,
-    b.body AS blob_body,
-    b.r2_key AS blob_r2_key,
-    b.size_bytes AS blob_size
+    CASE v.content_storage WHEN 'legacy' THEN lb.hash ELSE bb.hash END AS stored_hash,
+    CASE v.content_storage WHEN 'legacy' THEN lb.size_bytes ELSE bb.size_bytes END AS stored_size,
+    CASE v.content_storage WHEN 'legacy' THEN lb.r2_key ELSE bb.r2_key END AS stored_r2_key
   FROM files AS f
   JOIN versions AS v
     ON v.stash_name = f.stash_name
    AND v.path = f.path
-  LEFT JOIN blobs AS b
-    ON b.stash_name = v.stash_name
-   AND b.hash = v.blob_hash
+  LEFT JOIN blobs AS lb
+    ON v.content_storage = 'legacy'
+   AND lb.stash_name = v.stash_name
+   AND lb.hash = v.blob_hash
+  LEFT JOIN byte_blobs AS bb
+    ON v.content_storage = 'bytes'
+   AND bb.stash_name = v.stash_name
+   AND bb.hash = v.blob_hash
   WHERE f.stash_name = ?
     AND f.path = ?
     AND v.version = ?
@@ -73,7 +87,10 @@ export const SELECT_FILES = `
     f.head_hash AS hash,
     v.size_bytes AS size,
     f.deleted AS deleted,
-    f.updated_at AS updated_at
+    f.updated_at AS updated_at,
+    v.content_type AS content_type,
+    v.representation AS representation,
+    v.application_etag AS application_etag
   FROM files AS f
   JOIN versions AS v
     ON v.stash_name = f.stash_name
@@ -111,7 +128,10 @@ export const SELECT_HISTORY_VERSIONS = `
     v.author AS author,
     v.message AS message,
     v.meta_json AS meta_json,
-    v.created_at AS created_at
+    v.created_at AS created_at,
+    v.content_type AS content_type,
+    v.representation AS representation,
+    v.application_etag AS application_etag
   FROM versions AS v
   WHERE v.stash_name = ?
     AND v.path = ?
@@ -127,10 +147,14 @@ export const SELECT_CHANGES_ASC = `
     v.path AS path,
     v.version AS version,
     v.kind AS kind,
+    v.blob_hash AS hash,
     v.author AS author,
     v.message AS message,
     v.size_bytes AS size,
-    v.created_at AS created_at
+    v.created_at AS created_at,
+    v.content_type AS content_type,
+    v.representation AS representation,
+    v.application_etag AS application_etag
   FROM versions AS v
   WHERE v.stash_name = ?
     AND v.id > ?
@@ -145,10 +169,14 @@ export const SELECT_CHANGES_BEFORE = `
     v.path AS path,
     v.version AS version,
     v.kind AS kind,
+    v.blob_hash AS hash,
     v.author AS author,
     v.message AS message,
     v.size_bytes AS size,
-    v.created_at AS created_at
+    v.created_at AS created_at,
+    v.content_type AS content_type,
+    v.representation AS representation,
+    v.application_etag AS application_etag
   FROM versions AS v
   WHERE v.stash_name = ?
     AND v.id < ?
@@ -163,10 +191,14 @@ export const SELECT_CHANGES_NEWEST = `
     v.path AS path,
     v.version AS version,
     v.kind AS kind,
+    v.blob_hash AS hash,
     v.author AS author,
     v.message AS message,
     v.size_bytes AS size,
-    v.created_at AS created_at
+    v.created_at AS created_at,
+    v.content_type AS content_type,
+    v.representation AS representation,
+    v.application_etag AS application_etag
   FROM versions AS v
   WHERE v.stash_name = ?
   ORDER BY v.id DESC
@@ -185,11 +217,13 @@ export interface FileReadRow {
   meta_json: string;
   created_at: number;
   content_type: string;
+  representation: "text" | "binary";
+  application_etag: string | null;
+  content_storage: "legacy" | "bytes";
   deleted: number;
-  blob_hash: string | null;
-  blob_body: string | null;
-  blob_r2_key: string | null;
-  blob_size: number | null;
+  stored_hash: string | null;
+  stored_size: number | null;
+  stored_r2_key: string | null;
 }
 
 export interface FileSummaryRow {
@@ -199,6 +233,9 @@ export interface FileSummaryRow {
   size: number;
   deleted: number;
   updated_at: number;
+  content_type: string;
+  representation: "text" | "binary";
+  application_etag: string | null;
 }
 
 export interface HistoryHeadRow {
@@ -217,6 +254,9 @@ export interface HistoryVersionRow {
   message: string;
   meta_json: string;
   created_at: number;
+  content_type: string;
+  representation: "text" | "binary";
+  application_etag: string | null;
 }
 
 export interface ChangeRow {
@@ -225,8 +265,12 @@ export interface ChangeRow {
   path: string;
   version: number;
   kind: "put" | "delete" | "rollback";
+  hash: string | null;
   author: string;
   message: string;
   size: number;
   created_at: number;
+  content_type: string;
+  representation: "text" | "binary";
+  application_etag: string | null;
 }

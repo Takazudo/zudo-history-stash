@@ -121,7 +121,8 @@ export const fence = {
 };
 
 export const selectHeadForWrite = `
-  SELECT f.head_version, f.head_hash, f.deleted, v.kind, v.author, v.created_at
+  SELECT f.head_version, f.head_hash, f.deleted, v.kind, v.author, v.created_at,
+    v.representation, v.content_type
   FROM files f
   JOIN versions v ON v.stash_name = f.stash_name AND v.path = f.path
     AND v.version = f.head_version
@@ -131,7 +132,10 @@ export const selectHeadForWrite = `
 export const selectVersionMeta = `
   SELECT v.id, v.version, v.kind, v.blob_hash, v.size_bytes, v.content_type,
     v.rollback_of, v.author, v.message, v.meta_json, v.created_at,
-    previous.blob_hash AS previous_blob_hash
+    v.representation, v.application_etag, v.content_storage,
+    previous.blob_hash AS previous_blob_hash,
+    previous.representation AS previous_representation,
+    previous.content_type AS previous_content_type
   FROM versions v
   LEFT JOIN versions previous ON previous.stash_name = v.stash_name
     AND previous.path = v.path AND previous.version = v.version - 1
@@ -322,9 +326,13 @@ export function deleteBatch(db: Preparer, input: DeleteBatchInput): D1PreparedSt
       .prepare(
         `INSERT INTO versions
           (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-           rollback_of, author, message, meta_json, created_at)
-         SELECT ?, ?, ?, 'delete', NULL, 0, 'text/plain; charset=utf-8',
-           NULL, ?, ?, '{}', ? WHERE ${operationFence.sql}`,
+           rollback_of, author, message, meta_json, created_at,
+           representation, application_etag, content_storage)
+         SELECT ?, ?, ?, 'delete', NULL, 0, current.content_type,
+           NULL, ?, ?, '{}', ?, current.representation, NULL, current.content_storage
+         FROM versions AS current
+         WHERE current.stash_name = ? AND current.path = ? AND current.version = ?
+           AND ${operationFence.sql}`,
       )
       .bind(
         input.stash,
@@ -333,6 +341,9 @@ export function deleteBatch(db: Preparer, input: DeleteBatchInput): D1PreparedSt
         input.author,
         input.message,
         input.createdAt,
+        input.stash,
+        input.path,
+        input.expectedVersion,
         ...operationFence.params,
       ),
     ...ledgerStatement(db, input, version, operationFence),
@@ -371,9 +382,11 @@ export function rollbackBatch(db: Preparer, input: RollbackBatchInput): D1Prepar
       .prepare(
         `INSERT INTO versions
           (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-           rollback_of, author, message, meta_json, created_at)
+           rollback_of, author, message, meta_json, created_at,
+           representation, application_etag, content_storage)
          SELECT ?, ?, ?, 'rollback', target.blob_hash, target.size_bytes, target.content_type,
-           target.version, ?, COALESCE(NULLIF(?, ''), 'Rollback to v' || target.version), ?, ?
+           target.version, ?, COALESCE(NULLIF(?, ''), 'Rollback to v' || target.version), ?, ?,
+           target.representation, target.application_etag, target.content_storage
          FROM versions target
          WHERE target.stash_name = ? AND target.path = ? AND target.version = ?
            AND ${operationFence.sql}`,

@@ -105,15 +105,23 @@ describe("deleted stash concealment matrix", () => {
     const url = `http://stash.test${routePath(route)}`;
     const formerResponse = await request(app, url, routeInit(route, former.token));
     expect(formerResponse.status).toBe(401);
-    await expect(formerResponse.json()).resolves.toMatchObject({
-      error: { code: "unauthorized" },
-    });
+    if (route.method === "HEAD") {
+      await expect(formerResponse.text()).resolves.toBe("");
+    } else {
+      await expect(formerResponse.json()).resolves.toMatchObject({
+        error: { code: "unauthorized" },
+      });
+    }
 
     const otherResponse = await request(app, url, routeInit(route, other.token));
     expect(otherResponse.status).toBe(404);
-    await expect(otherResponse.json()).resolves.toMatchObject({
-      error: { code: "not-found" },
-    });
+    if (route.method === "HEAD") {
+      await expect(otherResponse.text()).resolves.toBe("");
+    } else {
+      await expect(otherResponse.json()).resolves.toMatchObject({
+        error: { code: "not-found" },
+      });
+    }
 
     const adminResponse = await request(app, url, routeInit(route, "test-admin"));
     const expected =
@@ -126,9 +134,13 @@ describe("deleted stash concealment matrix", () => {
             : 404;
     expect(adminResponse.status).toBe(expected);
     if (expected === 404) {
-      await expect(adminResponse.json()).resolves.toMatchObject({
-        error: { code: "not-found" },
-      });
+      if (route.method === "HEAD") {
+        await expect(adminResponse.text()).resolves.toBe("");
+      } else {
+        await expect(adminResponse.json()).resolves.toMatchObject({
+          error: { code: "not-found" },
+        });
+      }
     }
   });
 

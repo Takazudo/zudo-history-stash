@@ -1,6 +1,8 @@
 export type Representation = "text" | "binary";
 export type ContentAccess = "inline" | "raw" | "deleted";
 export type StorageTier = "d1" | "r2";
+/** Selects the immutable content table referenced by a version row. */
+export type ContentStorage = "legacy" | "bytes";
 export type UploadMode = "single" | "multipart";
 
 export interface ContentMetadata {
@@ -49,7 +51,15 @@ export interface ByteObject {
 
 /** Read seam shared by legacy TEXT, D1 BLOB, and private R2 implementations. */
 export interface ByteStorageReader {
-  get(input: { stash: string; hash: string; range?: ByteRange }): Promise<ByteObject | null>;
+  get(input: {
+    stash: string;
+    hash: string;
+    storage: ContentStorage;
+    size: number;
+    etag: string;
+    contentType: string;
+    range?: ByteRange;
+  }): Promise<ByteObject | null>;
 }
 
 export interface StagedByteObject {
