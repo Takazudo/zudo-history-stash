@@ -7,14 +7,12 @@ import ts from "typescript";
 
 const ID_PATTERN = /^(?:consumer|ops|reference)-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MARKER_PATTERN = /^\s*\{\/\*\s*zhs-example:\s*([^\s]+)\s*\*\/\}\s*$/;
-const TYPESCRIPT_FENCE_PATTERN = /^\s*(`{3,}|~{3,})(ts|typescript|tsx)(?:\s+.*)?$/i;
+const TYPESCRIPT_FENCE_PATTERN = /^\s*(`{3,}|~{3,})\s*(ts|typescript|tsx)(?:\s+.*)?$/i;
 const NESTED_TYPESCRIPT_FENCE_PATTERN =
-  /^\s*(?:>\s*|(?:[-+*]|\d+[.)])\s+)+(`{3,}|~{3,})(ts|typescript|tsx)(?:\s+.*)?$/i;
+  /^\s*(?:>\s*|(?:[-+*]|\d+[.)])\s+)+(`{3,}|~{3,})\s*(ts|typescript|tsx)(?:\s+.*)?$/i;
 const ANY_FENCE_PATTERN = /^\s*(`{3,}|~{3,})([^\s]*)?.*$/;
 const BYPASS_PATTERN =
-  /^\s*<(?:pre|code)\b|^\s*<(?:SourceCode|CodeSource|CodeInclude|CodeSnippet|SourceInclude|SnippetInclude|[A-Z][A-Za-z]*(?:Include|Snippet|Source)[A-Za-z]*)\b/;
-const INDENTED_CODE_PATTERN =
-  /^ {4}(?:import|export|const|let|var|function|class|interface|type)\b/;
+  /<\/?(?:pre|code)\b|<\/?(?:SourceCode|CodeSource|[A-Za-z][A-Za-z0-9]*(?:Include|Snippet|Source)[A-Za-z0-9]*)\b/i;
 
 export class ExampleCheckError extends Error {
   constructor(diagnostics) {
@@ -88,6 +86,18 @@ function sourceFor(id, language) {
   return `${id}.${language === "tsx" ? "tsx" : "ts"}`;
 }
 
+function isIndentedCode(line) {
+  if (line.trim() === "") return false;
+  let column = 0;
+  for (const character of line) {
+    if (character === " ") column += 1;
+    else if (character === "\t") column += 4 - (column % 4);
+    else break;
+    if (column >= 4) return true;
+  }
+  return false;
+}
+
 function parseMdx(path, body, locale, diagnostics) {
   const lines = body.replace(/\r\n?/g, "\n").split("\n");
   const uses = [];
@@ -129,10 +139,10 @@ function parseMdx(path, body, locale, diagnostics) {
         `${locale}: HTML example markers are not MDX-compatible at ${path}:${index + 1}; use {/* zhs-example: id */}`,
       );
     }
-    if (INDENTED_CODE_PATTERN.test(line)) {
+    if (isIndentedCode(line)) {
       addDiagnostic(
         diagnostics,
-        `${locale}: indented TypeScript-like code is not mapped at ${path}:${index + 1}`,
+        `${locale}: rendered indented code is not mapped at ${path}:${index + 1}`,
       );
     }
 

@@ -65,6 +65,18 @@ test("copyOpenApi keeps a good destination for missing or malformed sources", as
     await assert.rejects(copyOpenApi(paths), /not valid JSON/);
     assert.deepEqual(await readFile(paths.destination), VALID_OPENAPI);
   });
+
+  await t.test("empty metadata", async (t) => {
+    const paths = await fixture(t);
+    const malformed = Buffer.from(
+      `${JSON.stringify({ openapi: "3.1.0", info: { title: "   ", version: "1.0.0" }, paths: {} })}\n`,
+    );
+    await writeCanonical(paths, malformed);
+    await mkdir(join(paths.root, "public"), { recursive: true });
+    await writeFile(paths.destination, VALID_OPENAPI);
+    await assert.rejects(copyOpenApi(paths), /non-empty info\.title and info\.version/);
+    assert.deepEqual(await readFile(paths.destination), VALID_OPENAPI);
+  });
 });
 
 test("copyOpenApi cleans temporary files and preserves the destination when rename fails", async (t) => {

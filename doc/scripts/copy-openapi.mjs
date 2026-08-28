@@ -19,9 +19,9 @@ function validateOpenApi(bytes, source) {
     document.info === null ||
     typeof document.info !== "object" ||
     typeof document.info.title !== "string" ||
-    document.info.title.length === 0 ||
+    document.info.title.trim().length === 0 ||
     typeof document.info.version !== "string" ||
-    document.info.version.length === 0
+    document.info.version.trim().length === 0
   ) {
     throw new Error(`OpenAPI source must contain non-empty info.title and info.version: ${source}`);
   }

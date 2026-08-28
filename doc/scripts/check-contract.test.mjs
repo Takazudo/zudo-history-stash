@@ -213,6 +213,31 @@ test("OpenAPI drift is detected independently", async (t) => {
     value.options.openApi.paths["/v1/health"].get.operationId = "healthWrong";
     await expectDiagnostic(value.options, /openapi: GET \/v1\/health id must be health/);
   });
+
+  await t.test("non-string info title", async (t) => {
+    const value = await fixture(t);
+    value.options.openApi.info.title = { malformed: true };
+    await expectDiagnostic(value.options, /info\.title must be a non-empty string/);
+  });
+
+  await t.test("empty info version", async (t) => {
+    const value = await fixture(t);
+    value.options.openApi.info.version = "   ";
+    await expectDiagnostic(value.options, /info\.version must be a non-empty string/);
+  });
+
+  await t.test("uppercase standard method key", async (t) => {
+    const value = await fixture(t);
+    value.options.openApi.paths["/v1/health"].GET = value.options.openApi.paths["/v1/health"].get;
+    delete value.options.openApi.paths["/v1/health"].get;
+    await expectDiagnostic(value.options, /method key GET at \/v1\/health must be lowercase get/);
+  });
+
+  await t.test("explicit null transport", async (t) => {
+    const value = await fixture(t);
+    value.options.openApi.paths["/v1/health"].get["x-transport"] = null;
+    await expectDiagnostic(value.options, /operation health has unknown transport null/);
+  });
 });
 
 test("error rows are exact pairs in the dedicated visible section", async (t) => {
@@ -235,6 +260,64 @@ test("error rows are exact pairs in the dedicated visible section", async (t) =>
           "| `idempotency-key-reused` | `409` |",
         ),
       /error idempotency-key-reused value must be 422/,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const value = await fixture(t);
+      await mutate(value.reference("error-codes.mdx"), transform);
+      await expectDiagnostic(value.options, diagnostic);
+    });
+  }
+});
+
+test("error tables reject header, separator, malformed, extra, truncated, and raw-decimal drift", async (t) => {
+  for (const [name, transform, diagnostic] of [
+    [
+      "header",
+      (source) =>
+        source.replace(
+          "| Code | HTTP status | Meaning | Recovery |",
+          "| Wrong | Columns | Are | Accepted |",
+        ),
+      /error table header must be \| Code \| HTTP status \| Meaning \| Recovery \|/,
+    ],
+    [
+      "separator",
+      (source) => source.replace("| --- | ---: | --- | --- |", "| :---: | :---: | :---: | :---: |"),
+      /error table separator must be \| --- \| ---: \| --- \| --- \|/,
+    ],
+    [
+      "detached separator",
+      (source) => source.replace("| Code | HTTP status | Meaning | Recovery |\n", "$&\n"),
+      /error table separator must be \| --- \| ---: \| --- \| --- \|/,
+    ],
+    [
+      "malformed stale row",
+      (source) =>
+        source.replace(
+          "| `internal` | `500` |",
+          "| legacy-code | 418 | Stale rendered contract. | Do the wrong thing. |\n| `internal` | `500` |",
+        ),
+      /malformed error table row/,
+    ],
+    [
+      "extra strict row",
+      (source) =>
+        source.replace(
+          "| `internal` | `500` |",
+          "| `legacy-code` | `418` | Stale rendered contract. | Do the wrong thing. |\n| `internal` | `500` |",
+        ),
+      /unexpected error row legacy-code/,
+    ],
+    [
+      "truncated canonical row",
+      (source) => source.replace(/^\| `internal` .*$/m, "| `internal` | `500` |"),
+      /malformed error table row/,
+    ],
+    [
+      "raw status spelling",
+      (source) => source.replace("| `internal` | `500` |", "| `internal` | `0500` |"),
+      /error internal HTTP status must be spelled 500, received 0500/,
     ],
   ]) {
     await t.test(name, async (t) => {
@@ -268,6 +351,66 @@ test("limit rows preserve names, shared values, and exact decimals", async (t) =
       (source) =>
         source.replace("| `BODY_LIMIT_BYTES` | `33554432` |", "| `BODY_LIMIT_BYTES` | `32` |"),
       /limit BODY_LIMIT_BYTES value must be 33554432/,
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const value = await fixture(t);
+      await mutate(value.reference("limits.mdx"), transform);
+      await expectDiagnostic(value.options, diagnostic);
+    });
+  }
+});
+
+test("limit tables reject header, separator, malformed, extra, truncated, and raw-decimal drift", async (t) => {
+  for (const [name, transform, diagnostic] of [
+    [
+      "header",
+      (source) =>
+        source.replace(
+          "| Constant | Exact decimal | Display | Meaning |",
+          "| Wrong | Columns | Are | Accepted |",
+        ),
+      /limit table header must be \| Constant \| Exact decimal \| Display \| Meaning \|/,
+    ],
+    [
+      "separator",
+      (source) =>
+        source.replace("| --- | ---: | ---: | --- |", "| :---: | :---: | :---: | :---: |"),
+      /limit table separator must be \| --- \| ---: \| ---: \| --- \|/,
+    ],
+    [
+      "detached data rows",
+      (source) => source.replace("| --- | ---: | ---: | --- |\n", "$&\n"),
+      /malformed limit table row outside the contiguous table/,
+    ],
+    [
+      "malformed stale row",
+      (source) =>
+        source.replace(
+          "| `MAX_BODY_BYTES` | `5000000` |",
+          "| LEGACY_LIMIT | 123 | stale | Stale rendered contract. |\n| `MAX_BODY_BYTES` | `5000000` |",
+        ),
+      /malformed limit table row/,
+    ],
+    [
+      "extra strict row",
+      (source) =>
+        source.replace(
+          "| `MAX_BODY_BYTES` | `5000000` |",
+          "| `LEGACY_LIMIT` | `123` | stale | Stale rendered contract. |\n| `MAX_BODY_BYTES` | `5000000` |",
+        ),
+      /unexpected limit row LEGACY_LIMIT/,
+    ],
+    [
+      "truncated canonical row",
+      (source) => source.replace(/^\| `MAX_BODY_BYTES` .*$/m, "| `MAX_BODY_BYTES` | `5000000` |"),
+      /malformed limit table row/,
+    ],
+    [
+      "raw decimal spelling",
+      (source) =>
+        source.replace("| `MAX_BODY_BYTES` | `5000000` |", "| `MAX_BODY_BYTES` | `05000000` |"),
+      /limit MAX_BODY_BYTES exact decimal must be spelled 5000000, received 05000000/,
     ],
   ]) {
     await t.test(name, async (t) => {

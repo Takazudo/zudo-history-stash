@@ -4,7 +4,13 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const HTTP_METHODS = new Set(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"]);
+const OPENAPI_METHODS = new Map(
+  ["get", "post", "put", "delete", "patch", "head", "options", "trace"].map((method) => [
+    method,
+    method.toUpperCase(),
+  ]),
+);
+const HTTP_METHODS = new Set(OPENAPI_METHODS.values());
 const PRINCIPALS = new Set(["open", "any", "admin", "admin-or-stash", "read", "write"]);
 const TRANSPORTS = new Set(["any", "fetch-only"]);
 
@@ -194,8 +200,11 @@ function coreRouteMap(core, diagnostics) {
 
 function openApiRouteMap(openApi, diagnostics) {
   if (openApi?.openapi !== "3.1.0") diagnostics.add("openapi: document must declare 3.1.0");
-  if (!isObject(openApi?.info) || !openApi.info.title || !openApi.info.version) {
-    diagnostics.add("openapi: info.title and info.version must be non-empty");
+  for (const field of ["title", "version"]) {
+    const value = openApi?.info?.[field];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      diagnostics.add(`openapi: info.${field} must be a non-empty string`);
+    }
   }
   if (!isObject(openApi?.paths)) {
     diagnostics.add("openapi: paths must be an object");
@@ -212,8 +221,16 @@ function openApiRouteMap(openApi, diagnostics) {
       diagnostics.add(`openapi: public path uses invalid internal notation ${path}`);
     }
     for (const [rawMethod, operation] of Object.entries(pathItem)) {
-      const method = rawMethod.toUpperCase();
-      if (!HTTP_METHODS.has(method)) continue;
+      const method = OPENAPI_METHODS.get(rawMethod);
+      if (method === undefined) {
+        const canonicalMethod = rawMethod.toLocaleLowerCase("en-US");
+        if (OPENAPI_METHODS.has(canonicalMethod)) {
+          diagnostics.add(
+            `openapi: method key ${rawMethod} at ${path} must be lowercase ${canonicalMethod}`,
+          );
+        }
+        continue;
+      }
       if (!isObject(operation)) {
         diagnostics.add(`openapi: operation ${method} ${path} must be an object`);
         continue;
@@ -226,7 +243,7 @@ function openApiRouteMap(openApi, diagnostics) {
       if (operationIds.has(id)) diagnostics.add(`openapi: duplicate operation id ${id}`);
       operationIds.add(id);
       const principal = operation["x-principal"];
-      const transport = operation["x-transport"] ?? "any";
+      const transport = Object.hasOwn(operation, "x-transport") ? operation["x-transport"] : "any";
       if (!PRINCIPALS.has(principal)) {
         diagnostics.add(`openapi: operation ${id} has unknown principal ${principal}`);
       }
@@ -472,14 +489,27 @@ function coreErrorMap(core, diagnostics) {
 
 function parseStructuredRows(source, kind, locale, diagnostics) {
   const rows = new Map();
-  const sectionHeading = kind === "error" ? "## Code/status contract" : "## Public numeric exports";
+  const contract =
+    kind === "error"
+      ? {
+          sectionHeading: "## Code/status contract",
+          header: "| Code | HTTP status | Meaning | Recovery |",
+          separator: "| --- | ---: | --- | --- |",
+          row: /^\| `([a-z][a-z0-9-]*)` \| `([0-9]+)` \| (\S(?:[^|]*\S)?) \| (\S(?:[^|]*\S)?) \|$/,
+        }
+      : {
+          sectionHeading: "## Public numeric exports",
+          header: "| Constant | Exact decimal | Display | Meaning |",
+          separator: "| --- | ---: | ---: | --- |",
+          row: /^\| `([A-Z][A-Z0-9_]*)` \| `([0-9]+)` \| (\S(?:[^|]*\S)?) \| (\S(?:[^|]*\S)?) \|$/,
+        };
   const lines = visibleLines(source);
   const sectionIndexes = lines
-    .map((item, index) => (item.line === sectionHeading ? index : -1))
+    .map((item, index) => (item.line === contract.sectionHeading ? index : -1))
     .filter((index) => index >= 0);
   if (sectionIndexes.length !== 1) {
     diagnostics.add(
-      `${locale}: ${kind} table must have exactly one ${sectionHeading} section, received ${sectionIndexes.length}`,
+      `${locale}: ${kind} table must have exactly one ${contract.sectionHeading} section, received ${sectionIndexes.length}`,
     );
     return rows;
   }
@@ -491,19 +521,54 @@ function parseStructuredRows(source, kind, locale, diagnostics) {
       break;
     }
   }
-  const pattern =
-    kind === "error"
-      ? /^\|\s*`([a-z][a-z0-9-]*)`\s*\|\s*`([0-9]+)`\s*\|/
-      : /^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|\s*`([0-9]+)`\s*\|/;
-  for (const item of lines.slice(start, end)) {
-    const match = pattern.exec(item.line);
-    if (match === null) continue;
+  const section = lines.slice(start, end);
+  const headerIndex = section.findIndex((item) => item.line.trim() !== "");
+  if (headerIndex === -1) {
+    diagnostics.add(`${locale}: ${kind} table is missing its exact four-column header`);
+    diagnostics.add(`${locale}: discovered zero ${kind} rows`);
+    return rows;
+  }
+  const header = section[headerIndex];
+  if (header.line !== contract.header) {
+    diagnostics.add(
+      `${locale}: ${kind} table header must be ${contract.header}, received ${header.line} at line ${header.number}`,
+    );
+  }
+  const separatorIndex = headerIndex + 1;
+  const separator = section[separatorIndex];
+  if (separator === undefined || separator.line !== contract.separator) {
+    diagnostics.add(
+      `${locale}: ${kind} table separator must be ${contract.separator}, received ${separator?.line ?? "<missing>"} at line ${separator?.number ?? header.number + 1}`,
+    );
+  }
+
+  let tableEnded = false;
+  for (const item of section.slice(Math.min(separatorIndex + 1, section.length))) {
+    if (item.line.trim() === "") {
+      tableEnded = true;
+      continue;
+    }
+    if (tableEnded) {
+      if (item.line.trimStart().startsWith("|")) {
+        diagnostics.add(
+          `${locale}: malformed ${kind} table row outside the contiguous table at line ${item.number}`,
+        );
+      }
+      continue;
+    }
+    const match = contract.row.exec(item.line);
+    if (match === null) {
+      diagnostics.add(
+        `${locale}: malformed ${kind} table row at line ${item.number}; expected exactly four non-empty cells with backticked identity and decimal value`,
+      );
+      continue;
+    }
     const [, name, rawValue] = match;
     if (rows.has(name)) {
       diagnostics.add(`${locale}: duplicate ${kind} row ${name} at line ${item.number}`);
       continue;
     }
-    rows.set(name, Number(rawValue));
+    rows.set(name, { rawValue, value: Number(rawValue) });
   }
   if (rows.size === 0) diagnostics.add(`${locale}: discovered zero ${kind} rows`);
   return rows;
@@ -528,9 +593,17 @@ function comparePairs(expected, actual, label, kind, diagnostics) {
   for (const [name, value] of expected) {
     if (!actual.has(name)) {
       diagnostics.add(`${label}: missing ${kind} row ${name}`);
-    } else if (actual.get(name) !== value) {
+      continue;
+    }
+    const received = actual.get(name);
+    if (received.value !== value) {
       diagnostics.add(
-        `${label}: ${kind} ${name} value must be ${value}, received ${actual.get(name)}`,
+        `${label}: ${kind} ${name} value must be ${value}, received ${received.value}`,
+      );
+    } else if (received.rawValue !== String(value)) {
+      const field = kind === "error" ? "HTTP status" : "exact decimal";
+      diagnostics.add(
+        `${label}: ${kind} ${name} ${field} must be spelled ${value}, received ${received.rawValue}`,
       );
     }
   }

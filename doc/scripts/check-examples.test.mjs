@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -119,11 +119,23 @@ async function expectDiagnostic(options, pattern) {
 }
 
 test("production examples map every formatter-clean fence to public-dist TypeScript", async () => {
-  assert.deepEqual(await checkExamples({ repositoryRoot: REPOSITORY_ROOT }), {
-    examples: 2,
-    locales: ["en", "ja"],
-    sources: 2,
+  const examplesRoot = resolve(REPOSITORY_ROOT, "doc/examples-check");
+  const productionManifest = JSON.parse(
+    await readFile(resolve(examplesRoot, "manifest.json"), "utf8"),
+  );
+  assert.deepEqual(productionManifest.snippets["reference-client-transports"], {
+    source: "reference-client-transports.ts",
   });
+  assert.deepEqual(productionManifest.snippets["reference-ui-provider"], {
+    source: "reference-ui-provider.tsx",
+  });
+  const sourceCount = (await readdir(examplesRoot, { withFileTypes: true })).filter(
+    (entry) => entry.isFile() && /\.tsx?$/.test(entry.name),
+  ).length;
+  const result = await checkExamples({ repositoryRoot: REPOSITORY_ROOT });
+  assert.deepEqual(result.locales, ["en", "ja"]);
+  assert.equal(result.examples, Object.keys(productionManifest.snippets).length);
+  assert.equal(result.sources, sourceCount);
 });
 
 test("whitespace-only marker adjacency passes and intervening content fails", async (t) => {
@@ -160,8 +172,20 @@ test("unmapped fences and HTML markers cannot bypass the JSX marker contract", a
 
   await t.test("nested TypeScript fence", async (t) => {
     const value = await fixture(t);
-    await writeFile(join(value.en, "fixture.mdx"), `> \`\`\`ts\n> ${value.source}> \`\`\`\n`);
+    await writeFile(join(value.en, "fixture.mdx"), `> \`\`\` ts\n> ${value.source}> \`\`\`\n`);
     await expectDiagnostic(value.options, /nested TypeScript fences are not supported/);
+  });
+
+  await t.test("spaced backtick TypeScript fence", async (t) => {
+    const value = await fixture(t);
+    await writeFile(join(value.en, "bypass.mdx"), '\`\`\` ts\nconsole.log("sentinel");\n\`\`\`\n');
+    await expectDiagnostic(value.options, /missing an adjacent zhs-example marker/);
+  });
+
+  await t.test("spaced tilde TypeScript fence", async (t) => {
+    const value = await fixture(t);
+    await writeFile(join(value.en, "bypass.mdx"), '  ~~~ ts\nconsole.log("sentinel");\n  ~~~\n');
+    await expectDiagnostic(value.options, /missing an adjacent zhs-example marker/);
   });
 });
 
@@ -289,12 +313,22 @@ test("raw and hand-written include forms cannot evade the inventory", async (t) 
   for (const [name, payload, diagnostic] of [
     ["pre", "<pre>sentinel</pre>\n", /unsupported code\/include markup/],
     ["code", "<code>sentinel</code>\n", /unsupported code\/include markup/],
-    ["include", '<CodeInclude source="sentinel.ts" />\n', /unsupported code\/include markup/],
     [
-      "indented",
-      "    export const sentinel = true;\n",
-      /indented TypeScript-like code is not mapped/,
+      "nested raw markup",
+      "<div><pre><code>const sentinel = true;</code></pre></div>\n",
+      /unsupported code\/include markup/,
     ],
+    [
+      "embedded include",
+      '<Aside><CodeInclude source="sentinel.ts" /></Aside>\n',
+      /unsupported code\/include markup/,
+    ],
+    [
+      "general indented code",
+      '    console.log("sentinel");\n',
+      /rendered indented code is not mapped/,
+    ],
+    ["tab-indented code", '\tconsole.log("sentinel");\n', /rendered indented code is not mapped/],
   ]) {
     await t.test(name, async (t) => {
       const value = await fixture(t);
