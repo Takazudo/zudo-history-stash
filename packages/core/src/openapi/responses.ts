@@ -392,6 +392,18 @@ export const UploadCommitResultSchema = z.strictObject({
   createdAt: TimestampSchema,
 });
 
+export const UploadCompletionResultSchema = z.union([
+  UploadCommitResultSchema,
+  z.strictObject({
+    unchanged: z.literal(true),
+    version: z.number().int().positive(),
+    hash: HashSchema,
+    size: NonNegativeIntegerSchema,
+    representation: RepresentationSchema,
+    contentType: z.string(),
+  }),
+]);
+
 export const UploadPartRecordSchema = z.strictObject({
   partNumber: z.number().int().min(1).max(10_000),
   size: NonNegativeIntegerSchema,
@@ -431,7 +443,7 @@ export const UploadSessionRecordSchema = z.strictObject({
   uploadedHash: HashSchema.nullable(),
   finalizationLeaseOwner: z.string().nullable(),
   finalizationLeaseExpiresAt: TimestampSchema.nullable(),
-  result: UploadCommitResultSchema.nullable(),
+  result: UploadCompletionResultSchema.nullable(),
 });
 
 export const GetUploadSessionResultSchema = UploadSessionRecordSchema.extend({
@@ -660,7 +672,7 @@ export const RESPONSE_SCHEMAS = {
   ErrorResponse: ErrorResponseSchema,
   CreateUploadSessionResult: UploadSessionRecordSchema,
   GetUploadSessionResult: GetUploadSessionResultSchema,
-  CompleteUploadResult: UploadCommitResultSchema,
+  CompleteUploadResult: UploadCompletionResultSchema,
   AbortUploadResult: AbortUploadResultSchema,
   ListStashesResult: StashListResponseSchema,
   ListTokensResult: TokenListResponseSchema,

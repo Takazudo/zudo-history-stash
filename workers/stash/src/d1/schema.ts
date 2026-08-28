@@ -105,6 +105,11 @@ export interface UploadSessionRow {
   reservation_released_at: number | null;
   created_at: number;
   updated_at: number;
+  skip_if_unchanged: 0 | 1;
+  event_published_at: number | null;
+  event_publish_owner: string | null;
+  event_publish_until: number | null;
+  event_origin: string | null;
 }
 
 export interface UploadStagedBytesRow {
@@ -334,6 +339,11 @@ export const TABLE_COLUMNS = {
     "reservation_released_at",
     "created_at",
     "updated_at",
+    "skip_if_unchanged",
+    "event_published_at",
+    "event_publish_owner",
+    "event_publish_until",
+    "event_origin",
   ],
   upload_staged_bytes: [
     "session_id",

@@ -12,7 +12,15 @@ export type Principal =
       expiresAt: string | null;
     };
 
-export type AppDependencies = Pick<StoreDependencies, "now">;
+export type AppDependencies = Pick<StoreDependencies, "now" | "createId"> & {
+  uploadLeaseMs: number;
+  uploadHooks: {
+    afterStage?: () => void | Promise<void>;
+    duringFinalizing?: () => void | Promise<void>;
+    afterCommit?: () => void | Promise<void>;
+    beforeEventPublish?: () => void | Promise<void>;
+  };
+};
 
 export interface AppEnv {
   Bindings: Env;

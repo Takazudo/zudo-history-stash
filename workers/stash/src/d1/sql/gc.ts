@@ -118,6 +118,13 @@ export function finishRunBatch(db: Preparer, input: FinishRunInput): D1PreparedS
 
 export const selectReferencedR2Keys = `
   SELECT r2_key FROM blobs WHERE r2_key IN (__PLACEHOLDERS__)
+  UNION SELECT r2_key FROM byte_blobs WHERE r2_key IN (__PLACEHOLDERS__)
+  UNION SELECT objects.object_key AS r2_key
+    FROM upload_objects objects
+    JOIN upload_sessions sessions ON sessions.id = objects.session_id
+      AND sessions.attempt_generation = objects.generation
+    WHERE objects.object_key IN (__PLACEHOLDERS__)
+      AND sessions.state IN ('open','uploaded','finalizing')
 `;
 
 export const selectLedgerPage = `
