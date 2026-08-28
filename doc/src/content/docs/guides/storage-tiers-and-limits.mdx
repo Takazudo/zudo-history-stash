@@ -1,0 +1,59 @@
+---
+title: Storage Tiers and Limits
+description: Understand the public text model, D1 and R2 placement, integrity checks, and bounds.
+sidebar_position: 70
+category: guides
+---
+
+The public model is versioned, well-formed UTF-8 text. It is not direct R2 access, binary storage,
+or a general filesystem. One body may contain at most 5,000,000 UTF-8 bytes, inclusive; the complete
+encoded HTTP request may contain at most 32 MiB (33,554,432 bytes). Metadata is limited to 4,096
+UTF-8 bytes after JSON encoding, authors to 200 bytes, and messages to 2,000 bytes.
+
+Bodies of 524,288 bytes or less stay inline in D1. Larger file and proposal bodies use private,
+content-addressed R2 objects, while D1 remains authoritative for heads, history, hashes, sizes, and
+object pointers. Reads verify an R2 object's raw byte length and SHA-256 hash before decoding it.
+Private object keys and generations do not appear in API responses or logs.
+
+Stored diffs are available only when each side is at most 524,288 bytes. A larger side returns an
+`oversized` diff result instead of unified text. Link consumer interfaces to this public outcome,
+not to either storage tier.
+
+## Names, paths, and pages
+
+A stash name is 1–63 lowercase ASCII letters, digits, or hyphens, starts with a letter or digit, and
+cannot contain underscores or uppercase letters. A file path is at most 512 UTF-8 bytes. Each
+slash-delimited segment must match letters, digits, dot, underscore, or hyphen and cannot be empty,
+`.` or `..`.
+
+Use the exported validators before constructing application input:
+
+{/* zhs-example: consumer-path-validation */}
+
+```ts
+import { validatePath, validateStashName } from "@takazudo/zudo-history-stash";
+
+export function validateFileTarget(stash: string, path: string) {
+  const stashResult = validateStashName(stash);
+  if (!stashResult.ok) {
+    return { ok: false as const, field: "stash" as const, error: stashResult };
+  }
+
+  const pathResult = validatePath(path);
+  if (!pathResult.ok) {
+    return { ok: false as const, field: "path" as const, error: pathResult };
+  }
+
+  return { ok: true as const, stash, path };
+}
+```
+
+The public wildcard write template is `PUT /v1/stashes/{stash}/files/{path}`. Here `{path}` consumes
+all remaining slash-separated segments: a concrete path such as `docs/guide.md` keeps that slash and
+must not encode it as `%2F`. OpenAPI 3.1 cannot fully express a multi-segment wildcard, so confirm
+that any generated client preserves this behavior.
+
+List operations default to 50 items and accept at most 200. A value above 200 is a validation error,
+not a request to clamp the page. Follow each returned cursor until it is null. See
+[stash lifecycle and GC](./stash-lifecycle-and-gc.mdx) for deliberate cleanup of unreferenced large
+bodies.

@@ -1,0 +1,103 @@
+---
+title: Quickstart
+description: Create a fresh stash, append two versions, inspect them, and roll back safely.
+sidebar_position: 3
+category: getting-started
+---
+
+Run this function in a trusted server or Worker. Supply the deployed Stash Worker URL and its
+administrator token through that runtime's secret mechanism. The example generates a unique valid
+stash name, so it begins with an absent stash and an absent file path.
+
+The sequence constructs an administrator client, creates the stash, mints a one-hour write token,
+and immediately passes the one-time token secret into a write client without printing it. It then
+creates version 1 with the absent-path fence `expectedVersion: null`, creates version 2 with version
+1 as its fence, reads history, diffs the two versions, and appends a rollback to version 1 while
+fencing against version 2.
+
+{/* zhs-example: consumer-quickstart */}
+
+```ts
+import {
+  createStashClient,
+  type ClientResult,
+  validatePath,
+  validateStashName,
+} from "@takazudo/zudo-history-stash";
+
+function valueOf<T>(result: ClientResult<T>, step: string): T {
+  if (!result.ok) {
+    throw new Error(`${step} failed: ${result.error.code}`);
+  }
+  return result.value;
+}
+
+export async function runFreshStashQuickstart(input: { baseUrl: string; adminToken: string }) {
+  const admin = createStashClient({ baseUrl: input.baseUrl, token: input.adminToken });
+  const stash = `guide-${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
+  const path = "docs/guide.md";
+
+  if (!validateStashName(stash).ok || !validatePath(path).ok) {
+    throw new Error("The generated quickstart target is invalid.");
+  }
+
+  const created = valueOf(
+    await admin.stashes.create({ name: stash, description: "Fresh SDK quickstart" }),
+    "create stash",
+  );
+  const credential = valueOf(
+    await admin.stashes.tokens(stash).create({
+      label: "quickstart",
+      scope: "write",
+      ttlSeconds: 3_600,
+    }),
+    "create write token",
+  );
+
+  const writer = createStashClient({ baseUrl: input.baseUrl, token: credential.token });
+  const files = writer.files(stash);
+  const version1 = valueOf(
+    await files.put(path, {
+      body: "# Guide\n\nFirst version.\n",
+      expectedVersion: null,
+      message: "Create the guide",
+    }),
+    "write version 1",
+  );
+  const version2 = valueOf(
+    await files.put(path, {
+      body: "# Guide\n\nSecond version.\n",
+      expectedVersion: version1.version,
+      message: "Revise the guide",
+    }),
+    "write version 2",
+  );
+
+  const history = valueOf(await files.history(path), "read history");
+  const diff = valueOf(
+    await files.diff(path, { from: version1.version, to: version2.version }),
+    "diff versions",
+  );
+  const rollback = valueOf(
+    await files.rollback(path, {
+      toVersion: version1.version,
+      expectedVersion: version2.version,
+      message: "Restore the first version",
+    }),
+    "roll back",
+  );
+
+  return { created, history, diff, rollback };
+}
+```
+
+Every expected HTTP 4xx business outcome is a `ClientResult` value, so the example narrows `ok`
+before reading `value`. Network failures, response-parsing failures, and HTTP 500 responses instead
+throw `StashHttpError`. File reads have one additional success shape:
+`{ ok: true, notModified: true }`; check it before reading a file value when using
+`files.get()` with an ETag.
+
+The server never recycles a deleted stash name. Generate a new name for another run instead of
+treating creation with a fixed name as a reusable loop. Keep both administrator and returned token
+secrets out of logs and response bodies. For production conflict and retry decisions, continue with
+the [consumer write protocol](../guides/consumer-write-protocol.mdx).

@@ -1,0 +1,23 @@
+---
+title: Install
+description: Install the public client and place each credential in an appropriate runtime.
+sidebar_position: 2
+category: getting-started
+---
+
+Add the isomorphic client package with `pnpm add @takazudo/zudo-history-stash`. Import only from the
+package root; its public client and types work in Node.js, browser bundles, and Cloudflare Workers.
+See [versions](../reference/versions.mdx) for the repository's current Node.js, pnpm, and package
+requirements.
+
+Runtime support does not make every credential safe in every runtime. Keep the administrator token
+and stash-scoped write tokens in a trusted server or Worker secret. A browser-direct client should
+receive only a least-privilege read token, ideally with an expiry. Anyone who extracts a write token
+can replace, delete, or roll back every path in that stash.
+
+For a client that calls the public Worker URL, pass its base URL and a suitable token to
+`createStashClient`. Same-account Workers can avoid a public network hop with either a typed RPC
+binding or a fetch service binding; both still require authentication. See
+[Service bindings and RPC](../guides/service-binding-and-rpc.mdx).
+
+Continue with the [fresh-stash quickstart](./quickstart.mdx).

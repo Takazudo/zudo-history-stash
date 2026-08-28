@@ -1,0 +1,92 @@
+---
+title: Stash Lifecycle and Garbage Collection
+description: Soft-delete and restore stashes, then operate paged garbage collection safely.
+sidebar_position: 80
+category: guides
+---
+
+Deleting a stash is soft deletion: its data remains retained for a configured restoration window,
+but normal routes conceal it and all active stash tokens are revoked. The name is never released or
+recycled. Restoring within the window preserves the stored files and history but does not revive any
+credential, so mint a new token afterward.
+
+The committed deployment currently sets `STASH_DELETE_GRACE_DAYS` to 30. Treat the response's
+`restoreUntil` as the authoritative deadline; the setting is configurable and is not an eternal
+platform constant. An unknown stash, a live stash, and a deleted stash at or beyond its restoration
+deadline are intentionally indistinguishable to the restore operation.
+
+## Run garbage collection
+
+Garbage collection is administrator-only, paged, and protected by a fenced lease for each kind.
+`r2-orphans` removes old, unreferenced private objects; `ledger` removes expired idempotency rows.
+Run the function separately for each kind. It completes an entire dry pass, lets the caller inspect
+every page's counters, and only then begins live deletion.
+
+{/* zhs-example: consumer-gc */}
+
+```ts
+import {
+  createStashClient,
+  type GcKind,
+  type GcRunResult,
+  type StashClient,
+} from "@takazudo/zudo-history-stash";
+
+async function runPass(input: {
+  client: StashClient;
+  kind: GcKind;
+  dryRun: boolean;
+  maxObjects: number;
+  inspect: (page: GcRunResult) => void;
+}) {
+  let cursor: string | undefined;
+  do {
+    const result = await input.client.admin.gc.run({
+      kind: input.kind,
+      dryRun: input.dryRun,
+      maxObjects: input.maxObjects,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    if (!result.ok && result.error.code === "gc-busy") {
+      return { kind: "busy" as const };
+    }
+    if (!result.ok) {
+      return { kind: "failed" as const, failure: result };
+    }
+
+    input.inspect(result.value);
+    if (result.value.error !== null) {
+      return { kind: "failed-page" as const, error: result.value.error };
+    }
+    cursor = result.value.cursor ?? undefined;
+  } while (cursor !== undefined);
+
+  return { kind: "complete" as const };
+}
+
+export async function collectGarbageSafely(input: {
+  baseUrl: string;
+  adminToken: string;
+  kind: GcKind;
+  maxObjects: number;
+  inspect: (page: GcRunResult) => void;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.adminToken });
+  const dryRun = await runPass({ ...input, client, dryRun: true });
+  if (dryRun.kind !== "complete") {
+    return { phase: "dry-run" as const, outcome: dryRun };
+  }
+
+  const live = await runPass({ ...input, client, dryRun: false });
+  return { phase: "live" as const, outcome: live };
+}
+```
+
+Treat every returned cursor as opaque and bound to its GC kind; pass it back byte-for-byte. A null
+cursor completes that pass. An R2 page is capped at 24 objects even if `maxObjects` is larger, while
+the input accepts up to 500. A successful response can still record a page-level `error`, so inspect
+it before continuing.
+
+`gc-busy` means another current fenced lease owns that kind. Stop and retry later instead of trying
+to bypass it. Dry runs take the same lease and record runs but never delete data or persist progress.
+Neither run results nor logs expose private R2 keys or generations.
