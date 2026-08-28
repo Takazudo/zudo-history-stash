@@ -1,9 +1,16 @@
 export type RoutePrincipal = "open" | "any" | "admin" | "admin-or-stash" | "read" | "write";
-export type RouteMethod = "GET" | "POST" | "PUT" | "DELETE";
+export type RouteMethod = "GET" | "HEAD" | "POST" | "PUT" | "DELETE";
 export type RouteTransport = "any" | "fetch-only";
 
 export const ROUTES = [
   { id: "health", method: "GET", template: "/v1/health", principal: "open" },
+  {
+    id: "getCapabilities",
+    method: "GET",
+    template: "/v1/capabilities",
+    principal: "open",
+    transport: "fetch-only",
+  },
   { id: "me", method: "GET", template: "/v1/me", principal: "any" },
   { id: "listStashes", method: "GET", template: "/v1/stashes", principal: "admin" },
   { id: "createStash", method: "POST", template: "/v1/stashes", principal: "admin" },
@@ -114,6 +121,83 @@ export const ROUTES = [
     method: "GET",
     template: "/v1/stashes/:stash/changes",
     principal: "read",
+  },
+  {
+    id: "getRawFile",
+    method: "GET",
+    template: "/v1/stashes/:stash/raw/*path",
+    principal: "read",
+    transport: "fetch-only",
+  },
+  {
+    id: "headRawFile",
+    method: "HEAD",
+    template: "/v1/stashes/:stash/raw/*path",
+    principal: "read",
+    transport: "fetch-only",
+  },
+  {
+    id: "getRawVersion",
+    method: "GET",
+    template: "/v1/stashes/:stash/versions/:version/raw/*path",
+    principal: "read",
+    transport: "fetch-only",
+  },
+  {
+    id: "headRawVersion",
+    method: "HEAD",
+    template: "/v1/stashes/:stash/versions/:version/raw/*path",
+    principal: "read",
+    transport: "fetch-only",
+  },
+  {
+    id: "createUploadSession",
+    method: "POST",
+    template: "/v1/stashes/:stash/uploads/*path",
+    principal: "write",
+    transport: "fetch-only",
+  },
+  {
+    id: "getUploadSession",
+    method: "GET",
+    template: "/v1/stashes/:stash/uploads/:sessionId",
+    principal: "write",
+    transport: "fetch-only",
+  },
+  {
+    id: "abortUploadSession",
+    method: "DELETE",
+    template: "/v1/stashes/:stash/uploads/:sessionId",
+    principal: "write",
+    transport: "fetch-only",
+  },
+  {
+    id: "uploadSingleContent",
+    method: "PUT",
+    template: "/v1/stashes/:stash/uploads/:sessionId/content",
+    principal: "write",
+    transport: "fetch-only",
+  },
+  {
+    id: "uploadPart",
+    method: "PUT",
+    template: "/v1/stashes/:stash/uploads/:sessionId/parts/:partNumber",
+    principal: "write",
+    transport: "fetch-only",
+  },
+  {
+    id: "completeUploadSession",
+    method: "POST",
+    template: "/v1/stashes/:stash/uploads/:sessionId/complete",
+    principal: "write",
+    transport: "fetch-only",
+  },
+  {
+    id: "resumeUploadSession",
+    method: "POST",
+    template: "/v1/stashes/:stash/uploads/:sessionId/resume",
+    principal: "write",
+    transport: "fetch-only",
   },
 ] as const satisfies readonly {
   id: string;

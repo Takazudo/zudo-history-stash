@@ -22,6 +22,12 @@ const clientIdentityRouteIds = [
   "putFile",
   "deleteFile",
   "rollbackFile",
+  "createUploadSession",
+  "abortUploadSession",
+  "uploadSingleContent",
+  "uploadPart",
+  "completeUploadSession",
+  "resumeUploadSession",
 ] as const;
 
 describe("route contract coverage", () => {
@@ -91,6 +97,7 @@ describe("route contract coverage", () => {
   it("marks only errors that include the root-level current head", () => {
     const expected = {
       health: [],
+      getCapabilities: [],
       me: [],
       listStashes: [],
       createStash: [],
@@ -121,6 +128,17 @@ describe("route contract coverage", () => {
       getDiff: [],
       diffCandidate: [],
       getStashChanges: [],
+      getRawFile: [],
+      headRawFile: [],
+      getRawVersion: [],
+      headRawVersion: [],
+      createUploadSession: ["stale"],
+      getUploadSession: [],
+      uploadSingleContent: [],
+      uploadPart: [],
+      completeUploadSession: ["stale"],
+      resumeUploadSession: [],
+      abortUploadSession: [],
     } as const;
 
     for (const route of ROUTES) {
@@ -139,6 +157,16 @@ describe("route contract coverage", () => {
       for (const response of Object.values(contract.responses)) {
         expect(response?.headers, routeId).toContain("Idempotent-Replayed");
       }
+    }
+  });
+
+  it("pins raw upload request media independently from JSON schemas", () => {
+    for (const routeId of ["uploadSingleContent", "uploadPart"] as const) {
+      expect(ROUTE_CONTRACTS[routeId]).toMatchObject({
+        rawBody: true,
+        requestMediaType: "application/octet-stream",
+      });
+      expect("body" in ROUTE_CONTRACTS[routeId]).toBe(false);
     }
   });
 
@@ -185,13 +213,28 @@ describe("route contract coverage", () => {
     expect(contract.responses[304]?.example).toBeUndefined();
   });
 
-  it("marks only stash events fetch-only and declares its SSE contract", () => {
-    expect(
-      ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only").map(({ id }) => id),
-    ).toEqual(["stashEvents"]);
+  it("marks streaming and binary-contract routes fetch-only and declares SSE", () => {
+    const fetchOnly = ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only").map(
+      ({ id }) => id,
+    );
+    expect(fetchOnly).toEqual([
+      "getCapabilities",
+      "stashEvents",
+      "getRawFile",
+      "headRawFile",
+      "getRawVersion",
+      "headRawVersion",
+      "createUploadSession",
+      "getUploadSession",
+      "abortUploadSession",
+      "uploadSingleContent",
+      "uploadPart",
+      "completeUploadSession",
+      "resumeUploadSession",
+    ]);
     for (const route of ROUTES) {
       expect(transportForRoute(route.id), route.id).toBe(
-        route.id === "stashEvents" ? "fetch-only" : "any",
+        fetchOnly.includes(route.id) ? "fetch-only" : "any",
       );
       const contract = ROUTE_CONTRACTS[route.id];
       expect("transport" in contract ? contract.transport : "any", route.id).toBe(
@@ -237,6 +280,17 @@ describe("route contract coverage", () => {
       "getDiff",
       "diffCandidate",
       "getStashChanges",
+      "getRawFile",
+      "headRawFile",
+      "getRawVersion",
+      "headRawVersion",
+      "createUploadSession",
+      "getUploadSession",
+      "uploadSingleContent",
+      "uploadPart",
+      "completeUploadSession",
+      "resumeUploadSession",
+      "abortUploadSession",
     ]);
     for (const route of ROUTES) {
       const rateLimit = ROUTE_CONTRACTS[route.id].errors.find(

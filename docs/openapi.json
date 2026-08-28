@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "AbortUploadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "const": "aborted",
+            "type": "string"
+          }
+        },
+        "required": ["id", "state"],
+        "type": "object"
+      },
       "ApproveProposalResult": {
         "additionalProperties": false,
         "properties": {
@@ -38,6 +52,17 @@
             "properties": {
               "state": {
                 "const": "same",
+                "type": "string"
+              }
+            },
+            "required": ["state"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "binary",
                 "type": "string"
               }
             },
@@ -87,21 +112,184 @@
           }
         ]
       },
+      "CapabilitiesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "contentAccess": {
+            "prefixItems": [
+              {
+                "const": "inline",
+                "type": "string"
+              },
+              {
+                "const": "raw",
+                "type": "string"
+              },
+              {
+                "const": "deleted",
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "limits": {
+            "additionalProperties": false,
+            "properties": {
+              "d1InlineMaxBytes": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "diffMaxBytesPerSide": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "httpRequestMaxBytes": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "jsonInlineMaxBytes": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxFileBytes": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxMultipartParts": {
+                "const": 10000,
+                "type": "number"
+              },
+              "maxOpenUploadSessionsPerStash": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxReservedUploadBytesPerStash": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "multipartPartBytes": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "singleUploadMaxBytes": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "uploadSessionTtlSeconds": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "jsonInlineMaxBytes",
+              "d1InlineMaxBytes",
+              "httpRequestMaxBytes",
+              "singleUploadMaxBytes",
+              "maxFileBytes",
+              "diffMaxBytesPerSide",
+              "multipartPartBytes",
+              "maxMultipartParts",
+              "maxOpenUploadSessionsPerStash",
+              "maxReservedUploadBytesPerStash",
+              "uploadSessionTtlSeconds"
+            ],
+            "type": "object"
+          },
+          "representations": {
+            "prefixItems": [
+              {
+                "const": "text",
+                "type": "string"
+              },
+              {
+                "const": "binary",
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "storageTiers": {
+            "prefixItems": [
+              {
+                "const": "d1",
+                "type": "string"
+              },
+              {
+                "const": "r2",
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "transferModes": {
+            "prefixItems": [
+              {
+                "const": "json",
+                "type": "string"
+              },
+              {
+                "const": "single",
+                "type": "string"
+              },
+              {
+                "const": "multipart",
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          }
+        },
+        "required": ["representations", "contentAccess", "transferModes", "storageTiers", "limits"],
+        "type": "object"
+      },
       "ChangeItem": {
         "additionalProperties": false,
         "properties": {
           "author": {
             "type": "string"
           },
+          "byteSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
           "changeId": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },
+          "contentAccess": {
+            "enum": ["inline", "raw", "deleted"],
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
             "type": "string"
+          },
+          "etag": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "kind": {
             "enum": ["put", "delete", "rollback"],
@@ -111,6 +299,10 @@
             "type": "string"
           },
           "path": {
+            "type": "string"
+          },
+          "representation": {
+            "enum": ["text", "binary"],
             "type": "string"
           },
           "size": {
@@ -199,6 +391,52 @@
             "type": "object"
           }
         ]
+      },
+      "CompleteUploadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "changeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "hash": {
+            "pattern": "^sha256-[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
+          },
+          "size": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "hash",
+          "size",
+          "representation",
+          "contentType",
+          "changeId",
+          "createdAt"
+        ],
+        "type": "object"
       },
       "CreateStashResult": {
         "additionalProperties": false,
@@ -345,6 +583,205 @@
           }
         },
         "required": ["id", "label", "scope", "createdAt", "token", "expiresAt", "rotatedFrom"],
+        "type": "object"
+      },
+      "CreateUploadSessionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attemptGeneration": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "declaredHash": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "declaredSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expectedVersion": {
+            "oneOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "finalizationLeaseExpiresAt": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finalizationLeaseOwner": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": ["single", "multipart"],
+            "type": "string"
+          },
+          "partSize": {
+            "oneOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "principal": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "admin",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "stash",
+                    "type": "string"
+                  },
+                  "tokenId": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "tokenId"],
+                "type": "object"
+              }
+            ]
+          },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CompleteUploadResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stash": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "uploaded",
+              "finalizing",
+              "committed",
+              "aborted",
+              "expired",
+              "stale",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "storageTier": {
+            "enum": ["d1", "r2"],
+            "type": "string"
+          },
+          "uploadedHash": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "uploadedSize": {
+            "oneOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "stash",
+          "path",
+          "principal",
+          "state",
+          "expectedVersion",
+          "declaredSize",
+          "declaredHash",
+          "representation",
+          "contentType",
+          "mode",
+          "storageTier",
+          "partSize",
+          "expiresAt",
+          "attemptGeneration",
+          "uploadedSize",
+          "uploadedHash",
+          "finalizationLeaseOwner",
+          "finalizationLeaseExpiresAt",
+          "result"
+        ],
         "type": "object"
       },
       "CreatedToken": {
@@ -528,6 +965,17 @@
           {
             "additionalProperties": false,
             "properties": {
+              "state": {
+                "const": "binary",
+                "type": "string"
+              }
+            },
+            "required": ["state"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
               "reason": {
                 "enum": ["bytes", "complexity"],
                 "type": "string"
@@ -571,8 +1019,31 @@
       "DiffSide": {
         "additionalProperties": false,
         "properties": {
+          "byteSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contentAccess": {
+            "enum": ["inline", "raw", "deleted"],
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
           "deleted": {
             "type": "boolean"
+          },
+          "etag": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hash": {
             "oneOf": [
@@ -584,6 +1055,10 @@
                 "type": "null"
               }
             ]
+          },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
           },
           "version": {
             "maximum": 9007199254740991,
@@ -636,6 +1111,12 @@
               "payload-too-large",
               "idempotency-key-reused",
               "rollback-target-tombstone",
+              "unsupported-representation",
+              "upload-session-not-open",
+              "upload-session-expired",
+              "upload-size-mismatch",
+              "upload-hash-mismatch",
+              "range-not-satisfiable",
               "internal"
             ],
             "type": "string"
@@ -665,6 +1146,23 @@
       },
       "FileDiffResult": {
         "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "$ref": "#/components/schemas/DiffSide"
+              },
+              "state": {
+                "const": "binary",
+                "type": "string"
+              },
+              "to": {
+                "$ref": "#/components/schemas/DiffSide"
+              }
+            },
+            "required": ["state", "from", "to"],
+            "type": "object"
+          },
           {
             "additionalProperties": false,
             "properties": {
@@ -776,6 +1274,18 @@
               }
             ]
           },
+          "byteSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contentAccess": {
+            "enum": ["inline", "raw", "deleted"],
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
@@ -783,6 +1293,17 @@
           },
           "deleted": {
             "type": "boolean"
+          },
+          "etag": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hash": {
             "oneOf": [
@@ -814,6 +1335,10 @@
           "path": {
             "type": "string"
           },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
+          },
           "size": {
             "maximum": 9007199254740991,
             "minimum": 0,
@@ -843,8 +1368,31 @@
       "FileSummary": {
         "additionalProperties": false,
         "properties": {
+          "byteSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contentAccess": {
+            "enum": ["inline", "raw", "deleted"],
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
           "deleted": {
             "type": "boolean"
+          },
+          "etag": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hash": {
             "oneOf": [
@@ -863,6 +1411,10 @@
             "type": "integer"
           },
           "path": {
+            "type": "string"
+          },
+          "representation": {
+            "enum": ["text", "binary"],
             "type": "string"
           },
           "size": {
@@ -988,6 +1540,23 @@
                 "$ref": "#/components/schemas/DiffSide"
               },
               "state": {
+                "const": "binary",
+                "type": "string"
+              },
+              "to": {
+                "$ref": "#/components/schemas/DiffSide"
+              }
+            },
+            "required": ["state", "from", "to"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "$ref": "#/components/schemas/DiffSide"
+              },
+              "state": {
                 "const": "same",
                 "type": "string"
               },
@@ -1069,6 +1638,18 @@
               }
             ]
           },
+          "byteSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contentAccess": {
+            "enum": ["inline", "raw", "deleted"],
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
@@ -1076,6 +1657,17 @@
           },
           "deleted": {
             "type": "boolean"
+          },
+          "etag": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hash": {
             "oneOf": [
@@ -1105,6 +1697,10 @@
             "type": "object"
           },
           "path": {
+            "type": "string"
+          },
+          "representation": {
+            "enum": ["text", "binary"],
             "type": "string"
           },
           "size": {
@@ -1271,6 +1867,234 @@
           "deletedAt",
           "restoreUntil",
           "restorable"
+        ],
+        "type": "object"
+      },
+      "GetUploadSessionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "attemptGeneration": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "declaredHash": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "declaredSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expectedVersion": {
+            "oneOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "finalizationLeaseExpiresAt": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finalizationLeaseOwner": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": ["single", "multipart"],
+            "type": "string"
+          },
+          "partSize": {
+            "oneOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "etag": {
+                  "type": "string"
+                },
+                "generation": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "partNumber": {
+                  "maximum": 10000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "size": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": ["partNumber", "size", "generation", "etag"],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "principal": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "admin",
+                    "type": "string"
+                  }
+                },
+                "required": ["kind"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "stash",
+                    "type": "string"
+                  },
+                  "tokenId": {
+                    "type": "string"
+                  }
+                },
+                "required": ["kind", "tokenId"],
+                "type": "object"
+              }
+            ]
+          },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CompleteUploadResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stash": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "uploaded",
+              "finalizing",
+              "committed",
+              "aborted",
+              "expired",
+              "stale",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "storageTier": {
+            "enum": ["d1", "r2"],
+            "type": "string"
+          },
+          "uploadedHash": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "uploadedSize": {
+            "oneOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "stash",
+          "path",
+          "principal",
+          "state",
+          "expectedVersion",
+          "declaredSize",
+          "declaredHash",
+          "representation",
+          "contentType",
+          "mode",
+          "storageTier",
+          "partSize",
+          "expiresAt",
+          "attemptGeneration",
+          "uploadedSize",
+          "uploadedHash",
+          "finalizationLeaseOwner",
+          "finalizationLeaseExpiresAt",
+          "result",
+          "parts"
         ],
         "type": "object"
       },
@@ -1590,6 +2414,79 @@
               },
               "state": {
                 "const": "same",
+                "type": "string"
+              }
+            },
+            "required": ["state", "base", "candidate", "current", "stale"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "base": {
+                "additionalProperties": false,
+                "properties": {
+                  "deleted": {
+                    "type": "boolean"
+                  },
+                  "hash": {
+                    "oneOf": [
+                      {
+                        "pattern": "^sha256-[0-9a-f]{64}$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "version": {
+                    "oneOf": [
+                      {
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": ["version", "hash", "deleted"],
+                "type": "object"
+              },
+              "candidate": {
+                "additionalProperties": false,
+                "properties": {
+                  "hash": {
+                    "pattern": "^sha256-[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["hash", "size"],
+                "type": "object"
+              },
+              "current": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Current"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stale": {
+                "type": "boolean"
+              },
+              "state": {
+                "const": "binary",
                 "type": "string"
               }
             },
@@ -2237,14 +3134,26 @@
       "RollbackResult": {
         "additionalProperties": false,
         "properties": {
+          "byteSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
           "changeId": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },
+          "contentType": {
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "etag": {
+            "pattern": "^sha256-[0-9a-f]{64}$",
             "type": "string"
           },
           "hash": {
@@ -2253,6 +3162,10 @@
           },
           "identicalToHead": {
             "type": "boolean"
+          },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
           },
           "rollbackOf": {
             "maximum": 9007199254740991,
@@ -2815,10 +3728,33 @@
           "author": {
             "type": "string"
           },
+          "byteSize": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contentAccess": {
+            "enum": ["inline", "raw", "deleted"],
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
             "type": "string"
+          },
+          "etag": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hash": {
             "oneOf": [
@@ -2846,6 +3782,10 @@
               "type": "string"
             },
             "type": "object"
+          },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
           },
           "rollbackOf": {
             "oneOf": [
@@ -3093,6 +4033,57 @@
         },
         "summary": "List garbage-collection runs",
         "x-principal": "admin"
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "description": "Publishes authoritative exact-content byte limits. The HTTP request ceiling is operator supplied; it is not inferred from the Worker plan.\n\nopen; no capability or token is required.",
+        "operationId": "getCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "contentAccess": ["inline", "raw", "deleted"],
+                  "limits": {
+                    "d1InlineMaxBytes": 524288,
+                    "diffMaxBytesPerSide": 524288,
+                    "httpRequestMaxBytes": 100000000,
+                    "jsonInlineMaxBytes": 5000000,
+                    "maxFileBytes": 100000000,
+                    "maxMultipartParts": 10000,
+                    "maxOpenUploadSessionsPerStash": 8,
+                    "maxReservedUploadBytesPerStash": 500000000,
+                    "multipartPartBytes": 8388608,
+                    "singleUploadMaxBytes": 33554432,
+                    "uploadSessionTtlSeconds": 86400
+                  },
+                  "representations": ["text", "binary"],
+                  "storageTiers": ["d1", "r2"],
+                  "transferModes": ["json", "single", "multipart"]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            },
+            "description": "The server's binary and large-object capabilities."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "security": [],
+        "summary": "Get server capabilities",
+        "x-principal": "open",
+        "x-transport": "fetch-only"
       }
     },
     "/v1/changes": {
@@ -4354,6 +5345,16 @@
             },
             "description": "Errors: `payload-too-large`."
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unsupported-representation`."
+          },
           "429": {
             "content": {
               "application/json": {
@@ -4428,14 +5429,14 @@
             "description": "A Server-Sent Events stream of ready, change, proposal, and reconnect events.",
             "headers": {
               "Cache-Control": {
-                "description": "Disables storage of the live stream response.",
+                "description": "Response cache policy.",
                 "schema": {
                   "const": "no-store",
                   "type": "string"
                 }
               },
               "X-Accel-Buffering": {
-                "description": "Disables reverse-proxy response buffering.",
+                "description": "Reverse-proxy response buffering policy.",
                 "schema": {
                   "const": "no",
                   "type": "string"
@@ -4697,7 +5698,7 @@
             "description": "The requested file record.",
             "headers": {
               "ETag": {
-                "description": "Entity tag for this exact file version.",
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
                 "schema": {
                   "type": "string"
                 }
@@ -4714,7 +5715,7 @@
             "description": "The requested representation has not changed; the response has no body.",
             "headers": {
               "ETag": {
-                "description": "Entity tag for this exact file version.",
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
                 "schema": {
                   "type": "string"
                 }
@@ -5433,6 +6434,16 @@
             },
             "description": "Errors: `payload-too-large`."
           },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unsupported-representation`."
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5794,7 +6805,7 @@
                 }
               }
             },
-            "description": "Errors: `idempotency-key-reused`."
+            "description": "Errors: `idempotency-key-reused`, `unsupported-representation`."
           },
           "429": {
             "content": {
@@ -6435,6 +7446,530 @@
         },
         "summary": "Reject a proposal",
         "x-principal": "write"
+      }
+    },
+    "/v1/stashes/{stash}/raw/{path}": {
+      "get": {
+        "description": "Streams the current version's exact bytes using the application SHA-256 ETag.\n\nread; administrator or a matching read/write stash token.\n\nThe path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+        "operationId": "getRawFile",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A non-empty slash-separated path whose segments contain only ASCII letters, digits, dots, underscores, or hyphens and are neither dot nor dot-dot; maximum 512 UTF-8 bytes. The path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-wildcard": true
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Complete content.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "206": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "One byte range.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The ETag matched.",
+            "headers": {
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `invalid-path`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`, `file-deleted`."
+          },
+          "416": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `range-not-satisfiable`.",
+            "headers": {
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Download current raw content",
+        "x-principal": "read",
+        "x-transport": "fetch-only",
+        "x-wildcard": true
+      },
+      "head": {
+        "description": "Returns the same status and metadata headers as current raw GET without a body.\n\nread; administrator or a matching read/write stash token.\n\nThe path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+        "operationId": "headRawFile",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A non-empty slash-separated path whose segments contain only ASCII letters, digits, dots, underscores, or hyphens and are neither dot nor dot-dot; maximum 512 UTF-8 bytes. The path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-wildcard": true
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete content metadata.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Range metadata.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The ETag matched.",
+            "headers": {
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `invalid-path`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`, `file-deleted`."
+          },
+          "416": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `range-not-satisfiable`.",
+            "headers": {
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Inspect current raw content",
+        "x-principal": "read",
+        "x-transport": "fetch-only",
+        "x-wildcard": true
       }
     },
     "/v1/stashes/{stash}/restore": {
@@ -7168,6 +8703,1975 @@
         },
         "summary": "Rotate a stash token",
         "x-principal": "admin"
+      }
+    },
+    "/v1/stashes/{stash}/uploads/{path}": {
+      "post": {
+        "description": "Reserves declared exact content bytes and chooses single or multipart transfer plus D1 or R2 staging. Repeating the same idempotency fingerprint replays the session.\n\nwrite; administrator or a matching write stash token.\n\nThe path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+        "operationId": "createUploadSession",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A non-empty slash-separated path whose segments contain only ASCII letters, digits, dots, underscores, or hyphens and are neither dot nor dot-dot; maximum 512 UTF-8 bytes. The path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-wildcard": true
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "contentType": {
+                    "type": "string"
+                  },
+                  "expectedVersion": {
+                    "oneOf": [
+                      {
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "hash": {
+                    "pattern": "^sha256-[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "default": "auto",
+                    "enum": ["auto", "single", "multipart"],
+                    "type": "string"
+                  },
+                  "representation": {
+                    "enum": ["text", "binary"],
+                    "type": "string"
+                  },
+                  "resumable": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "size": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["expectedVersion", "size", "representation", "contentType"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "attemptGeneration": 0,
+                  "contentType": "application/octet-stream",
+                  "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "declaredSize": 13,
+                  "expectedVersion": null,
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "finalizationLeaseExpiresAt": null,
+                  "finalizationLeaseOwner": null,
+                  "id": "upl_1787702400000deadbeef",
+                  "mode": "single",
+                  "partSize": null,
+                  "path": "assets/archive.bin",
+                  "principal": {
+                    "kind": "stash",
+                    "tokenId": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7"
+                  },
+                  "representation": "binary",
+                  "result": null,
+                  "stash": "demo",
+                  "state": "open",
+                  "storageTier": "d1",
+                  "uploadedHash": null,
+                  "uploadedSize": null
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CreateUploadSessionResult"
+                }
+              }
+            },
+            "description": "The created or replayed upload session.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`, `invalid-path`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `stale` (includes current)."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Create a raw upload session",
+        "x-principal": "write",
+        "x-transport": "fetch-only",
+        "x-wildcard": true
+      }
+    },
+    "/v1/stashes/{stash}/uploads/{sessionId}": {
+      "delete": {
+        "description": "Generation-fenced abort competes with finalization for one winner and is replayable after success.\n\nwrite; the session-bound administrator or matching stash principal.",
+        "operationId": "abortUploadSession",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "generation": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["generation"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "id": "upl_1787702400000deadbeef",
+                  "state": "aborted"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/AbortUploadResult"
+                }
+              }
+            },
+            "description": "The terminal aborted session identity.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-not-open`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-expired`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Abort an upload session",
+        "x-principal": "write",
+        "x-transport": "fetch-only"
+      },
+      "get": {
+        "description": "Returns durable state and server-recorded current-generation multipart parts without exposing R2 identifiers.\n\nwrite; the session-bound administrator or matching stash principal.",
+        "operationId": "getUploadSession",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "attemptGeneration": 0,
+                  "contentType": "application/octet-stream",
+                  "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "declaredSize": 13,
+                  "expectedVersion": null,
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "finalizationLeaseExpiresAt": null,
+                  "finalizationLeaseOwner": null,
+                  "id": "upl_1787702400000deadbeef",
+                  "mode": "single",
+                  "partSize": null,
+                  "parts": [],
+                  "path": "assets/archive.bin",
+                  "principal": {
+                    "kind": "stash",
+                    "tokenId": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7"
+                  },
+                  "representation": "binary",
+                  "result": null,
+                  "stash": "demo",
+                  "state": "open",
+                  "storageTier": "d1",
+                  "uploadedHash": null,
+                  "uploadedSize": null
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/GetUploadSessionResult"
+                }
+              }
+            },
+            "description": "Upload status and parts."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get upload session status",
+        "x-principal": "write",
+        "x-transport": "fetch-only"
+      }
+    },
+    "/v1/stashes/{stash}/uploads/{sessionId}/complete": {
+      "post": {
+        "description": "Acquires the finalization lease, verifies staged bytes, rechecks CAS, and atomically commits one version; retries replay the durable result.\n\nwrite; the session-bound administrator or matching stash principal.",
+        "operationId": "completeUploadSession",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "generation": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["generation"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "changeId": 8,
+                  "contentType": "application/octet-stream",
+                  "createdAt": "2026-08-26T01:00:00.000Z",
+                  "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "representation": "binary",
+                  "size": 13,
+                  "version": 4
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CompleteUploadResult"
+                }
+              }
+            },
+            "description": "The committed file version.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`, `body-not-well-formed`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `stale` (includes current), `upload-session-not-open`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-expired`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-size-mismatch`, `upload-hash-mismatch`, `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Complete or replay an upload",
+        "x-principal": "write",
+        "x-transport": "fetch-only"
+      }
+    },
+    "/v1/stashes/{stash}/uploads/{sessionId}/content": {
+      "put": {
+        "description": "Consumes and validates one raw byte stream for a single-mode session. The upload fingerprint is distinct from creation and completion fingerprints.\n\nwrite; the session-bound administrator or matching stash principal.",
+        "operationId": "uploadSingleContent",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Content-Length",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "attemptGeneration": 0,
+                  "contentType": "application/octet-stream",
+                  "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "declaredSize": 13,
+                  "expectedVersion": null,
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "finalizationLeaseExpiresAt": null,
+                  "finalizationLeaseOwner": null,
+                  "id": "upl_1787702400000deadbeef",
+                  "mode": "single",
+                  "partSize": null,
+                  "path": "assets/archive.bin",
+                  "principal": {
+                    "kind": "stash",
+                    "tokenId": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7"
+                  },
+                  "representation": "binary",
+                  "result": null,
+                  "stash": "demo",
+                  "state": "open",
+                  "storageTier": "d1",
+                  "uploadedHash": null,
+                  "uploadedSize": null
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CreateUploadSessionResult"
+                }
+              }
+            },
+            "description": "The durable uploaded session.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `body-not-well-formed`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-not-open`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-expired`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-size-mismatch`, `upload-hash-mismatch`, `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Upload single raw content",
+        "x-principal": "write",
+        "x-transport": "fetch-only"
+      }
+    },
+    "/v1/stashes/{stash}/uploads/{sessionId}/parts/{partNumber}": {
+      "put": {
+        "description": "Streams one raw part and records only the server-returned R2 ETag for the current generation.\n\nwrite; the session-bound administrator or matching stash principal.",
+        "operationId": "uploadPart",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "partNumber",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "generation",
+            "required": false,
+            "schema": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "style": "form"
+          },
+          {
+            "in": "header",
+            "name": "Content-Length",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "attemptGeneration": 0,
+                  "contentType": "application/octet-stream",
+                  "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "declaredSize": 13,
+                  "expectedVersion": null,
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "finalizationLeaseExpiresAt": null,
+                  "finalizationLeaseOwner": null,
+                  "id": "upl_1787702400000deadbeef",
+                  "mode": "single",
+                  "partSize": null,
+                  "parts": [],
+                  "path": "assets/archive.bin",
+                  "principal": {
+                    "kind": "stash",
+                    "tokenId": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7"
+                  },
+                  "representation": "binary",
+                  "result": null,
+                  "stash": "demo",
+                  "state": "open",
+                  "storageTier": "d1",
+                  "uploadedHash": null,
+                  "uploadedSize": null
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/GetUploadSessionResult"
+                }
+              }
+            },
+            "description": "Updated upload status.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-not-open`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-expired`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-size-mismatch`, `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Upload or replace one multipart part",
+        "x-principal": "write",
+        "x-transport": "fetch-only"
+      }
+    },
+    "/v1/stashes/{stash}/uploads/{sessionId}/resume": {
+      "post": {
+        "description": "Resumes recovery from durable D1/R2 staging or takes over a finalization lease after expiry.\n\nwrite; the session-bound administrator or matching stash principal.",
+        "operationId": "resumeUploadSession",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "generation": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": ["generation"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "attemptGeneration": 0,
+                  "contentType": "application/octet-stream",
+                  "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "declaredSize": 13,
+                  "expectedVersion": null,
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "finalizationLeaseExpiresAt": null,
+                  "finalizationLeaseOwner": null,
+                  "id": "upl_1787702400000deadbeef",
+                  "mode": "single",
+                  "partSize": null,
+                  "path": "assets/archive.bin",
+                  "principal": {
+                    "kind": "stash",
+                    "tokenId": "tok_01HZX7Y3S5W5Q1R2P3A4B5C6D7"
+                  },
+                  "representation": "binary",
+                  "result": null,
+                  "stash": "demo",
+                  "state": "open",
+                  "storageTier": "d1",
+                  "uploadedHash": null,
+                  "uploadedSize": null
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CreateUploadSessionResult"
+                }
+              }
+            },
+            "description": "Current durable session or replayed result.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `upload-session-expired`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Resume upload finalization",
+        "x-principal": "write",
+        "x-transport": "fetch-only"
+      }
+    },
+    "/v1/stashes/{stash}/versions/{version}/raw/{path}": {
+      "get": {
+        "description": "Streams one immutable historical version's exact bytes.\n\nread; administrator or a matching read/write stash token.\n\nThe path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+        "operationId": "getRawVersion",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A non-empty slash-separated path whose segments contain only ASCII letters, digits, dots, underscores, or hyphens and are neither dot nor dot-dot; maximum 512 UTF-8 bytes. The path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-wildcard": true
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Complete historical content.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "206": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "One historical byte range.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The ETag matched.",
+            "headers": {
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `invalid-path`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`, `version-not-found`, `file-deleted`."
+          },
+          "416": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `range-not-satisfiable`.",
+            "headers": {
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Download historical raw content",
+        "x-principal": "read",
+        "x-transport": "fetch-only",
+        "x-wildcard": true
+      },
+      "head": {
+        "description": "Returns the same status and metadata headers as historical raw GET without a body.\n\nread; administrator or a matching read/write stash token.\n\nThe path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+        "operationId": "headRawVersion",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A non-empty slash-separated path whose segments contain only ASCII letters, digits, dots, underscores, or hyphens and are neither dot nor dot-dot; maximum 512 UTF-8 bytes. The path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-wildcard": true
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Historical content metadata.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Historical range metadata.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "Supported range unit; always bytes for raw content.",
+                "schema": {
+                  "const": "bytes",
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Safely encoded inline or attachment disposition.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "description": "Exact response content bytes.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Type": {
+                "description": "Stored media type.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Prevents MIME sniffing of stored content.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Stash-Version": {
+                "description": "Numeric stash file version.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The ETag matched.",
+            "headers": {
+              "ETag": {
+                "description": "Strong application SHA-256 entity tag for this exact file version.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `invalid-path`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`, `version-not-found`, `file-deleted`."
+          },
+          "416": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `range-not-satisfiable`.",
+            "headers": {
+              "Content-Range": {
+                "description": "Selected byte range or the complete size for an unsatisfied range.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Inspect historical raw content",
+        "x-principal": "read",
+        "x-transport": "fetch-only",
+        "x-wildcard": true
       }
     }
   },

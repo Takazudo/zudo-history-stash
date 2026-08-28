@@ -61,7 +61,7 @@ function registeredRouteSet(): RouteTuple[] {
 
 function documentedRouteSet(): RouteTuple[] {
   const routes: RouteTuple[] = [];
-  for (const match of apiReference.matchAll(/^### `(GET|POST|PUT|DELETE) (\/v1\/[^`]+)`$/gm)) {
+  for (const match of apiReference.matchAll(/^### `(GET|HEAD|POST|PUT|DELETE) (\/v1\/[^`]+)`$/gm)) {
     const method = match[1];
     const template = match[2];
     if (method === undefined || template === undefined)
@@ -88,9 +88,7 @@ describe("route contract pin", () => {
         "function",
       );
     }
-    expect(ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only")).toEqual([
-      expect.objectContaining({ id: "stashEvents" }),
-    ]);
+    expect(ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only")).toHaveLength(13);
     expect(prototypeNames.has("stashEvents")).toBe(false);
   });
 

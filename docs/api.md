@@ -266,6 +266,21 @@ HTTP-compatible consumers.
 
 ## Routes
 
+Binary metadata keeps representation (`text | binary`), content access (`inline | raw | deleted`),
+transfer mode, and physical storage tier independent. Legacy rows default to text and resolve from
+the legacy TEXT table; new versions carry an explicit storage discriminator so an identical SHA-256
+may coexist in the legacy and byte tables without ambiguous reads. Binary bytes are never base64 in
+JSON. Proposal candidates and history import remain JSON/text-only and reject raw/binary usage with
+`422 unsupported-representation`.
+
+Published defaults are 5,000,000 JSON-inline bytes, 524,288 D1-inline bytes, a 100,000,000-byte
+operator-declared HTTP/file ceiling, 32 MiB single uploads, 524,288 diff bytes per side, 8 MiB
+multipart parts, eight open sessions, 500,000,000 reserved bytes per stash, and a one-day session
+TTL. Production parts are at least 5 MiB and total parts never exceed 10,000. `MAX_FILE_BYTES` may
+be configured through 1 GiB only when reservation capacity is raised too; this is a correctness
+boundary, not a performance/load-test claim. All thresholds count exact content bytes, excluding
+JSON and protocol framing.
+
 ### `GET /v1/health`
 
 - **Principal/capability:** `open`; no capability or token is required.
@@ -274,6 +289,14 @@ HTTP-compatible consumers.
   `{ "ok": true, "service": "zudo-history-stash", "marker": "ZHS_HEALTH_OK" }`.
 - **Errors:** No route-level business errors. Infrastructure failures may still produce a network
   error or an internal response.
+
+### `GET /v1/capabilities`
+
+- **Principal/capability:** `open`; no capability or token is required.
+- **Request:** No body or query.
+- **Response:** `200` with representations, content-access modes, transfer modes, storage tiers,
+  and the authoritative exact-content byte limits.
+- **Errors:** `500 internal`.
 
 ### `GET /v1/me`
 
@@ -392,7 +415,7 @@ token.
   epoch-ms `createdAt`, with optional `author`, `message`, and `meta`.
 - **Response:** `201 { path, headVersion, firstChangeId }`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `409 stale`, `409 exists`,
-  `413 payload-too-large`, `500 internal`.
+  `413 payload-too-large`, `422 unsupported-representation`, `500 internal`.
 
 See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 
@@ -476,7 +499,8 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
 - **Response:** `201 ProposalRecord`. Replaying the same key and canonical body returns the same
   record with the same `201` status and `Idempotent-Replayed: true`.
 - **Errors:** `400 validation`, `400 body-not-well-formed`, `401 unauthorized`, `403 scope`,
-  `404 not-found`, `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited` with
+  `404 not-found`, `413 payload-too-large`, `422 idempotency-key-reused`,
+  `422 unsupported-representation`, `429 rate-limited` with
   `Retry-After: 60`, `500 internal`.
 
 ### `GET /v1/stashes/:stash/proposals`
@@ -634,6 +658,7 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
   blob, or version is persisted.
 - **Errors:** `400 validation`, `400 invalid-path`, `400 body-not-well-formed`,
   `401 unauthorized`, `404 not-found`, `404 version-not-found`, `413 payload-too-large`,
+  `422 unsupported-representation`,
   `429 rate-limited` with `Retry-After: 60`, `500 internal`.
 
 ### `GET /v1/stashes/:stash/changes`
@@ -645,6 +670,118 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
   restricted to `:stash`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found` for a foreign stash,
   `429 rate-limited` with `Retry-After: 60`.
+
+### `GET /v1/stashes/:stash/raw/*path`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
+- **Request:** Optional `If-None-Match`, `Range`, and application-ETag `If-Range` headers.
+- **Response:** `200` exact bytes or `206` one range with `ETag`, `X-Stash-Version`,
+  `Accept-Ranges`, `Content-Length`, `Content-Range`, `Content-Type`, `Content-Disposition`, and
+  `X-Content-Type-Options`; `304` has `ETag` and no body.
+- **Errors:** `400 invalid-path`, `401 unauthorized`, `404 not-found`, `404 file-deleted`,
+  `416 range-not-satisfiable` with `Content-Range`, `429 rate-limited` with `Retry-After: 60`,
+  `500 internal`.
+
+### `HEAD /v1/stashes/:stash/raw/*path`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
+- **Request:** Optional `If-None-Match`, `Range`, and application-ETag `If-Range` headers.
+- **Response:** `200` or `206` with `ETag`, `X-Stash-Version`, `Accept-Ranges`, `Content-Length`,
+  `Content-Range`, `Content-Type`, `Content-Disposition`, and `X-Content-Type-Options`; `304` has
+  `ETag`. HEAD never emits content bytes.
+- **Errors:** `400 invalid-path`, `401 unauthorized`, `404 not-found`, `404 file-deleted`,
+  `416 range-not-satisfiable` with `Content-Range`, `429 rate-limited` with `Retry-After: 60`,
+  `500 internal`.
+
+### `GET /v1/stashes/:stash/versions/:version/raw/*path`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
+- **Request:** Historical version in the path plus optional conditional/range headers.
+- **Response:** `200` exact bytes or `206` one range with `ETag`, `X-Stash-Version`,
+  `Accept-Ranges`, `Content-Length`, `Content-Range`, `Content-Type`, `Content-Disposition`, and
+  `X-Content-Type-Options`; `304` has `ETag` and no body.
+- **Errors:** `400 invalid-path`, `401 unauthorized`, `404 not-found`, `404 version-not-found`,
+  `404 file-deleted`, `416 range-not-satisfiable` with `Content-Range`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
+
+### `HEAD /v1/stashes/:stash/versions/:version/raw/*path`
+
+- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
+- **Request:** Historical version in the path plus optional conditional/range headers.
+- **Response:** `200` or `206` with `ETag`, `X-Stash-Version`, `Accept-Ranges`, `Content-Length`,
+  `Content-Range`, `Content-Type`, `Content-Disposition`, and `X-Content-Type-Options`; `304` has
+  `ETag`. HEAD never emits content bytes.
+- **Errors:** `400 invalid-path`, `401 unauthorized`, `404 not-found`, `404 version-not-found`,
+  `404 file-deleted`, `416 range-not-satisfiable` with `Content-Range`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
+
+### `POST /v1/stashes/:stash/uploads/*path`
+
+- **Principal/capability:** `write`; administrator or a matching `write` token.
+- **Request:** JSON metadata with exact `size`, optional SHA-256 `hash`, `representation`,
+  `contentType`, expected-version CAS, and transfer preference; creation has its own
+  `Idempotency-Key` fingerprint.
+- **Response:** `201` session with `Idempotent-Replayed`, chosen mode/tier, expiry, and generation.
+- **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `403 scope`,
+  `404 not-found`, `409 stale`, `413 payload-too-large`, `422 idempotency-key-reused`,
+  `429 rate-limited` with `Retry-After: 60`, `500 internal`.
+
+### `GET /v1/stashes/:stash/uploads/:sessionId`
+
+- **Principal/capability:** `write`; the session-bound administrator or matching stash principal.
+- **Request:** No body.
+- **Response:** `200` durable session state and server-recorded current-generation parts.
+- **Errors:** `401 unauthorized`, `403 scope`, `404 not-found`, `429 rate-limited` with
+  `Retry-After: 60`.
+
+### `DELETE /v1/stashes/:stash/uploads/:sessionId`
+
+- **Principal/capability:** `write`; the session-bound administrator or matching stash principal.
+- **Request:** JSON generation plus an abort-specific `Idempotency-Key`.
+- **Response:** `200 { id, state: "aborted" }` with `Idempotent-Replayed`.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`,
+  `409 upload-session-not-open`, `410 upload-session-expired`, `422 idempotency-key-reused`,
+  `429 rate-limited` with `Retry-After: 60`, `500 internal`.
+
+### `PUT /v1/stashes/:stash/uploads/:sessionId/content`
+
+- **Principal/capability:** `write`; the session-bound administrator or matching stash principal.
+- **Request:** One raw byte stream with optional `Content-Length` and a distinct upload
+  `Idempotency-Key` fingerprint.
+- **Response:** `202` durable uploaded session with `Idempotent-Replayed`.
+- **Errors:** `400 body-not-well-formed`, `401 unauthorized`, `403 scope`, `404 not-found`,
+  `409 upload-session-not-open`, `410 upload-session-expired`, `413 payload-too-large`,
+  `422 upload-size-mismatch`, `422 upload-hash-mismatch`, `422 idempotency-key-reused`,
+  `429 rate-limited` with `Retry-After: 60`, `500 internal`.
+
+### `PUT /v1/stashes/:stash/uploads/:sessionId/parts/:partNumber`
+
+- **Principal/capability:** `write`; the session-bound administrator or matching stash principal.
+- **Request:** One raw part, current generation query, and part-specific idempotency fingerprint.
+- **Response:** `202` updated status with `Idempotent-Replayed`.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`,
+  `409 upload-session-not-open`, `410 upload-session-expired`, `413 payload-too-large`,
+  `422 upload-size-mismatch`, `422 idempotency-key-reused`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
+
+### `POST /v1/stashes/:stash/uploads/:sessionId/complete`
+
+- **Principal/capability:** `write`; the session-bound administrator or matching stash principal.
+- **Request:** JSON generation and a completion-specific `Idempotency-Key` fingerprint.
+- **Response:** `201` committed version with `Idempotent-Replayed`.
+- **Errors:** `400 validation`, `400 body-not-well-formed`, `401 unauthorized`, `403 scope`,
+  `404 not-found`, `409 stale`, `409 upload-session-not-open`, `410 upload-session-expired`,
+  `422 upload-size-mismatch`, `422 upload-hash-mismatch`, `422 idempotency-key-reused`,
+  `429 rate-limited` with `Retry-After: 60`, `500 internal`.
+
+### `POST /v1/stashes/:stash/uploads/:sessionId/resume`
+
+- **Principal/capability:** `write`; the session-bound administrator or matching stash principal.
+- **Request:** JSON generation and completion fingerprint for recovery/takeover.
+- **Response:** `200` durable session or replayed result with `Idempotent-Replayed`.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`,
+  `410 upload-session-expired`, `422 idempotency-key-reused`, `429 rate-limited` with
+  `Retry-After: 60`, `500 internal`.
 
 ## Proposals
 
@@ -887,8 +1024,6 @@ API accepts `Authorization`, `Content-Type`, `If-None-Match`, `Idempotency-Key`,
 
 The v1 HTTP contract intentionally defers:
 
-- binary request bodies and additional content types beyond UTF-8 text;
-- byte-range reads and dedicated download endpoints;
 - multi-file atomic commits; v1 history and CAS are per path.
 - proposal approval policy (required approvers, roles, and review comments); any matching `write`
   credential can approve.

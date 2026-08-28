@@ -5,7 +5,7 @@ import { cors } from "hono/cors";
 import { requireToken } from "./auth.js";
 import type { AppDependencies, AppEnv } from "./context.js";
 import { onError } from "./errors.js";
-import { healthResponse } from "./routes/meta.js";
+import { capabilitiesResponse, healthResponse } from "./routes/meta.js";
 import routes from "./routes/index.js";
 
 const ALLOW_HEADERS = [
@@ -53,6 +53,7 @@ export function createApp(dependencies: Partial<AppDependencies> = {}): Hono<App
     }),
   );
   app.get("/v1/health", (c) => c.json(healthResponse));
+  app.get("/v1/capabilities", (c) => c.json(capabilitiesResponse(c.env)));
   app.use("/v1/*", requireToken);
   app.route("/", routes);
   app.notFound((c) =>

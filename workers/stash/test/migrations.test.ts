@@ -161,6 +161,22 @@ describe("D1 migrations", () => {
     await env.UPGRADE_DB.prepare(
       "INSERT INTO stashes (name, description, meta_json, created_at) VALUES ('upgrade', '', '{}', 1)",
     ).run();
+    const legacyHash = `sha256-${"a".repeat(64)}`;
+    await env.UPGRADE_DB.prepare(
+      "INSERT INTO blobs (stash_name, hash, body, size_bytes, created_at) VALUES ('upgrade', ?, 'legacy text', 11, 1)",
+    )
+      .bind(legacyHash)
+      .run();
+    await env.UPGRADE_DB.prepare(
+      "INSERT INTO files (stash_name, path, head_version, head_hash, created_at, updated_at) VALUES ('upgrade', 'legacy.txt', 1, ?, 1, 1)",
+    )
+      .bind(legacyHash)
+      .run();
+    await env.UPGRADE_DB.prepare(
+      "INSERT INTO versions (stash_name, path, version, kind, blob_hash, size_bytes, created_at) VALUES ('upgrade', 'legacy.txt', 1, 'put', ?, 11, 1)",
+    )
+      .bind(legacyHash)
+      .run();
     await env.UPGRADE_DB.prepare(
       `INSERT INTO tokens (id, stash_name, token_hash, label, scope, created_at)
        VALUES (?, 'upgrade', ?, '', 'read', 1)`,
@@ -184,6 +200,66 @@ describe("D1 migrations", () => {
       "SELECT deleted_at FROM stashes WHERE name = 'upgrade'",
     ).first<{ deleted_at: number | null }>();
     expect(upgradedStash).toEqual({ deleted_at: null });
+    await expect(
+      env.UPGRADE_DB.prepare(
+        `SELECT b.body, b.size_bytes, v.representation, v.application_etag, v.content_storage, f.head_hash
+         FROM blobs b
+         JOIN versions v ON v.stash_name = b.stash_name AND v.blob_hash = b.hash
+         JOIN files f ON f.stash_name = v.stash_name AND f.path = v.path
+         WHERE b.stash_name = 'upgrade' AND b.hash = ?`,
+      )
+        .bind(legacyHash)
+        .first(),
+    ).resolves.toEqual({
+      body: "legacy text",
+      size_bytes: 11,
+      representation: "text",
+      application_etag: null,
+      content_storage: "legacy",
+      head_hash: legacyHash,
+    });
+
+    /* The same application hash may exist in both tables; the version discriminator is decisive. */
+    const byteHash = legacyHash;
+    const bytes = new Uint8Array([0, 255, 1, 2]);
+    await env.UPGRADE_DB.prepare(
+      "INSERT INTO byte_blobs (stash_name, hash, body_bytes, size_bytes, created_at) VALUES ('upgrade', ?, ?, 4, 2)",
+    )
+      .bind(byteHash, bytes)
+      .run();
+    const byteRow = await env.UPGRADE_DB.prepare(
+      "SELECT body_bytes, size_bytes FROM byte_blobs WHERE stash_name = 'upgrade' AND hash = ?",
+    )
+      .bind(byteHash)
+      .first<{ body_bytes: ArrayBuffer; size_bytes: number }>();
+    expect(byteRow?.size_bytes).toBe(4);
+    expect(Array.from(new Uint8Array(byteRow?.body_bytes ?? new ArrayBuffer(0)))).toEqual([
+      0, 255, 1, 2,
+    ]);
+    await env.UPGRADE_DB.prepare(
+      `INSERT INTO versions
+         (stash_name, path, version, kind, blob_hash, size_bytes, representation,
+          application_etag, content_storage, created_at)
+       VALUES ('upgrade', 'raw.bin', 1, 'put', ?, 4, 'binary', ?, 'bytes', 2)`,
+    )
+      .bind(byteHash, byteHash)
+      .run();
+    const resolutionRows = await env.UPGRADE_DB.prepare(
+      `SELECT v.path, v.content_storage,
+         CASE v.content_storage WHEN 'legacy' THEN lb.body ELSE hex(bb.body_bytes) END AS resolved
+       FROM versions v
+       LEFT JOIN blobs lb ON v.content_storage = 'legacy'
+         AND lb.stash_name = v.stash_name AND lb.hash = v.blob_hash
+       LEFT JOIN byte_blobs bb ON v.content_storage = 'bytes'
+         AND bb.stash_name = v.stash_name AND bb.hash = v.blob_hash
+       WHERE v.stash_name = 'upgrade' AND v.blob_hash = ? ORDER BY v.path`,
+    )
+      .bind(byteHash)
+      .all();
+    expect(resolutionRows.results).toEqual([
+      { path: "legacy.txt", content_storage: "legacy", resolved: "legacy text" },
+      { path: "raw.bin", content_storage: "bytes", resolved: "00FF0102" },
+    ]);
 
     const response = await request(
       createApp({ now: () => 2 }),
@@ -196,6 +272,19 @@ describe("D1 migrations", () => {
       principal: "stash",
       stash: "upgrade",
       expiresAt: null,
+    });
+    const legacyRead = await request(
+      createApp({ now: () => 2 }),
+      "http://stash.test/v1/stashes/upgrade/files/legacy.txt",
+      { headers: bearer(token.token) },
+      { ...createTestEnv().env, DB: env.UPGRADE_DB },
+    );
+    expect(legacyRead.status).toBe(200);
+    await expect(legacyRead.json()).resolves.toMatchObject({
+      path: "legacy.txt",
+      version: 1,
+      hash: legacyHash,
+      body: "legacy text",
     });
   });
 
