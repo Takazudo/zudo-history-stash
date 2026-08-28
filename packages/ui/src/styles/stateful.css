@@ -122,6 +122,14 @@
     font-weight: 680;
   }
 
+  .zhs-history-table__content-meta {
+    max-inline-size: 16rem;
+    overflow-wrap: anywhere;
+    color: var(--theme-ink-muted);
+    font-family: var(--font-family-mono);
+    font-size: var(--text-xs);
+  }
+
   .zhs-history-table__author {
     min-inline-size: 8rem;
     max-inline-size: 12rem;
@@ -163,6 +171,11 @@
   .zhs-history-diff-stats--ready {
     background: var(--theme-success-soft);
     color: var(--theme-success);
+  }
+
+  .zhs-history-diff-stats--binary {
+    background: var(--theme-warning-soft);
+    color: var(--theme-warning);
   }
 
   .zhs-history-diff-stats--error,
@@ -673,6 +686,16 @@
 
   .zhs-rollback-dialog__stats strong {
     color: var(--theme-success);
+  }
+
+  .zhs-rollback-dialog__target-metadata {
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  .zhs-rollback-dialog__target-metadata .zhs-bytes {
+    color: inherit;
   }
 
   .zhs-rollback-dialog__consequence,

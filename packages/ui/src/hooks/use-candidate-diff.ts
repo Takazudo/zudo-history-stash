@@ -60,6 +60,18 @@ function calculateCandidateDiff(
     };
   }
 
+  if (result.state === "binary") {
+    // Candidate editing is text-only. Keep the existing public model shape so
+    // consumers render this as an unavailable/oversized diff rather than
+    // attempting to read binary results as hunks.
+    return {
+      model: null,
+      stats: { added: 0, removed: 0 },
+      same: false,
+      oversized: true,
+    };
+  }
+
   return {
     model: buildDiffModel(result.hunks),
     stats: result.stats,

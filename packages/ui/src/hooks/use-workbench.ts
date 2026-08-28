@@ -262,6 +262,14 @@ async function readFile(
   const result = await files.get(path, version === undefined ? undefined : { version });
   if (!result.ok) throw result;
   if ("notModified" in result) throw new Error("The file representation was not returned");
+  if (
+    !result.value.deleted &&
+    (result.value.contentAccess === "raw" || result.value.body === null)
+  ) {
+    throw new Error(
+      "This file is raw-only and cannot be opened in the text editor. Open the file page to download it.",
+    );
+  }
   return result.value;
 }
 
@@ -276,6 +284,14 @@ async function readStoredSource(
     throw result;
   }
   if ("notModified" in result) throw new Error("The stored source representation was not returned");
+  if (
+    !result.value.deleted &&
+    (result.value.contentAccess === "raw" || result.value.body === null)
+  ) {
+    throw new Error(
+      "This file is raw-only and cannot be opened in the text editor. Open the file page to download it.",
+    );
+  }
   return result.value;
 }
 
@@ -283,6 +299,14 @@ async function readHead(files: StashFilesClient, path: string): Promise<FileReco
   const result = await files.get(path);
   if (result.ok) {
     if ("notModified" in result) throw new Error("The head representation was not returned");
+    if (
+      !result.value.deleted &&
+      (result.value.contentAccess === "raw" || result.value.body === null)
+    ) {
+      throw new Error(
+        "This file is raw-only and cannot be opened in the text editor. Open the file page to download it.",
+      );
+    }
     return result.value;
   }
   if (result.error.code === "file-deleted" && result.current !== undefined) {
