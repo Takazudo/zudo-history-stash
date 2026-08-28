@@ -1,0 +1,280 @@
+name: PR preview
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Check preview eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.credentials.outputs.ready || 'false' }}
+
+    steps:
+      - name: Explain fork skip
+        if: github.event.pull_request.head.repo.fork == true
+        run: echo "::notice::PR previews are disabled for fork pull requests."
+
+      - name: Checkout gate helper
+        if: github.event.pull_request.head.repo.fork == false
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Check preview credentials
+        id: credentials
+        if: github.event.pull_request.head.repo.fork == false
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_IS_FORK: "false"
+        run: bash scripts/preview-gate.sh
+
+  deploy:
+    name: Deploy and verify preview
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build libraries
+        run: pnpm build:libs
+
+      - name: Build Viewer assets
+        run: pnpm build:viewer
+
+      - name: Create private preview state
+        id: paths
+        run: |
+          set -euo pipefail
+          umask 077
+          state_dir="$RUNNER_TEMP/zhs-preview-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          log_dir="$RUNNER_TEMP/zhs-preview-logs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$state_dir" "$log_dir"
+          printf 'state_dir=%s\n' "$state_dir" >>"$GITHUB_OUTPUT"
+          printf 'log_dir=%s\n' "$log_dir" >>"$GITHUB_OUTPUT"
+
+      - name: Ensure resources and resolve URLs
+        id: resources
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_WORKERS_SUBDOMAIN: ${{ vars.CF_WORKERS_SUBDOMAIN }}
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          resources_json="$(node scripts/preview-resources.mjs ensure --pr "$PREVIEW_PR_NUMBER")"
+          urls_json="$(node scripts/preview-resources.mjs urls --pr "$PREVIEW_PR_NUMBER")"
+          d1_id="$(jq -er '.d1Id | select(type == "string" and length > 0)' <<<"$resources_json")"
+          d1_name="$(jq -er '.d1Name | select(type == "string")' <<<"$resources_json")"
+          r2_bucket="$(jq -er '.r2Bucket | select(type == "string")' <<<"$resources_json")"
+          stash_url="$(jq -er '.stashUrl | select(type == "string")' <<<"$urls_json")"
+          viewer_url="$(jq -er '.viewerUrl | select(type == "string")' <<<"$urls_json")"
+          [[ "$d1_name" == "zudo-history-stash-pr-$PREVIEW_PR_NUMBER" ]]
+          [[ "$r2_bucket" == "zudo-history-stash-blobs-pr-$PREVIEW_PR_NUMBER" ]]
+          [[ "$d1_id" =~ ^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$ ]]
+          [[ "$stash_url" =~ ^https://zudo-history-stash-pr-${PREVIEW_PR_NUMBER}\.[A-Za-z0-9.-]+\.workers\.dev$ ]]
+          [[ "$viewer_url" =~ ^https://zudo-history-stash-viewer-pr-${PREVIEW_PR_NUMBER}\.[A-Za-z0-9.-]+\.workers\.dev$ ]]
+          printf 'd1_id=%s\n' "$d1_id" >>"$GITHUB_OUTPUT"
+          printf 'd1_name=%s\n' "$d1_name" >>"$GITHUB_OUTPUT"
+          printf 'r2_bucket=%s\n' "$r2_bucket" >>"$GITHUB_OUTPUT"
+          printf 'stash_url=%s\n' "$stash_url" >>"$GITHUB_OUTPUT"
+          printf 'viewer_url=%s\n' "$viewer_url" >>"$GITHUB_OUTPUT"
+
+      - name: Generate flattened preview configs
+        id: config
+        env:
+          D1_ID: ${{ steps.resources.outputs.d1_id }}
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_STATE_DIR: ${{ steps.paths.outputs.state_dir }}
+          VIEWER_URL: ${{ steps.resources.outputs.viewer_url }}
+        run: |
+          set -euo pipefail
+          config_json="$(node scripts/preview-config.mjs --pr "$PREVIEW_PR_NUMBER" --d1-id "$D1_ID" --viewer-origin "$VIEWER_URL" --out "$PREVIEW_STATE_DIR/config")"
+          stash_config="$(jq -er '.stashConfig | select(type == "string")' <<<"$config_json")"
+          viewer_config="$(jq -er '.viewerConfig | select(type == "string")' <<<"$config_json")"
+          [[ -f "$stash_config" ]]
+          [[ -f "$viewer_config" ]]
+          [[ "$stash_config" == "$PREVIEW_STATE_DIR"/* ]]
+          [[ "$viewer_config" == "$PREVIEW_STATE_DIR"/* ]]
+          printf 'stash_config=%s\n' "$stash_config" >>"$GITHUB_OUTPUT"
+          printf 'viewer_config=%s\n' "$viewer_config" >>"$GITHUB_OUTPUT"
+
+      - name: Apply D1 migrations
+        env:
+          CI: "1"
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LOG_DIR: ${{ steps.paths.outputs.log_dir }}
+          STASH_CONFIG: ${{ steps.config.outputs.stash_config }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler d1 migrations apply DB --remote -c "$STASH_CONFIG" 2>&1 | tee "$LOG_DIR/d1-migrations.log"
+
+      - name: Deploy Stash with first-deploy admin secret
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LOG_DIR: ${{ steps.paths.outputs.log_dir }}
+          PREVIEW_STATE_DIR: ${{ steps.paths.outputs.state_dir }}
+          STASH_CONFIG: ${{ steps.config.outputs.stash_config }}
+        run: |
+          set -euo pipefail
+          umask 077
+          admin_token_file="$PREVIEW_STATE_DIR/admin-token"
+          secrets_file="$PREVIEW_STATE_DIR/stash-secret-input.json"
+          trap 'rm -f -- "$secrets_file"' EXIT INT TERM
+          admin_token="$(openssl rand -hex 32)"
+          printf '::add-mask::%s\n' "$admin_token"
+          printf '%s' "$admin_token" >"$admin_token_file"
+          chmod 600 "$admin_token_file"
+          jq -n --arg token "$admin_token" '{STASH_ADMIN_TOKEN: $token}' >"$secrets_file"
+          chmod 600 "$secrets_file"
+          pnpm exec wrangler deploy -c "$STASH_CONFIG" --secrets-file "$secrets_file" 2>&1 | tee "$LOG_DIR/stash-deploy.log"
+
+      - name: Deploy Viewer
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LOG_DIR: ${{ steps.paths.outputs.log_dir }}
+          VIEWER_CONFIG: ${{ steps.config.outputs.viewer_config }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deploy -c "$VIEWER_CONFIG" 2>&1 | tee "$LOG_DIR/viewer-deploy.log"
+
+      - name: Wait for preview health
+        env:
+          VIEWER_URL: ${{ steps.resources.outputs.viewer_url }}
+        run: node scripts/wait-for.mjs --url "$VIEWER_URL/api/v1/health"
+
+      - name: Seed deterministic demo fixture
+        env:
+          ADMIN_TOKEN_FILE: ${{ steps.paths.outputs.state_dir }}/admin-token
+          API_BASE_URL: ${{ steps.resources.outputs.viewer_url }}/api
+        run: |
+          set -euo pipefail
+          admin_token="$(<"$ADMIN_TOKEN_FILE")"
+          STASH_ADMIN_TOKEN="$admin_token" node scripts/seed-dev.mjs --base-url "$API_BASE_URL" --ci
+
+      - name: Mint masked read-only token
+        id: mint
+        env:
+          ADMIN_TOKEN_FILE: ${{ steps.paths.outputs.state_dir }}/admin-token
+          API_BASE_URL: ${{ steps.resources.outputs.viewer_url }}/api
+        run: |
+          set -euo pipefail
+          admin_token="$(<"$ADMIN_TOKEN_FILE")"
+          STASH_ADMIN_TOKEN="$admin_token" node scripts/preview-mint-read-token.mjs
+
+      - name: Run preview read contract
+        env:
+          ADMIN_TOKEN_FILE: ${{ steps.paths.outputs.state_dir }}/admin-token
+          API_BASE_URL: ${{ steps.resources.outputs.viewer_url }}/api
+          TEST_TIER: preview
+        run: |
+          set -euo pipefail
+          admin_token="$(<"$ADMIN_TOKEN_FILE")"
+          STASH_ADMIN_TOKEN="$admin_token" pnpm --filter zudo-history-stash test:contract
+
+      - name: Run strict Viewer HTTP smoke
+        env:
+          SMOKE_BASE_URL: ${{ steps.resources.outputs.viewer_url }}
+          SMOKE_REQUIRE_LIVE: "1"
+        run: node scripts/smoke.mjs --target viewer
+
+      - name: Restore Playwright browser cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Chromium
+        run: pnpm --filter zudo-history-stash-viewer exec playwright install --with-deps chromium
+
+      - name: Run read-only browser preview smoke
+        env:
+          PW_BASE_URL: ${{ steps.resources.outputs.viewer_url }}
+          PW_PREVIEW: "1"
+          PW_STASH_TOKEN: ${{ steps.mint.outputs.token }}
+        run: pnpm --filter zudo-history-stash-viewer exec playwright test --project=chromium-preview
+
+      - name: Record deployed commit
+        id: revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          deployed_sha="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$deployed_sha" == "$EXPECTED_SHA" ]]
+          printf 'sha=%s\n' "$deployed_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Create or update preview comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_COMMENT_STATE: active
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_READ_TOKEN: ${{ steps.mint.outputs.token }}
+          PREVIEW_SHA: ${{ steps.revision.outputs.sha }}
+          PREVIEW_STASH_URL: ${{ steps.resources.outputs.stash_url }}
+          PREVIEW_VIEWER_URL: ${{ steps.resources.outputs.viewer_url }}
+        run: node scripts/preview-comment.mjs
+
+      - name: Remove private preview state
+        if: always()
+        env:
+          PREVIEW_STATE_DIR: ${{ steps.paths.outputs.state_dir }}
+        run: |
+          set -euo pipefail
+          expected="$RUNNER_TEMP/zhs-preview-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ -z "$PREVIEW_STATE_DIR" ]]; then
+            exit 0
+          fi
+          [[ "$PREVIEW_STATE_DIR" == "$expected" ]]
+          rm -f -- "$PREVIEW_STATE_DIR/stash-secret-input.json" "$PREVIEW_STATE_DIR/admin-token"
+          rm -rf -- "$PREVIEW_STATE_DIR/config"
+          rmdir "$PREVIEW_STATE_DIR"
+
+      - name: Upload non-secret deploy logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: preview-deploy-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/zhs-preview-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
