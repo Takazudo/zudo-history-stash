@@ -77,7 +77,7 @@ Admonitions (above), tabbed content (`<Tabs>` / `<TabItem>`, `<CodeGroup>`), and
 
 ## Enabled Features
 
-- **search** — Full-text search via Pagefind
+- **search** — Full-text search
 - **claudeResources** — Auto-generated docs for Claude Code resources
 - **sidebarResizer** — Draggable sidebar width
 - **sidebarToggle** — Show/hide desktop sidebar
