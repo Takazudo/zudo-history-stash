@@ -1,0 +1,106 @@
+---
+title: トークンの有効期限とレート制限
+description: 一度だけ返される認証情報、ローテーション、失効、許容的なレート制限を扱います。
+sidebar_position: 60
+category: guides
+---
+
+stash トークンのスコープは `read` または `write` です。書き込みトークンには読み取り権限も含まれ、
+その stash 内のすべてのパスを変更できます。作成とローテーションで平文のシークレットが返るのは
+一度だけです。シークレット自体ではなく、そのハッシュだけがサーバーに保存されます。以後の一覧には
+ID とライフサイクルメタデータが表示されますが、ハッシュもシークレットも含まれません。各レスポンスを
+シークレットストアの境界へ直接渡し、出力しないでください。
+
+{/* zhs-example: consumer-token-lifecycle */}
+
+```ts
+import { createStashClient, type ClientResult } from "@takazudo/zudo-history-stash";
+
+function valueOf<T>(result: ClientResult<T>, step: string): T {
+  if (!result.ok) {
+    throw new Error(`${step} failed: ${result.error.code}`);
+  }
+  return result.value;
+}
+
+export async function rotateAndRevokeToken(input: {
+  baseUrl: string;
+  adminToken: string;
+  stash: string;
+  storeSecret: (tokenId: string, secret: string) => Promise<void>;
+}) {
+  const admin = createStashClient({ baseUrl: input.baseUrl, token: input.adminToken });
+  const tokens = admin.stashes.tokens(input.stash);
+  const predecessor = valueOf(
+    await tokens.create({ label: "automation", scope: "write", ttlSeconds: 3_600 }),
+    "create token",
+  );
+  await input.storeSecret(predecessor.id, predecessor.token);
+
+  const successor = valueOf(
+    await tokens.rotate(predecessor.id, { graceSeconds: 30 }),
+    "rotate token",
+  );
+  await input.storeSecret(successor.id, successor.token);
+
+  valueOf(await tokens.revoke(successor.id), "revoke successor");
+  return { predecessorId: predecessor.id, successorId: successor.id };
+}
+```
+
+`expiresAt` と `ttlSeconds` はどちらか一方だけを選び、両方を指定してはいけません。確定した有効期限は
+未来で、かつ最大十年先までである必要があります。どちらも省略すると、`expiresAt: null` の
+無期限トークンが作成されます。ローテーションは一回限りです。後継トークンは上書きしない限り
+先行トークンの有効期限を引き継ぎ、先行トークンは既存の有効期限と猶予期限のうち早い方までに
+短縮されます。勝者となったローテーションのレスポンスが失われた場合、それ以降の試行で確認できるのは
+後継トークンの ID だけで、シークレットは確認できません。その後継トークンを失効させて、別の
+認証情報を作成してください。失効は取り消せません。
+
+## レート制限の結果
+
+リポジトリでは、read、write、diff の各バケットをそれぞれ 600、60、120 操作に設定し、期間は
+いずれも 60 秒です。stash プリンシパルのリクエストは、最初にトークンキー、次に stash キーを確認します。
+管理者は対象外です。これらは
+[ロケーションごとの許容的で結果整合的なカウンター](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)であり、
+正確なグローバルクォータではありません。デプロイ時に異なる Binding 設定を意図的に選択できます。
+
+Binding が操作を拒否すると、API は `429 rate-limited` を `Retry-After: 60` とともに返し、クライアントは
+その遅延を `retryAfter` として公開します。この例は、型付けされた値だけ待機して読み取りを一回
+再試行します。throw されたトランスポート障害やサーバー障害は、そのまま呼び出し側へ伝播します。
+
+{/* zhs-example: consumer-rate-limit */}
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+export async function readHistoryWithRateLimitRetry(input: {
+  baseUrl: string;
+  readToken: string;
+  stash: string;
+  path: string;
+  sleep: (milliseconds: number) => Promise<void>;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.readToken });
+  const read = () => client.files(input.stash).history(input.path);
+  const first = await read();
+
+  if (first.ok) {
+    return { kind: "history" as const, value: first.value };
+  }
+  if (first.error.code !== "rate-limited" || first.retryAfter === undefined) {
+    return { kind: "failed" as const, failure: first };
+  }
+
+  await input.sleep(first.retryAfter * 1_000);
+  const retry = await read();
+  if (!retry.ok) {
+    return { kind: "failed" as const, failure: retry };
+  }
+  return { kind: "history" as const, value: retry.value };
+}
+```
+
+レートリミッター Binding の例外はログに記録され、Storage API の可用性を維持するため fail-open と
+なります。これは正確な会計システムではありません。通常のリクエストはリクエスト時に認証されます。
+ライブイベントのレスポンスは、それに加えて[ライブ更新](./live-updates.mdx)で説明しているトークンの
+有効期限までに終了します。

@@ -1,14 +1,19 @@
 import type { GetDiffResult, GetHistoryResult, VersionRecord } from "@takazudo/zudo-history-stash";
+import { buildDiffModel } from "@takazudo/zudo-history-stash-core";
+import {
+  DiffControls,
+  DiffPane,
+  KindBadge,
+  useDiffViewPreferences,
+} from "@takazudo/zudo-history-stash-ui";
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { Button } from "../app/shell/button.js";
 import { Page } from "../app/shell/page.js";
-import { DiffTable } from "../components/diff-table.js";
-import { ErrorBanner, KindBadge, clientValue } from "../components/index.js";
+import { ErrorBanner, clientValue } from "../components/error-banner.js";
 import { useAsync } from "../hooks/use-async.js";
 
-const WRAP_STORAGE_KEY = "zhs.diff.wrap";
 const CONTEXT_VALUES = [0, 3, 10] as const;
 
 type ContextLines = (typeof CONTEXT_VALUES)[number];
@@ -35,14 +40,6 @@ function contextLines(value: string | null): ContextLines {
   const parsed = positiveInteger(value);
   if (value === "0") return 0;
   return parsed === 10 ? 10 : 3;
-}
-
-function initialWrap(): boolean {
-  try {
-    return localStorage.getItem(WRAP_STORAGE_KEY) !== "false";
-  } catch {
-    return true;
-  }
 }
 
 function optionLabel(record: VersionRecord): string {
@@ -109,6 +106,62 @@ function RawVersionLinks({
   );
 }
 
+type ReadyDiffResult = Extract<GetDiffResult, { state: "ready" }>;
+
+function crlfNotice(crlf: { old: boolean; new: boolean }): string | null {
+  if (crlf.old && crlf.new) return "CRLF line endings are shown normalized";
+  if (crlf.old) return "CRLF line endings on the old side are shown normalized";
+  if (crlf.new) return "CRLF line endings on the new side are shown normalized";
+  return null;
+}
+
+function ReadyDiff({
+  diff,
+  effectiveLayout,
+  marks,
+  wrap,
+}: {
+  diff: ReadyDiffResult;
+  effectiveLayout: "unified" | "split";
+  marks: boolean;
+  wrap: boolean;
+}) {
+  const model = useMemo(() => buildDiffModel(diff.hunks), [diff.hunks]);
+  const lineEndingNotice = crlfNotice(model.crlf);
+
+  return (
+    <>
+      {diff.truncated ? (
+        <section className="diff-notice" role="status">
+          <strong>Unified output was truncated</strong>
+          <p>The structured hunk table below still includes every changed line.</p>
+        </section>
+      ) : null}
+      {lineEndingNotice ? (
+        <section className="diff-notice" role="status">
+          <strong>{lineEndingNotice}</strong>
+        </section>
+      ) : null}
+      {model.intralineSkipped > 0 ? (
+        <section className="diff-notice" role="status">
+          <strong>
+            Word-level marks were skipped on {model.intralineSkipped} long line
+            {model.intralineSkipped === 1 ? "" : "s"}
+          </strong>
+        </section>
+      ) : null}
+      <DiffPane
+        fromLabel={`v${diff.from.version}`}
+        layout={effectiveLayout}
+        marks={marks}
+        model={model}
+        toLabel={`v${diff.to.version}`}
+        wrap={wrap}
+      />
+    </>
+  );
+}
+
 export default function DiffPage() {
   const { stash, "*": path } = useParams();
   const { client } = useStashClient();
@@ -116,7 +169,7 @@ export default function DiffPage() {
   const fromVersion = positiveInteger(searchParams.get("from")) ?? 1;
   const selectedTo = toVersion(searchParams.get("to")) ?? "head";
   const context = contextLines(searchParams.get("context"));
-  const [wrap, setWrap] = useState(initialWrap);
+  const preferences = useDiffViewPreferences();
   const [copyState, setCopyState] = useState<CopyState>("idle");
 
   const history = useAsync(
@@ -189,16 +242,6 @@ export default function DiffPage() {
 
   function handleContextChange(event: ChangeEvent<HTMLSelectElement>) {
     updateSearch({ context: contextLines(event.currentTarget.value) });
-  }
-
-  function handleWrapChange(event: ChangeEvent<HTMLInputElement>) {
-    const next = event.currentTarget.checked;
-    setWrap(next);
-    try {
-      localStorage.setItem(WRAP_STORAGE_KEY, String(next));
-    } catch {
-      // The visible preference still changes when storage is unavailable.
-    }
   }
 
   function handleSwap() {
@@ -274,10 +317,15 @@ export default function DiffPage() {
                 ))}
               </select>
             </label>
-            <label className="diff-toggle">
-              <input checked={wrap} onChange={handleWrapChange} type="checkbox" />
-              Wrap long lines
-            </label>
+            <DiffControls
+              isNarrow={preferences.isNarrow}
+              marks={preferences.marks}
+              preferredLayout={preferences.preferredLayout}
+              setMarks={preferences.setMarks}
+              setPreferredLayout={preferences.setPreferredLayout}
+              setWrap={preferences.setWrap}
+              wrap={preferences.wrap}
+            />
             {diff.state === "ready" && diff.value.state === "ready" ? (
               <span
                 className="diff-stats"
@@ -306,12 +354,17 @@ export default function DiffPage() {
         {history.state === "error" ? (
           <ErrorBanner
             error={history.error}
-            onRetry={history.reload}
+            onRetry={() => void history.reload().catch(() => undefined)}
             title="Could not load version history"
           />
         ) : null}
         {diff.state === "loading" ? <p className="loading-copy">Loading comparison…</p> : null}
-        {diff.state === "error" ? <ErrorBanner error={diff.error} onRetry={diff.reload} /> : null}
+        {diff.state === "error" ? (
+          <ErrorBanner
+            error={diff.error}
+            onRetry={() => void diff.reload().catch(() => undefined)}
+          />
+        ) : null}
 
         {diff.state === "ready" && diff.value.state === "same" ? (
           <section className="diff-state-card" role="status">
@@ -335,15 +388,12 @@ export default function DiffPage() {
         ) : null}
 
         {diff.state === "ready" && diff.value.state === "ready" ? (
-          <>
-            {diff.value.truncated ? (
-              <section className="diff-notice" role="status">
-                <strong>Unified output was truncated</strong>
-                <p>The structured hunk table below still includes every changed line.</p>
-              </section>
-            ) : null}
-            <DiffTable hunks={diff.value.hunks} wrap={wrap} />
-          </>
+          <ReadyDiff
+            diff={diff.value}
+            effectiveLayout={preferences.effectiveLayout}
+            marks={preferences.marks}
+            wrap={preferences.wrap}
+          />
         ) : null}
       </div>
     </Page>

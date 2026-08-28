@@ -9,9 +9,8 @@ consumers (Node.js, browser, Worker service binding)
                          │
                          ▼
                  stash Worker (/v1)
-                         │
-                         ▼
-                         D1
+                   ├──► D1 (metadata, heads, history, and inline text)
+                   └──► private R2 (large text bodies)
 
 viewer Worker ── service binding ──► stash Worker
 ```
@@ -20,7 +19,8 @@ viewer Worker ── service binding ──► stash Worker
 | ----------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `@takazudo/zudo-history-stash-core` (`packages/core`) | Runtime-agnostic types, schemas, validators, hashes, limits, and diff engine |
 | `@takazudo/zudo-history-stash` (`packages/client`)    | Node, browser, and Worker client with CAS writes and bounded retries         |
-| `zudo-history-stash` (`workers/stash`)                | Hono `/v1` API and the D1 system of record                                   |
+| `@takazudo/zudo-history-stash-ui` (`packages/ui`)     | Router-independent React workflows, hooks, and components                    |
+| `zudo-history-stash` (`workers/stash`)                | Hono `/v1` API with D1 metadata/history and private R2 spill storage         |
 | `zudo-history-stash-viewer` (`workers/viewer`)        | React/Tailwind standalone viewer and service-binding proxy                   |
 
 ## Consumer guide
@@ -53,8 +53,32 @@ const rollback = await files.rollback("docs/guide.md", {
 if (!rollback.ok) throw new Error(rollback.error.message);
 ```
 
-For a same-account Worker, bind the stash service and give its `fetch` method to the same client.
-The hostname is only a valid URL base; the binding routes the request internally:
+For a same-account Worker, prefer the named `StashRpc` entrypoint and the same client API:
+
+```toml
+compatibility_date = "2024-04-03"
+
+[[services]]
+binding = "STASH_RPC"
+service = "zudo-history-stash"
+entrypoint = "StashRpc"
+```
+
+```ts
+import { createStashClient, type StashRpcEntrypoint } from "@takazudo/zudo-history-stash";
+
+interface Env {
+  STASH_RPC: StashRpcEntrypoint;
+  STASH_TOKEN: string;
+}
+
+const client = createStashClient({
+  transport: { kind: "rpc", binding: env.STASH_RPC, token: env.STASH_TOKEN },
+});
+```
+
+The existing fetch service binding remains available for HTTP-compatible consumers. The hostname
+is only a valid URL base; the binding routes the request internally:
 
 ```toml
 [[services]]
@@ -74,11 +98,23 @@ Bots and other consumers can post stable viewer links without knowing the viewer
 
 - `/s/:stash/f/*path` opens a file and its history.
 - `/s/:stash/diff/*path?from=N&to=M|head` opens a stored-version diff.
+- `/s/:stash/edit/*path?from=N` opens the write-gated editor, optionally from an older version.
+- `/s/:stash/proposals?status=open|all&path=...` lists proposals, optionally filtered by path.
+- `/s/:stash/proposals/:id` opens the immutable proposal review and decision record.
+- `/s/:stash/new` opens the write-gated new-file form.
+- `/s/:stash/tokens` opens admin-only token management for a stash.
 
 Browser-direct code must use a `read` token. A `write` token is a full-stash credential and can
 replace, delete, or roll back every path in that stash; keep it in a trusted server or Worker
-secret. See the complete [API reference](docs/api.md) and the
-[Cloudflare setup guide](docs/cloudflare-setup.md) for bindings, D1, secrets, CORS, and deployment.
+secret. See the [UI package guide](packages/ui/README.md), complete [API reference](docs/api.md),
+generated [OpenAPI document](docs/openapi.json), [Cloudflare setup guide](docs/cloudflare-setup.md),
+and [Viewer operations runbook](docs/viewer-operations.md).
+
+Once repository Cloudflare credentials are provisioned, same-repository pull requests receive
+isolated stash and Viewer Workers plus D1, R2, and Worker-owned Durable Object resources, with
+automatic close teardown and orphan reaping; see
+[Cloudflare setup](docs/cloudflare-setup.md#pull-request-previews) and
+[Testing](TESTING.md#pull-request-preview-lane).
 
 ## Quick start
 
@@ -111,8 +147,36 @@ To preserve the fixture while exercising a reset,
 `node scripts/seed-dev.mjs --base-url http://localhost:8787/api --reset` uses a fresh
 `demo-reset-...` stash because stash deletion is deferred.
 
+## Lifecycle and GC confirmation
+
+The final local proof is split deliberately: `pnpm b4push` covers the ordinary workspace, the
+focused Worker test exercises isolated real D1/R2 storage with an injected clock, and the
+server-backed lanes exercise `dev:full` without making a production mutation:
+
+```bash
+pnpm --filter zudo-history-stash exec vitest run \
+  --config vitest.config.ts test/final-evidence.test.ts
+pnpm b4push
+
+# With dev:full running and demo seeded:
+TEST_TIER=local API_BASE_URL=http://localhost:8787/api STASH_ADMIN_TOKEN=dev-admin-token \
+  pnpm --filter zudo-history-stash test:contract
+API_BASE_URL=http://localhost:8787/api STASH_ADMIN_TOKEN=dev-admin-token \
+  node packages/client/scripts/conformance-live.mjs
+
+# Stop the manual server first; Playwright owns a fresh dev:full lifecycle.
+pnpm --filter zudo-history-stash-viewer e2e:live
+```
+
+The HTTP contract includes the complete spill → soft-delete → revoked-token → admin visibility →
+restore → exact read → new-token lifecycle on a uniquely suffixed stash. The focused storage proof
+covers R2 dry/live collection, ledger continuation, leases, run identity, history order, and
+restart-after-completion. The browser GC smoke is always a dry run. See [TESTING.md](TESTING.md) for
+the production-tier skip audit and exact safety boundaries.
+
 See [docs/api.md](docs/api.md) for the API reference and
-[docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning.
+[docs/cloudflare-setup.md](docs/cloudflare-setup.md) for Cloudflare provisioning. Operators should
+also read [docs/viewer-operations.md](docs/viewer-operations.md) before deploying the Viewer.
 
 | Command                                | Purpose                                                           |
 | -------------------------------------- | ----------------------------------------------------------------- |
@@ -121,12 +185,12 @@ See [docs/api.md](docs/api.md) for the API reference and
 | `pnpm dev:migrate`                     | Apply pending migrations to the local stash D1                    |
 | `pnpm dev:full`                        | Build, migrate, then run the viewer-primary multi-Worker topology |
 | `pnpm wait:full` / `pnpm seed:dev`     | Wait for proxied health, then seed `demo` through `/api`          |
-| `pnpm build:libs`                      | Build the two public packages first                               |
+| `pnpm build:libs`                      | Build the three public packages first                             |
 | `pnpm build:viewer`                    | Build static viewer assets for the full local Worker              |
 | `pnpm build`                           | Build every workspace package and Worker dry-run                  |
 | `pnpm test`                            | Run workspace unit/Worker tests                                   |
 | `pnpm typecheck`                       | Type-check every workspace package                                |
-| `pnpm lint` / `pnpm lint:tokens`       | Run ESLint and viewer token lint                                  |
+| `pnpm lint` / `pnpm lint:tokens`       | Run ESLint and Viewer + UI package token lint                     |
 | `pnpm format:check` / `pnpm format:md` | Check or format source and Markdown                               |
 | `pnpm b4push`                          | Run the local pre-push quality sequence                           |
 

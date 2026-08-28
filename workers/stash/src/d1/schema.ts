@@ -3,6 +3,7 @@ export interface StashRow {
   description: string;
   meta_json: string;
   created_at: number;
+  deleted_at: number | null;
 }
 
 export interface TokenRow {
@@ -14,6 +15,9 @@ export interface TokenRow {
   created_at: number;
   revoked_at: number | null;
   last_used_at: number | null;
+  expires_at: number | null;
+  rotated_from: string | null;
+  rotated_to: string | null;
 }
 
 export interface BlobRow {
@@ -61,6 +65,55 @@ export interface IdempotencyRow {
   created_at: number;
 }
 
+export type GcJobKind = "r2-orphans" | "ledger";
+
+export interface GcJobRow {
+  kind: GcJobKind;
+  next_cursor: string | null;
+  lease_owner: string | null;
+  lease_generation: number;
+  lease_until: number | null;
+  updated_at: number;
+}
+
+export interface GcRunRow {
+  id: string;
+  job_kind: GcJobKind;
+  lease_generation: number;
+  dry_run: 0 | 1;
+  input_cursor: string | null;
+  next_cursor: string | null;
+  scanned: number;
+  eligible: number;
+  deleted: number;
+  error: string | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface ProposalRow {
+  id: string;
+  stash_name: string;
+  path: string;
+  base_version: number | null;
+  blob_hash: string;
+  size_bytes: number;
+  author: string;
+  message: string;
+  meta_json: string;
+  status: "open" | "applied" | "rejected";
+  expires_at: number;
+  created_at: number;
+  idempotency_key: string | null;
+  request_hash: string | null;
+  decision_attempt: string | null;
+  decided_at: number | null;
+  decided_by: string | null;
+  decision_reason: string | null;
+  applied_version: number | null;
+  applied_change_id: number | null;
+}
+
 export const TABLE_NAMES = [
   "stashes",
   "tokens",
@@ -68,10 +121,13 @@ export const TABLE_NAMES = [
   "files",
   "versions",
   "idempotency",
+  "gc_jobs",
+  "gc_runs",
+  "proposals",
 ] as const;
 
 export const TABLE_COLUMNS = {
-  stashes: ["name", "description", "meta_json", "created_at"],
+  stashes: ["name", "description", "meta_json", "created_at", "deleted_at"],
   tokens: [
     "id",
     "stash_name",
@@ -81,6 +137,9 @@ export const TABLE_COLUMNS = {
     "created_at",
     "revoked_at",
     "last_used_at",
+    "expires_at",
+    "rotated_from",
+    "rotated_to",
   ],
   blobs: ["stash_name", "hash", "body", "r2_key", "size_bytes", "created_at"],
   files: ["stash_name", "path", "head_version", "head_hash", "deleted", "created_at", "updated_at"],
@@ -108,6 +167,43 @@ export const TABLE_COLUMNS = {
     "status_code",
     "created_at",
   ],
+  gc_jobs: ["kind", "next_cursor", "lease_owner", "lease_generation", "lease_until", "updated_at"],
+  gc_runs: [
+    "id",
+    "job_kind",
+    "lease_generation",
+    "dry_run",
+    "input_cursor",
+    "next_cursor",
+    "scanned",
+    "eligible",
+    "deleted",
+    "error",
+    "started_at",
+    "finished_at",
+  ],
+  proposals: [
+    "id",
+    "stash_name",
+    "path",
+    "base_version",
+    "blob_hash",
+    "size_bytes",
+    "author",
+    "message",
+    "meta_json",
+    "status",
+    "expires_at",
+    "created_at",
+    "idempotency_key",
+    "request_hash",
+    "decision_attempt",
+    "decided_at",
+    "decided_by",
+    "decision_reason",
+    "applied_version",
+    "applied_change_id",
+  ],
 } as const satisfies Record<(typeof TABLE_NAMES)[number], readonly string[]>;
 
 export interface DatabaseSchema {
@@ -117,4 +213,7 @@ export interface DatabaseSchema {
   files: FileRow;
   versions: VersionRow;
   idempotency: IdempotencyRow;
+  gc_jobs: GcJobRow;
+  gc_runs: GcRunRow;
+  proposals: ProposalRow;
 }

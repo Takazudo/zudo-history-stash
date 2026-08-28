@@ -1,0 +1,22 @@
+---
+title: 変更フィード
+description: 管理者向け、および stash に限定した正本の変更 pagination です。
+sidebar_position: 150
+category: reference
+---
+
+### `GET /v1/changes`
+
+**Contract:** operation `listChanges`; principal `admin`; transport `any`.
+
+管理者向けの全体 feed は、上限付きの `limit` と、`since` または `before` のいずれか一方を受け入れます。
+両方を指定することはできません。polling 用の `since` page は昇順、最初の page と `before` page は新しい順
+です。response には change、方向に応じた次の cursor、`hasMore` が含まれます。
+
+### `GET /v1/stashes/{stash}/changes`
+
+**Contract:** operation `getStashChanges`; principal `read`; transport `any`.
+
+同じ cursor と順序の契約を、認可された一つの stash に限定して使用します。各 change は全体で一意な
+`changeId`、path、version、kind、authorship、size、timestamp を持ちます。live event の後では、この feed を
+正本の照合元として扱ってください。有効な checkpoint を進める前に、`hasMore` の全 page を処理します。

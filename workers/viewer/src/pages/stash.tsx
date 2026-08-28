@@ -1,18 +1,25 @@
 import type { ChangeItem, FileSummary } from "@takazudo/zudo-history-stash";
-import { useState, type ChangeEvent } from "react";
-import { useParams } from "react-router-dom";
-import { useStashClient } from "../app/auth/stash-client-provider.js";
-import { Page } from "../app/shell/page.js";
-import { Table } from "../app/shell/table.js";
 import {
   Bytes,
+  Button,
   ChangeRow,
-  ErrorBanner,
+  DeleteStashDialog,
   LoadMore,
   PathCell,
   RelativeTime,
-  clientValue,
-} from "../components/index.js";
+  useCanWrite,
+  useIsAdmin,
+  useStashHref,
+} from "@takazudo/zudo-history-stash-ui";
+import { useCallback, useState, type ChangeEvent } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useStashClient } from "../app/auth/stash-client-provider.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
+import { proposalListHref } from "../app/proposal-routes.js";
+import { Page } from "../app/shell/page.js";
+import { Table } from "../app/shell/table.js";
+import { ErrorBanner, clientValue } from "../components/error-banner.js";
+import { useOpenProposalCount } from "../hooks/use-open-proposal-count.js";
 import { usePagedData } from "./use-paged-data.js";
 
 const fileKey = (file: FileSummary) => file.path;
@@ -43,7 +50,7 @@ function FileTable({ files, stash }: { files: FileSummary[]; stash: string }) {
             <PathCell
               className="data-table__path"
               path={file.path}
-              to={`/s/${stash}/f/${file.path}`}
+              route={{ kind: "file", stash, path: file.path }}
             />
             <td className="data-table__version">v{file.headVersion}</td>
             <td className="data-table__size data-table__mobile-optional">
@@ -64,8 +71,14 @@ function FileTable({ files, stash }: { files: FileSummary[]; stash: string }) {
 
 export default function StashPage() {
   const { stash } = useParams();
+  const navigate = useNavigate();
   const { client } = useStashClient();
+  const write = useCanWrite(stash ?? "");
+  const admin = useIsAdmin();
+  const hrefFor = useStashHref();
   const [includeDeleted, setIncludeDeleted] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const openProposals = useOpenProposalCount(client, stash);
   const files = usePagedData<FileSummary, string>(
     async (signal, after) => {
       if (!client || !stash) return { items: [], nextCursor: null };
@@ -97,15 +110,68 @@ export default function StashPage() {
     [client, stash],
     changeKey,
   );
+  const resetFiles = files.reset;
+  const resetChanges = changes.reset;
+  const reloadOpenProposals = openProposals.reload;
+  useViewerLiveRefresh(
+    useCallback(
+      async ({ signal }) => {
+        const results = await Promise.allSettled([
+          resetFiles(signal),
+          resetChanges(signal),
+          reloadOpenProposals(signal),
+        ]);
+        const failed = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failed !== undefined) throw failed.reason;
+      },
+      [reloadOpenProposals, resetChanges, resetFiles],
+    ),
+  );
 
   function handleIncludeDeleted(event: ChangeEvent<HTMLInputElement>) {
     setIncludeDeleted(event.currentTarget.checked);
-    files.reset();
   }
 
   const newestChanges = [...changes.items].sort((left, right) => right.changeId - left.changeId);
   return (
-    <Page title={stash ?? "Stash"} description="Files and recent changes in this stash.">
+    <Page
+      title={stash ?? "Stash"}
+      description="Files and recent changes in this stash."
+      actions={
+        stash ? (
+          <div className="page-actions">
+            <Link className="zhs-button zhs-button--secondary" to={proposalListHref(stash)}>
+              {openProposals.state === "ready" && openProposals.value !== null
+                ? `Proposals (${openProposals.value} open)`
+                : "Proposals"}
+            </Link>
+            {write.ready && write.canWrite ? (
+              <Link
+                className="zhs-button zhs-button--primary"
+                to={hrefFor({ kind: "new-file", stash })}
+              >
+                New file
+              </Link>
+            ) : null}
+            {admin.ready && admin.isAdmin ? (
+              <>
+                <Link
+                  className="zhs-button zhs-button--secondary"
+                  to={hrefFor({ kind: "tokens", stash })}
+                >
+                  Tokens
+                </Link>
+                <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+                  Delete stash
+                </Button>
+              </>
+            ) : null}
+          </div>
+        ) : null
+      }
+    >
       {!stash ? (
         <ErrorBanner error={new Error("The stash name is missing from this URL.")} />
       ) : null}
@@ -124,7 +190,12 @@ export default function StashPage() {
                 </label>
               </div>
               {files.initialLoading ? <p className="loading-copy">Loading files…</p> : null}
-              {files.error ? <ErrorBanner error={files.error} onRetry={files.retry} /> : null}
+              {files.error ? (
+                <ErrorBanner
+                  error={files.error}
+                  onRetry={() => void files.retry().catch(() => undefined)}
+                />
+              ) : null}
               {!files.initialLoading && !files.error && files.items.length === 0 ? (
                 <p className="empty-copy">
                   {includeDeleted ? "This stash has no files." : "This stash has no live files."}
@@ -149,7 +220,12 @@ export default function StashPage() {
                 </div>
               </div>
               {changes.initialLoading ? <p className="loading-copy">Loading changes…</p> : null}
-              {changes.error ? <ErrorBanner error={changes.error} onRetry={changes.retry} /> : null}
+              {changes.error ? (
+                <ErrorBanner
+                  error={changes.error}
+                  onRetry={() => void changes.retry().catch(() => undefined)}
+                />
+              ) : null}
               {!changes.initialLoading && !changes.error && newestChanges.length === 0 ? (
                 <p className="empty-copy">No changes have been recorded.</p>
               ) : null}
@@ -170,6 +246,14 @@ export default function StashPage() {
             </section>
           </aside>
         </div>
+      ) : null}
+      {stash ? (
+        <DeleteStashDialog
+          open={deleteOpen}
+          stash={stash}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => navigate("/")}
+        />
       ) : null}
     </Page>
   );

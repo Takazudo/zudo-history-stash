@@ -1,0 +1,89 @@
+---
+title: Proposals and Approval
+description: Store immutable candidates and apply them only while their exact base is current.
+sidebar_position: 40
+category: guides
+---
+
+A proposal stores an immutable candidate body against an exact `baseVersion`; `null` means the path
+must not exist. Creation requires a write credential and can carry a stable idempotency key. The
+candidate does not become file history until approval succeeds.
+
+The proposal diff always compares its stored base with its stored candidate, even after the live
+head moves. Its separate `current` and `stale` fields describe that live state. Approval repeats the
+same exact-head fence and never rebases the candidate.
+
+{/* zhs-example: consumer-proposals */}
+
+```ts
+import {
+  createStashClient,
+  isProposalClosedResult,
+  isProposalExpiredResult,
+  isProposalStaleResult,
+  type ClientResult,
+} from "@takazudo/zudo-history-stash";
+
+function valueOf<T>(result: ClientResult<T>, step: string): T {
+  if (!result.ok) {
+    throw new Error(`${step} failed: ${result.error.code}`);
+  }
+  return result.value;
+}
+
+export async function proposeAndApprove(input: {
+  baseUrl: string;
+  writeToken: string;
+  stash: string;
+  path: string;
+  body: string;
+  baseVersion: number | null;
+  stableIdempotencyKey: string;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.writeToken });
+  const proposals = client.proposals(input.stash);
+  const proposal = valueOf(
+    await proposals.create(
+      {
+        path: input.path,
+        body: input.body,
+        baseVersion: input.baseVersion,
+        message: "Candidate content",
+      },
+      { idempotencyKey: input.stableIdempotencyKey },
+    ),
+    "create proposal",
+  );
+  const diff = valueOf(await proposals.diff(proposal.id), "diff proposal");
+  const approval = await proposals.approve(proposal.id, { message: "Approved" });
+
+  if (isProposalStaleResult(approval)) {
+    return { kind: "stale" as const, current: approval.current, proposal, diff };
+  }
+  if (isProposalExpiredResult(approval)) {
+    return { kind: "expired" as const, proposal, diff };
+  }
+  if (isProposalClosedResult(approval)) {
+    return { kind: "closed" as const, proposal, diff };
+  }
+  if (!approval.ok) {
+    return { kind: "failed" as const, failure: approval, proposal, diff };
+  }
+  return { kind: "applied" as const, value: approval.value, proposal, diff };
+}
+```
+
+A `stale` approval leaves the proposal open. Fetch the new head and create a new proposal if the
+candidate still makes sense; do not overwrite or automatically rebase. A successful approval
+appends an ordinary version whose metadata includes the platform-owned proposal ID. Repeating an
+already successful approval reconstructs the stored winner.
+
+An open proposal is expired when its expiry is equal to or earlier than the server's current time.
+An expired open proposal cannot be approved but can still be rejected. Rejection is idempotent for
+an already rejected proposal, while the opposite terminal decision returns `proposal-closed`.
+
+Any matching stash write credential can approve. Required reviewers, roles, review comments, and
+the relationship between a human and a credential belong to the consuming application.
+`decidedBy` comes from authenticated identity and is not caller input; author and message fields are
+audit metadata, not authorization. Apply the same retry rules described in the
+[consumer write protocol](./consumer-write-protocol.mdx).

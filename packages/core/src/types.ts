@@ -3,6 +3,48 @@ import type { JsonValue } from "./canonical.js";
 
 export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
+export type GcKind = "r2-orphans" | "ledger";
+export type ProposalStatus = "open" | "applied" | "rejected" | "expired";
+export type ReconnectReason = "lifetime" | "replay-limit" | "shutdown";
+
+export interface StashReadyEvent {
+  type: "ready";
+  head: number | null;
+  checkpoint: number | null;
+}
+
+export interface StashChangeEvent {
+  type: "change";
+  changeId: number;
+  stash: string;
+  path: string;
+  version: number;
+  kind: VersionKind;
+  origin: string | null;
+  createdAt: string;
+}
+
+export interface StashProposalEvent {
+  type: "proposal";
+  proposalId: string;
+  stash: string;
+  path: string;
+  status: ProposalStatus;
+  origin: string | null;
+}
+
+export interface StashReconnectEvent {
+  type: "reconnect";
+  reason: ReconnectReason;
+}
+
+/** One validated advisory event yielded by the fetch-only live stream. */
+export type StashEvent =
+  StashReadyEvent | StashChangeEvent | StashProposalEvent | StashReconnectEvent;
+
+/** Stream lifecycle state. Client packages bind the failure parameter to their HTTP error type. */
+export type LiveStatus<Failure = unknown> =
+  "connecting" | "live" | "reconnecting" | "closed" | { failed: Failure };
 export type ErrorCode =
   | "validation"
   | "invalid-path"
@@ -15,6 +57,12 @@ export type ErrorCode =
   | "stale"
   | "exists"
   | "already-deleted"
+  | "gc-busy"
+  | "already-rotated"
+  | "token-expired"
+  | "proposal-expired"
+  | "proposal-closed"
+  | "rate-limited"
   | "payload-too-large"
   | "idempotency-key-reused"
   | "rollback-target-tombstone"
@@ -31,6 +79,7 @@ export interface Current {
 export interface ErrorDetail {
   code: ErrorCode;
   message: string;
+  successorId?: string;
 }
 export interface ErrorResponse {
   error: ErrorDetail;
@@ -49,7 +98,13 @@ export interface HealthResponse {
 }
 export type MeResponse =
   | { principal: "admin" }
-  | { principal: "stash"; stash: string; tokenId: string; scope: TokenScope };
+  | {
+      principal: "stash";
+      stash: string;
+      tokenId: string;
+      scope: TokenScope;
+      expiresAt: string | null;
+    };
 export interface StashRecord {
   name: string;
   description: string;
@@ -59,6 +114,9 @@ export interface StashRecord {
   lastChangeId: number | null;
   lastChangeAt: string | null;
   createdAt: string;
+  deletedAt: string | null;
+  restoreUntil: string | null;
+  restorable: boolean;
 }
 export type StashSummary = Omit<StashRecord, "meta">;
 export interface StashListResponse {
@@ -67,21 +125,93 @@ export interface StashListResponse {
 }
 export type CreateStashResult = StashRecord;
 export type GetStashResult = StashRecord;
+export interface DeleteStashResult {
+  name: string;
+  deletedAt: string;
+  revokedTokens: number;
+  restoreUntil: string;
+}
+export type RestoreStashResult = StashRecord;
+export interface GcRunResult {
+  runId: string;
+  jobId: GcKind;
+  kind: GcKind;
+  dryRun: boolean;
+  scanned: number;
+  eligible: number;
+  deleted: number;
+  cursor: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+export interface GcRunsResponse {
+  runs: GcRunResult[];
+}
+export interface ProposalRecord {
+  id: string;
+  stash: string;
+  path: string;
+  baseVersion: number | null;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  size: number;
+  hash: string;
+  createdAt: string;
+  expiresAt: string;
+  status: ProposalStatus;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  appliedVersion: number | null;
+  appliedChangeId: number | null;
+}
+export type ProposalWithBody = ProposalRecord & { body: string };
+export interface ProposalListResponse {
+  proposals: ProposalRecord[];
+  nextAfter: string | null;
+  total: number;
+}
+export interface ApproveProposalResult {
+  status: "applied";
+  appliedVersion: number;
+  appliedChangeId: number;
+  hash: string;
+  createdAt: string;
+}
+export type ProposalDiffResult = DiffResult & {
+  base: { version: number | null; hash: string | null; deleted: boolean };
+  candidate: { hash: string; size: number };
+  current: Current | null;
+  stale: boolean;
+};
 export interface TokenRecord {
   id: string;
   label: string;
   scope: TokenScope;
   createdAt: string;
+  expiresAt: string | null;
+  rotatedFrom: string | null;
+  rotatedTo: string | null;
   revokedAt: string | null;
   lastUsedAt: string | null;
 }
-export interface CreatedToken extends Omit<TokenRecord, "revokedAt" | "lastUsedAt"> {
+export interface CreatedToken extends Omit<
+  TokenRecord,
+  "expiresAt" | "rotatedFrom" | "rotatedTo" | "revokedAt" | "lastUsedAt"
+> {
   token: string;
+  expiresAt: string | null;
+  rotatedFrom: string | null;
 }
 export interface TokenListResponse {
   tokens: TokenRecord[];
 }
 export type CreateTokenResult = CreatedToken;
+export type RotateTokenResult = CreatedToken & {
+  predecessor: { id: string; expiresAt: string | null };
+};
 export type RevokeTokenResult = undefined;
 export interface FileSummary {
   path: string;
@@ -185,6 +315,11 @@ export interface DiffSide {
 export type FileDiffResult = DiffResult & { from: DiffSide; to: DiffSide };
 export type GetDiffResult = FileDiffResult;
 export type CandidateDiffResult = DiffResult;
+export type CreateProposalResult = ProposalRecord;
+export type ListProposalsResult = ProposalListResponse;
+export type GetProposalResult = ProposalWithBody;
+export type GetProposalDiffResult = ProposalDiffResult;
+export type RejectProposalResult = ProposalRecord;
 export type ListStashesResult = StashListResponse;
 export type ListTokensResult = TokenListResponse;
 export type ListFilesResult = FileListResponse;

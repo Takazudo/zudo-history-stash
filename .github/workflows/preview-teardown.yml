@@ -1,0 +1,128 @@
+name: PR preview teardown
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to tear down
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number || github.event.inputs.pr || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Check teardown eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.pull.outputs.pr }}
+      ready: ${{ steps.credentials.outputs.ready || 'false' }}
+
+    steps:
+      - name: Checkout trusted preview helpers
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Require an exact closed pull request
+        id: pull
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          pull_json="$(node scripts/preview-reaper.mjs check-pr --pr "$PREVIEW_PR_NUMBER")"
+          pr="$(jq -er '.pr | select(type == "number" and floor == . and . >= 1)' <<<"$pull_json")"
+          state="$(jq -er '.state | select(. == "open" or . == "closed")' <<<"$pull_json")"
+          fork="$(jq -er '.fork | select(type == "boolean")' <<<"$pull_json")"
+          [[ "$pr" == "$PREVIEW_PR_NUMBER" ]]
+          [[ "$state" == "closed" ]]
+          {
+            printf 'pr=%s\n' "$pr"
+            printf 'fork=%s\n' "$fork"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Explain fork skip
+        if: steps.pull.outputs.fork == 'true'
+        run: echo "::notice::PR preview teardown is unnecessary for fork pull requests."
+
+      - name: Check preview credentials
+        id: credentials
+        if: steps.pull.outputs.fork == 'false'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_IS_FORK: "false"
+        run: bash scripts/preview-gate.sh
+
+  cleanup:
+    name: Tear down preview resources
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout trusted preview helpers
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Recheck pull request after acquiring the preview lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_PR_NUMBER: ${{ needs.gate.outputs.pr }}
+        run: |
+          set -euo pipefail
+          pull_json="$(node scripts/preview-reaper.mjs check-pr --pr "$PREVIEW_PR_NUMBER")"
+          jq -e '.state == "closed" and .fork == false and .pr == $PREVIEW_PR_NUMBER' \
+            --argjson PREVIEW_PR_NUMBER "$PREVIEW_PR_NUMBER" <<<"$pull_json" >/dev/null
+
+      - name: Delete and verify preview resources
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_PR_NUMBER: ${{ needs.gate.outputs.pr }}
+        run: node scripts/preview-reaper.mjs teardown --pr "$PREVIEW_PR_NUMBER"
+
+      - name: Mark preview comment torn down
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_COMMENT_STATE: torn-down
+          PREVIEW_PR_NUMBER: ${{ needs.gate.outputs.pr }}
+        run: node scripts/preview-comment.mjs

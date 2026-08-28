@@ -1,0 +1,1 @@
+CREATE TABLE fixture (id TEXT PRIMARY KEY);

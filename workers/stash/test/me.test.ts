@@ -25,6 +25,24 @@ describe("GET /v1/me", () => {
       stash: "alpha",
       tokenId: minted.id,
       scope: "read",
+      expiresAt: null,
+    });
+  });
+
+  it("returns the authenticated token expiry", async () => {
+    const expiresAt = 2_000_000_000_000;
+    await seedStash("expiring");
+    const minted = await mintToken("expiring", "write", { expiresAt });
+    const response = await request(app, "http://stash.test/v1/me", {
+      headers: bearer(minted.token),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      principal: "stash",
+      stash: "expiring",
+      tokenId: minted.id,
+      scope: "write",
+      expiresAt: new Date(expiresAt).toISOString(),
     });
   });
 });

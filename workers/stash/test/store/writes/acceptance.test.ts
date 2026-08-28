@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { MAX_BODY_BYTES } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
 import { createWrites } from "../../../src/d1/writes.js";
 import { rollbackBatch } from "../../../src/d1/sql/writes.js";
@@ -24,7 +25,7 @@ describe("stash writes", () => {
       expectedVersion = result.value.version;
     }
     const tooLarge = await writes.put(stash, "large.txt", {
-      body: "x".repeat(1_000_001),
+      body: "x".repeat(MAX_BODY_BYTES + 1),
       expectedVersion: null,
     });
     expectError(tooLarge, "payload-too-large");
@@ -337,36 +338,5 @@ describe("stash writes", () => {
     expect(deleteReplay).toMatchObject({ ok: true, statusCode: 200, replayed: true });
     if (!deleted.ok || !deleteReplay.ok) throw new Error("delete replay failed");
     expect(deleteReplay.value).toEqual(deleted.value);
-  });
-
-  it("sweeps at most 200 ledger rows strictly older than the cutoff", async () => {
-    const { stash, writes } = await setup();
-    const statements = Array.from({ length: 205 }, (_, index) =>
-      env.DB.prepare(
-        `INSERT INTO idempotency
-          (stash_name, key, request_hash, path, version, status_code, created_at)
-         VALUES (?, ?, 'hash', 'path', 1, 201, ?)`,
-      ).bind(stash, `old-${index}`, index),
-    );
-    statements.push(
-      env.DB.prepare(
-        `INSERT INTO idempotency
-          (stash_name, key, request_hash, path, version, status_code, created_at)
-         VALUES (?, 'cutoff', 'hash', 'path', 1, 201, 500)`,
-      ).bind(stash),
-    );
-    await env.DB.batch(statements);
-    expect(await writes.sweepLedger(500)).toBe(200);
-    const remaining = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM idempotency WHERE stash_name = ?",
-    )
-      .bind(stash)
-      .first<{ count: number }>();
-    expect(remaining?.count).toBe(6);
-    expect(
-      await env.DB.prepare("SELECT 1 FROM idempotency WHERE stash_name = ? AND key = 'cutoff'")
-        .bind(stash)
-        .first(),
-    ).not.toBeNull();
   });
 });

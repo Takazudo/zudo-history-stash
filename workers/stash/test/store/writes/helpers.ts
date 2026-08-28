@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import type { Env } from "../../../src/env.js";
 import { createWrites, type WriteDependencies } from "../../../src/d1/writes.js";
+import { generation } from "../../helpers/blob-generations.js";
 
 let sequence = 0;
 
@@ -8,6 +9,7 @@ export async function setup(overrides: Partial<WriteDependencies> = {}) {
   sequence += 1;
   const stash = `writes-${sequence}`;
   const now = overrides.now ?? (() => 1_700_000_000_000 + sequence);
+  let generationSequence = sequence * 1_000;
   await env.DB.prepare(
     "INSERT INTO stashes (name, description, meta_json, created_at) VALUES (?, '', '{}', ?)",
   )
@@ -17,6 +19,8 @@ export async function setup(overrides: Partial<WriteDependencies> = {}) {
   const deps: WriteDependencies = {
     now,
     createId: overrides.createId ?? (() => `id-${sequence}`),
+    createBlobGeneration:
+      overrides.createBlobGeneration ?? (() => generation((generationSequence += 1))),
     ...(overrides.onBeforeCommit ? { onBeforeCommit: overrides.onBeforeCommit } : {}),
   };
   return { env: workerEnv, stash, deps, writes: createWrites(workerEnv, deps) };

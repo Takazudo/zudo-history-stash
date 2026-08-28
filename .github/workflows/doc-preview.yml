@@ -1,0 +1,143 @@
+name: Documentation preview
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+    paths:
+      - "doc/**"
+      - "docs/openapi.json"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".mdx-formatter.json"
+      - ".github/workflows/doc-preview.yml"
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: doc-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Check documentation preview eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.credentials.outputs.ready || 'false' }}
+
+    steps:
+      - name: Explain ineligible fork
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "::notice::Documentation previews are disabled for fork pull requests."
+
+      - name: Check preview credentials
+        id: credentials
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cloudflare credentials are incomplete; documentation preview skipped."
+          fi
+
+  preview:
+    name: Build and upload documentation preview
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout exact pull request head with full history
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run documentation aggregate
+        run: pnpm b4push:doc
+
+      - name: Generate published page history
+        run: >-
+          cd doc && pnpm exec doc-history-generate
+          --content-dir src/content/docs
+          --locale ja:src/content/docs-ja
+          --out-dir dist/doc-history
+          --max-entries 50
+
+      - name: Create private structured-output path
+        id: output
+        run: |
+          set -euo pipefail
+          umask 077
+          output_path="$(mktemp "$RUNNER_TEMP/zhs-doc-preview.XXXXXX.ndjson")"
+          printf 'path=%s\n' "$output_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload version and update pull-request alias
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ steps.output.outputs.path }}
+        run: cd doc && pnpm exec wrangler versions upload --preview-alias "pr-${PR_NUMBER}"
+
+      - name: Verify deployed commit
+        id: revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          deployed_sha="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$deployed_sha" == "$EXPECTED_SHA" ]]
+          printf 'sha=%s\n' "$deployed_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update documentation preview comment
+        env:
+          DOC_PREVIEW_OUTPUT_PATH: ${{ steps.output.outputs.path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          PREVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_SHA: ${{ steps.revision.outputs.sha }}
+        run: node scripts/doc-preview-comment.mjs
+
+      - name: Remove structured output
+        if: always()
+        env:
+          DOC_PREVIEW_OUTPUT_PATH: ${{ steps.output.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${DOC_PREVIEW_OUTPUT_PATH:-}" ]]; then
+            rm -f -- "$DOC_PREVIEW_OUTPUT_PATH"
+          fi

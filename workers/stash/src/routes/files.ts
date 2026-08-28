@@ -2,7 +2,6 @@ import {
   DeleteFileBody,
   FileGetQuery,
   IDEMPOTENCY_KEY_MAX_CHARS,
-  IDEMPOTENCY_TTL_DAYS,
   ListFilesQuery,
   MAX_BODY_BYTES,
   PutFileBody,
@@ -18,18 +17,15 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
 import { Hono, type Context } from "hono";
-import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
-import type { ReadFileRecord } from "../d1/reads.js";
+import type { ReadFileMetadata, ReadFileRecord } from "../d1/reads.js";
 import type { StoreWriteResult } from "../d1/writes.js";
+import { eventOrigin, publishEvents } from "../events/publish.js";
 
 const files = new Hono<AppEnv>();
 
-const LEDGER_SWEEP_INTERVAL_MS = 60_000;
-const IDEMPOTENCY_TTL_MS = IDEMPOTENCY_TTL_DAYS * 24 * 60 * 60 * 1_000;
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
-let lastLedgerSweepAt: number | undefined;
 
 type WriteSuccess<T> = Extract<StoreWriteResult<T>, { ok: true }>;
 type RoutedWriteSuccess<T> = WriteSuccess<T> & { statusCode: 200 | 201 };
@@ -106,30 +102,6 @@ function unwrapWrite<T>(result: StoreWriteResult<T>): RoutedWriteSuccess<T> {
   return { ...result, statusCode: result.statusCode };
 }
 
-function scheduleLedgerSweep(
-  c: Context<AppEnv>,
-  writes: ReturnType<typeof createStashStore>["writes"],
-  now: number,
-): void {
-  if (lastLedgerSweepAt !== undefined && now - lastLedgerSweepAt < LEDGER_SWEEP_INTERVAL_MS) {
-    return;
-  }
-  lastLedgerSweepAt = now;
-  c.executionCtx.waitUntil(
-    writes.sweepLedger(now - IDEMPOTENCY_TTL_MS).then(
-      () => undefined,
-      (error: unknown) => {
-        console.error(
-          JSON.stringify({
-            event: "ledger-sweep-failed",
-            message: error instanceof Error ? error.message : "Unknown ledger sweep error",
-          }),
-        );
-      },
-    ),
-  );
-}
-
 function responseFile(record: ReadFileRecord): FileRecord {
   return {
     path: record.path,
@@ -146,7 +118,7 @@ function responseFile(record: ReadFileRecord): FileRecord {
   };
 }
 
-function currentFromRecord(record: ReadFileRecord): Current {
+function currentFromRecord(record: ReadFileMetadata): Current {
   return {
     version: record.version,
     hash: record.hash,
@@ -157,7 +129,7 @@ function currentFromRecord(record: ReadFileRecord): Current {
   };
 }
 
-function fileEtag(record: ReadFileRecord): string {
+function fileEtag(record: ReadFileMetadata): string {
   if (record.deleted) {
     return formatEtag({ version: record.version, hash: null, deleted: true });
   }
@@ -169,33 +141,33 @@ function fileEtag(record: ReadFileRecord): string {
 
 files.get(
   "/v1/stashes/:stash/files",
-  requireRoute("listFiles"),
   zValidator("query", ListFilesQuery, (result) => {
     if (!result.success) throw new StashError("validation", "Invalid file list query.");
   }),
   async (c) => {
     const store = createStashStore(c.env);
     const query = c.req.valid("query");
-    return c.json(await store.reads.listFiles(c.req.param("stash"), query));
+    return c.json(await store.reads.listFiles(c.get("routeStash").name, query));
   },
 );
 
 files.get(
   "/v1/stashes/:stash/files/:path{.+}",
-  requireRoute("getFile"),
   zValidator("query", FileGetQuery, (result) => {
     if (!result.success) throw new StashError("validation", "Invalid file query.");
   }),
   async (c) => {
     const path = filePath(c);
     const query = c.req.valid("query");
-    const record = await createStashStore(c.env).reads.getFile(c.req.param("stash"), path, query);
-    if (record === null) {
+    const reads = createStashStore(c.env).reads;
+    const source = await reads.getFileSource(c.get("routeStash").name, path, query);
+    if (source === null) {
       throw new StashError(
         query.version === undefined ? "not-found" : "version-not-found",
         query.version === undefined ? "File not found." : "Version not found.",
       );
     }
+    const record = source.metadata;
     if (record.deleted && query.version === undefined) {
       return c.json(
         {
@@ -211,52 +183,93 @@ files.get(
     if (ifNoneMatchMatches(c.req.header("If-None-Match"), etag)) {
       return c.body(null, 304, headers);
     }
+    const materialized = await reads.materializeFile(source);
     for (const [name, value] of Object.entries(headers)) c.header(name, value);
-    return c.json(responseFile(record));
+    return c.json(responseFile(materialized));
   },
 );
 
-files.put("/v1/stashes/:stash/files/:path{.+}", requireRoute("putFile"), async (c) => {
+files.put("/v1/stashes/:stash/files/:path{.+}", async (c) => {
   const path = filePath(c);
+  const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.put(c.req.param("stash"), path, await putBody(c), {
+    await store.writes.put(stash, path, await putBody(c), {
       idempotencyKey: key,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
-  if (!result.replayed && !("unchanged" in result.value)) {
-    scheduleLedgerSweep(c, store.writes, store.deps.now());
+  if (result.statusCode === 201 && !result.replayed && !("unchanged" in result.value)) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "change",
+        changeId: result.value.changeId,
+        stash,
+        path,
+        version: result.value.version,
+        kind: "put",
+        origin: eventOrigin(c.req.raw),
+        createdAt: result.value.createdAt,
+      },
+    ]);
   }
   return c.json(result.value, result.statusCode);
 });
 
-files.post("/v1/stashes/:stash/delete/:path{.+}", requireRoute("deleteFile"), async (c) => {
+files.post("/v1/stashes/:stash/delete/:path{.+}", async (c) => {
   const path = filePath(c);
+  const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.delete(c.req.param("stash"), path, await deleteBody(c), {
+    await store.writes.delete(stash, path, await deleteBody(c), {
       idempotencyKey: key,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
-  if (!result.replayed) scheduleLedgerSweep(c, store.writes, store.deps.now());
+  if (!result.replayed) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "change",
+        changeId: result.value.changeId,
+        stash,
+        path,
+        version: result.value.version,
+        kind: "delete",
+        origin: eventOrigin(c.req.raw),
+        createdAt: result.value.createdAt,
+      },
+    ]);
+  }
   return c.json(result.value, result.statusCode);
 });
 
-files.post("/v1/stashes/:stash/rollback/:path{.+}", requireRoute("rollbackFile"), async (c) => {
+files.post("/v1/stashes/:stash/rollback/:path{.+}", async (c) => {
   const path = filePath(c);
+  const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
   const store = createStashStore(c.env);
   const result = unwrapWrite(
-    await store.writes.rollback(c.req.param("stash"), path, await rollbackBody(c), {
+    await store.writes.rollback(stash, path, await rollbackBody(c), {
       idempotencyKey: key,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
-  if (!result.replayed) scheduleLedgerSweep(c, store.writes, store.deps.now());
+  if (!result.replayed) {
+    publishEvents(c.env, c.executionCtx, stash, [
+      {
+        type: "change",
+        changeId: result.value.changeId,
+        stash,
+        path,
+        version: result.value.version,
+        kind: "rollback",
+        origin: eventOrigin(c.req.raw),
+        createdAt: result.value.createdAt,
+      },
+    ]);
+  }
   return c.json(result.value, result.statusCode);
 });
 

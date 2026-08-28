@@ -1,0 +1,38 @@
+---
+title: Error codes
+description: Closed API error-code and HTTP-status contract with recovery guidance.
+sidebar_position: 60
+category: reference
+---
+
+JSON failures use a stable error envelope whose machine-readable `error.code` is one of the values
+below. Route pages and the OpenAPI document define which errors apply to a particular operation.
+
+## Code/status contract
+
+| Code | HTTP status | Meaning | Recovery |
+| --- | ---: | --- | --- |
+| `validation` | `400` | Request shape, query, or value is invalid. | Correct the named field; do not retry unchanged input. |
+| `invalid-path` | `400` | A file path is not canonical or violates path rules. | Normalize and validate the path before retrying. |
+| `body-not-well-formed` | `400` | Text is not accepted well-formed content. | Repair the text encoding/content. |
+| `unauthorized` | `401` | The credential is absent, invalid, revoked, or expired. | Obtain a current credential and authenticate again. |
+| `scope` | `403` | The credential is valid but lacks the required capability. | Use an appropriate write/admin credential; do not broaden a read token. |
+| `not-found` | `404` | The authorized resource is absent or intentionally concealed. | Recheck the identifier and current principal. |
+| `file-deleted` | `404` | The current file head is a tombstone. | Read history or create a new live version as allowed. |
+| `version-not-found` | `404` | The requested historical version does not exist. | Refresh history and choose an existing version. |
+| `stale` | `409` | The expected head no longer matches. | Reload the authoritative head, reconcile, and retry with its version. |
+| `exists` | `409` | A create-only operation found an existing resource. | Read the existing resource or use an update fence. |
+| `already-deleted` | `409` | A lifecycle or file delete targeted an existing tombstone. | Treat it as already deleted or refresh state. |
+| `gc-busy` | `409` | Another generation owns the garbage-collection lease. | Retry after the active lease window. |
+| `already-rotated` | `409` | The predecessor token already has a successor. | Inspect the successor ID; revoke it and create anew if its secret was lost. |
+| `token-expired` | `409` | Token rotation targeted an expired predecessor. | Create a new token from an admin credential. |
+| `proposal-expired` | `409` | An open proposal passed its approval deadline. | Create a fresh proposal against the current head. |
+| `proposal-closed` | `409` | A proposal decision conflicts with its terminal state. | Refresh the proposal and respect the recorded decision. |
+| `payload-too-large` | `413` | The encoded request or stored content exceeds a limit. | Reduce the request using the documented limit and unit. |
+| `idempotency-key-reused` | `422` | One key was reused for a different canonical request. | Generate a new key; never mutate a retried request under the old key. |
+| `rollback-target-tombstone` | `422` | Rollback selected a deleted historical version. | Choose a live version or perform an explicit delete/create workflow. |
+| `rate-limited` | `429` | The principal exceeded its request class budget. | Honor `Retry-After` and back off. |
+| `internal` | `500` | The server could not safely complete the operation. | Record request context and retry only when the operation protocol permits. |
+
+Transport failures and malformed responses can reject before a typed error result exists. Do not
+infer success from the absence of one of these business codes.

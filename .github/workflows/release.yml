@@ -4,9 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -14,12 +16,9 @@ concurrency:
 
 jobs:
   publish:
-    name: Build, test, and publish packages
+    name: Build, verify, and publish packages
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
@@ -35,6 +34,25 @@ jobs:
           node-version: 22.13.0
           registry-url: https://registry.npmjs.org
 
+      - name: Verify publish context
+        id: context
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT_NAME" == "push" ]]; then
+            if ! version="$(bash scripts/release/ref-guard.sh "$RELEASE_REF")"; then
+              echo "::error::A release push must use an exact vX.Y.Z tag; got $RELEASE_REF"
+              exit 1
+            fi
+          else
+            version="$(node -p "require('./packages/core/package.json').version")"
+            echo "::notice::workflow_dispatch is dry-run only (version $version)"
+          fi
+          printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -44,28 +62,256 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Determine npm dist-tag from package version
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint core package
+        run: pnpm --filter @takazudo/zudo-history-stash-core lint:pkg
+
+      - name: Lint client package
+        run: pnpm --filter @takazudo/zudo-history-stash lint:pkg
+
+      - name: Lint UI package
+        run: pnpm --filter @takazudo/zudo-history-stash-ui lint:pkg
+
+      - name: Safeguards
+        id: safeguards
         env:
-          CORE_PACKAGE_JSON: packages/core/package.json
+          VERSION: ${{ steps.context.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION=$(node -p "require('./$CORE_PACKAGE_JSON').version")
-          if [[ "$VERSION" == *-* ]]; then
-            DIST_TAG=next
-          else
-            DIST_TAG=latest
+
+          core_package_version="$(node -p "require('./packages/core/package.json').version")"
+          client_package_version="$(node -p "require('./packages/client/package.json').version")"
+          ui_package_version="$(node -p "require('./packages/ui/package.json').version")"
+          core_constant="$(node -p 'require("fs").readFileSync("packages/core/src/index.ts", "utf8").match(/export const VERSION = "([^"]+)"/u)?.[1] ?? ""')"
+          client_constant="$(node -p 'require("fs").readFileSync("packages/client/src/index.ts", "utf8").match(/export const VERSION = "([^"]+)"/u)?.[1] ?? ""')"
+          ui_constant="$(node -p 'require("fs").readFileSync("packages/ui/src/index.ts", "utf8").match(/export const VERSION = "([^"]+)"/u)?.[1] ?? ""')"
+          openapi_version="$(node -p 'require("./docs/openapi.json").info?.version ?? ""')"
+
+          if [[ "$core_package_version" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match packages/core/package.json ($core_package_version)"
+            exit 1
           fi
-          echo "DIST_TAG=$DIST_TAG" >> "$GITHUB_ENV"
-          echo "Publishing version $VERSION with dist-tag $DIST_TAG"
+          if [[ "$client_package_version" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match packages/client/package.json ($client_package_version)"
+            exit 1
+          fi
+          if [[ "$ui_package_version" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match packages/ui/package.json ($ui_package_version)"
+            exit 1
+          fi
+          if [[ "$core_constant" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match the core VERSION constant ($core_constant)"
+            exit 1
+          fi
+          if [[ "$client_constant" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match the client VERSION constant ($client_constant)"
+            exit 1
+          fi
+          if [[ "$ui_constant" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match the UI VERSION constant ($ui_constant)"
+            exit 1
+          fi
+          if [[ "$openapi_version" != "$VERSION" ]]; then
+            echo "::error::The release tag version $VERSION does not match docs/openapi.json info.version ($openapi_version)"
+            exit 1
+          fi
 
-      - name: Publish core package
-        working-directory: packages/core
+          check_publication() {
+            local package_name="$1"
+            local output_name="$2"
+            local output
+            local status
+
+            set +e
+            output="$(npm view "${package_name}@${VERSION}" version 2>&1)"
+            status=$?
+            set -e
+
+            if [[ "$status" -eq 0 ]]; then
+              output="${output//$'\r'/}"
+              if [[ "$output" != "$VERSION" ]]; then
+                echo "::error::npm returned version '$output' for ${package_name}@${VERSION}"
+                exit 1
+              fi
+              echo "::notice::${package_name}@${VERSION} is already published; skipping its publish step."
+              echo "${output_name}_already_published=true" >> "$GITHUB_OUTPUT"
+              return 0
+            fi
+
+            if grep -Eq '^npm (ERR!|error) code E404([[:space:]]|$)' <<<"$output"; then
+              return 0
+            fi
+
+            echo "::error::Unable to query ${package_name}@${VERSION}: $output"
+            exit 1
+          }
+
+          printf '%s\n' \
+            'core_already_published=false' \
+            'client_already_published=false' \
+            'ui_already_published=false' >> "$GITHUB_OUTPUT"
+          check_publication '@takazudo/zudo-history-stash-core' core
+          check_publication '@takazudo/zudo-history-stash' client
+          check_publication '@takazudo/zudo-history-stash-ui' ui
+
+      - name: Publish core
+        if: github.event_name == 'workflow_dispatch' || steps.safeguards.outputs.core_already_published != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: pnpm publish --provenance --access public --no-git-checks --tag "$DIST_TAG"
+          RELEASE_EVENT_IS_PUSH: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT_IS_PUSH" == "true" ]]; then
+            dry_run=()
+          else
+            dry_run=(--dry-run)
+            echo "::notice::Publishing core in dry-run mode."
+          fi
+          pnpm --filter @takazudo/zudo-history-stash-core publish --access public --provenance --no-git-checks --tag latest "${dry_run[@]}"
 
-      - name: Publish client package
-        working-directory: packages/client
+      - name: Verify core publication
+        if: github.event_name == 'push' && steps.safeguards.outputs.core_already_published != 'true'
+        env:
+          VERSION: ${{ steps.context.outputs.version }}
+          PACKAGE_NAME: "@takazudo/zudo-history-stash-core"
+        run: |
+          set -euo pipefail
+          max_attempts=12
+          for attempt in $(seq 1 "$max_attempts"); do
+            set +e
+            output="$(npm view "${PACKAGE_NAME}@${VERSION}" version 2>&1)"
+            status=$?
+            set -e
+            output="${output//$'\r'/}"
+            if [[ "$status" -eq 0 ]]; then
+              if [[ "$output" == "$VERSION" ]]; then
+                exit 0
+              fi
+              echo "::error::npm returned version '$output' for ${PACKAGE_NAME}@${VERSION}"
+              exit 1
+            fi
+            if ! grep -Eq '^npm (ERR!|error) code E404([[:space:]]|$)' <<<"$output"; then
+              echo "::error::Unable to verify ${PACKAGE_NAME}@${VERSION}: $output"
+              exit 1
+            fi
+            if (( attempt < max_attempts )); then
+              sleep 5
+            fi
+          done
+          echo "::error::${PACKAGE_NAME}@${VERSION} was not visible after $max_attempts attempts"
+          exit 1
+
+      - name: Publish client
+        if: github.event_name == 'workflow_dispatch' || steps.safeguards.outputs.client_already_published != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: pnpm publish --provenance --access public --no-git-checks --tag "$DIST_TAG"
+          RELEASE_EVENT_IS_PUSH: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT_IS_PUSH" == "true" ]]; then
+            dry_run=()
+          else
+            dry_run=(--dry-run)
+            echo "::notice::Publishing client in dry-run mode."
+          fi
+          pnpm --filter @takazudo/zudo-history-stash publish --access public --provenance --no-git-checks --tag latest "${dry_run[@]}"
+
+      - name: Verify client publication
+        if: github.event_name == 'push' && steps.safeguards.outputs.client_already_published != 'true'
+        env:
+          VERSION: ${{ steps.context.outputs.version }}
+          PACKAGE_NAME: "@takazudo/zudo-history-stash"
+        run: |
+          set -euo pipefail
+          max_attempts=12
+          for attempt in $(seq 1 "$max_attempts"); do
+            set +e
+            output="$(npm view "${PACKAGE_NAME}@${VERSION}" version 2>&1)"
+            status=$?
+            set -e
+            output="${output//$'\r'/}"
+            if [[ "$status" -eq 0 ]]; then
+              if [[ "$output" == "$VERSION" ]]; then
+                exit 0
+              fi
+              echo "::error::npm returned version '$output' for ${PACKAGE_NAME}@${VERSION}"
+              exit 1
+            fi
+            if ! grep -Eq '^npm (ERR!|error) code E404([[:space:]]|$)' <<<"$output"; then
+              echo "::error::Unable to verify ${PACKAGE_NAME}@${VERSION}: $output"
+              exit 1
+            fi
+            if (( attempt < max_attempts )); then
+              sleep 5
+            fi
+          done
+          echo "::error::${PACKAGE_NAME}@${VERSION} was not visible after $max_attempts attempts"
+          exit 1
+
+      - name: Publish UI
+        if: github.event_name == 'workflow_dispatch' || steps.safeguards.outputs.ui_already_published != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_EVENT_IS_PUSH: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT_IS_PUSH" == "true" ]]; then
+            dry_run=()
+          else
+            dry_run=(--dry-run)
+            echo "::notice::Publishing UI in dry-run mode."
+          fi
+          pnpm --filter @takazudo/zudo-history-stash-ui publish --access public --provenance --no-git-checks --tag latest "${dry_run[@]}"
+
+      - name: Verify UI publication
+        if: github.event_name == 'push' && steps.safeguards.outputs.ui_already_published != 'true'
+        env:
+          VERSION: ${{ steps.context.outputs.version }}
+          PACKAGE_NAME: "@takazudo/zudo-history-stash-ui"
+        run: |
+          set -euo pipefail
+          max_attempts=12
+          for attempt in $(seq 1 "$max_attempts"); do
+            set +e
+            output="$(npm view "${PACKAGE_NAME}@${VERSION}" version 2>&1)"
+            status=$?
+            set -e
+            output="${output//$'\r'/}"
+            if [[ "$status" -eq 0 ]]; then
+              if [[ "$output" == "$VERSION" ]]; then
+                exit 0
+              fi
+              echo "::error::npm returned version '$output' for ${PACKAGE_NAME}@${VERSION}"
+              exit 1
+            fi
+            if ! grep -Eq '^npm (ERR!|error) code E404([[:space:]]|$)' <<<"$output"; then
+              echo "::error::Unable to verify ${PACKAGE_NAME}@${VERSION}: $output"
+              exit 1
+            fi
+            if (( attempt < max_attempts )); then
+              sleep 5
+            fi
+          done
+          echo "::error::${PACKAGE_NAME}@${VERSION} was not visible after $max_attempts attempts"
+          exit 1
+
+      - name: Verify dist-tags
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.context.outputs.version }}
+        run: |
+          set -euo pipefail
+          verify_latest_tag() {
+            local package_name="$1"
+            local tags
+            tags="$(npm dist-tag ls "$package_name")"
+            if ! grep -Fxq "latest: $VERSION" <<<"$tags"; then
+              echo "::error::${package_name} does not have latest: $VERSION (tags: $tags)"
+              exit 1
+            fi
+          }
+          verify_latest_tag '@takazudo/zudo-history-stash-core'
+          verify_latest_tag '@takazudo/zudo-history-stash'
+          verify_latest_tag '@takazudo/zudo-history-stash-ui'

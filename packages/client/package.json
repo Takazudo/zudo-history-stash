@@ -6,6 +6,7 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "license": "MIT",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,7 +21,10 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "scripts": {
@@ -28,7 +32,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "lint:pkg": "pnpm dlx publint@0.3.12 && pnpm dlx @arethetypeswrong/cli@0.18.5 --pack . --profile esm-only",
+    "lint:pkg": "node ../../scripts/release/package-check.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {

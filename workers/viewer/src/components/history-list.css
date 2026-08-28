@@ -1,3 +1,4 @@
+/* Viewer-only file-detail layout; HistoryList styling now lives in package stateful.css. */
 .file-detail-layout {
   display: grid;
   min-width: 0;
@@ -122,108 +123,6 @@
   padding-inline: var(--hsp-md);
   color: var(--theme-ink-muted);
   text-align: center;
-}
-
-.history-list__heading {
-  align-items: center;
-}
-
-.history-table.table {
-  min-width: 76rem;
-}
-
-.history-table th,
-.history-table td {
-  padding-block: var(--vsp-xs);
-}
-
-.history-table__choice,
-.history-table__version,
-.history-table__kind,
-.history-table__stats,
-.history-table__size,
-.history-table__time,
-.history-table__actions {
-  width: 0;
-  white-space: nowrap;
-}
-
-.history-table__choice {
-  text-align: center;
-}
-
-.history-table__choice input {
-  display: block;
-  margin: auto;
-  accent-color: var(--theme-accent);
-}
-
-.history-table__version,
-.history-table__size,
-.history-diff-stats {
-  font-variant-numeric: tabular-nums;
-}
-
-.history-table__kind-content,
-.history-row-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--hsp-sm);
-}
-
-.history-table__deleted-label {
-  color: var(--theme-error);
-  font-size: var(--text-xs);
-  font-weight: 680;
-}
-
-.history-table__author {
-  min-width: 8rem;
-  max-width: 12rem;
-  overflow-wrap: break-word;
-}
-
-.history-table__message {
-  min-width: 12rem;
-  max-width: 24rem;
-  overflow-wrap: break-word;
-}
-
-.history-table__time {
-  font-size: var(--text-xs);
-}
-
-.history-table tr[aria-current="true"] td {
-  background: var(--theme-accent-soft);
-}
-
-.history-diff-stats {
-  display: inline-flex;
-  justify-content: center;
-  min-width: 4.75rem;
-  padding-block: var(--vsp-xs);
-  padding-inline: var(--hsp-xs);
-  border-radius: var(--radius-sm);
-  background: var(--theme-surface-muted);
-  color: var(--theme-ink-muted);
-  font-size: var(--text-xs);
-  font-weight: 680;
-}
-
-.history-diff-stats--ready {
-  background: var(--theme-success-soft);
-  color: var(--theme-success);
-}
-
-.history-diff-stats--error,
-.history-diff-stats--oversized {
-  background: var(--theme-error-soft);
-  color: var(--theme-error);
-}
-
-.history-list__paging-error {
-  padding-block: var(--vsp-md) 0;
-  padding-inline: var(--hsp-md);
 }
 
 @media (max-width: 40rem) {

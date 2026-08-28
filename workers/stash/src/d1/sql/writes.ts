@@ -1,3 +1,5 @@
+import type { PreparedBlob } from "../blobs.js";
+
 /**
  * Every mutation has one operation predicate F, and that exact predicate is applied to every
  * statement in its batch. The files/head statement is always last and also requires the newly
@@ -15,12 +17,11 @@ export interface LedgerInsert {
   statusCode: number;
 }
 
-export interface PutBatchInput {
+export type PutBatchInput = {
   stash: string;
   path: string;
   expectedVersion: number | null;
   hash: string;
-  body: string;
   size: number;
   contentType: string;
   author: string;
@@ -28,7 +29,7 @@ export interface PutBatchInput {
   metaJson: string;
   createdAt: number;
   ledger?: LedgerInsert;
-}
+} & PreparedBlob;
 
 export interface DeleteBatchInput {
   stash: string;
@@ -54,10 +55,39 @@ export interface RollbackBatchInput {
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
 
+export interface VersionInsertInput {
+  stash: string;
+  path: string;
+  version: number;
+  hash: string;
+  size: number;
+  contentType: string;
+  author: string;
+  message: string;
+  metaJson: string;
+  createdAt: number;
+}
+
+export interface HeadWriteInput {
+  stash: string;
+  path: string;
+  expectedVersion: number | null;
+  version: number;
+  hash: string;
+  createdAt: number;
+}
+
+export function combineFences(...fragments: SqlFragment[]): SqlFragment {
+  return {
+    sql: fragments.map((fragment) => `(${fragment.sql})`).join(" AND "),
+    params: fragments.flatMap((fragment) => fragment.params),
+  };
+}
+
 export const fence = {
   create(stash: string, path: string): SqlFragment {
     return {
-      sql: `EXISTS (SELECT 1 FROM stashes WHERE name = ?)
+      sql: `EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
         AND NOT EXISTS (SELECT 1 FROM files WHERE stash_name = ? AND path = ?)`,
       params: [stash, stash, path],
     };
@@ -65,15 +95,17 @@ export const fence = {
   put(stash: string, path: string, expectedVersion: number): SqlFragment {
     return {
       sql: `EXISTS (SELECT 1 FROM files
-        WHERE stash_name = ? AND path = ? AND head_version = ?)`,
-      params: [stash, path, expectedVersion],
+        WHERE stash_name = ? AND path = ? AND head_version = ?)
+        AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
+      params: [stash, path, expectedVersion, stash],
     };
   },
   delete(stash: string, path: string, expectedVersion: number): SqlFragment {
     return {
       sql: `EXISTS (SELECT 1 FROM files
-        WHERE stash_name = ? AND path = ? AND head_version = ? AND deleted = 0)`,
-      params: [stash, path, expectedVersion],
+        WHERE stash_name = ? AND path = ? AND head_version = ? AND deleted = 0)
+        AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
+      params: [stash, path, expectedVersion, stash],
     };
   },
   rollback(stash: string, path: string, expectedVersion: number, toVersion: number): SqlFragment {
@@ -81,8 +113,9 @@ export const fence = {
       sql: `EXISTS (SELECT 1 FROM files
         WHERE stash_name = ? AND path = ? AND head_version = ?)
         AND EXISTS (SELECT 1 FROM versions
-          WHERE stash_name = ? AND path = ? AND version = ? AND blob_hash IS NOT NULL)`,
-      params: [stash, path, expectedVersion, stash, path, toVersion],
+          WHERE stash_name = ? AND path = ? AND version = ? AND blob_hash IS NOT NULL)
+        AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
+      params: [stash, path, expectedVersion, stash, path, toVersion, stash],
     };
   },
 };
@@ -139,11 +172,80 @@ export function insertLedger(
     );
 }
 
-export const sweepLedger = `
-  DELETE FROM idempotency WHERE rowid IN (
-    SELECT rowid FROM idempotency WHERE created_at < ? ORDER BY created_at LIMIT 200
-  )
-`;
+export function versionInsert(
+  db: Preparer,
+  input: VersionInsertInput,
+  operationFence: SqlFragment,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO versions
+        (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
+         rollback_of, author, message, meta_json, created_at)
+       SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ? WHERE ${operationFence.sql}`,
+    )
+    .bind(
+      input.stash,
+      input.path,
+      input.version,
+      input.hash,
+      input.size,
+      input.contentType,
+      input.author,
+      input.message,
+      input.metaJson,
+      input.createdAt,
+      ...operationFence.params,
+    );
+}
+
+export function headWrite(
+  db: Preparer,
+  input: HeadWriteInput,
+  operationFence: SqlFragment,
+): D1PreparedStatement {
+  if (input.expectedVersion === null) {
+    return db
+      .prepare(
+        `INSERT INTO files
+          (stash_name, path, head_version, head_hash, deleted, created_at, updated_at)
+         SELECT ?, ?, ?, ?, 0, ?, ? WHERE ${operationFence.sql}
+           AND EXISTS (SELECT 1 FROM versions
+             WHERE stash_name = ? AND path = ? AND version = ?)`,
+      )
+      .bind(
+        input.stash,
+        input.path,
+        input.version,
+        input.hash,
+        input.createdAt,
+        input.createdAt,
+        ...operationFence.params,
+        input.stash,
+        input.path,
+        input.version,
+      );
+  }
+  return db
+    .prepare(
+      `UPDATE files SET head_version = ?, head_hash = ?, deleted = 0, updated_at = ?
+       WHERE stash_name = ? AND path = ? AND head_version = ? AND ${operationFence.sql}
+         AND EXISTS (SELECT 1 FROM versions
+           WHERE stash_name = ? AND path = ? AND version = ?)`,
+    )
+    .bind(
+      input.version,
+      input.hash,
+      input.createdAt,
+      input.stash,
+      input.path,
+      input.expectedVersion,
+      ...operationFence.params,
+      input.stash,
+      input.path,
+      input.version,
+    );
+}
 
 function ledgerStatement(
   db: Preparer,
@@ -175,37 +277,19 @@ function putStatements(
     db
       .prepare(
         `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
-         SELECT ?, ?, ?, NULL, ?, ? WHERE ${operationFence.sql}
+         SELECT ?, ?, ?, ?, ?, ? WHERE ${operationFence.sql}
          ON CONFLICT(stash_name, hash) DO NOTHING`,
       )
       .bind(
         input.stash,
         input.hash,
         input.body,
+        input.r2_key,
         input.size,
         input.createdAt,
         ...operationFence.params,
       ),
-    db
-      .prepare(
-        `INSERT INTO versions
-          (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-           rollback_of, author, message, meta_json, created_at)
-         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ? WHERE ${operationFence.sql}`,
-      )
-      .bind(
-        input.stash,
-        input.path,
-        version,
-        input.hash,
-        input.size,
-        input.contentType,
-        input.author,
-        input.message,
-        input.metaJson,
-        input.createdAt,
-        ...operationFence.params,
-      ),
+    versionInsert(db, { ...input, version }, operationFence),
     ...ledgerStatement(db, input, version, operationFence),
   ];
 }
@@ -216,25 +300,7 @@ export function putUpdateBatch(db: Preparer, input: PutBatchInput): D1PreparedSt
   const version = input.expectedVersion + 1;
   return [
     ...putStatements(db, input, operationFence, version),
-    db
-      .prepare(
-        `UPDATE files SET head_version = ?, head_hash = ?, deleted = 0, updated_at = ?
-         WHERE stash_name = ? AND path = ? AND head_version = ? AND ${operationFence.sql}
-           AND EXISTS (SELECT 1 FROM versions
-             WHERE stash_name = ? AND path = ? AND version = ?)`,
-      )
-      .bind(
-        version,
-        input.hash,
-        input.createdAt,
-        input.stash,
-        input.path,
-        input.expectedVersion,
-        ...operationFence.params,
-        input.stash,
-        input.path,
-        version,
-      ),
+    headWrite(db, { ...input, version }, operationFence),
   ];
 }
 
@@ -244,24 +310,7 @@ export function putCreateBatch(db: Preparer, input: PutBatchInput): D1PreparedSt
   const operationFence = fence.create(input.stash, input.path);
   return [
     ...putStatements(db, input, operationFence, 1),
-    db
-      .prepare(
-        `INSERT INTO files
-          (stash_name, path, head_version, head_hash, deleted, created_at, updated_at)
-         SELECT ?, ?, 1, ?, 0, ?, ? WHERE ${operationFence.sql}
-           AND EXISTS (SELECT 1 FROM versions
-             WHERE stash_name = ? AND path = ? AND version = 1)`,
-      )
-      .bind(
-        input.stash,
-        input.path,
-        input.hash,
-        input.createdAt,
-        input.createdAt,
-        ...operationFence.params,
-        input.stash,
-        input.path,
-      ),
+    headWrite(db, { ...input, version: 1 }, operationFence),
   ];
 }
 

@@ -1,5 +1,22 @@
 {
-  "exclude": ["node_modules/**", "dist/**", "worktrees/**", "__inbox/**", ".playwright-cli/**"],
+  "exclude": [
+    "node_modules/**",
+    "dist/**",
+    "**/dist/**",
+    "worktrees/**",
+    "__inbox/**",
+    ".playwright-cli/**",
+    "_temp-resource/**",
+    "doc/src/content/docs/claude*/**",
+    "doc/src/content/docs-ja/claude*/**",
+    "doc/dist/**",
+    "doc/.zfb*/**",
+    "doc/.zudo-doc/**",
+    "doc/.wrangler/**",
+    "doc/.claude/skills/zudo-history-stash-wisdom/**",
+    "doc/.codex/skills/zudo-history-stash-wisdom/**",
+    "packages/*/CHANGELOG.md"
+  ],
   "addEmptyLinesInBlockJsx": {
     "blockComponents": ["Note", "Tip", "Warning", "Details", "Tabs"]
   }

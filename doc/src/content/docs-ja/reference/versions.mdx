@@ -1,0 +1,22 @@
+---
+title: バージョンと互換性
+description: ビルド時に取得するパッケージ、API、ツールチェーンの要件です。
+sidebar_position: 80
+category: reference
+---
+
+次の値は、サイトのビルド時にリポジトリのマニフェストと OpenAPI ドキュメントから直接取得します。
+
+- Core パッケージ: <VersionValue name="core" />
+- Client パッケージ: <VersionValue name="client" />
+- UI パッケージ: <VersionValue name="ui" />
+- API 契約: <VersionValue name="api" />
+- Node.js: <VersionValue name="node" />
+- pnpm: <VersionValue name="pnpm" />
+- Wrangler: <VersionValue name="wrangler" />
+
+## 非推奨化ポリシー
+
+現時点では、固定の非推奨期間を保証していません。破壊的変更を含むリリースは、リリースツールの `!` または
+`BREAKING CHANGE` 規約を使用し、パッケージの変更履歴で内容を説明する必要があります。利用側では
+互換性のあるバージョンを固定してください。

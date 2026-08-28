@@ -1,0 +1,160 @@
+name: PR preview reaper
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: preview-reaper
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Check reaper credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.credentials.outputs.ready || 'false' }}
+
+    steps:
+      - name: Checkout trusted preview helpers
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Check preview credentials
+        id: credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_IS_FORK: "false"
+        run: bash scripts/preview-gate.sh
+
+  discover:
+    name: Discover preview resources
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      candidates: ${{ steps.inventory.outputs.candidates }}
+      has_candidates: ${{ steps.inventory.outputs.has_candidates }}
+
+    steps:
+      - name: Checkout trusted preview helpers
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Inventory every preview resource class
+        id: inventory
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          candidates="$(node scripts/preview-reaper.mjs discover)"
+          count="$(jq -er 'if type == "array" and all(.[]; type == "number" and floor == . and . >= 1) then length else error("invalid candidate matrix") end' <<<"$candidates")"
+          if (( count > 0 )); then
+            has_candidates=true
+          else
+            has_candidates=false
+          fi
+          {
+            printf 'candidates=%s\n' "$candidates"
+            printf 'has_candidates=%s\n' "$has_candidates"
+          } >>"$GITHUB_OUTPUT"
+          printf 'Discovered %s preview candidate(s).\n' "$count"
+
+  cleanup:
+    name: Reap preview for PR ${{ matrix.pr }}
+    needs: discover
+    if: needs.discover.outputs.has_candidates == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        pr: ${{ fromJSON(needs.discover.outputs.candidates) }}
+    concurrency:
+      group: preview-${{ matrix.pr }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout trusted preview helpers
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.13.0
+
+      - name: Recheck pull request after acquiring the preview lock
+        id: pull
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_PR_NUMBER: ${{ matrix.pr }}
+        run: |
+          set -euo pipefail
+          pull_json="$(node scripts/preview-reaper.mjs check-pr --pr "$PREVIEW_PR_NUMBER")"
+          state="$(jq -er '.state | select(. == "open" or . == "closed")' <<<"$pull_json")"
+          if [[ "$state" == "closed" ]]; then
+            closed=true
+          else
+            closed=false
+            printf 'Retaining preview resources for open PR %s.\n' "$PREVIEW_PR_NUMBER"
+          fi
+          printf 'closed=%s\n' "$closed" >>"$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        if: steps.pull.outputs.closed == 'true'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.1.0
+        with:
+          version: 10.32.0
+
+      - name: Install dependencies
+        if: steps.pull.outputs.closed == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Delete and verify preview resources
+        if: steps.pull.outputs.closed == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_PR_NUMBER: ${{ matrix.pr }}
+        run: |
+          set -euo pipefail
+          node scripts/preview-reaper.mjs teardown --pr "$PREVIEW_PR_NUMBER"
+          printf 'Cleaned preview resources for closed PR %s.\n' "$PREVIEW_PR_NUMBER"
+
+      - name: Report failed preview cleanup
+        if: failure()
+        env:
+          PREVIEW_PR_NUMBER: ${{ matrix.pr }}
+        run: printf 'Failed to clean preview resources for PR %s.\n' "$PREVIEW_PR_NUMBER"

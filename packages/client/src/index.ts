@@ -2,6 +2,15 @@
 export const VERSION = "0.0.0";
 
 export * from "./client.js";
+export type { EventsOptions, StashEventStream, StashLiveStatus } from "./events.js";
+export * from "./parse.js";
+export {
+  type ListGcRunsOptions,
+  type ListStashesRpcOptions,
+  type StashRpcBinding,
+  type StashRpcEntrypoint,
+  type StashRpcMethods,
+} from "./rpc-types.js";
 export {
   ROUTES,
   formatEtag,

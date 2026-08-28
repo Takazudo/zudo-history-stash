@@ -6,9 +6,12 @@ import {
   type ListChangesResult,
   type ListStashesResult,
   type MeResponse,
+  type ProposalListResponse,
   type StashClient,
   type StashFilesClient,
+  type StashProposalsClient,
 } from "@takazudo/zudo-history-stash";
+import type { FakeStash } from "@takazudo/zudo-history-stash/testing";
 import type { ViewerStashClient } from "../app/auth/stash-client-provider.js";
 
 export interface FakeViewerClientOverrides {
@@ -16,6 +19,7 @@ export interface FakeViewerClientOverrides {
   stashes?: Partial<StashClient["stashes"]>;
   changes?: StashClient["changes"];
   files?: (stash: string) => StashFilesClient;
+  proposals?: (stash: string) => StashProposalsClient;
 }
 
 const emptyChanges: ListChangesResult = {
@@ -72,6 +76,13 @@ export function createFakeViewerClient(
       value: { stashes: [], nextAfter: null },
     }),
   };
+  const defaultProposals = (stash: string): StashProposalsClient => ({
+    ...unreachable.proposals(stash),
+    list: async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: true,
+      value: { proposals: [], nextAfter: null, total: 0 },
+    }),
+  });
 
   const client = {
     ...unreachable,
@@ -84,7 +95,30 @@ export function createFakeViewerClient(
         value: emptyChanges,
       })),
     files: overrides.files ?? defaultFiles,
+    proposals: overrides.proposals ?? defaultProposals,
   } as ViewerStashClient;
   client.withSignal = () => client;
   return client;
+}
+
+/** Real SDK client backed by the controllable fake, including events and abort-bound recreations. */
+export function createFakeBackedViewerClient(
+  fake: FakeStash,
+  token: string,
+  clientId: string,
+): ViewerStashClient {
+  const create = (signal?: AbortSignal): StashClient =>
+    createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId,
+      fetch: (input, init) =>
+        fake.fetch(input, signal && !init?.signal ? { ...init, signal } : init),
+    });
+  const client = create();
+  return {
+    ...client,
+    me: ({ signal } = {}) => create(signal).me(),
+    withSignal: (signal) => create(signal),
+  };
 }

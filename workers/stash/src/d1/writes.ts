@@ -19,6 +19,7 @@ import {
   type RollbackResult,
 } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
+import { prepareBlob, type BlobGenerationFactory } from "./blobs.js";
 import type { IdempotencyRow, VersionRow } from "./schema.js";
 import {
   deleteBatch,
@@ -28,7 +29,6 @@ import {
   selectHeadForWrite,
   selectLedger,
   selectVersionMeta,
-  sweepLedger as sweepLedgerSql,
   type LedgerInsert,
 } from "./sql/writes.js";
 import type { StoreDependencies } from "./store.js";
@@ -75,11 +75,11 @@ export interface StashWrites {
     input: RollbackBody,
     options?: WriteOptions,
   ): Promise<StoreWriteResult<RollbackResult>>;
-  sweepLedger(olderThanMs: number): Promise<number>;
 }
 
 export interface WriteDependencies extends StoreDependencies {
   onBeforeCommit?: () => void | Promise<void>;
+  createBlobGeneration?: BlobGenerationFactory;
 }
 
 function failure<T>(
@@ -144,6 +144,15 @@ async function readLedger(
   key: string,
 ): Promise<IdempotencyRow | null> {
   return db.prepare(selectLedger).bind(stash, key).first<IdempotencyRow>();
+}
+
+async function stashIsLive(db: D1DatabaseSession, stash: string): Promise<boolean> {
+  return (
+    (await db
+      .prepare("SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL")
+      .bind(stash)
+      .first()) !== null
+  );
 }
 
 function created<T>(value: T, statusCode: number): StoreWriteResult<T> {
@@ -248,6 +257,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       ),
     );
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const priorReplay = await existingReplay<PutResult>(
       db,
       stash,
@@ -268,6 +278,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       return created({ unchanged: true, version: head.head_version }, 200);
     }
 
+    const prepared = await prepareBlob(env, stash, hash, input.body, deps.createBlobGeneration);
     await deps.onBeforeCommit?.();
     const createdAt = deps.now();
     const ledger: LedgerInsert | undefined = options.idempotencyKey
@@ -278,7 +289,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       path,
       expectedVersion: input.expectedVersion,
       hash,
-      body: input.body,
+      ...prepared,
       size,
       contentType,
       author: input.author ?? "",
@@ -310,6 +321,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // A concurrent, independently fenced batch may win the unique ledger key.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const wonByOther = await existingReplay<PutResult>(
       db,
       stash,
@@ -349,6 +361,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       ),
     );
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const priorReplay = await existingReplay<DeleteResult>(
       db,
       stash,
@@ -397,6 +410,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // See put: only a concurrent ledger claim is recoverable as a replay.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const wonByOther = await existingReplay<DeleteResult>(
       db,
       stash,
@@ -441,6 +455,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       ),
     );
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const priorReplay = await existingReplay<RollbackResult>(
       db,
       stash,
@@ -502,6 +517,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // See put: only a concurrent ledger claim is recoverable as a replay.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const wonByOther = await existingReplay<RollbackResult>(
       db,
       stash,
@@ -533,12 +549,5 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     put,
     delete: deleteFile,
     rollback,
-    async sweepLedger(olderThanMs: number): Promise<number> {
-      const result = await env.DB.withSession("first-primary")
-        .prepare(sweepLedgerSql)
-        .bind(olderThanMs)
-        .run();
-      return result.meta.changes;
-    },
   };
 }

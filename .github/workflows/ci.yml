@@ -50,6 +50,9 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      - name: Markdown format check
+        run: pnpm format:md:check
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -70,6 +73,7 @@ jobs:
           set -euo pipefail
           pnpm --filter @takazudo/zudo-history-stash-core lint:pkg
           pnpm --filter @takazudo/zudo-history-stash lint:pkg
+          pnpm --filter @takazudo/zudo-history-stash-ui lint:pkg
 
   e2e:
     name: Playwright e2e

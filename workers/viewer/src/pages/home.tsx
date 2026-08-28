@@ -1,18 +1,19 @@
 import type { ChangeItem, MeResponse, StashSummary } from "@takazudo/zudo-history-stash";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Link, Navigate } from "react-router-dom";
-import { useStashClient } from "../app/auth/stash-client-provider.js";
-import { Button } from "../app/shell/button.js";
-import { Page } from "../app/shell/page.js";
-import { Table } from "../app/shell/table.js";
 import {
+  Button,
   ChangeRow,
-  ErrorBanner,
+  CreateStashDialog,
+  GcPanel,
   LoadMore,
   RelativeTime,
-  clientValue,
-  stashErrorMessage,
-} from "../components/index.js";
+  useIsAdmin,
+} from "@takazudo/zudo-history-stash-ui";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Link, Navigate } from "react-router-dom";
+import { useStashClient } from "../app/auth/stash-client-provider.js";
+import { Page } from "../app/shell/page.js";
+import { Table } from "../app/shell/table.js";
+import { ErrorBanner, clientValue } from "../components/error-banner.js";
 import { useAsync } from "../hooks/use-async.js";
 import { usePagedData } from "./use-paged-data.js";
 
@@ -26,7 +27,17 @@ function nextBefore(page: {
   return page.nextBefore ?? null;
 }
 
-function StashTable({ stashes }: { stashes: StashSummary[] }) {
+function StashTable({
+  stashes,
+  isAdmin,
+  restoring,
+  onRestore,
+}: {
+  stashes: StashSummary[];
+  isAdmin: boolean;
+  restoring: string | null;
+  onRestore: (stash: StashSummary) => void;
+}) {
   return (
     <Table className="data-table data-table--stashes">
       <thead>
@@ -36,13 +47,15 @@ function StashTable({ stashes }: { stashes: StashSummary[] }) {
           <th className="data-table__count">Files</th>
           <th className="data-table__time">Last change</th>
           <th className="data-table__time data-table__mobile-optional">Created</th>
+          <th className="data-table__status">Status</th>
+          <th className="data-table__action">Action</th>
         </tr>
       </thead>
       <tbody>
         {stashes.map((stash) => (
-          <tr key={stash.name}>
+          <tr className={stash.deletedAt ? "deleted-row" : undefined} key={stash.name}>
             <td className="data-table__name">
-              <Link to={`/s/${stash.name}`}>{stash.name}</Link>
+              {stash.deletedAt ? stash.name : <Link to={`/s/${stash.name}`}>{stash.name}</Link>}
             </td>
             <td className="data-table__description data-table__mobile-optional">
               {stash.description || <span className="muted">No description</span>}
@@ -59,6 +72,21 @@ function StashTable({ stashes }: { stashes: StashSummary[] }) {
             <td className="data-table__time data-table__mobile-optional">
               <RelativeTime value={stash.createdAt} />
             </td>
+            <td className="data-table__status">
+              {stash.deletedAt ? <span className="deleted-badge">deleted</span> : "live"}
+            </td>
+            <td className="data-table__action">
+              {isAdmin && stash.deletedAt && stash.restorable ? (
+                <Button
+                  aria-label={`Restore ${stash.name}`}
+                  disabled={restoring !== null}
+                  size="sm"
+                  onClick={() => onRestore(stash)}
+                >
+                  {restoring === stash.name ? "Restoring…" : "Restore"}
+                </Button>
+              ) : null}
+            </td>
           </tr>
         ))}
       </tbody>
@@ -66,104 +94,77 @@ function StashTable({ stashes }: { stashes: StashSummary[] }) {
   );
 }
 
-function NewStashForm({ onCreated }: { onCreated: () => void }) {
-  const { client } = useStashClient();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<unknown | null>(null);
-  const controllerRef = useRef<AbortController | null>(null);
-
-  useEffect(() => () => controllerRef.current?.abort(), []);
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!client || !name.trim()) return;
-    controllerRef.current?.abort();
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    setSubmitting(true);
-    setError(null);
-
-    try {
-      const result = await client.withSignal(controller.signal).stashes.create({
-        name: name.trim(),
-        ...(description.trim() ? { description: description.trim() } : {}),
-      });
-      if (!result.ok) {
-        setError(result);
-        return;
-      }
-      setName("");
-      setDescription("");
-      onCreated();
-    } catch (requestError) {
-      if (!controller.signal.aborted) setError(requestError);
-    } finally {
-      if (!controller.signal.aborted) setSubmitting(false);
-    }
-  }
-
-  return (
-    <section className="section-card" aria-labelledby="new-stash-title">
-      <div className="section-card__heading">
-        <div>
-          <h2 id="new-stash-title">New stash</h2>
-          <p>Create an empty namespace for versioned files.</p>
-        </div>
-      </div>
-      <div className="section-card__body">
-        <form className="new-stash-form" onSubmit={handleSubmit}>
-          <label className="form-field">
-            <span className="form-field__label">Name</span>
-            <input
-              className="form-field__input"
-              name="name"
-              pattern="[a-z0-9][a-z0-9-]{0,62}"
-              required
-              value={name}
-              onChange={(event) => setName(event.currentTarget.value)}
-            />
-          </label>
-          <label className="form-field">
-            <span className="form-field__label">Description</span>
-            <input
-              className="form-field__input"
-              name="description"
-              value={description}
-              onChange={(event) => setDescription(event.currentTarget.value)}
-            />
-          </label>
-          <div className="form-actions">
-            <Button disabled={submitting} type="submit" variant="primary">
-              {submitting ? "Creating…" : "Create stash"}
-            </Button>
-          </div>
-        </form>
-        {error ? (
-          <div className="form-error" role="alert">
-            {stashErrorMessage(error)}
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
 function HomeContents({ me }: { me: MeResponse }) {
   const { client } = useStashClient();
-  const isAdmin = me.principal === "admin";
+  const admin = useIsAdmin();
+  const [createOpen, setCreateOpen] = useState(false);
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restoreError, setRestoreError] = useState<unknown | null>(null);
+  const restoreControllerRef = useRef<AbortController | null>(null);
+  const restoreGenerationRef = useRef(0);
+  const isAdmin = admin.ready && admin.isAdmin;
   const stashes = usePagedData<StashSummary, string>(
     async (signal, after) => {
       if (!client || !isAdmin) return { items: [], nextCursor: null };
       const page = await clientValue(
-        client.withSignal(signal).stashes.list({ ...(after ? { after } : {}) }),
+        client.withSignal(signal).stashes.list({
+          includeDeleted: showDeleted,
+          ...(after ? { after } : {}),
+        }),
       );
       return { items: page.stashes, nextCursor: page.nextAfter };
     },
-    [client, isAdmin],
+    [client, isAdmin, showDeleted],
     stashKey,
   );
+
+  useEffect(
+    () => () => {
+      restoreGenerationRef.current += 1;
+      restoreControllerRef.current?.abort();
+      restoreControllerRef.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (isAdmin) return;
+    restoreGenerationRef.current += 1;
+    restoreControllerRef.current?.abort();
+    restoreControllerRef.current = null;
+    setRestoring(null);
+  }, [isAdmin]);
+
+  function handleShowDeleted(event: ChangeEvent<HTMLInputElement>) {
+    setShowDeleted(event.currentTarget.checked);
+    setRestoreError(null);
+  }
+
+  async function handleRestore(stash: StashSummary) {
+    if (!client || !admin.ready || !admin.isAdmin || !stash.restorable || restoring !== null)
+      return;
+    const controller = new AbortController();
+    restoreControllerRef.current?.abort();
+    restoreControllerRef.current = controller;
+    const generation = ++restoreGenerationRef.current;
+    setRestoring(stash.name);
+    setRestoreError(null);
+    try {
+      await clientValue(client.withSignal(controller.signal).stashes.restore(stash.name));
+      if (controller.signal.aborted || restoreGenerationRef.current !== generation) return;
+      await stashes.reset(controller.signal);
+    } catch (error: unknown) {
+      if (!controller.signal.aborted && restoreGenerationRef.current === generation) {
+        setRestoreError(error);
+      }
+    } finally {
+      if (!controller.signal.aborted && restoreGenerationRef.current === generation) {
+        setRestoring(null);
+        restoreControllerRef.current = null;
+      }
+    }
+  }
   const changes = usePagedData<ChangeItem, number>(
     async (signal, before) => {
       if (!client || !isAdmin) return { items: [], nextCursor: null };
@@ -180,23 +181,53 @@ function HomeContents({ me }: { me: MeResponse }) {
 
   const newestChanges = [...changes.items].sort((left, right) => right.changeId - left.changeId);
   return (
-    <Page title="Stashes" description="Browse every stash and the latest activity.">
+    <Page
+      title="Stashes"
+      description="Browse every stash and the latest activity."
+      actions={
+        isAdmin ? (
+          <Button variant="primary" onClick={() => setCreateOpen(true)}>
+            New stash
+          </Button>
+        ) : null
+      }
+    >
       <div className="page-data-layout">
         <div className="page-data-main section-stack">
-          <NewStashForm onCreated={stashes.reset} />
           <section className="section-card" aria-labelledby="stash-directory-title">
             <div className="section-card__heading">
               <div>
                 <h2 id="stash-directory-title">Stash directory</h2>
                 <p>Live and deleted file counts are shown separately.</p>
               </div>
+              {isAdmin ? (
+                <label className="toggle-field">
+                  <input checked={showDeleted} type="checkbox" onChange={handleShowDeleted} />
+                  Show deleted
+                </label>
+              ) : null}
             </div>
             {stashes.initialLoading ? <p className="loading-copy">Loading stashes…</p> : null}
-            {stashes.error ? <ErrorBanner error={stashes.error} onRetry={stashes.retry} /> : null}
-            {!stashes.initialLoading && !stashes.error && stashes.items.length === 0 ? (
-              <p className="empty-copy">No stashes yet. Create the first one above.</p>
+            {stashes.error ? (
+              <ErrorBanner
+                error={stashes.error}
+                onRetry={() => void stashes.retry().catch(() => undefined)}
+              />
             ) : null}
-            {stashes.items.length > 0 ? <StashTable stashes={stashes.items} /> : null}
+            {!stashes.initialLoading && !stashes.error && stashes.items.length === 0 ? (
+              <p className="empty-copy">No stashes yet. Create the first one.</p>
+            ) : null}
+            {restoreError ? (
+              <ErrorBanner error={restoreError} title="Could not restore this stash" />
+            ) : null}
+            {stashes.items.length > 0 ? (
+              <StashTable
+                isAdmin={isAdmin}
+                restoring={restoring}
+                stashes={stashes.items}
+                onRestore={(stash) => void handleRestore(stash)}
+              />
+            ) : null}
             <LoadMore
               hasMore={stashes.hasMore}
               loading={stashes.loading}
@@ -213,7 +244,12 @@ function HomeContents({ me }: { me: MeResponse }) {
               </div>
             </div>
             {changes.initialLoading ? <p className="loading-copy">Loading changes…</p> : null}
-            {changes.error ? <ErrorBanner error={changes.error} onRetry={changes.retry} /> : null}
+            {changes.error ? (
+              <ErrorBanner
+                error={changes.error}
+                onRetry={() => void changes.retry().catch(() => undefined)}
+              />
+            ) : null}
             {!changes.initialLoading && !changes.error && newestChanges.length === 0 ? (
               <p className="empty-copy">No changes have been recorded.</p>
             ) : null}
@@ -232,8 +268,17 @@ function HomeContents({ me }: { me: MeResponse }) {
               />
             </div>
           </section>
+          {isAdmin ? <GcPanel /> : null}
         </aside>
       </div>
+      <CreateStashDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={() => {
+          setCreateOpen(false);
+          void stashes.reset().catch(() => undefined);
+        }}
+      />
     </Page>
   );
 }
@@ -258,7 +303,7 @@ export default function HomePage() {
   if (me.state === "error") {
     return (
       <Page title="Stashes" description="Browse every stash and the latest activity.">
-        <ErrorBanner error={me.error} onRetry={me.reload} />
+        <ErrorBanner error={me.error} onRetry={() => void me.reload().catch(() => undefined)} />
       </Page>
     );
   }

@@ -13,6 +13,7 @@ import { createStashClient } from "@takazudo/zudo-history-stash";
 const client = createStashClient({
   baseUrl: "https://stash.example.com",
   token: "zhs_…",
+  clientId: "viewer-tab-7",
 });
 
 const file = await client.files("docs").get("README.md");
@@ -21,7 +22,31 @@ if (file.ok && "value" in file) {
 }
 ```
 
-For a same-account Worker service binding, the hostname is inert and the binding supplies fetch:
+For a same-account Worker, the recommended transport is a named `StashRpc` entrypoint. Type its
+binding as `StashRpcEntrypoint` and use the discriminated `transport` option:
+
+```ts
+import { createStashClient, type StashRpcEntrypoint } from "@takazudo/zudo-history-stash";
+
+interface Env {
+  STASH_RPC: StashRpcEntrypoint;
+  STASH_TOKEN: string;
+}
+
+const client = createStashClient({
+  transport: { kind: "rpc", binding: env.STASH_RPC, token: env.STASH_TOKEN },
+});
+```
+
+The RPC transport uses its token per call. Business responses remain the same discriminated result
+unions as fetch (`{ ok: false, error, current? }`); a rejected binding call throws
+`StashHttpError` with `status === 0`. Direct `StashRpcEntrypoint` methods instead accept the token
+as their first argument. After dispatch, they return serialisable `Result` unions for business
+failures and internal exceptions, but callers should still catch an outer binding rejection before
+dispatch or during platform serialisation.
+
+The existing fetch transport remains compatible. For a same-account Worker service binding, the
+hostname is inert and the binding supplies fetch:
 
 ```ts
 const client = createStashClient({
@@ -38,6 +63,12 @@ const client = createStashClient({
 Write tokens are full-stash credentials and should not be embedded in browser code. Use a read
 token for browser-direct consumers.
 
+`clientId` is an optional stable mutation origin used to suppress a caller's own live-update
+echoes. It must be 1–64 printable ASCII characters with no leading or trailing whitespace; values
+matching `^[!-~](?:[ -~]{0,62}[!-~])?$` round-trip unchanged through Fetch headers. The SDK sends
+`X-Stash-Client-Id` on non-GET, non-read-principal mutation operations over both fetch and generic
+RPC transports, and never sends it on reads.
+
 ## In-memory testing fake
 
 The `./testing` subpath provides a deliberately narrow, environment-neutral fetch fake. It is for
@@ -50,7 +81,7 @@ import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 
 const fake = createFakeStash({ adminToken: "test-admin" });
 fake.createStash("docs");
-const token = fake.mintToken("docs", "write");
+const token = await fake.mintToken("docs", "write");
 
 const client = createStashClient({
   baseUrl: "https://stash.test",
@@ -61,22 +92,52 @@ const client = createStashClient({
 
 `fake.state` exposes the in-memory stash, token, blob, file, version, and idempotency tables for
 direct fixture setup and assertions. `fake.reset()` clears those tables without replacing the
-state object. Pass `now` to freeze timestamps.
+state object. Pass `now` to control timestamps and token expiry; pass `rateLimit` to inject
+Cloudflare-shaped capability/key verdicts (rejections fail open, matching the Worker).
 
-The fake implements only `GET /v1/me`, `POST /v1/stashes`, and the stash-scoped file list, file
-read/write/delete/rollback, history, changes, and stored/candidate diff routes. All other routes —
-including health, stash listing/details, token management, import, and cross-stash changes — return
-`501 not-implemented`. Token-management setup therefore uses `fake.mintToken()` directly.
+The fake implements the SDK route surface, including proposals and the authenticated fetch-only
+stash event stream, except for health, import, and cross-stash changes. Those unsupported routes
+and unknown routes return `501 not-implemented`.
+`await fake.mintToken()` remains available for direct fixture setup, accepts `expiresAt` or
+`ttlSeconds`, and uses the same hash-only storage path as the token-management routes.
+
+Live tests can drive the stable `fake.events` controller directly:
+
+```ts
+const stream = client.files("docs").events();
+const iterator = stream[Symbol.asyncIterator]();
+await iterator.next(); // authoritative ready event
+
+fake.events.emit({
+  type: "proposal",
+  proposalId: "prp_1787875200000deadbeef",
+  stash: "docs",
+  path: "README.md",
+  status: "open",
+  origin: null,
+});
+const proposal = await iterator.next();
+
+fake.events.rotate("docs", "lifetime");
+stream.close();
+```
+
+The controller also provides `close`, `error`, and `subscriberCount` for lifecycle assertions.
 
 The same exported conformance runner is used to detect drift between the fake and the real Worker:
 
 ```ts
 import { runConformance } from "@takazudo/zudo-history-stash/testing";
 
-await runConformance(fetch, "http://localhost:8787/api", {
-  adminToken: process.env.STASH_ADMIN_TOKEN!,
+await runConformance(targetFetch, targetBaseUrl, {
+  adminToken,
+  advanceTime,
+  configureRateLimit,
 });
 ```
 
-Fake-only conformance runs additionally pass `mintToken: fake.mintToken`; real-worker runs mint the
-read token through the server's admin endpoint.
+`advanceTime(milliseconds)` crosses the trace's expiry boundary; `configureRateLimit(target)`
+arranges a denial for the supplied capability and `p:<tokenId>` key. The fake test adapter can move
+an injected clock and update a verdict set synchronously. For a running local Worker, use the
+checked-in `packages/client/scripts/conformance-live.mjs` runner documented in the repository's
+`TESTING.md`; it sleeps for the real clock and safely exhausts the local write bucket.

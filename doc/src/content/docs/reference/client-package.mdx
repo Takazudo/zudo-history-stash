@@ -1,0 +1,69 @@
+---
+title: Client package
+description: Fetch and RPC clients, result boundaries, identities, and testing support.
+sidebar_position: 30
+category: reference
+---
+
+The package root `@takazudo/zudo-history-stash` constructs typed clients. The transport is a
+discriminated choice: use a base URL (and optionally a compatible `fetch`) for HTTP, or a Cloudflare
+RPC binding for in-Worker calls. `stashEvents` is fetch-only; an RPC client reports that transport
+constraint instead of pretending to stream through RPC.
+
+{/* zhs-example: reference-client-transports */}
+
+```ts
+import {
+  createStashClient,
+  type StashClient,
+  type StashFetch,
+  type StashRpcBinding,
+} from "@takazudo/zudo-history-stash";
+
+export function createFetchClient(options: {
+  baseUrl: string;
+  token: string;
+  clientId: string;
+  fetch?: StashFetch;
+}): StashClient {
+  return createStashClient({
+    baseUrl: options.baseUrl,
+    token: options.token,
+    clientId: options.clientId,
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+  });
+}
+
+export function createRpcClient(options: {
+  binding: StashRpcBinding;
+  token: string;
+  clientId: string;
+}): StashClient {
+  return createStashClient({
+    clientId: options.clientId,
+    transport: {
+      kind: "rpc",
+      binding: options.binding,
+      token: options.token,
+    },
+  });
+}
+```
+
+## Results and failures
+
+Expected business 4xx responses are typed result values so callers can branch on the error code.
+Transport failures, invalid server data, 5xx responses, and RPC-boundary failures can reject. Keep
+both branches in application error handling.
+
+A stable `clientId` attributes mutation origins and lets live consumers suppress their own
+advisory events. Idempotency keys make write retries safe only when the canonical request is
+unchanged. Per-stash clients group file, history, proposal, change-feed, token, and event
+operations. Close or abort a live iterator when its owner unmounts or changes target. The public
+base `StashClient` has no `withSignal` method; compose cancellation through supported fetch options
+and the event iterator lifecycle.
+
+## Testing entry point
+
+`@takazudo/zudo-history-stash/testing` supplies fake and conformance helpers. It is deterministic
+testing support, not a production server, Worker runtime, D1 emulator, or R2 emulator.

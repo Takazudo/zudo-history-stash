@@ -1,0 +1,35 @@
+---
+title: Getting Started
+description: Understand where History Stash fits and start using its versioned text API.
+sidebar_position: 1
+category: getting-started
+---
+
+Zudo History Stash is a small, Git-shaped store for versioned UTF-8 text on Cloudflare Workers. It
+gives each path an append-only history, explicit compare-and-set writes, stored and candidate diffs,
+rollback as a new version, consumer-owned approval through proposals, and advisory live-refresh
+signals. It is not Git hosting and it is not a general filesystem.
+
+Your application calls the Stash Worker. D1 is authoritative for stash metadata, file heads,
+history, and smaller text bodies; larger text bodies live in a private, content-addressed R2 bucket.
+The separately deployed Viewer reaches the Stash Worker through an authenticated service binding.
+R2 is never a public object API.
+
+## When it fits
+
+History Stash works well when a service needs per-path history or an audit trail, a caller must fence
+concurrent writes, reviewers need an immutable candidate diff, or an interface should refresh after
+advisory change events.
+
+Choose a different system when you need binary or byte-range delivery, atomic commits across
+multiple files, branches and merges, or built-in reviewer roles and review comments. Approval policy
+and user identity remain responsibilities of the consuming application.
+
+## Continue
+
+Start with [installation](./install.mdx), then run the [fresh-stash quickstart](./quickstart.mdx).
+The guides explain the [consumer write protocol](../guides/consumer-write-protocol.mdx),
+[proposals](../guides/proposals-and-approval.mdx), and
+[live updates](../guides/live-updates.mdx) in more detail.
+
+<CategoryNav category="getting-started" />

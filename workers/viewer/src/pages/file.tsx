@@ -1,18 +1,32 @@
 import type {
   FileGetResult,
   FileRecordWithEtag,
-  HistoryPage,
   StashFilesClient,
   VersionRecord,
 } from "@takazudo/zudo-history-stash";
-import { useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import {
+  Button,
+  Bytes,
+  DeleteFileDialog,
+  HistoryList,
+  KindBadge,
+  Notice,
+  RelativeTime,
+  TombstoneRestore,
+  useCanWrite,
+  useFileHistory,
+  useStashHref,
+} from "@takazudo/zudo-history-stash-ui";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
-import { Button } from "../app/shell/button.js";
+import { useViewerLiveRefresh } from "../app/live-updates.js";
+import { proposalListHref } from "../app/proposal-routes.js";
+import { Badge } from "../app/shell/badge.js";
 import { Page } from "../app/shell/page.js";
-import { Bytes, clientValue, ErrorBanner, KindBadge, RelativeTime } from "../components/index.js";
-import { HistoryList } from "../components/history-list.js";
+import { ErrorBanner } from "../components/error-banner.js";
 import { useAsync } from "../hooks/use-async.js";
+import { useOpenProposalCount } from "../hooks/use-open-proposal-count.js";
 
 function isVersionKind(value: unknown): value is FileRecordWithEtag["kind"] {
   return value === "put" || value === "delete" || value === "rollback";
@@ -32,27 +46,6 @@ function isFileRecord(value: unknown): value is FileRecordWithEtag {
     typeof record.deleted === "boolean" &&
     (typeof record.hash === "string" || record.hash === null) &&
     (typeof record.body === "string" || record.body === null)
-  );
-}
-
-function isHistoryPage(value: unknown): value is HistoryPage {
-  if (!value || typeof value !== "object") return false;
-  const page = value as Partial<HistoryPage>;
-  return (
-    typeof page.path === "string" &&
-    typeof page.headVersion === "number" &&
-    typeof page.deleted === "boolean" &&
-    typeof page.total === "number" &&
-    Array.isArray(page.versions) &&
-    page.versions.every(
-      (version) =>
-        typeof version.version === "number" &&
-        isVersionKind(version.kind) &&
-        typeof version.author === "string" &&
-        typeof version.message === "string" &&
-        typeof version.createdAt === "string",
-    ) &&
-    (typeof page.nextBefore === "number" || page.nextBefore === null)
   );
 }
 
@@ -93,6 +86,80 @@ function shortHash(hash: string): string {
   return digest.length > 12 ? `${prefix}${digest.slice(0, 12)}…` : hash;
 }
 
+function FileActions({
+  file,
+  stash,
+  path,
+  versions,
+  currentHead,
+  onChanged,
+}: {
+  file: FileRecordWithEtag;
+  stash: string;
+  path: string;
+  versions: readonly VersionRecord[];
+  currentHead: boolean;
+  onChanged: () => void;
+}) {
+  const capability = useCanWrite(stash);
+  const hrefFor = useStashHref();
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  useEffect(() => setDeleteOpen(false), [file.version, path, stash]);
+
+  if (!capability.ready || !capability.canWrite) return null;
+
+  if (currentHead && file.deleted) {
+    return (
+      <div className="form-actions">
+        <TombstoneRestore
+          head={file}
+          path={path}
+          stash={stash}
+          versions={versions}
+          onChanged={onChanged}
+        />
+      </div>
+    );
+  }
+
+  if (file.deleted) return null;
+
+  return (
+    <div className="form-actions">
+      <Link
+        className="zhs-button zhs-button--primary"
+        to={hrefFor({
+          kind: "edit",
+          stash,
+          path,
+          from: currentHead ? undefined : file.version,
+        })}
+      >
+        {currentHead ? "Edit" : "Edit from this version"}
+      </Link>
+      {currentHead ? (
+        <>
+          <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+            Delete…
+          </Button>
+          <DeleteFileDialog
+            headVersion={file.version}
+            open={deleteOpen}
+            path={path}
+            stash={stash}
+            onChanged={() => {
+              setDeleteOpen(false);
+              onChanged();
+            }}
+            onClose={() => setDeleteOpen(false)}
+          />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function FileDetails({
   file,
   stash,
@@ -100,6 +167,8 @@ function FileDetails({
   headVersion,
   requestedVersion,
   lastLiveVersion,
+  versions,
+  onChanged,
 }: {
   file: FileRecordWithEtag;
   stash: string;
@@ -107,7 +176,10 @@ function FileDetails({
   headVersion?: number;
   requestedVersion: number | null;
   lastLiveVersion?: VersionRecord;
+  versions: readonly VersionRecord[];
+  onChanged: () => void;
 }) {
+  const hrefFor = useStashHref();
   const [wrapLongLines, setWrapLongLines] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
 
@@ -137,7 +209,7 @@ function FileDetails({
             Viewing v{file.version}
             {headVersion ? ` — head is v${headVersion}.` : "."}
           </p>
-          <Link to={`/s/${stash}/f/${path}`}>Return to head</Link>
+          <Link to={hrefFor({ kind: "file", stash, path })}>Return to head</Link>
         </div>
       ) : null}
 
@@ -147,12 +219,28 @@ function FileDetails({
             <strong>Deleted at v{file.version}</strong> by {author}.
           </p>
           {lastLiveVersion ? (
-            <Link to={`/s/${stash}/f/${path}?version=${lastLiveVersion.version}`}>
+            <Link
+              to={hrefFor({
+                kind: "file",
+                stash,
+                path,
+                version: lastLiveVersion.version,
+              })}
+            >
               View last live version v{lastLiveVersion.version}
             </Link>
           ) : null}
         </div>
       ) : null}
+
+      <FileActions
+        currentHead={!viewingHistoricalVersion}
+        file={file}
+        path={path}
+        stash={stash}
+        versions={versions}
+        onChanged={onChanged}
+      />
 
       <section className="section-card" aria-labelledby="file-metadata-title">
         <div className="section-card__heading">
@@ -178,7 +266,7 @@ function FileDetails({
               {file.hash ? (
                 <>
                   <code title={file.hash}>{shortHash(file.hash)}</code>
-                  <Button compact onClick={copyHash}>
+                  <Button size="sm" onClick={() => void copyHash()}>
                     {copyState === "copied"
                       ? "Copied"
                       : copyState === "error"
@@ -253,86 +341,224 @@ function FileDetails({
   );
 }
 
-export default function FilePage() {
-  const { stash, "*": path } = useParams();
-  const [searchParams] = useSearchParams();
+function FileRouteContent({
+  stash,
+  path,
+  requestedVersion,
+}: {
+  stash: string;
+  path: string;
+  requestedVersion: number | null;
+}) {
   const { client } = useStashClient();
-  const versionParam = searchParams.get("version");
-  const requestedVersion =
-    versionParam && /^[1-9]\d*$/u.test(versionParam) ? Number.parseInt(versionParam, 10) : null;
-  const invalidVersion = versionParam !== null && requestedVersion === null;
-
+  const navigate = useNavigate();
+  const hrefFor = useStashHref();
+  const openProposals = useOpenProposalCount(client, stash, path);
   const file = useAsync(
     async (signal) => {
       if (!client) throw new Error("Sign in to inspect this file.");
-      if (!stash || !path) throw new Error("The stash name or file path is missing from this URL.");
-      if (invalidVersion) throw new Error("The version query must be a positive integer.");
       return loadFile(client.withSignal(signal).files(stash), path, requestedVersion);
     },
-    [client, invalidVersion, path, requestedVersion, stash],
+    [client, path, requestedVersion, stash],
   );
-  const history = useAsync<HistoryPage>(
-    async (signal) => {
-      if (!client) throw new Error("Sign in to inspect this file.");
-      if (!stash || !path) throw new Error("The stash name or file path is missing from this URL.");
-      const value = await clientValue(client.withSignal(signal).files(stash).history(path));
-      if (!isHistoryPage(value)) throw new Error("The history response was malformed.");
-      return value;
-    },
-    [client, path, stash],
+  const history = useFileHistory(stash, path);
+  const reloadFile = file.reload;
+  const reloadHistory = history.reload;
+  const reloadOpenProposals = openProposals.reload;
+  useViewerLiveRefresh(
+    useCallback(
+      async ({ signal }) => {
+        const results = await Promise.allSettled([
+          reloadFile(signal),
+          reloadHistory(signal),
+          reloadOpenProposals(signal),
+        ]);
+        const failed = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failed !== undefined) throw failed.reason;
+      },
+      [reloadFile, reloadHistory, reloadOpenProposals],
+    ),
   );
-
+  const historyPage = history.state === "ready" ? history.page : null;
   const lastLiveVersion =
-    file.state === "ready" && file.value.deleted && history.state === "ready"
-      ? history.value.versions.find(
+    file.state === "ready" && file.value.deleted && historyPage
+      ? historyPage.versions.find(
           (version) => version.version < file.value.version && version.kind !== "delete",
         )
       : undefined;
 
+  function refreshAfterChange() {
+    void file.reload().catch(() => undefined);
+    void history.reload().catch(() => undefined);
+  }
+
+  function refreshAfterRollback() {
+    // HistoryList has already appended the successful rollback and its toast. Reload only the
+    // representation here so that local confirmation remains visible while the new head arrives.
+    if (requestedVersion === null) {
+      void file.reload().catch(() => undefined);
+      return;
+    }
+    navigate(hrefFor({ kind: "file", stash, path }), { replace: true });
+  }
+
+  return (
+    <div className="file-detail-layout">
+      {openProposals.state === "ready" &&
+      openProposals.value !== null &&
+      openProposals.value > 0 ? (
+        <div>
+          <Link
+            aria-label={`${openProposals.value} open ${openProposals.value === 1 ? "proposal" : "proposals"} for ${path}`}
+            to={proposalListHref(stash, { path })}
+          >
+            <Badge>
+              {openProposals.value} open {openProposals.value === 1 ? "proposal" : "proposals"}
+            </Badge>
+          </Link>
+        </div>
+      ) : null}
+      {file.state === "loading" ? <p className="loading-copy">Loading file…</p> : null}
+      {file.state === "error" ? (
+        <ErrorBanner
+          error={file.error}
+          onRetry={() => void file.reload().catch(() => undefined)}
+          title="Could not load file"
+        />
+      ) : null}
+      {file.state === "ready" ? (
+        <FileDetails
+          file={file.value}
+          headVersion={historyPage?.headVersion}
+          lastLiveVersion={lastLiveVersion}
+          path={path}
+          requestedVersion={requestedVersion}
+          stash={stash}
+          versions={historyPage?.versions ?? []}
+          onChanged={refreshAfterChange}
+        />
+      ) : null}
+
+      {history.state === "loading" ? (
+        <section className="section-card" aria-label="History">
+          <p className="loading-copy">Loading history…</p>
+        </section>
+      ) : null}
+      {history.state === "error" ? (
+        <ErrorBanner
+          error={history.error}
+          onRetry={() => void history.reload().catch(() => undefined)}
+          title="Could not load history"
+        />
+      ) : null}
+      {history.state === "ready" ? (
+        <HistoryList
+          key={`${stash}:${path}`}
+          loadMoreError={history.loadMoreError}
+          loadingMore={history.loadingMore}
+          page={history.page}
+          path={path}
+          stash={stash}
+          viewedVersion={
+            file.state === "ready" ? file.value.version : (requestedVersion ?? undefined)
+          }
+          onLoadMore={history.loadMore}
+          onRollbackComplete={refreshAfterRollback}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function positiveVersion(value: string | null): number | null {
+  if (value === null || !/^[1-9]\d*$/u.test(value)) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function saveFlashFromState(state: unknown): string | null {
+  if (!state || typeof state !== "object" || !("flash" in state)) return null;
+  const flash = (state as { flash?: unknown }).flash;
+  if (typeof flash !== "string") return null;
+  return /^(?:Saved v[1-9]\d*|No write was needed; the file already matches v[1-9]\d*)\.$/u.test(
+    flash,
+  )
+    ? flash
+    : null;
+}
+
+function stateWithoutFlash(state: unknown): unknown {
+  if (!state || typeof state !== "object" || Array.isArray(state) || !("flash" in state)) {
+    return state;
+  }
+  const next = { ...(state as Record<string, unknown>) };
+  delete next.flash;
+  return Object.keys(next).length === 0 ? null : next;
+}
+
+export default function FilePage() {
+  const { stash, "*": path } = useParams();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const incomingSaveFlash = saveFlashFromState(location.state);
+  const consumedLocationRef = useRef<string | null>(null);
+  const [saveFlash, setSaveFlash] = useState<string | null>(incomingSaveFlash);
+  const versionParam = searchParams.get("version");
+  const requestedVersion = positiveVersion(versionParam);
+  const invalidVersion = versionParam !== null && requestedVersion === null;
+
+  useEffect(() => {
+    if (incomingSaveFlash !== null) {
+      setSaveFlash(incomingSaveFlash);
+      consumedLocationRef.current = location.key;
+      navigate(
+        {
+          pathname: location.pathname,
+          search: location.search,
+          hash: location.hash,
+        },
+        { replace: true, state: stateWithoutFlash(location.state) },
+      );
+      return;
+    }
+
+    // The replace above produces a new location key. Keep the visible confirmation for that one
+    // transition, then clear it normally when a later navigation reaches this route without one.
+    if (consumedLocationRef.current !== null) {
+      consumedLocationRef.current = null;
+      return;
+    }
+    setSaveFlash(null);
+  }, [
+    incomingSaveFlash,
+    location.hash,
+    location.key,
+    location.pathname,
+    location.search,
+    location.state,
+    navigate,
+  ]);
+
   return (
     <Page title={path ?? "File"} description="File content and append-only version history.">
-      <div className="file-detail-layout">
-        {file.state === "loading" ? <p className="loading-copy">Loading file…</p> : null}
-        {file.state === "error" ? (
-          <ErrorBanner error={file.error} onRetry={file.reload} title="Could not load file" />
-        ) : null}
-        {file.state === "ready" && stash && path ? (
-          <FileDetails
-            file={file.value}
-            headVersion={history.state === "ready" ? history.value.headVersion : undefined}
-            lastLiveVersion={lastLiveVersion}
-            path={path}
-            requestedVersion={requestedVersion}
-            stash={stash}
-          />
-        ) : null}
-
-        {history.state === "loading" ? (
-          <section className="section-card" aria-label="History">
-            <p className="loading-copy">Loading history…</p>
-          </section>
-        ) : null}
-        {history.state === "error" ? (
-          <ErrorBanner
-            error={history.error}
-            onRetry={history.reload}
-            title="Could not load history"
-          />
-        ) : null}
-        {history.state === "ready" && client && stash && path ? (
-          <HistoryList
-            client={client}
-            key={`${stash}:${path}`}
-            onRollbackComplete={file.reload}
-            page={history.value}
-            path={path}
-            stash={stash}
-            viewedVersion={
-              file.state === "ready" ? file.value.version : (requestedVersion ?? undefined)
-            }
-          />
-        ) : null}
-      </div>
+      {saveFlash ? (
+        <Notice aria-label="Save confirmation" aria-live="polite" variant="success">
+          <span>{saveFlash}</span>
+          <Button size="sm" onClick={() => setSaveFlash(null)}>
+            Dismiss
+          </Button>
+        </Notice>
+      ) : null}
+      {!stash || !path ? (
+        <ErrorBanner error={new Error("The stash name or file path is missing from this URL.")} />
+      ) : invalidVersion ? (
+        <ErrorBanner error={new Error("The version query must be a positive integer.")} />
+      ) : (
+        <FileRouteContent path={path} requestedVersion={requestedVersion} stash={stash} />
+      )}
     </Page>
   );
 }

@@ -1,11 +1,13 @@
 export const VERSION = "0.0.0";
 export * from "./canonical.js";
+export * from "./diff-model.js";
 export * from "./diff.js";
 export * from "./errors.js";
 export * from "./etag.js";
 export * from "./hash.js";
 export * from "./limits.js";
 export * from "./paths.js";
+export * from "./rpc.js";
 export * from "./routes.js";
 export * from "./schemas.js";
 export * from "./types.js";

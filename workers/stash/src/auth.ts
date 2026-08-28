@@ -1,7 +1,7 @@
 import { ROUTES, StashError, type RouteId } from "@takazudo/zudo-history-stash-core";
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv, Principal } from "./context.js";
-import type { TokenRow } from "./d1/schema.js";
+import type { StashRow, TokenRow } from "./d1/schema.js";
 
 const encoder = new TextEncoder();
 const LAST_USED_INTERVAL_MS = 60_000;
@@ -54,10 +54,17 @@ export const requireToken: MiddlewareHandler<AppEnv> = async (c, next) => {
       principal = { kind: "admin" };
     } else {
       if (!token.startsWith("zhs_")) throw unauthorized();
+      const now = c.get("deps").now();
       const tokenRow = await c.env.DB.prepare(
-        "SELECT id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at FROM tokens WHERE token_hash = ? AND revoked_at IS NULL",
+        `SELECT
+           id, stash_name, token_hash, label, scope, created_at, revoked_at, last_used_at,
+           expires_at, rotated_from, rotated_to
+         FROM tokens
+         WHERE token_hash = ?
+           AND revoked_at IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)`,
       )
-        .bind(await sha256Hex(token))
+        .bind(await sha256Hex(token), now)
         .first<TokenRow>();
       if (tokenRow === null || (tokenRow.scope !== "read" && tokenRow.scope !== "write")) {
         throw unauthorized();
@@ -67,8 +74,9 @@ export const requireToken: MiddlewareHandler<AppEnv> = async (c, next) => {
         stash: tokenRow.stash_name,
         tokenId: tokenRow.id,
         scope: tokenRow.scope,
+        expiresAt:
+          tokenRow.expires_at === null ? null : new Date(tokenRow.expires_at).toISOString(),
       };
-      const now = Date.now();
       if (tokenRow.last_used_at === null || tokenRow.last_used_at <= now - LAST_USED_INTERVAL_MS) {
         c.executionCtx.waitUntil(touchLastUsed(c.env, tokenRow, now));
       }
@@ -87,18 +95,35 @@ export function requireRoute(routeId: RouteId): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const principal = c.get("principal");
     const stash = c.req.param("stash");
-    if (principal.kind === "admin") {
-      await next();
-      return;
+    if (principal.kind !== "admin") {
+      if (route.principal === "admin") {
+        throw new StashError("not-found", "The requested resource was not found.");
+      }
+      if (stash !== undefined && principal.stash !== stash) {
+        throw new StashError("not-found", "The requested resource was not found.");
+      }
+      if (route.principal === "write" && principal.scope !== "write") {
+        throw new StashError("scope", "This token does not have write access.");
+      }
     }
-    if (route.principal === "admin") {
-      throw new StashError("not-found", "The requested resource was not found.");
-    }
-    if (stash !== undefined && principal.stash !== stash) {
-      throw new StashError("not-found", "The requested resource was not found.");
-    }
-    if (route.principal === "write" && principal.scope !== "write") {
-      throw new StashError("scope", "This token does not have write access.");
+    const allowsDeleted =
+      route.id === "deleteStash" ||
+      route.id === "restoreStash" ||
+      (route.id === "getStash" && principal.kind === "admin");
+    if (stash !== undefined && !allowsDeleted) {
+      const row = await c.env.DB.withSession("first-primary")
+        .prepare(
+          `SELECT name, description, meta_json, created_at, deleted_at
+           FROM stashes
+           WHERE name = ? AND deleted_at IS NULL
+           LIMIT 1`,
+        )
+        .bind(stash)
+        .first<StashRow>();
+      if (row === null) {
+        throw new StashError("not-found", "The requested resource was not found.");
+      }
+      c.set("routeStash", row);
     }
     await next();
   };

@@ -1,0 +1,103 @@
+---
+title: Tokens, Expiry, and Rate Limits
+description: Handle one-time credentials, rotation, revocation, and permissive rate limits.
+sidebar_position: 60
+category: guides
+---
+
+Stash tokens have `read` or `write` scope. A write token includes reads and can mutate every path in
+its stash. Creation and rotation return the plaintext secret once. The server retains the secret
+only as a hash; later listings expose the token identifier and lifecycle metadata, never the hash
+or secret. Pass each response directly to a secret-store boundary and never print it.
+
+{/* zhs-example: consumer-token-lifecycle */}
+
+```ts
+import { createStashClient, type ClientResult } from "@takazudo/zudo-history-stash";
+
+function valueOf<T>(result: ClientResult<T>, step: string): T {
+  if (!result.ok) {
+    throw new Error(`${step} failed: ${result.error.code}`);
+  }
+  return result.value;
+}
+
+export async function rotateAndRevokeToken(input: {
+  baseUrl: string;
+  adminToken: string;
+  stash: string;
+  storeSecret: (tokenId: string, secret: string) => Promise<void>;
+}) {
+  const admin = createStashClient({ baseUrl: input.baseUrl, token: input.adminToken });
+  const tokens = admin.stashes.tokens(input.stash);
+  const predecessor = valueOf(
+    await tokens.create({ label: "automation", scope: "write", ttlSeconds: 3_600 }),
+    "create token",
+  );
+  await input.storeSecret(predecessor.id, predecessor.token);
+
+  const successor = valueOf(
+    await tokens.rotate(predecessor.id, { graceSeconds: 30 }),
+    "rotate token",
+  );
+  await input.storeSecret(successor.id, successor.token);
+
+  valueOf(await tokens.revoke(successor.id), "revoke successor");
+  return { predecessorId: predecessor.id, successorId: successor.id };
+}
+```
+
+Choose either `expiresAt` or `ttlSeconds`, never both. The resolved expiry must be in the future and
+no more than ten years away; omitting both creates a non-expiring token with `expiresAt: null`.
+Rotation is one-shot. Its successor inherits the predecessor's expiry unless overridden, while the
+predecessor is shortened to the earlier of its existing expiry and the grace deadline. If a winning
+rotation response is lost, later attempts expose only the successor ID, not its secret; revoke that
+successor and create another credential. Revocation is final.
+
+## Rate-limit outcomes
+
+The repository configures read, write, and diff buckets at 600, 60, and 120 operations per 60
+seconds, respectively. A stash-principal request checks the token key first and the stash key
+second; the administrator is exempt. These are
+[per-location, permissive, eventually consistent counters](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/),
+not an exact global quota. A deployment can intentionally choose different binding configuration.
+
+When a binding refuses an operation, the API returns `429 rate-limited` with `Retry-After: 60`, and
+the client exposes that delay as `retryAfter`. The example waits for the typed value and retries one
+read; thrown transport or server failures still propagate to its caller.
+
+{/* zhs-example: consumer-rate-limit */}
+
+```ts
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+export async function readHistoryWithRateLimitRetry(input: {
+  baseUrl: string;
+  readToken: string;
+  stash: string;
+  path: string;
+  sleep: (milliseconds: number) => Promise<void>;
+}) {
+  const client = createStashClient({ baseUrl: input.baseUrl, token: input.readToken });
+  const read = () => client.files(input.stash).history(input.path);
+  const first = await read();
+
+  if (first.ok) {
+    return { kind: "history" as const, value: first.value };
+  }
+  if (first.error.code !== "rate-limited" || first.retryAfter === undefined) {
+    return { kind: "failed" as const, failure: first };
+  }
+
+  await input.sleep(first.retryAfter * 1_000);
+  const retry = await read();
+  if (!retry.ok) {
+    return { kind: "failed" as const, failure: retry };
+  }
+  return { kind: "history" as const, value: retry.value };
+}
+```
+
+A rate-limiter binding exception is logged and fails open so the storage API remains available.
+This is not an exact accounting system. Ordinary requests authenticate at request time; live-event
+responses additionally end by the token-expiry deadline described in [Live updates](./live-updates.mdx).

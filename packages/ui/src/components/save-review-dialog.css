@@ -1,0 +1,149 @@
+@layer zhs-components {
+  .zhs-save-review-dialog__form {
+    display: grid;
+    min-block-size: 0;
+  }
+
+  .zhs-save-review-dialog__header,
+  .zhs-save-review-dialog__body,
+  .zhs-save-review-dialog__actions {
+    padding-block: var(--vsp-md);
+    padding-inline: var(--hsp-lg);
+  }
+
+  .zhs-save-review-dialog__header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: var(--hsp-lg);
+    border-block-end: var(--border-hairline) solid var(--theme-border);
+  }
+
+  .zhs-save-review-dialog__eyebrow,
+  .zhs-save-review-dialog__title,
+  .zhs-save-review-dialog__notice p,
+  .zhs-save-review-dialog__stats,
+  .zhs-save-review-dialog__cas {
+    margin: 0;
+  }
+
+  .zhs-save-review-dialog__eyebrow {
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 680;
+    text-transform: uppercase;
+  }
+
+  .zhs-save-review-dialog__title {
+    margin-block-start: var(--vsp-xs);
+    color: var(--theme-ink-strong);
+    font-size: var(--text-lg);
+    line-height: var(--line-tight);
+  }
+
+  .zhs-save-review-dialog__body {
+    display: grid;
+    gap: var(--vsp-md);
+  }
+
+  .zhs-save-review-dialog__review {
+    display: grid;
+    min-inline-size: 0;
+    overflow: hidden;
+    border: var(--border-hairline) solid var(--theme-border);
+    border-radius: var(--radius-md);
+  }
+
+  .zhs-save-review-dialog__toolbar {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--vsp-sm) var(--hsp-md);
+    padding-block: var(--vsp-sm);
+    padding-inline: var(--hsp-sm);
+    border-block-end: var(--border-hairline) solid var(--theme-border);
+    background: var(--theme-surface-muted);
+  }
+
+  .zhs-save-review-dialog__stats {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--hsp-sm);
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .zhs-save-review-dialog__stats-add {
+    color: var(--theme-success);
+  }
+
+  .zhs-save-review-dialog__stats-remove {
+    color: var(--theme-error);
+  }
+
+  .zhs-save-review-dialog__diff {
+    max-block-size: 40dvh;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .zhs-save-review-dialog__diff > .zhs-notice {
+    margin-block: var(--vsp-lg);
+    margin-inline: var(--hsp-lg);
+  }
+
+  .zhs-save-review-dialog__cas {
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+    line-height: var(--line-body);
+  }
+
+  .zhs-save-review-dialog__metadata {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    gap: var(--hsp-md);
+  }
+
+  .zhs-save-review-dialog__field {
+    display: grid;
+    align-content: start;
+    gap: var(--vsp-xs);
+    min-inline-size: 0;
+  }
+
+  .zhs-save-review-dialog__field label {
+    color: var(--theme-ink-strong);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .zhs-save-review-dialog__field .zhs-input,
+  .zhs-save-review-dialog__field .zhs-textarea {
+    inline-size: 100%;
+  }
+
+  .zhs-save-review-dialog__byte-count {
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+    text-align: end;
+  }
+
+  .zhs-save-review-dialog__actions {
+    position: sticky;
+    inset-block-end: 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--hsp-sm);
+    border-block-start: var(--border-hairline) solid var(--theme-border);
+    background: var(--theme-surface-raised);
+  }
+
+  @media (max-width: 56rem) {
+    .zhs-save-review-dialog__metadata {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}

@@ -10,6 +10,20 @@ import {
 } from "./limits.js";
 import { isWellFormedString, utf8ByteLength } from "./hash.js";
 import { validatePath, validateStashName } from "./paths.js";
+import type { StashEvent } from "./types.js";
+
+export const STASH_CLIENT_ID_HEADER = "X-Stash-Client-Id";
+export const STASH_CLIENT_ID_PATTERN = /^[!-~](?:[ -~]{0,62}[!-~])?$/;
+export const StashClientIdSchema = z
+  .string()
+  .regex(
+    STASH_CLIENT_ID_PATTERN,
+    "Client ID must be 1-64 printable ASCII characters without leading or trailing whitespace",
+  );
+
+export function isStashClientId(value: unknown): value is z.infer<typeof StashClientIdSchema> {
+  return StashClientIdSchema.safeParse(value).success;
+}
 
 const nonEmptyQueryInteger = (minimum: number) =>
   z.preprocess(
@@ -33,9 +47,15 @@ const body = wellFormed.refine(
 const expectedVersion = z.number().int().positive().nullable();
 const author = boundedString(MAX_AUTHOR_BYTES).optional();
 const message = boundedString(MAX_MESSAGE_BYTES).optional();
-const meta = z
+const metaObject = z
   .record(z.string(), z.json())
-  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= MAX_META_BYTES, "Meta is too large")
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= MAX_META_BYTES, "Meta is too large");
+const meta = metaObject.optional();
+const proposalMeta = metaObject
+  .refine(
+    (value) => !Object.prototype.hasOwnProperty.call(value, "proposalId"),
+    "meta.proposalId is platform-owned",
+  )
   .optional();
 
 export const PutFileBody = z.strictObject({
@@ -65,10 +85,39 @@ export const CreateStashBody = z.strictObject({
   description: wellFormed.optional(),
   meta,
 });
-export const CreateTokenBody = z.strictObject({
-  label: wellFormed.optional(),
-  scope: z.enum(["read", "write"]),
-});
+const tokenExpirationFields = {
+  expiresAt: z.iso.datetime().optional(),
+  ttlSeconds: z.number().int().positive().max(315_360_000).optional(),
+};
+export const CreateTokenBody = z
+  .strictObject({
+    label: wellFormed.optional(),
+    scope: z.enum(["read", "write"]),
+    ...tokenExpirationFields,
+  })
+  .superRefine((value, context) => {
+    if (value.expiresAt !== undefined && value.ttlSeconds !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["ttlSeconds"],
+        message: "expiresAt and ttlSeconds are mutually exclusive",
+      });
+    }
+  });
+export const RotateTokenBody = z
+  .strictObject({
+    graceSeconds: z.number().int().min(0).max(86_400).default(300),
+    ...tokenExpirationFields,
+  })
+  .superRefine((value, context) => {
+    if (value.expiresAt !== undefined && value.ttlSeconds !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["ttlSeconds"],
+        message: "expiresAt and ttlSeconds are mutually exclusive",
+      });
+    }
+  });
 
 const importCommon = { author, message, meta, createdAt: z.number().int().nonnegative() };
 const ImportPut = z.strictObject({
@@ -134,6 +183,14 @@ export const ImportBody = z
   });
 
 export const ListQuery = z.strictObject({ limit, after: z.string().optional() });
+export const ListStashesQuery = z.strictObject({
+  limit,
+  after: z.string().optional(),
+  includeDeleted: z.preprocess(
+    (value) => (value === "true" ? true : value === "false" ? false : value),
+    z.boolean().default(false),
+  ),
+});
 export const ListFilesQuery = z.strictObject({
   includeDeleted: z.preprocess(
     (value) => (value === "true" ? true : value === "false" ? false : value),
@@ -147,6 +204,7 @@ export const ChangesQuery = z
   .refine((value) => value.since === undefined || value.before === undefined, {
     message: "since and before are mutually exclusive",
   });
+export const EventsQuery = z.strictObject({ since: optionalQueryInteger(0) });
 export const FileGetQuery = z.strictObject({ version: optionalQueryInteger(1) });
 export const HistoryQuery = z.strictObject({ limit, before: optionalQueryInteger(1) });
 export const DiffQuery = z.strictObject({
@@ -160,6 +218,76 @@ export const DiffCandidateBody = z.strictObject({
   body,
   context: z.number().int().nonnegative().optional(),
 });
+export const RunGcBody = z.strictObject({
+  kind: z.enum(["r2-orphans", "ledger"]),
+  dryRun: z.boolean().default(false),
+  maxObjects: z.number().int().min(1).max(500).default(100),
+  cursor: z.string().optional(),
+});
+export const ListGcRunsQuery = z.strictObject({
+  kind: z.enum(["r2-orphans", "ledger"]).optional(),
+  limit,
+});
+export const CreateProposalBody = z.strictObject({
+  path: z.string().refine((value) => validatePath(value).ok, "Invalid file path"),
+  body,
+  baseVersion: expectedVersion,
+  author,
+  message,
+  meta: proposalMeta,
+  expiresAt: z.iso
+    .datetime()
+    .refine((value) => Date.parse(value) > Date.now(), "expiresAt must be in the future")
+    .optional(),
+});
+export const ListProposalsQuery = z.strictObject({
+  status: z.enum(["open", "applied", "rejected", "expired", "all"]).default("open"),
+  path: z
+    .string()
+    .refine((value) => validatePath(value).ok, "Invalid file path")
+    .optional(),
+  limit,
+  after: z.string().optional(),
+});
+export const ApproveProposalBody = z.strictObject({ author, message });
+export const RejectProposalBody = z.strictObject({
+  reason: boundedString(MAX_MESSAGE_BYTES).optional(),
+});
+export const ProposalDiffQuery = z.strictObject({ context: optionalQueryInteger(0) });
+
+export const StashReadyEventSchema = z.strictObject({
+  type: z.literal("ready"),
+  head: z.number().int().nonnegative().nullable(),
+  checkpoint: z.number().int().nonnegative().nullable(),
+});
+export const StashChangeEventSchema = z.strictObject({
+  type: z.literal("change"),
+  changeId: z.number().int().nonnegative(),
+  stash: z.string(),
+  path: z.string(),
+  version: z.number().int().nonnegative(),
+  kind: z.enum(["put", "delete", "rollback"]),
+  origin: StashClientIdSchema.nullable(),
+  createdAt: z.iso.datetime(),
+});
+export const StashProposalEventSchema = z.strictObject({
+  type: z.literal("proposal"),
+  proposalId: z.string().regex(/^prp_\d{13}[0-9a-f]{8}$/),
+  stash: z.string(),
+  path: z.string(),
+  status: z.enum(["open", "applied", "rejected", "expired"]),
+  origin: StashClientIdSchema.nullable(),
+});
+export const StashReconnectEventSchema = z.strictObject({
+  type: z.literal("reconnect"),
+  reason: z.enum(["lifetime", "replay-limit", "shutdown"]),
+});
+export const StashEventSchema: z.ZodType<StashEvent> = z.discriminatedUnion("type", [
+  StashReadyEventSchema,
+  StashChangeEventSchema,
+  StashProposalEventSchema,
+  StashReconnectEventSchema,
+]);
 
 export type PutFileBody = z.infer<typeof PutFileBody>;
 export type DeleteFileBody = z.infer<typeof DeleteFileBody>;
@@ -168,10 +296,25 @@ export type ImportBody = z.infer<typeof ImportBody>;
 export type ImportVersion = z.infer<typeof ImportVersion>;
 export type CreateStashBody = z.infer<typeof CreateStashBody>;
 export type CreateTokenBody = z.infer<typeof CreateTokenBody>;
+export type RotateTokenBody = z.input<typeof RotateTokenBody>;
 export type DiffQuery = z.infer<typeof DiffQuery>;
 export type DiffCandidateBody = z.infer<typeof DiffCandidateBody>;
 export type ListQuery = z.infer<typeof ListQuery>;
+export type ListStashesQuery = z.input<typeof ListStashesQuery>;
+export type ParsedListStashesQuery = z.output<typeof ListStashesQuery>;
 export type ListFilesQuery = z.infer<typeof ListFilesQuery>;
 export type ChangesQuery = z.infer<typeof ChangesQuery>;
+export type EventsQuery = z.infer<typeof EventsQuery>;
 export type FileGetQuery = z.infer<typeof FileGetQuery>;
 export type HistoryQuery = z.infer<typeof HistoryQuery>;
+export type RunGcBody = z.input<typeof RunGcBody>;
+export type ListGcRunsQuery = z.input<typeof ListGcRunsQuery>;
+export type ParsedRunGcBody = z.output<typeof RunGcBody>;
+export type ParsedListGcRunsQuery = z.output<typeof ListGcRunsQuery>;
+export type CreateProposalBody = z.infer<typeof CreateProposalBody>;
+export type ListProposalsQuery = z.input<typeof ListProposalsQuery>;
+export type ParsedListProposalsQuery = z.output<typeof ListProposalsQuery>;
+export type ApproveProposalBody = z.infer<typeof ApproveProposalBody>;
+export type RejectProposalBody = z.infer<typeof RejectProposalBody>;
+export type ProposalDiffQuery = z.infer<typeof ProposalDiffQuery>;
+export type StashClientId = z.infer<typeof StashClientIdSchema>;

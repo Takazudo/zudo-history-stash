@@ -7,3 +7,8 @@ worktrees/
 test-results/
 playwright-report/
 pnpm-lock.yaml
+doc/public/openapi.json
+**/*.md
+**/*.mdx
+
+_temp-resource/

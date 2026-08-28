@@ -1,0 +1,80 @@
+---
+title: Operate the Viewer
+description: Use the hosted Viewer safely for browsing, editing, proposals, tokens, and live updates.
+sidebar_position: 100
+category: guides
+---
+
+The Viewer is a trusted operator interface to a Stash Worker. Put it behind Cloudflare Access or an
+equivalent perimeter when it is internet-facing, but keep the API's bearer-token and scope checks in
+place. The perimeter, route visibility, and hidden controls are not authorization.
+
+## Sign in without crossing identities
+
+The login form validates a bearer token through `/v1/me` before installing it. The token is kept in
+this browser tab's `sessionStorage`; do not put it in a URL, log, analytics event, screenshot,
+support capture, fixture, or build artifact. A stable tab client ID accompanies mutation requests
+as origin and audit metadata. It is not a credential.
+
+Replacing a credential first validates the candidate, then clears credential-bound workbench
+drafts, confirms tab storage, and only then activates the new principal. If cleanup or storage
+fails, stop: do not sign in as another principal in that tab. Logout and automatic logout after a
+`401` always deactivate the in-memory client. If the Viewer warns that persisted data could not be
+cleared, close the tab and clear its site data before signing in again.
+
+Capabilities come from the resolved `/v1/me` principal and fail closed while that principal is
+loading or changing:
+
+| Capability | Viewer operations |
+| --- | --- |
+| read | Browse stashes and files, inspect history and diffs, and list or review proposals. |
+| write | Create, edit, delete, restore, or roll back files, and create or decide proposals. |
+| admin | Create, delete, or restore stashes; manage tokens; and run garbage collection. |
+
+## Viewer routes
+
+Viewer URLs are navigation state, not proof of access.
+
+| Route | Purpose and query |
+| --- | --- |
+| `/login` | Validate and install a credential for this tab. |
+| `/` | List stashes visible to the current principal. |
+| `/s/:stash` | Show one stash and its files. |
+| `/s/:stash/f/*` | Show a file; `?version=N` selects a historical version. |
+| `/s/:stash/diff/*` | Compare `?from=N&to=M&context=N`, or set `to=head` for the current head. |
+| `/s/:stash/edit/*` | Edit a file; optional `?from=N` pins the loaded source version. |
+| `/s/:stash/proposals` | List `?status=open` or `?status=all`, optionally filtered by exact `?path=...`. |
+| `/s/:stash/proposals/:id` | Review one proposal and its immutable base/candidate diff. |
+| `/s/:stash/new` | Create a file. |
+| `/s/:stash/tokens` | Admin-only token management. |
+
+## Edit with the loaded head as a fence
+
+A save uses the head loaded with the draft as its compare-and-set fence. If another writer moves
+the head, the Viewer marks the draft stale while preserving dirty text and the pinned comparison.
+Reload and compare the authoritative version, then deliberately reapply the change. Do not blindly
+retry, silently merge, or silently rebase a stale draft.
+
+Proposal base and candidate state are similarly immutable. Review the exact diff before deciding.
+Open/all and exact-path filters help triage, but approval and rejection remain write-gated. A stale
+approval is refused; it is never automatically rebased onto a newer head.
+
+Token plaintext is shown only once after minting. Move it directly to the intended secret store,
+then leave the page. A later list can show metadata but cannot recover the credential.
+
+## Read live state as a hint, then reconcile
+
+The status indicator uses four labels:
+
+- `Live`: an event stream is connected.
+- `Reconnecting`: the stream is recovering.
+- `Polling`: authoritative refreshes continue without a healthy stream.
+- `Off`: live updates are unavailable or disabled.
+
+An event's origin and path are hints. The Viewer adopts state only after an authoritative change
+feed or refetch reconciliation, including after focus or visibility changes. Do not build operating
+procedures around an internal polling interval or storage-key spelling.
+
+For safe diagnosis, continue to [Troubleshooting](./troubleshooting.mdx). The
+[reference landing page](../reference/index.mdx) is the stable entry point for exhaustive API and
+error contracts.

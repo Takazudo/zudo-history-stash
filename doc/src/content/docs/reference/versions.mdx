@@ -1,0 +1,23 @@
+---
+title: Versions and compatibility
+description: Build-time package, API, and toolchain requirements.
+sidebar_position: 80
+category: reference
+---
+
+These values come directly from repository manifests and the OpenAPI document during the site
+build:
+
+- Core package: <VersionValue name="core" />
+- Client package: <VersionValue name="client" />
+- UI package: <VersionValue name="ui" />
+- API contract: <VersionValue name="api" />
+- Node.js: <VersionValue name="node" />
+- pnpm: <VersionValue name="pnpm" />
+- Wrangler: <VersionValue name="wrangler" />
+
+## Deprecation policy
+
+No fixed deprecation window is presently guaranteed. Breaking releases use the release tooling's
+`!` or `BREAKING CHANGE` convention and must explain the change in package changelogs. Consumers
+should pin compatible versions.

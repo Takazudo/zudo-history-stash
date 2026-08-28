@@ -1,0 +1,32 @@
+---
+title: Viewer URL スキーム
+description: 安定した Viewer route、query の意味、encode、認証情報を安全に保つ navigation です。
+sidebar_position: 50
+category: reference
+---
+
+これらは React Router の pattern であり、公開 HTTP API path ではありません。ここで `:stash` と `:id` は
+名前付き route parameter で、裸の `*` は Viewer の splat です。`"*"` parameter から読み取るその値は
+ファイルパスを表します。HTTP リファレンスでは `{stash}` や `{path}` のような OpenAPI の波括弧を使います。
+
+| Viewer route | Query または state | Gate |
+| --- | --- | --- |
+| `/login` | 任意の安全な同一 origin の `next`。 | Open。 |
+| `/` | Principal に応じた home。 | Authenticated。 |
+| `/s/:stash` | Stash overview。 | 一致する stash credential または admin。 |
+| `/s/:stash/f/*` | 任意の正の `version`。 | Read。 |
+| `/s/:stash/diff/*` | 正の `from`（デフォルト 1）、正の `to` または `head`、受け入れ可能な `context`。 | Read。 |
+| `/s/:stash/edit/*` | 任意の正の `from` source version。 | Write。 |
+| `/s/:stash/proposals` | `status=open` または `status=all`（デフォルト `open`）、任意の `path`。 | Read。判断はケイパビリティで制限されます。 |
+| `/s/:stash/proposals/:id` | 不変の proposal ID。 | Read。判断操作には write が必要です。 |
+| `/s/:stash/new` | Query なし。 | Write。 |
+| `/s/:stash/tokens` | Query なし。 | Admin。 |
+
+stash ID と proposal ID は `encodeURIComponent` で encode します。ファイルパスは segment ごとに encode し、
+slash を区切りとして残します。履歴や diff のリンクを共有するときは、query string 全体を保持してください。
+`defaultStashHref` は中心的な destination を扱います。proposal filter は `proposalListHref` を使うため、
+一つの helper がすべての安定 URL を扱うと主張することはありません。
+
+未認証の deep link は `/login?next=<encoded path+query+hash>` へ redirect します。ログインから戻るときに
+受け入れるのは、安全な同一 origin の application path だけです。認証情報はタブに限定した session storage
+に保存し、path、query、fragment、log、共有 link には決して含めません。

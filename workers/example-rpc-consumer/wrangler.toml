@@ -1,0 +1,17 @@
+name = "zudo-history-stash-example-rpc-consumer"
+main = "src/index.ts"
+compatibility_date = "2026-08-25"
+workers_dev = true
+preview_urls = true
+
+[[services]]
+binding = "STASH"
+service = "zudo-history-stash"
+
+[[services]]
+binding = "STASH_RPC"
+service = "zudo-history-stash"
+entrypoint = "StashRpc"
+
+[vars]
+STASH_TOKEN = ""

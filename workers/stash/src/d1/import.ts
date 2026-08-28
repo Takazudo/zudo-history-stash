@@ -10,6 +10,7 @@ import {
   type Result,
 } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
+import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./blobs.js";
 import { importBatch, type PreparedImportVersion } from "./sql/import.js";
 import { selectHeadForWrite } from "./sql/writes.js";
 import type { StoreDependencies } from "./store.js";
@@ -26,14 +27,67 @@ interface HeadForImportRow {
 interface ImportTargetRow {
   version: number;
   blob_hash: string | null;
+  size_bytes: number;
 }
 
+interface ImportPutFact {
+  body: string;
+  hash: string;
+  size: number;
+}
+
+interface LogicalImportBase {
+  version: number;
+  size: number;
+  author: string;
+  message: string;
+  metaJson: string;
+  createdAt: number;
+}
+
+type LogicalImportVersion =
+  | (LogicalImportBase & {
+      kind: "put";
+      hash: string;
+      rollbackOf: null;
+    })
+  | (LogicalImportBase & {
+      kind: "delete";
+      body: null;
+      hash: null;
+      rollbackOf: null;
+    })
+  | (LogicalImportBase & {
+      kind: "rollback";
+      body: null;
+      hash: string;
+      rollbackOf: number;
+    });
+
 export type StoreImportResult =
-  | (Extract<Result<ImportResult>, { ok: true }> & { statusCode: 201 })
+  | (Extract<Result<ImportResult>, { ok: true }> & {
+      statusCode: 201;
+      createdVersions: ImportedVersionFact[];
+    })
   | Extract<Result<ImportResult>, { ok: false }>;
+
+export interface ImportedVersionFact {
+  changeId: number;
+  version: number;
+  kind: "put" | "delete" | "rollback";
+  author: string;
+  message: string;
+  size: number;
+  createdAt: string;
+}
 
 export interface StashImport {
   importFile(stash: string, input: ImportBody): Promise<StoreImportResult>;
+}
+
+export interface ImportDependencies extends StoreDependencies {
+  onBeforeCommit?: () => void | Promise<void>;
+  createBlobGeneration?: BlobGenerationFactory;
 }
 
 function failure(
@@ -74,12 +128,21 @@ async function readExistingTargets(
   const placeholders = versions.map(() => "?").join(", ");
   const rows = await db
     .prepare(
-      `SELECT version, blob_hash FROM versions
+      `SELECT version, blob_hash, size_bytes FROM versions
        WHERE stash_name = ? AND path = ? AND version IN (${placeholders})`,
     )
     .bind(stash, path, ...versions)
     .all<ImportTargetRow>();
   return new Map(rows.results.map((row) => [row.version, row]));
+}
+
+async function stashIsLive(db: D1DatabaseSession, stash: string): Promise<boolean> {
+  return (
+    (await db
+      .prepare("SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL")
+      .bind(stash)
+      .first()) !== null
+  );
 }
 
 function refusal(expectedVersion: number | null, head: HeadForImportRow | null): StoreImportResult {
@@ -95,7 +158,7 @@ function refusal(expectedVersion: number | null, head: HeadForImportRow | null):
   return failure("stale", 409, "Expected version is stale", currentFromHead(head));
 }
 
-export function createImport(env: Env, deps: StoreDependencies): StashImport {
+export function createImport(env: Env, deps: ImportDependencies): StashImport {
   async function importFile(stash: string, input: ImportBody): Promise<StoreImportResult> {
     const stashValidation = validateStashName(stash);
     if (!stashValidation.ok) return failure("validation", 400, stashValidation.message);
@@ -107,7 +170,21 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
       return failure("validation", 400, "Import createdAt cannot be in the future");
     }
 
+    const putFacts: (ImportPutFact | undefined)[] = new Array(value.versions.length);
+    const distinctPuts = new Map<string, ImportPutFact>();
+    for (const [index, entry] of value.versions.entries()) {
+      if (entry.kind !== "put") continue;
+      const fact = {
+        body: entry.body,
+        hash: await sha256Hex(entry.body),
+        size: utf8ByteLength(entry.body),
+      };
+      putFacts[index] = fact;
+      if (!distinctPuts.has(fact.hash)) distinctPuts.set(fact.hash, fact);
+    }
+
     const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const head = await readHead(db, stash, value.path);
     if (value.expectedVersion === null) {
       if (head) return failure("exists", 409, "File already exists", currentFromHead(head));
@@ -138,16 +215,17 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
       }
     }
 
-    const prepared: PreparedImportVersion[] = [];
+    const logical: LogicalImportVersion[] = [];
     for (const [index, entry] of value.versions.entries()) {
       const version = baseVersion + index + 1;
       if (entry.kind === "put") {
-        prepared.push({
+        const fact = putFacts[index];
+        if (fact === undefined) throw new Error("Missing import PUT facts");
+        logical.push({
           version,
           kind: "put",
-          body: entry.body,
-          hash: await sha256Hex(entry.body),
-          size: utf8ByteLength(entry.body),
+          hash: fact.hash,
+          size: fact.size,
           rollbackOf: null,
           author: entry.author ?? "",
           message: entry.message ?? "",
@@ -155,7 +233,7 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
           createdAt: entry.createdAt,
         });
       } else if (entry.kind === "delete") {
-        prepared.push({
+        logical.push({
           version,
           kind: "delete",
           body: null,
@@ -169,12 +247,14 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
         });
       } else {
         const importedTargetIndex = entry.rollbackOf - baseVersion - 1;
-        const importedTarget = importedTargetIndex >= 0 ? prepared[importedTargetIndex] : undefined;
+        const importedTarget = importedTargetIndex >= 0 ? logical[importedTargetIndex] : undefined;
         const storedTarget = storedTargets.get(entry.rollbackOf);
         const hash = importedTarget?.hash ?? storedTarget?.blob_hash ?? null;
-        const size = importedTarget?.size ?? 0;
-        if (hash === null) return failure("validation", 400, "Invalid import rollback target");
-        prepared.push({
+        const size = importedTarget?.size ?? storedTarget?.size_bytes;
+        if (hash === null || size === undefined) {
+          return failure("validation", 400, "Invalid import rollback target");
+        }
+        logical.push({
           version,
           kind: "rollback",
           body: null,
@@ -189,6 +269,22 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
       }
     }
 
+    const storageByHash = new Map<string, PreparedBlob>();
+    for (const [hash, fact] of distinctPuts) {
+      storageByHash.set(
+        hash,
+        await prepareBlob(env, stash, hash, fact.body, deps.createBlobGeneration),
+      );
+    }
+
+    const prepared = logical.map((entry): PreparedImportVersion => {
+      if (entry.kind !== "put") return entry;
+      const storage = storageByHash.get(entry.hash);
+      if (storage === undefined) throw new Error("Missing prepared import blob");
+      return { ...entry, ...storage };
+    });
+
+    await deps.onBeforeCommit?.();
     const batch = importBatch(db, {
       stash,
       path: value.path,
@@ -198,13 +294,34 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
     try {
       const results = await db.batch(batch.statements);
       if (results.at(-1)?.meta.changes === 1) {
-        const firstChangeId = results[batch.firstVersionStatementIndex]?.meta.last_row_id;
-        if (typeof firstChangeId !== "number" || firstChangeId < 1) {
+        const createdVersions = logical.map((entry, index): ImportedVersionFact | null => {
+          const statementIndex = batch.versionStatementIndexes[index];
+          const changeId =
+            statementIndex === undefined ? undefined : results[statementIndex]?.meta.last_row_id;
+          if (typeof changeId !== "number" || changeId < 1) return null;
+          return {
+            changeId,
+            version: entry.version,
+            kind: entry.kind,
+            author: entry.author,
+            message: entry.message,
+            size: entry.size,
+            createdAt: new Date(entry.createdAt).toISOString(),
+          };
+        });
+        if (createdVersions.some((entry) => entry === null)) {
           return failure("internal", 500, "Missing import change id");
         }
+        const exactCreatedVersions = createdVersions.filter(
+          (entry): entry is ImportedVersionFact => entry !== null,
+        );
+        const firstChangeId = exactCreatedVersions[0]?.changeId;
+        if (firstChangeId === undefined)
+          return failure("internal", 500, "Missing import change id");
         return {
           ok: true,
           statusCode: 201,
+          createdVersions: exactCreatedVersions,
           value: {
             path: value.path,
             headVersion: prepared.at(-1)?.version ?? baseVersion,
@@ -215,6 +332,7 @@ export function createImport(env: Env, deps: StoreDependencies): StashImport {
     } catch {
       // A competing fenced writer can win after the preflight read.
     }
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     return refusal(value.expectedVersion, await readHead(db, stash, value.path));
   }
 

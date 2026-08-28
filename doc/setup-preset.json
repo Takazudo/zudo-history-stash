@@ -1,0 +1,40 @@
+{
+  "projectName": "zudo-history-stash",
+  "defaultLang": "en",
+  "colorSchemeMode": "light-dark",
+  "lightScheme": "Default Light",
+  "darkScheme": "Default Dark",
+  "defaultMode": "dark",
+  "respectPrefersColorScheme": true,
+  "themePack": "drift",
+  "features": [
+    "search",
+    "sidebarFilter",
+    "imageEnlarge",
+    "dynamicPageTransition",
+    "footerCopyright",
+    "i18n",
+    "claudeResources",
+    "sidebarResizer",
+    "sidebarToggle",
+    "tocToggle",
+    "docHistory",
+    "llmsTxt",
+    "skillSymlinker"
+  ],
+  "cjkFriendly": true,
+  "packageManager": "pnpm",
+  "headerRightItems": [
+    { "type": "component", "component": "github-link" },
+    { "type": "component", "component": "theme-toggle" },
+    { "type": "component", "component": "search" },
+    { "type": "component", "component": "language-switcher" }
+  ],
+  "metaTags": {
+    "description": true,
+    "keywords": "Cloudflare, file history, git like",
+    "ogImage": "/img/ogp.png",
+    "ogSiteName": true,
+    "twitterCard": false
+  }
+}

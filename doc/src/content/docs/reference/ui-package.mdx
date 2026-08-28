@@ -1,0 +1,63 @@
+---
+title: UI package
+description: Provider, hook, workflow, component, and styling integration contracts.
+sidebar_position: 40
+category: reference
+---
+
+Install `@takazudo/zudo-history-stash-ui` with React and React DOM 19 or newer, and import
+`@takazudo/zudo-history-stash-ui/styles.css` once in the host application.
+
+The package groups a provider, data and capability hooks, mutation workflows, composed components,
+and lower-level primitives. It includes live-change state and indicator surfaces, but it is not a
+router, credential store, or complete application shell.
+
+## Host boundary
+
+The host supplies the authenticated client, an abort-signal-bound `clientForSignal` factory,
+`hrefFor` route generation, and an `Anchor` adapter. The host also owns credential persistence and
+cleanup, route guards, and dirty-draft decisions.
+
+{/* zhs-example: reference-ui-provider */}
+
+```tsx
+import type { StashClient } from "@takazudo/zudo-history-stash";
+import {
+  StashUiProvider,
+  type StashAnchorProps,
+  type StashHrefFor,
+} from "@takazudo/zudo-history-stash-ui";
+import type { ReactNode } from "react";
+
+function Anchor({ href, ...props }: StashAnchorProps) {
+  return <a href={href} {...props} />;
+}
+
+export function ReferenceUiProvider({
+  children,
+  client,
+  clientForSignal,
+  hrefFor,
+}: {
+  children: ReactNode;
+  client: StashClient;
+  clientForSignal: (signal: AbortSignal) => StashClient;
+  hrefFor: StashHrefFor;
+}) {
+  return (
+    <StashUiProvider
+      Anchor={Anchor}
+      client={client}
+      clientForSignal={clientForSignal}
+      hrefFor={hrefFor}
+    >
+      {children}
+    </StashUiProvider>
+  );
+}
+```
+
+Capability hooks should drive whether write and administrative actions are offered. Aborting a
+route-scoped client stops obsolete reads; credential replacement or logout must also clear
+sensitive draft and cached state. See the UI embedding and credential-boundary operation guides
+for complete host integrations once those sibling pages are present.

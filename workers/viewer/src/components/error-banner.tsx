@@ -1,10 +1,13 @@
-import { StashHttpError, type ClientResult } from "@takazudo/zudo-history-stash";
 import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import {
+  ErrorBanner as PackageErrorBanner,
+  type ErrorBannerProps,
+} from "@takazudo/zudo-history-stash-ui";
+import { StashHttpError, type ClientResult } from "@takazudo/zudo-history-stash";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
-import { Button } from "../app/shell/button.js";
 
-interface ErrorDetails {
+export interface ErrorDetails {
   status?: number;
   code?: string;
   message: string;
@@ -28,11 +31,7 @@ export function stashErrorDetails(value: unknown): ErrorDetails {
     } else if (value.cause instanceof Error) {
       message = value.cause.message;
     }
-    return {
-      status: value.status,
-      code: value.code,
-      message,
-    };
+    return { status: value.status, code: value.code, message };
   }
   if (value instanceof Error) return { message: value.message };
   return { message: "The request could not be completed." };
@@ -56,16 +55,11 @@ export async function clientValue<T>(request: Promise<ClientResult<T>>): Promise
   return result.value;
 }
 
-export function ErrorBanner({
-  error,
-  onRetry,
-  title = "Could not load this data",
-}: {
-  error: unknown;
-  onRetry?: () => void;
-  title?: string;
-}) {
-  const details = stashErrorDetails(error);
+export type { ErrorBannerProps };
+
+/** Keep credential clearing and deep-link redirects in the Viewer host, never in package UI. */
+export function ErrorBanner(props: ErrorBannerProps) {
+  const details = stashErrorDetails(props.error);
   const { logOut } = useStashClient();
   const location = useLocation();
   const navigate = useNavigate();
@@ -78,15 +72,5 @@ export function ErrorBanner({
     navigate(`/login?next=${encodeURIComponent(next)}`, { replace: true });
   }, [location.hash, location.pathname, location.search, logOut, navigate, unauthorized]);
 
-  return (
-    <section className="error-banner" role="alert">
-      <strong>{unauthorized ? "Session expired" : title}</strong>
-      <p>{stashErrorMessage(error)}</p>
-      {onRetry && !unauthorized ? (
-        <Button compact onClick={onRetry}>
-          Try again
-        </Button>
-      ) : null}
-    </section>
-  );
+  return <PackageErrorBanner {...props} />;
 }

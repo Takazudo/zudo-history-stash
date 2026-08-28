@@ -1,14 +1,22 @@
+import {
+  createStashClient,
+  type ClientResult,
+  type FileListResponse,
+  type FileSummary,
+  type ListChangesResult,
+  type ProposalListResponse,
+  type StashFilesClient,
+  type StashProposalsClient,
+} from "@takazudo/zudo-history-stash";
+import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type {
-  ClientResult,
-  FileListResponse,
-  FileSummary,
-  ListChangesResult,
-  StashFilesClient,
-} from "@takazudo/zudo-history-stash";
 import { describe, expect, it, vi } from "vitest";
-import { change, createFakeViewerClient } from "../test/fake-viewer-client.js";
+import {
+  change,
+  createFakeBackedViewerClient,
+  createFakeViewerClient,
+} from "../test/fake-viewer-client.js";
 import { renderViewerRoute } from "../test/render-viewer-route.js";
 
 function file(overrides: Partial<FileSummary> = {}): FileSummary {
@@ -30,7 +38,74 @@ function clientWithFiles(overrides: Partial<StashFilesClient>) {
   });
 }
 
+function clientWithProposalList(list: StashProposalsClient["list"], readOnly = false) {
+  const base = createFakeViewerClient();
+  return createFakeViewerClient({
+    ...(readOnly
+      ? {
+          me: async () => ({
+            ok: true as const,
+            value: {
+              principal: "stash" as const,
+              stash: "notes",
+              tokenId: "tok_read",
+              scope: "read" as const,
+              expiresAt: null,
+            },
+          }),
+        }
+      : {}),
+    proposals: (stash) => ({ ...base.proposals(stash), list }),
+  });
+}
+
 describe("StashPage", () => {
+  it("refreshes files, changes, and proposal count from the shared live provider", async () => {
+    const token = "viewer-stash-live";
+    const fake = createFakeStash({ adminToken: token });
+    fake.createStash("notes");
+    const seed = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "fixture",
+      fetch: fake.fetch,
+    });
+    const first = await seed
+      .files("notes")
+      .put("docs/first.txt", { body: "first", expectedVersion: null });
+    if (!first.ok) throw new Error(first.error.message);
+    renderViewerRoute("/s/notes", createFakeBackedViewerClient(fake, token, "viewer-live-tab"));
+
+    const filesRegion = screen.getByRole("region", { name: "Files" });
+    expect(await within(filesRegion).findByRole("link", { name: "docs/first.txt" })).toBeTruthy();
+    await waitFor(() => expect(fake.events.subscriberCount("notes")).toBe(1));
+
+    const peer = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token,
+      clientId: "peer-tab",
+      fetch: fake.fetch,
+    });
+    const second = await peer
+      .files("notes")
+      .put("docs/second.txt", { body: "second", expectedVersion: null });
+    if (!second.ok) throw new Error(second.error.message);
+    expect(await within(filesRegion).findByRole("link", { name: "docs/second.txt" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByText("Recent changes").closest("section")?.textContent).toContain(
+        "docs/second.txt",
+      ),
+    );
+
+    const proposal = await peer.proposals("notes").create({
+      path: "docs/second.txt",
+      body: "candidate",
+      baseVersion: 1,
+    });
+    if (!proposal.ok) throw new Error(proposal.error.message);
+    expect(await screen.findByRole("link", { name: "Proposals (1 open)" })).toBeTruthy();
+  });
+
   it("shows the loading state", () => {
     const client = clientWithFiles({
       list: vi.fn(
@@ -119,9 +194,114 @@ describe("StashPage", () => {
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Include deleted" }));
     const deletedLink = await within(filesRegion).findByRole("link", { name: deleted.path });
-    expect(deletedLink.closest("td")?.className).toContain("list-path-cell");
+    expect(deletedLink.closest("td")?.className).toContain("zhs-path-cell");
     expect(screen.getByText("deleted")).toBeTruthy();
     expect(list).toHaveBeenCalledWith({ includeDeleted: true });
     expect(within(filesRegion).queryByRole("link", { name: "folder/a.txt" })).toBeNull();
+  });
+
+  it("shows New file and Tokens entry points to an admin", async () => {
+    renderViewerRoute("/s/notes", createFakeViewerClient());
+
+    expect(
+      (await screen.findByRole("link", { name: "Proposals (0 open)" })).getAttribute("href"),
+    ).toBe("/s/notes/proposals");
+    expect((await screen.findByRole("link", { name: "New file" })).getAttribute("href")).toBe(
+      "/s/notes/new",
+    );
+    expect(screen.getByRole("link", { name: "Tokens" }).getAttribute("href")).toBe(
+      "/s/notes/tokens",
+    );
+    expect(screen.getByRole("button", { name: "Delete stash" })).toBeTruthy();
+  });
+
+  it("shows the exact open total to a read principal outside write and admin gating", async () => {
+    const list = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: true,
+      value: { proposals: [], nextAfter: null, total: 6 },
+    }));
+    renderViewerRoute("/s/notes", clientWithProposalList(list, true));
+
+    const proposals = await screen.findByRole("link", { name: "Proposals (6 open)" });
+    expect(proposals.getAttribute("href")).toBe("/s/notes/proposals");
+    expect(list).toHaveBeenCalledWith({ status: "open", limit: 1 });
+    expect(screen.queryByRole("link", { name: "New file" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Tokens" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete stash" })).toBeNull();
+  });
+
+  it("keeps plain proposal navigation when the auxiliary count fails", async () => {
+    const list = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
+      ok: false,
+      error: { status: 503, code: "internal", message: "Count unavailable" },
+    }));
+    renderViewerRoute("/s/notes", clientWithProposalList(list, true));
+
+    expect((await screen.findByRole("link", { name: "Proposals" })).getAttribute("href")).toBe(
+      "/s/notes/proposals",
+    );
+    expect(screen.queryByText("Count unavailable")).toBeNull();
+    expect(await screen.findByText("This stash has no live files.")).toBeTruthy();
+  });
+
+  it("shows only New file to a matching write principal", async () => {
+    const remove = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        name: "notes",
+        deletedAt: "2026-08-27T00:00:00.000Z",
+        revokedTokens: 1,
+        restoreUntil: "2026-09-26T00:00:00.000Z",
+      },
+    }));
+    const client = createFakeViewerClient({
+      me: async () => ({
+        ok: true,
+        value: {
+          principal: "stash",
+          stash: "notes",
+          tokenId: "tok_write",
+          scope: "write",
+          expiresAt: null,
+        },
+      }),
+      stashes: { delete: remove },
+    });
+    renderViewerRoute("/s/notes", client);
+
+    expect((await screen.findByRole("link", { name: "New file" })).getAttribute("href")).toBe(
+      "/s/notes/new",
+    );
+    expect(screen.queryByRole("link", { name: "Tokens" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete stash" })).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("keeps the server restore deadline visible until deletion is acknowledged", async () => {
+    const remove = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        name: "notes",
+        deletedAt: "2026-08-27T00:00:00.000Z",
+        revokedTokens: 2,
+        restoreUntil: "2026-09-26T00:00:00.000Z",
+      },
+    }));
+    const { router } = renderViewerRoute(
+      "/s/notes",
+      createFakeViewerClient({ stashes: { delete: remove } }),
+    );
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Delete stash" }));
+    const dialog = screen.getByRole("dialog", { name: /Delete/ });
+    await user.click(within(dialog).getByRole("button", { name: "Delete stash" }));
+
+    await waitFor(() => expect(dialog.textContent).toContain("2026-09-26T00:00:00.000Z"));
+    expect(router.state.location.pathname).toBe("/s/notes");
+    expect(dialog.textContent).toContain("cannot be reused after restore");
+    await user.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(remove).toHaveBeenCalledWith("notes");
   });
 });

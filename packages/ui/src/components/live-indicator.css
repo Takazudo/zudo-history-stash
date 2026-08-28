@@ -1,0 +1,31 @@
+@layer zhs-components {
+  .zhs-live-indicator {
+    display: inline-flex;
+    inline-size: fit-content;
+    align-items: center;
+    gap: var(--hsp-xs);
+    color: var(--theme-ink-muted);
+    font-size: var(--text-xs);
+    font-weight: 680;
+    line-height: var(--line-tight);
+    white-space: nowrap;
+  }
+
+  .zhs-live-indicator--live {
+    color: var(--theme-success);
+  }
+
+  .zhs-live-indicator--reconnecting {
+    color: var(--theme-info);
+  }
+
+  .zhs-live-indicator--polling {
+    color: var(--theme-warning);
+  }
+
+  .zhs-live-indicator__icon {
+    inline-size: var(--text-sm);
+    block-size: var(--text-sm);
+    flex: 0 0 auto;
+  }
+}

@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures/console-errors.js";
+import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 const tokenScript = () => sessionStorage.setItem("zhs.token", "zhs_test");
 
@@ -21,6 +22,8 @@ test("@smoke file detail renders history and lazily requests visible stats", asy
   });
 
   await page.route("**/api/v1/**", async (route) => {
+    if (await fulfillEmptyOpenProposalCount(route, [{ stash: "notes", path: "docs/readme.txt" }]))
+      return;
     const url = new URL(route.request().url());
     let value: object;
     if (url.pathname === "/api/v1/me") {
@@ -74,12 +77,12 @@ test("@smoke file detail renders history and lazily requests visible stats", asy
   await expect(history.getByText("→ v2", { exact: true })).toBeVisible();
   await expect(history.getByText("deleted", { exact: true })).toBeVisible();
 
-  const newestStats = history.locator('[data-history-version="60"] .history-diff-stats');
+  const newestStats = history.locator('[data-history-version="60"] .zhs-history-diff-stats');
   await newestStats.scrollIntoViewIfNeeded();
   await expect(newestStats).toHaveText("+2 −1");
   await expect.poll(() => diffRequests.length).toBeGreaterThan(0);
   expect(diffRequests.length).toBeLessThan(60);
 
-  await history.getByRole("button", { name: "Compare" }).click();
+  await history.getByRole("link", { name: "Compare" }).click();
   await expect(page).toHaveURL(/\/s\/notes\/diff\/docs\/readme\.txt\?from=59&to=60$/u);
 });

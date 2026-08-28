@@ -1,0 +1,21 @@
+---
+title: Health and identity
+description: Open health probing and authenticated principal discovery.
+sidebar_position: 110
+category: reference
+---
+
+### `GET /v1/health`
+
+**Contract:** operation `health`; principal `open`; transport `any`.
+
+No credential, body, or query is required. A healthy service returns `200` with `ok: true`, the
+service name, and the stable health marker. Network or infrastructure failure is outside the
+route-level business-error contract.
+
+### `GET /v1/me`
+
+**Contract:** operation `me`; principal `any`; transport `any`.
+
+Returns `200` with either the admin principal or the authenticated stash, token ID, scope, and
+expiry. Invalid credentials return `401`; read-class throttling returns `429` with `Retry-After`.

@@ -1,0 +1,24 @@
+---
+title: インストール
+description: 公開クライアントをインストールし、それぞれの認証情報を適切なランタイムに配置します。
+sidebar_position: 2
+category: getting-started
+---
+
+`pnpm add @takazudo/zudo-history-stash` で isomorphic なクライアントパッケージを追加します。
+パッケージルートからのみ import してください。公開クライアントと型は、Node.js、ブラウザバンドル、
+Cloudflare Workers で動作します。現在の Node.js、pnpm、パッケージの要件については、
+[バージョン](../reference/versions.mdx)を参照してください。
+
+ランタイムが対応していても、すべての認証情報をあらゆるランタイムに置いて安全というわけでは
+ありません。管理者トークンと stash スコープの書き込みトークンは、信頼できるサーバーまたは
+Worker のシークレットに保持してください。ブラウザから直接利用するクライアントには、できれば
+有効期限付きの最小権限の読み取りトークンだけを渡します。書き込みトークンを取得した者は、その
+stash 内のすべてのパスを置換、削除、ロールバックできます。
+
+公開 Worker URL を呼び出すクライアントでは、ベース URL と適切なトークンを
+`createStashClient` に渡します。同じアカウントの Workers は、型付き RPC Binding または Fetch
+Service Binding を使うことで公開ネットワークを経由せずに接続できます。どちらでも認証は必要です。
+[Service Binding と RPC](../guides/service-binding-and-rpc.mdx)を参照してください。
+
+[新しい stash のクイックスタート](./quickstart.mdx)に進んでください。

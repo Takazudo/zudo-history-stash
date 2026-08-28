@@ -1,0 +1,24 @@
+---
+title: ライブイベント
+description: Fetch 専用 SSE replay、助言的 event、再接続、正本による復旧です。
+sidebar_position: 180
+category: reference
+---
+
+### `GET /v1/stashes/{stash}/events`
+
+**Contract:** operation `stashEvents`; principal `read`; transport `fetch-only`.
+
+`text/event-stream` を開き、必要に応じて負でない `since` より後を replay します。response は cache と
+proxy buffering を無効にします。`ready`、`change`、`proposal`、`reconnect` event を、SSE の `event`、
+`id`、`data` field を使用して発行します。heartbeat comment は転送の生存確認であり、event では
+ありません。
+
+同時発生した変更を失わないよう、サーバーは replay を読む前に購読します。event は上限付きの hint です。
+`ready`、変更アクティビティ、focus/visibility の復旧、再接続の後には、
+[正本である stash 変更フィード](./change-feeds.mdx)を page ごとに読み、影響を受けたリソースを更新します。
+利用側の checkpoint を進めるのは、照合が完了した後だけです。利用側が stash を変えるかアンマウントしたら、
+response を閉じるか中止してください。
+
+認証、scope、stash の存在、rate limit は stream byte より前に失敗することがあります。認証情報の有効期限が
+stream の寿命を制限します。再接続ではもう一度認証する必要があります。

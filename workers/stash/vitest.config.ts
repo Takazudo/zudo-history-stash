@@ -6,10 +6,14 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },
       miniflare: {
+        d1Databases: ["UPGRADE_DB"],
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),
           STASH_ADMIN_TOKEN: "test-admin",
           ALLOWED_ORIGINS: "http://localhost:5173",
+        },
+        serviceBindings: {
+          STASH_RPC: { name: "zudo-history-stash", entrypoint: "StashRpc" },
         },
       },
     }),

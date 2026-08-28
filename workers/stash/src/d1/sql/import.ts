@@ -1,21 +1,40 @@
+import type { PreparedBlob } from "../blobs.js";
 import { fence, type SqlFragment } from "./writes.js";
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
 
-export interface PreparedImportVersion {
+interface PreparedImportBase {
   version: number;
-  kind: "put" | "delete" | "rollback";
-  body: string | null;
-  hash: string | null;
   size: number;
-  rollbackOf: number | null;
   author: string;
   message: string;
   metaJson: string;
   createdAt: number;
 }
+
+type PreparedImportPut = PreparedImportBase &
+  PreparedBlob & {
+    kind: "put";
+    hash: string;
+    rollbackOf: null;
+  };
+
+export type PreparedImportVersion =
+  | PreparedImportPut
+  | (PreparedImportBase & {
+      kind: "delete";
+      body: null;
+      hash: null;
+      rollbackOf: null;
+    })
+  | (PreparedImportBase & {
+      kind: "rollback";
+      body: null;
+      hash: string;
+      rollbackOf: number;
+    });
 
 export interface ImportBatchInput {
   stash: string;
@@ -26,7 +45,7 @@ export interface ImportBatchInput {
 
 export interface ImportBatch {
   statements: D1PreparedStatement[];
-  firstVersionStatementIndex: number;
+  versionStatementIndexes: number[];
 }
 
 function operationFence(input: ImportBatchInput): SqlFragment {
@@ -38,21 +57,21 @@ function operationFence(input: ImportBatchInput): SqlFragment {
 function putStatements(
   db: Preparer,
   input: ImportBatchInput,
-  entry: PreparedImportVersion,
+  entry: PreparedImportPut,
   importFence: SqlFragment,
 ): D1PreparedStatement[] {
-  if (entry.body === null || entry.hash === null) throw new Error("Invalid prepared import put");
   return [
     db
       .prepare(
         `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
-         SELECT ?, ?, ?, NULL, ?, ? WHERE ${importFence.sql}
+         SELECT ?, ?, ?, ?, ?, ? WHERE ${importFence.sql}
          ON CONFLICT(stash_name, hash) DO NOTHING`,
       )
       .bind(
         input.stash,
         entry.hash,
         entry.body,
+        entry.r2_key,
         entry.size,
         entry.createdAt,
         ...importFence.params,
@@ -143,19 +162,19 @@ export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch 
   if (input.versions.length === 0) throw new Error("Import batch requires versions");
   const importFence = operationFence(input);
   const statements: D1PreparedStatement[] = [];
-  let firstVersionStatementIndex = -1;
+  const versionStatementIndexes: number[] = [];
 
   for (const entry of input.versions) {
     const before = statements.length;
     if (entry.kind === "put") {
       statements.push(...putStatements(db, input, entry, importFence));
-      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before + 1;
+      versionStatementIndexes.push(before + 1);
     } else if (entry.kind === "delete") {
       statements.push(deleteStatement(db, input, entry, importFence));
-      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before;
+      versionStatementIndexes.push(before);
     } else {
       statements.push(rollbackStatement(db, input, entry, importFence));
-      if (firstVersionStatementIndex < 0) firstVersionStatementIndex = before;
+      versionStatementIndexes.push(before);
     }
   }
 
@@ -215,5 +234,5 @@ export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch 
     );
   }
 
-  return { statements, firstVersionStatementIndex };
+  return { statements, versionStatementIndexes };
 }

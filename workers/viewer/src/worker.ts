@@ -13,6 +13,7 @@ const FORWARDED_HEADERS = [
   "content-type",
   "if-none-match",
   "idempotency-key",
+  "x-stash-client-id",
 ] as const;
 
 function proxyHeaders(request: Request): Headers {
