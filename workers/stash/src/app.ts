@@ -12,10 +12,22 @@ const ALLOW_HEADERS = [
   "Authorization",
   "Content-Type",
   "If-None-Match",
+  "If-Range",
+  "Range",
   "Idempotency-Key",
   "X-Stash-Client-Id",
 ];
-const EXPOSE_HEADERS = ["ETag", "X-Stash-Version", "Idempotent-Replayed", "Retry-After"];
+const EXPOSE_HEADERS = [
+  "ETag",
+  "X-Stash-Version",
+  "Idempotent-Replayed",
+  "Retry-After",
+  "Accept-Ranges",
+  "Content-Length",
+  "Content-Range",
+  "Content-Disposition",
+  "X-Content-Type-Options",
+];
 
 function allowedOrigins(value: string): Set<string> {
   return new Set(

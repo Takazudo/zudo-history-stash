@@ -19,7 +19,7 @@ describe("StashStore reads", () => {
     it("reads a live head, an older version, a rollback head, and a tombstone", async () => {
       const reads = await createFixtureReads();
 
-      await expect(reads.getFile(READ_FIXTURE_STASH, "gamma.txt")).resolves.toEqual({
+      await expect(reads.getFile(READ_FIXTURE_STASH, "gamma.txt")).resolves.toMatchObject({
         path: "gamma.txt",
         version: 1,
         hash: "sha256-gamma-one",
@@ -33,6 +33,10 @@ describe("StashStore reads", () => {
         deleted: false,
         body: "gamma v1\n",
         contentType: "text/plain; charset=utf-8",
+        representation: "text",
+        contentAccess: "inline",
+        byteSize: 9,
+        etag: "sha256-gamma-one",
       });
 
       await expect(reads.getFile(READ_FIXTURE_STASH, "alpha.txt", { version: 2 })).resolves.toEqual(

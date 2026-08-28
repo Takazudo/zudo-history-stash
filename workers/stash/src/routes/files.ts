@@ -115,6 +115,11 @@ function responseFile(record: ReadFileRecord): FileRecord {
     createdAt: record.createdAt,
     deleted: record.deleted,
     body: record.body,
+    representation: record.representation,
+    contentAccess: record.contentAccess,
+    contentType: record.contentType,
+    byteSize: record.byteSize,
+    etag: record.etag,
   };
 }
 
