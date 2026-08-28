@@ -41,9 +41,9 @@ Viewer URLs are navigation state, not proof of access.
 | `/` | List stashes visible to the current principal. |
 | `/s/:stash` | Show one stash and its files. |
 | `/s/:stash/f/*` | Show a file; `?version=N` selects a historical version. |
-| `/s/:stash/diff/*` | Compare `?from=N&to=M|head&context=N`. |
+| `/s/:stash/diff/*` | Compare `?from=N&to=M&context=N`, or set `to=head` for the current head. |
 | `/s/:stash/edit/*` | Edit a file; optional `?from=N` pins the loaded source version. |
-| `/s/:stash/proposals` | List `?status=open|all`, optionally filtered by exact `?path=...`. |
+| `/s/:stash/proposals` | List `?status=open` or `?status=all`, optionally filtered by exact `?path=...`. |
 | `/s/:stash/proposals/:id` | Review one proposal and its immutable base/candidate diff. |
 | `/s/:stash/new` | Create a file. |
 | `/s/:stash/tokens` | Admin-only token management. |
