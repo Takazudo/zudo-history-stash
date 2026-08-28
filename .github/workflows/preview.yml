@@ -110,11 +110,13 @@ jobs:
           [[ "$d1_id" =~ ^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$ ]]
           [[ "$stash_url" =~ ^https://zudo-history-stash-pr-${PREVIEW_PR_NUMBER}\.[A-Za-z0-9.-]+\.workers\.dev$ ]]
           [[ "$viewer_url" =~ ^https://zudo-history-stash-viewer-pr-${PREVIEW_PR_NUMBER}\.[A-Za-z0-9.-]+\.workers\.dev$ ]]
-          printf 'd1_id=%s\n' "$d1_id" >>"$GITHUB_OUTPUT"
-          printf 'd1_name=%s\n' "$d1_name" >>"$GITHUB_OUTPUT"
-          printf 'r2_bucket=%s\n' "$r2_bucket" >>"$GITHUB_OUTPUT"
-          printf 'stash_url=%s\n' "$stash_url" >>"$GITHUB_OUTPUT"
-          printf 'viewer_url=%s\n' "$viewer_url" >>"$GITHUB_OUTPUT"
+          {
+            printf 'd1_id=%s\n' "$d1_id"
+            printf 'd1_name=%s\n' "$d1_name"
+            printf 'r2_bucket=%s\n' "$r2_bucket"
+            printf 'stash_url=%s\n' "$stash_url"
+            printf 'viewer_url=%s\n' "$viewer_url"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Generate flattened preview configs
         id: config
