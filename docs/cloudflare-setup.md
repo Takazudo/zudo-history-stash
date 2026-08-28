@@ -34,6 +34,49 @@ pnpm exec wrangler d1 create zudo-history-stash-preview
 
 The deployment remains skipped until the Cloudflare credentials and committed D1 IDs are ready. Apply migrations from `workers/stash` with `pnpm exec wrangler d1 migrations apply zudo-history-stash --remote` before deploying code.
 
+## Live-event Durable Object
+
+`StashEvents` is a SQLite-backed Durable Object class. Keep both of these entries in the default
+stash Worker configuration and repeat them under `env.preview`; Wrangler environments do not
+inherit Durable Object bindings or migrations:
+
+```toml
+[[durable_objects.bindings]]
+name = "STASH_EVENTS"
+class_name = "StashEvents"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StashEvents"]
+```
+
+The preview equivalents are `[[env.preview.durable_objects.bindings]]` and
+`[[env.preview.migrations]]`. The `v1` migration creates the Durable Object namespace on the first
+deployment of each environment; it is distinct from the D1 SQL migrations above. Keep the tag and
+class history stable after deployment, and validate both configurations before release:
+
+```bash
+pnpm --filter zudo-history-stash exec wrangler deploy --dry-run --env=""
+pnpm --filter zudo-history-stash exec wrangler deploy --dry-run --env=preview
+```
+
+[SQLite-backed Durable Objects are available on Workers Free](https://developers.cloudflare.com/durable-objects/platform/pricing/),
+subject to that plan's current limits. This class intentionally stores no application data, but
+its SSE delivery model is not hibernating: Cloudflare keeps a Durable Object active while an HTTP
+response stream is in flight. The shared heartbeat and per-subscriber lifetime timers therefore
+contribute active duration while viewers remain connected. Five-minute stream rotation bounds
+authorization staleness; an immediately reconnecting viewer can still keep the object active
+continuously. Consult the current [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+and [wall-time limits](https://developers.cloudflare.com/durable-objects/platform/limits/) rather
+than relying on a fixed price estimate.
+
+`STASH_EVENTS_MAX_STREAM_MS` is `"300000"` in both default and preview variables. A stash token's
+effective connection lifetime is the smaller of that configured maximum and its remaining token
+lifetime; administrators and non-expiring stash tokens use the configured maximum. Revocation,
+expiry, or stash deletion takes effect no later than the current effective lifetime. Each reconnect
+re-runs authorization, so a revoked or expired credential and a deleted stash fail before a new
+stream opens. This is a bounded revocation SLA, not an immediate-disconnect promise.
+
 ## Stash lifecycle and garbage collection
 
 The committed Worker variables define the lifecycle and garbage-collection policy used by this

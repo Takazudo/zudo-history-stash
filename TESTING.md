@@ -63,8 +63,12 @@ must not depend on a server.
 | `CONTRACT_STASH_NAME` | `demo`                       | Known seeded stash for read-only assertions                        |
 | `CONTRACT_FILE_PATH`  | `docs/guide.md`              | Known seeded file with at least two versions                       |
 
-The health, identity, list, get, conditional-get, history, diff, and change-feed cases run
-unchanged at every tier. Every persisting case is declared directly with
+The health, identity, list, get, conditional-get, history, diff, change-feed, and live-events
+cases run unchanged at every tier. The live assertion opens the seeded stash's `/events` stream,
+requires a validated `ready` event within an explicit five-second watchdog, and always aborts the
+stream in `finally` before proving the SDK status is `closed`. It is unconditional: an unavailable,
+buffered, or non-streaming events route fails the read contract instead of becoming a skipped test.
+Every persisting case is declared directly with
 `it.runIf(MUTATION_ALLOWED)`, where `MUTATION_ALLOWED` is true only for `TEST_TIER=local`.
 Preview and production therefore share the same read assertions while discovering mutation cases
 as skipped. A `POST` candidate diff remains in the read lane because the route has read capability
@@ -221,8 +225,14 @@ The local convention is always:
 - `API_BASE_URL=http://localhost:8787/api` for the seed and HTTP contract suite
 
 `pnpm dev:full` builds the libraries and viewer assets, applies local D1 migrations, and passes the
-viewer config first to Wrangler. `pnpm wait:full` polls `/api/v1/health` until it sees the
-`ZHS_HEALTH_OK` marker. `pnpm seed:dev` then creates the `demo` fixture. The base seed is idempotent:
+viewer config first to Wrangler. Wrangler serves the viewer at `http://localhost:8787`, dispatches
+`/api/v1/*` through its `STASH` service binding to the stash Worker in the same local runtime, and
+instantiates the SQLite-backed `StashEvents` Durable Object from the stash config. The object has no
+application storage; the migration declares its namespace, while D1 remains the authoritative
+change feed. Keep the combined Wrangler process alive for an SSE session—running only Vite or only
+the stash Worker does not reproduce the viewer proxy + service binding + local DO topology.
+`pnpm wait:full` polls `/api/v1/health` until it sees the `ZHS_HEALTH_OK` marker. `pnpm seed:dev` then
+creates the `demo` fixture. The base seed is idempotent:
 it skips an existing `demo`; `--reset` creates a fresh suffixed stash because deletion is deferred.
 A successful new seed prints its write token exactly once, but no test or follow-up command
 consumes that output. The bare script's `http://localhost:8787` default is for `dev:stash`; always
@@ -280,6 +290,16 @@ relative `/api` proxy using a uniquely labelled write token and unique file path
 body back, then tombstones the file and revokes the token in `finally`. That cleanup is deliberately
 described as **logical**: immutable D1 history and content-addressed R2 bytes may remain. Run the
 full live lane only with its managed `dev:full` lifecycle or the two-terminal command above.
+
+The same lane also owns the real live-refresh proof. It seeds a known tab client ID, proves a unique
+path is absent, observes a `200 text/event-stream` connection and the `Live` header indicator,
+waits for the ready-triggered authoritative change-feed reconciliation, and then creates the path
+with a different `X-Stash-Client-Id`. The post-mutation `/changes?since=...` response must contain
+that path and the file row must become visible before a deadline strictly below
+`VIEWER_LIVE_POLL_INTERVAL_MS`. Do not replace this with a zero-change-feed assertion: live events
+are advisory and that fetch is the correctness boundary. Mock Playwright suites instead receive a
+shared open, abort-bound SSE shim with no fabricated `ready`; the `@live` project opts out and must
+always reach the real Worker stream.
 
 The live rollback replay proof deliberately retries **without closing the dialog**. The first
 request commits in the real stash Worker, while Playwright aborts its browser-facing response.

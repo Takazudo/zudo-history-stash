@@ -121,7 +121,7 @@ function finiteStream(frames: Uint8Array[]): ReadableStream<Uint8Array> {
 export async function subscribeToStashEvents(
   env: Env,
   stash: string,
-  since?: number,
+  options: { lifetimeMs: number; since?: number },
 ): Promise<ReadableStream<Uint8Array>> {
   const stub = env.STASH_EVENTS.getByName(stash);
   const subscriptionAbort = new AbortController();
@@ -130,7 +130,7 @@ export async function subscribeToStashEvents(
     response = await stub.fetch(
       new Request(`${INTERNAL_ORIGIN}${STASH_EVENTS_SUBSCRIBE_PATH}`, {
         headers: {
-          [STASH_EVENTS_MAX_STREAM_MS_HEADER]: env.STASH_EVENTS_MAX_STREAM_MS,
+          [STASH_EVENTS_MAX_STREAM_MS_HEADER]: String(options.lifetimeMs),
         },
         signal: subscriptionAbort.signal,
       }),
@@ -172,8 +172,8 @@ export async function subscribeToStashEvents(
   void firstLiveRead.catch(() => undefined);
   const frames: Uint8Array[] = [];
   const reads = createStashStore(env).reads;
-  let checkpoint = since ?? null;
-  let cursor = since;
+  let checkpoint = options.since ?? null;
+  let cursor = options.since;
 
   try {
     if (cursor !== undefined) {
@@ -206,7 +206,7 @@ export async function subscribeToStashEvents(
       encodeEvent({
         type: "ready",
         head,
-        checkpoint: since === undefined ? head : checkpoint,
+        checkpoint: options.since === undefined ? head : checkpoint,
       }),
     );
     return prefixedLiveStream(frames, live, firstLiveRead);

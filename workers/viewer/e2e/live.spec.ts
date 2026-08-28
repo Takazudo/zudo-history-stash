@@ -1,7 +1,11 @@
 import type { APIRequestContext, APIResponse, Page, Response } from "@playwright/test";
 import { sha256Hex } from "@takazudo/zudo-history-stash-core";
+import { VIEWER_CLIENT_ID_STORAGE_KEY } from "../src/app/auth/stash-client-provider.js";
+import { VIEWER_LIVE_POLL_INTERVAL_MS } from "../src/app/live-updates.js";
 import { expect, test } from "./fixtures/console-errors.js";
 import { requireLoopbackViewerUrl } from "./live-safety.js";
+
+test.use({ mockLiveEvents: false });
 
 const ADMIN_TOKEN = process.env.STASH_ADMIN_TOKEN ?? "dev-admin-token";
 const ADMIN_AUTHORIZATION = { Authorization: `Bearer ${ADMIN_TOKEN}` };
@@ -10,6 +14,11 @@ const LARGE_FILE_BYTES = 1_500_000;
 const LARGE_FILE_PREFIX = "History Stash R2 large-file fixture\n";
 const LARGE_FILE_SUFFIX = "\nHistory Stash R2 large-file fixture end\n";
 const LARGE_FILE_LINE = `${"x".repeat(4_095)}\n`;
+const LIVE_REFRESH_DEADLINE_MS = VIEWER_LIVE_POLL_INTERVAL_MS - 5_000;
+
+if (LIVE_REFRESH_DEADLINE_MS <= 0) {
+  throw new Error("The live refresh deadline must remain below the polling interval");
+}
 
 test.beforeAll(({ baseURL }) => {
   requireLoopbackViewerUrl(baseURL ?? "");
@@ -42,6 +51,12 @@ interface MutationResult {
   version: number;
   changeId: number;
   createdAt: string;
+}
+
+interface ChangeFeedResponse {
+  changes: Array<{ changeId: number; path: string }>;
+  hasMore: boolean;
+  nextSince?: number | null;
 }
 
 interface LiveResources {
@@ -109,6 +124,24 @@ function capturePageErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   return errors;
+}
+
+async function withinLiveRefreshDeadline<T>(operation: () => Promise<T>): Promise<T> {
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    watchdog = setTimeout(() => {
+      reject(
+        new Error(
+          `Live refresh exceeded ${String(LIVE_REFRESH_DEADLINE_MS)} ms; polling begins at ${String(VIEWER_LIVE_POLL_INTERVAL_MS)} ms`,
+        ),
+      );
+    }, LIVE_REFRESH_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([operation(), deadline]);
+  } finally {
+    if (watchdog !== undefined) clearTimeout(watchdog);
+  }
 }
 
 function listedTokens(value: unknown): ListedToken[] {
@@ -313,6 +346,184 @@ async function cleanupLifecycleStash(request: APIRequestContext, stash: string):
   }
 }
 
+test("@live a foreign mutation refreshes the stash through SSE before polling", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const pageErrors = capturePageErrors(page);
+  await waitForDemo(request);
+  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const path = `e2e/live-refresh-${runId}.md`;
+  const label = `viewer-live-refresh-${runId}`;
+  const browserClientId = `viewer-tab-${runId}`;
+  const mutationClientId = `foreign-writer-${runId}`;
+  const body = `# Live refresh ${runId}\n\nDelivered through the event stream.\n`;
+  const resources: LiveResources = {
+    path,
+    tokenLabel: label,
+    tokenId: null,
+    tokenSecret: null,
+  };
+
+  let primaryFailure: unknown = null;
+  const cleanupFailures: Error[] = [];
+  try {
+    const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
+      headers: ADMIN_AUTHORIZATION,
+      data: { label, scope: "write" },
+    });
+    await requireStatus(mintResponse, 201, "mint live-refresh write token");
+    const minted = (await mintResponse.json()) as MintedToken;
+    if (typeof minted.id === "string") resources.tokenId = minted.id;
+    if (typeof minted.token === "string") resources.tokenSecret = minted.token;
+    expect(minted).toEqual({
+      id: expect.stringMatching(/^tok_/u),
+      token: expect.stringMatching(/^zhs_/u),
+      label,
+      scope: "write",
+      createdAt: expect.any(String),
+      expiresAt: null,
+      rotatedFrom: null,
+    });
+
+    const absent = await request.get(liveFileUrl(path), {
+      headers: authorization(minted.token),
+    });
+    await requireStatus(absent, 404, `prove ${path} is initially absent`);
+    expect(await absent.json()).toMatchObject({ error: { code: "not-found" } });
+
+    await page.addInitScript(
+      ({ clientId, clientIdKey, token }) => {
+        sessionStorage.setItem("zhs.token", token);
+        sessionStorage.setItem(clientIdKey, clientId);
+      },
+      { token: minted.token, clientId: browserClientId, clientIdKey: VIEWER_CLIENT_ID_STORAGE_KEY },
+    );
+
+    let fileListResponses = 0;
+    let recentChangesResponses = 0;
+    let proposalCountResponses = 0;
+    page.on("response", (response) => {
+      if (response.request().method() !== "GET" || response.status() !== 200) return;
+      const url = new URL(response.url());
+      if (url.pathname === "/api/v1/stashes/demo/files") fileListResponses += 1;
+      if (url.pathname === "/api/v1/stashes/demo/changes" && !url.searchParams.has("since")) {
+        recentChangesResponses += 1;
+      }
+      if (
+        url.pathname === "/api/v1/stashes/demo/proposals" &&
+        url.searchParams.get("status") === "open" &&
+        url.searchParams.get("limit") === "1"
+      ) {
+        proposalCountResponses += 1;
+      }
+    });
+
+    const eventsResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "GET" &&
+        url.pathname === "/api/v1/stashes/demo/events" &&
+        response.status() === 200
+      );
+    });
+    const readyRefreshPromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "GET" &&
+        url.pathname === "/api/v1/stashes/demo/changes" &&
+        url.searchParams.get("since") === "0" &&
+        response.status() === 200
+      );
+    });
+
+    await page.goto("/s/demo");
+    const [eventsResponse, readyRefresh] = await Promise.all([
+      eventsResponsePromise,
+      readyRefreshPromise,
+    ]);
+    expect(eventsResponse.headers()["content-type"]).toContain("text/event-stream");
+    const initialFeed = (await readyRefresh.json()) as ChangeFeedResponse;
+    expect(Array.isArray(initialFeed.changes)).toBe(true);
+    expect(initialFeed.hasMore).toBe(false);
+    await expect.poll(() => fileListResponses).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => recentChangesResponses).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => proposalCountResponses).toBeGreaterThanOrEqual(2);
+    expect(
+      await page.evaluate((key) => sessionStorage.getItem(key), VIEWER_CLIENT_ID_STORAGE_KEY),
+    ).toBe(browserClientId);
+    const liveIndicator = page.getByRole("status", { name: "Live updates: live" });
+    await expect(liveIndicator).toBeVisible();
+
+    let authoritativeFeed: ChangeFeedResponse | undefined;
+    const postMutationRefresh = page.waitForResponse(async (response) => {
+      const url = new URL(response.url());
+      if (
+        response.request().method() !== "GET" ||
+        url.pathname !== "/api/v1/stashes/demo/changes" ||
+        !url.searchParams.has("since") ||
+        response.status() !== 200
+      ) {
+        return false;
+      }
+      const candidate = (await response.json()) as ChangeFeedResponse;
+      if (!candidate.changes.some((change) => change.path === path)) return false;
+      authoritativeFeed = candidate;
+      return true;
+    });
+
+    const startedAt = performance.now();
+    await withinLiveRefreshDeadline(async () => {
+      expect(mutationClientId).not.toBe(browserClientId);
+      const put = await request.put(liveFileUrl(path), {
+        headers: {
+          ...authorization(minted.token),
+          "Idempotency-Key": idempotencyKey("live-refresh"),
+          "X-Stash-Client-Id": mutationClientId,
+        },
+        data: {
+          body,
+          expectedVersion: null,
+          author: "viewer-live-foreign-writer",
+          message: "Prove SSE-driven Viewer refresh",
+        },
+      });
+      await requireStatus(put, 201, `create ${path} from a foreign client`);
+      const mutation = (await put.json()) as MutationResult;
+      expect(mutation).toMatchObject({ version: 1, changeId: expect.any(Number) });
+
+      const refresh = await postMutationRefresh;
+      await requireStatus(refresh, 200, `fetch authoritative live changes for ${path}`);
+      expect(authoritativeFeed?.changes).toContainEqual(
+        expect.objectContaining({ changeId: mutation.changeId, path }),
+      );
+      await expect(
+        page.getByRole("region", { name: "Files" }).getByRole("link", { name: path, exact: true }),
+      ).toBeVisible();
+      await expect(liveIndicator).toBeVisible();
+    });
+    expect(performance.now() - startedAt).toBeLessThan(VIEWER_LIVE_POLL_INTERVAL_MS);
+    expect(pageErrors).toEqual([]);
+  } catch (error: unknown) {
+    primaryFailure = error;
+  } finally {
+    try {
+      await page.close();
+    } catch (error: unknown) {
+      cleanupFailures.push(errorFrom(error));
+    }
+    cleanupFailures.push(...(await cleanupUniqueResources(request, resources)));
+  }
+
+  if (primaryFailure !== null || cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
+      "SSE live-refresh proof or its verified logical cleanup failed",
+    );
+  }
+});
+
 test("@live viewer renders the seeded v2 to v3 CJK and CRLF diff", async ({ page, request }) => {
   const pageErrors = capturePageErrors(page);
   await waitForDemo(request);
@@ -349,7 +560,7 @@ test("@live viewer proxy round-trips a fixed 1.5 MB body with a minted write tok
   };
 
   let primaryFailure: unknown = null;
-  let cleanupFailures: Error[] = [];
+  const cleanupFailures: Error[] = [];
   try {
     const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
       headers: ADMIN_AUTHORIZATION,
@@ -418,7 +629,7 @@ test("@live viewer proxy round-trips a fixed 1.5 MB body with a minted write tok
   } catch (error: unknown) {
     primaryFailure = error;
   } finally {
-    cleanupFailures = await cleanupUniqueResources(request, resources);
+    cleanupFailures.push(...(await cleanupUniqueResources(request, resources)));
   }
 
   if (primaryFailure !== null || cleanupFailures.length > 0) {
@@ -453,7 +664,7 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
   });
 
   let primaryFailure: unknown = null;
-  let cleanupFailures: Error[] = [];
+  const cleanupFailures: Error[] = [];
   try {
     const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
       headers: ADMIN_AUTHORIZATION,
@@ -526,8 +737,37 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
     await expect(savedRailRow).toContainText("Browser e2e save");
     await expect(savedRailRow).toContainText("head");
 
-    await page.goto(`/s/demo/f/${path}`);
+    const fileRoute = `/s/demo/f/${path}`;
+    const reconciledLoads = { file: 0, history: 0, proposals: 0 };
+    page.on("response", (response) => {
+      if (response.request().method() !== "GET" || response.status() !== 200) return;
+      const referer = response.request().headers().referer;
+      if (referer === undefined || new URL(referer).pathname !== fileRoute) return;
+      const url = new URL(response.url());
+      let kind: keyof typeof reconciledLoads | undefined;
+      if (url.pathname === liveFileUrl(path) && url.search === "") kind = "file";
+      if (url.pathname === liveHistoryUrl(path) && url.search === "") kind = "history";
+      if (
+        url.pathname === "/api/v1/stashes/demo/proposals" &&
+        url.searchParams.get("status") === "open" &&
+        url.searchParams.get("path") === path &&
+        url.searchParams.get("limit") === "1"
+      ) {
+        kind = "proposals";
+      }
+      if (kind === undefined) return;
+      void response.finished().then((failure) => {
+        if (failure === null) reconciledLoads[kind] += 1;
+      });
+    });
+
+    await page.goto(fileRoute);
     const history = page.getByRole("region", { name: "History" });
+    await expect
+      .poll(() => Math.min(...Object.values(reconciledLoads)), {
+        message: "the initial file page and ready-triggered live reconciliation should finish",
+      })
+      .toBeGreaterThanOrEqual(2);
     await history.getByRole("button", { name: "Rollback to v1" }).click();
     const rollbackDialog = page.getByRole("dialog", { name: `Rollback ${path} to v1` });
     await expect(rollbackDialog.getByText("This creates v3 as a rollback to v1.")).toBeVisible();
@@ -567,7 +807,12 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
   } catch (error: unknown) {
     primaryFailure = error;
   } finally {
-    cleanupFailures = await cleanupUniqueResources(request, resources);
+    try {
+      await page.close();
+    } catch (error: unknown) {
+      cleanupFailures.push(errorFrom(error));
+    }
+    cleanupFailures.push(...(await cleanupUniqueResources(request, resources)));
   }
 
   if (primaryFailure !== null || cleanupFailures.length > 0) {
@@ -606,7 +851,7 @@ test("@live workbench proposes, approves, and exposes the stamped history link",
   });
 
   let primaryFailure: unknown = null;
-  let cleanupFailures: Error[] = [];
+  const cleanupFailures: Error[] = [];
   try {
     const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
       headers: ADMIN_AUTHORIZATION,
@@ -722,7 +967,12 @@ test("@live workbench proposes, approves, and exposes the stamped history link",
   } catch (error: unknown) {
     primaryFailure = error;
   } finally {
-    cleanupFailures = await cleanupUniqueResources(request, resources);
+    try {
+      await page.close();
+    } catch (error: unknown) {
+      cleanupFailures.push(errorFrom(error));
+    }
+    cleanupFailures.push(...(await cleanupUniqueResources(request, resources)));
   }
 
   if (primaryFailure !== null || cleanupFailures.length > 0) {
@@ -748,7 +998,7 @@ test("@live admin deletes and restores a unique stash through the viewer", async
   });
 
   let primaryFailure: unknown = null;
-  let cleanupFailures: Error[] = [];
+  const cleanupFailures: Error[] = [];
   try {
     const created = await request.post("/api/v1/stashes", {
       headers: ADMIN_AUTHORIZATION,
@@ -804,7 +1054,12 @@ test("@live admin deletes and restores a unique stash through the viewer", async
   } catch (error: unknown) {
     primaryFailure = error;
   } finally {
-    cleanupFailures = await cleanupLifecycleStash(request, stash);
+    try {
+      await page.close();
+    } catch (error: unknown) {
+      cleanupFailures.push(errorFrom(error));
+    }
+    cleanupFailures.push(...(await cleanupLifecycleStash(request, stash)));
   }
 
   if (primaryFailure !== null || cleanupFailures.length > 0) {

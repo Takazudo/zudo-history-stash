@@ -1,7 +1,7 @@
 import type { StashEvent } from "@takazudo/zudo-history-stash-core";
 import { runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { app } from "../../src/app.js";
+import { app, createApp } from "../../src/app.js";
 import { createStashStore } from "../../src/d1/store.js";
 import {
   STASH_EVENTS_INSPECT,
@@ -10,6 +10,7 @@ import {
 } from "../../src/events/stash-events.js";
 import { prefixedLiveStream } from "../../src/events/subscribe.js";
 import type { Env } from "../../src/env.js";
+import { effectiveStashEventsLifetimeMs } from "../../src/routes/events.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
 
@@ -87,9 +88,10 @@ async function connect(
   suffix = "",
   token = "test-admin",
   bindings: Env = createTestEnv().env,
+  application = app,
 ): Promise<Response> {
   return request(
-    app,
+    application,
     `http://stash.test/v1/stashes/${stash}/events${suffix}`,
     { headers: bearer(token) },
     bindings,
@@ -393,6 +395,96 @@ describe("prefixed live stream", () => {
 beforeEach(resetDatabase);
 
 describe("stash events route", () => {
+  it("uses the configured maximum for admin and non-expiring principals", () => {
+    const now = Date.parse("2026-08-28T01:00:00.000Z");
+    expect(effectiveStashEventsLifetimeMs("300000", { kind: "admin" }, now)).toBe(300_000);
+    expect(
+      effectiveStashEventsLifetimeMs(
+        "300000",
+        {
+          kind: "stash",
+          stash: "events-lifetime",
+          tokenId: "tok_non_expiring",
+          scope: "read",
+          expiresAt: null,
+        },
+        now,
+      ),
+    ).toBe(300_000);
+  });
+
+  it("rotates a revoked non-expiring principal at the configured lifetime and denies reconnect", async () => {
+    const stash = "events-revoked-rotation";
+    const now = Date.parse("2026-08-28T01:00:00.000Z");
+    await seedStash(stash);
+    const token = await mintToken(stash, "read");
+    const baseBindings = createTestEnv().env;
+    const bindings = { ...baseBindings, STASH_EVENTS_MAX_STREAM_MS: "500" };
+    const application = createApp({ now: () => now });
+    let reader: EventReader | undefined;
+    try {
+      reader = eventReader(await connect(stash, "", token.token, bindings, application));
+      expect((await reader.next()).event).toEqual({ type: "ready", head: null, checkpoint: null });
+      expect(await subscriberCount(baseBindings, stash)).toBe(1);
+
+      await baseBindings.DB.prepare("UPDATE tokens SET revoked_at = ? WHERE id = ?")
+        .bind(now, token.id)
+        .run();
+      expect(await reader.next()).toEqual({
+        id: null,
+        event: { type: "reconnect", reason: "lifetime" },
+      });
+      await reader.expectDone();
+      expect(await subscriberCount(baseBindings, stash)).toBe(0);
+      await publish(baseBindings, stash, {
+        type: "proposal",
+        proposalId: "prp_1756339200000deadbeef",
+        stash,
+        path: "after-revocation.txt",
+        status: "open",
+        origin: "peer-after-revocation",
+      });
+      await reader.expectDone();
+
+      const denied = await connect(stash, "", token.token, bindings, application);
+      await expectError(denied, 401, "unauthorized");
+      expect(await subscriberCount(baseBindings, stash)).toBe(0);
+    } finally {
+      await reader?.close();
+    }
+  });
+
+  it("caps rotation at token expiry, removes the subscriber, and denies reconnect", async () => {
+    const stash = "events-expiry-rotation";
+    let clock = Date.parse("2026-08-28T02:00:00.000Z");
+    const expiresAt = clock + 250;
+    await seedStash(stash);
+    const token = await mintToken(stash, "read", { expiresAt });
+    const baseBindings = createTestEnv().env;
+    const bindings = { ...baseBindings, STASH_EVENTS_MAX_STREAM_MS: "500" };
+    const application = createApp({ now: () => clock });
+    let reader: EventReader | undefined;
+    try {
+      reader = eventReader(await connect(stash, "", token.token, bindings, application));
+      expect((await reader.next()).event).toEqual({ type: "ready", head: null, checkpoint: null });
+      expect(await subscriberCount(baseBindings, stash)).toBe(1);
+
+      expect(await reader.next()).toEqual({
+        id: null,
+        event: { type: "reconnect", reason: "lifetime" },
+      });
+      await reader.expectDone();
+      expect(await subscriberCount(baseBindings, stash)).toBe(0);
+
+      clock = expiresAt;
+      const denied = await connect(stash, "", token.token, bindings, application);
+      await expectError(denied, 401, "unauthorized");
+      expect(await subscriberCount(baseBindings, stash)).toBe(0);
+    } finally {
+      await reader?.close();
+    }
+  });
+
   it("starts fresh at the current head and returns the exact streaming headers", async () => {
     const stash = "events-fresh";
     await seedStash(stash);

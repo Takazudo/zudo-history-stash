@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { API_BASE_URL, SEEDED_PATH, SEEDED_STASH, TEST_TIER } from "./env.js";
 import { createAdminClient, unwrap } from "./helpers.js";
 
+const EVENTS_READY_WATCHDOG_MS = 5_000;
+
 describe(`read-only HTTP contract (${TEST_TIER}: ${API_BASE_URL})`, () => {
   it("returns the public health marker", async () => {
     const anonymous = createStashClient({ baseUrl: API_BASE_URL });
@@ -92,6 +94,43 @@ describe(`read-only HTTP contract (${TEST_TIER}: ${API_BASE_URL})`, () => {
     );
     expect(stashChanges.changes.length).toBeGreaterThan(0);
     expect(stashChanges.changes.every(({ stash }) => stash === SEEDED_STASH)).toBe(true);
+  });
+
+  it("receives the live ready event within five seconds and closes cleanly", async () => {
+    const lifecycle = new AbortController();
+    const stream = createAdminClient().files(SEEDED_STASH).events({ signal: lifecycle.signal });
+    const iterator = stream[Symbol.asyncIterator]();
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      watchdog = setTimeout(() => {
+        reject(
+          new Error(
+            `GET /events did not yield ready within ${String(EVENTS_READY_WATCHDOG_MS)} ms`,
+          ),
+        );
+      }, EVENTS_READY_WATCHDOG_MS);
+    });
+
+    try {
+      for (;;) {
+        const result = await Promise.race([iterator.next(), deadline]);
+        if (result.done) throw new Error("GET /events closed before yielding ready");
+        if (result.value.type !== "ready") continue;
+        expect(result.value.head === null || Number.isSafeInteger(result.value.head)).toBe(true);
+        expect(
+          result.value.checkpoint === null || Number.isSafeInteger(result.value.checkpoint),
+        ).toBe(true);
+        expect(stream.status).toBe("live");
+        break;
+      }
+    } finally {
+      if (watchdog !== undefined) clearTimeout(watchdog);
+      lifecycle.abort();
+      stream.close();
+      await iterator.return?.();
+    }
+
+    expect(stream.status).toBe("closed");
   });
 
   it("rejects list limits above 200 rather than clamping them", async () => {
