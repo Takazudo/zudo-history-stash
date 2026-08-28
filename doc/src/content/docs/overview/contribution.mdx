@@ -1,0 +1,50 @@
+---
+title: Contributing
+description: Keep implementation, contracts, documentation, evidence, and releases synchronized.
+sidebar_position: 100
+category: overview
+---
+
+Keep each branch and pull request focused on one contract or implementation area. Base feature
+branches on the intended integration branch, preserve shared history, and record the exact commands
+and evidence collected. List important browser, live, infrastructure, or deployment checks that
+were not run.
+
+## Change the whole public contract
+
+When a public route, schema, error, package API, Viewer URL, binding, or operational command changes,
+update its implementation, focused tests, canonical documentation, and generated OpenAPI/reference
+artifacts together. Regenerate checked outputs from their source instead of hand-editing them. A
+fake-only test can prove deterministic behavior but cannot replace HTTP, Worker, browser, storage,
+or platform evidence.
+
+Never commit Cloudflare credentials, Worker secrets, bearer tokens, `.dev.vars`, private generated
+preview configs, or local storage state. Destructive tests belong in isolated local resources;
+preview mutation is limited to its reviewed disposable workflow; production acceptance remains
+read-only.
+
+Run focused package tests, types, and builds while developing. Before handoff, run root
+`pnpm b4push` when the dependency stage supports it. Docs changes also run the single aggregate
+`pnpm b4push:doc`. Browser, live, and infrastructure lanes keep their URL, credential, and mutation
+guards and are recorded separately when required.
+
+## Prepare and publish releases
+
+Use the repository `/l-make-release` command to prepare a plain SemVer release and its required
+release notes. The release must synchronize all package versions, exported version constants,
+generated OpenAPI version, and other checked release artifacts before creating an exact `vX.Y.Z`
+tag.
+
+The release workflow publishes Core, then Client, then UI under the npm `latest` dist-tag, waiting
+for each dependency version to become visible. A manual `workflow_dispatch` runs the complete chain
+in dry-run mode and never publishes. Do not replace the workflow with arbitrary local publish
+commands.
+
+If a tagged run fails transiently after publishing one package, rerun that same immutable tag. The
+workflow safely skips exact versions already present and continues in dependency order. Published
+npm versions are immutable: when code or workflow logic must change, fix forward on the main line
+and cut a new patch release instead of overwriting or repairing the old version.
+
+Release notes are part of the contributor's contract and must describe user-visible behavior,
+migrations, compatibility, and operational action. Follow the current release tooling for where
+those notes are authored rather than treating a particular file path as permanent policy.
