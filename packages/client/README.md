@@ -60,6 +60,49 @@ const client = createStashClient({
 `{ idempotencyKey: "…" }` to make a retry use a stable key. A replayed response has
 `replayed: true`; a representation cache hit is `{ ok: true, notModified: true }`.
 
+## Binary and large objects
+
+`client.capabilities()` returns the server's current transfer and file-size limits. The high-level
+`files(stash).upload(path, source, options)` API accepts `Blob`, `ArrayBuffer`, typed-array/DataView
+views, byte `ReadableStream`, and strings. Representation is always explicit; transfer mode, MIME
+type, and size never change `text` into `binary` or the reverse.
+
+```ts
+const files = client.files("assets");
+const uploaded = await files.upload("icons/logo.png", pngBlob, {
+  expectedVersion: null,
+  representation: "binary",
+  contentType: "image/png",
+  resumable: true,
+  onProgress: ({ observedBytes, durableParts }) => {
+    // observedBytes are source bytes consumed; durableParts are server-recorded parts.
+  },
+});
+
+const download = await files.raw.get("icons/logo.png", { range: "bytes=0-1023" });
+if (download.ok && "value" in download) {
+  const bytes = await download.value.bytes(1024); // explicit materialization bound
+  // download.value.body is the unbuffered ReadableStream for larger consumers.
+}
+```
+
+Mode selection is capability-driven: eligible replayable small text uses legacy JSON, a source at
+or below `singleUploadMaxBytes` uses one raw request, and larger or explicitly resumable sources use
+multipart. An explicit `mode` is checked against current capabilities. Binary is never base64
+encoded. Large valid UTF-8 stays `text` but uses raw content access.
+
+A `ReadableStream` is caller-owned and one-shot. Supply its exact `size`; cancellation is forwarded
+to Fetch/RPC where supported, and the client never automatically replays a consumed stream.
+Blob/buffer sources are replayable and may use `retries`; keep mutable ArrayBuffers/views unchanged
+until the operation settles. Multipart retries only the current failed part.
+Use `files.uploads` to create, inspect, resume, abort, upload/replace individual parts, or idempotently
+complete a durable session yourself. Progress reports bytes observed while consuming known sources
+and durable multipart part counts—it does not claim browser network acknowledgement.
+
+Raw current and historical downloads use `files.raw.get(path, { version? })`; `head` provides the
+same validator/version metadata without a body. Convenience `bytes(maxBytes)` and
+`text(maxBytes)` methods deliberately require a bound and cancel reads that exceed it.
+
 Write tokens are full-stash credentials and should not be embedded in browser code. Use a read
 token for browser-direct consumers.
 
@@ -90,12 +133,12 @@ const client = createStashClient({
 });
 ```
 
-`fake.state` exposes the in-memory stash, token, blob, file, version, and idempotency tables for
+`fake.state` exposes the in-memory stash, token, blob, file, version, upload-session, and idempotency tables for
 direct fixture setup and assertions. `fake.reset()` clears those tables without replacing the
 state object. Pass `now` to control timestamps and token expiry; pass `rateLimit` to inject
 Cloudflare-shaped capability/key verdicts (rejections fail open, matching the Worker).
 
-The fake implements the SDK route surface, including proposals and the authenticated fetch-only
+The fake implements the SDK route surface, including exact binary bytes, upload sessions, raw ranges, proposals, and the authenticated fetch-only
 stash event stream, except for health, import, and cross-stash changes. Those unsupported routes
 and unknown routes return `501 not-implemented`.
 `await fake.mintToken()` remains available for direct fixture setup, accepts `expiresAt` or

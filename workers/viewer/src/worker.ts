@@ -12,7 +12,10 @@ const FORWARDED_HEADERS = [
   "authorization",
   "content-type",
   "if-none-match",
+  "if-range",
   "idempotency-key",
+  "range",
+  "content-length",
   "x-stash-client-id",
 ] as const;
 

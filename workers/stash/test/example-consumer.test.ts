@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEMO_STASH,
+  BINARY_DEMO_PATH,
   handleRequest,
   type Env as ExampleEnv,
 } from "../../example-rpc-consumer/src/index.js";
@@ -76,5 +77,20 @@ describe("example RPC consumer", () => {
     );
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("GET");
+  });
+
+  it("streams arbitrary bytes through the named RPC consumer bridge", async () => {
+    await seedStash(DEMO_STASH);
+    const token = await mintToken(DEMO_STASH, "write");
+    const response = await handleRequest(
+      new Request("https://example-consumer.test/binary-demo"),
+      exampleEnv(token.token),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      uploaded: { ok: true, value: { version: 1, representation: "binary", size: 6 } },
+      bytes: [0x89, 0x50, 0x00, 0xff, 0x0d, 0x0a],
+    });
+    expect(BINARY_DEMO_PATH).toBe("demo.bin");
   });
 });

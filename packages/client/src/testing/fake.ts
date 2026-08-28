@@ -2,6 +2,9 @@ import {
   ApproveProposalBody,
   BODY_LIMIT_BYTES,
   ChangesQuery,
+  CreateUploadSessionBody,
+  CompleteUploadSessionBody,
+  AbortUploadSessionBody,
   CreateProposalBody,
   CreateStashBody,
   CreateTokenBody,
@@ -43,6 +46,7 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import type {
   Current,
+  CapabilitiesResponse,
   DiffSide,
   ErrorCode,
   GcKind,
@@ -69,6 +73,7 @@ import type {
   FakeStashState,
   FakeTokenRow,
   FakeVersionRow,
+  FakeUploadSessionRow,
 } from "./types.js";
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
@@ -83,8 +88,28 @@ const MAX_R2_GC_PAGE_OBJECTS = 24;
 const SHA256_HASH = /^sha256-[0-9a-f]{64}$/;
 const LOWERCASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
+const DEFAULT_CAPABILITIES: CapabilitiesResponse = {
+  representations: ["text", "binary"],
+  contentAccess: ["inline", "raw", "deleted"],
+  transferModes: ["json", "single", "multipart"],
+  storageTiers: ["d1", "r2"],
+  limits: {
+    jsonInlineMaxBytes: MAX_BODY_BYTES,
+    d1InlineMaxBytes: 1_000_000,
+    httpRequestMaxBytes: 100_000_000,
+    singleUploadMaxBytes: 32_000_000,
+    maxFileBytes: 1_073_741_824,
+    diffMaxBytesPerSide: 1_000_000,
+    multipartPartBytes: 8_388_608,
+    maxMultipartParts: 10_000,
+    maxOpenUploadSessionsPerStash: 32,
+    maxReservedUploadBytesPerStash: 2_147_483_648,
+    uploadSessionTtlSeconds: 86_400,
+  },
+};
 
 const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
+  "getCapabilities",
   "me",
   "listStashes",
   "createStash",
@@ -113,6 +138,17 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "approveProposal",
   "rejectProposal",
   "stashEvents",
+  "getRawFile",
+  "headRawFile",
+  "getRawVersion",
+  "headRawVersion",
+  "createUploadSession",
+  "getUploadSession",
+  "uploadSingleContent",
+  "uploadPart",
+  "completeUploadSession",
+  "resumeUploadSession",
+  "abortUploadSession",
 ]);
 
 const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
@@ -136,6 +172,17 @@ const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
   "approveProposal",
   "rejectProposal",
   "stashEvents",
+  "getRawFile",
+  "headRawFile",
+  "getRawVersion",
+  "headRawVersion",
+  "createUploadSession",
+  "getUploadSession",
+  "uploadSingleContent",
+  "uploadPart",
+  "completeUploadSession",
+  "resumeUploadSession",
+  "abortUploadSession",
 ]);
 
 const RATE_LIMIT_CAPABILITY_BY_ROUTE = {
@@ -200,6 +247,9 @@ interface MatchedRoute {
   path?: string;
   tokenId?: string;
   proposalId?: string;
+  sessionId?: string;
+  version?: number;
+  partNumber?: number;
 }
 
 class FakeHttpError extends Error {
@@ -266,6 +316,7 @@ function decode(value: string): string {
 function routeMatch(request: Request): MatchedRoute | undefined {
   const { pathname } = new URL(request.url);
   const method = request.method.toUpperCase();
+  if (method === "GET" && pathname === "/v1/capabilities") return { routeId: "getCapabilities" };
   if (method === "GET" && pathname === "/v1/me") return { routeId: "me" };
   if (method === "GET" && pathname === "/v1/stashes") return { routeId: "listStashes" };
   if (method === "POST" && pathname === "/v1/stashes") return { routeId: "createStash" };
@@ -355,6 +406,59 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   match = /^\/v1\/stashes\/([^/]+)\/files$/.exec(pathname);
   if (method === "GET" && match?.[1] !== undefined) {
     return { routeId: "listFiles", stash: decode(match[1]) };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/versions\/(\d+)\/raw\/(.+)$/.exec(pathname);
+  if ((method === "GET" || method === "HEAD") && match?.[1] && match[2] && match[3]) {
+    return {
+      routeId: method === "HEAD" ? "headRawVersion" : "getRawVersion",
+      stash: decode(match[1]),
+      version: Number(match[2]),
+      path: decode(match[3]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/raw\/(.+)$/.exec(pathname);
+  if ((method === "GET" || method === "HEAD") && match?.[1] && match[2]) {
+    return {
+      routeId: method === "HEAD" ? "headRawFile" : "getRawFile",
+      stash: decode(match[1]),
+      path: decode(match[2]),
+    };
+  }
+
+  match = /^\/v1\/stashes\/([^/]+)\/uploads\/([^/]+)\/parts\/(\d+)$/.exec(pathname);
+  if (method === "PUT" && match?.[1] && match[2] && match[3]) {
+    return {
+      routeId: "uploadPart",
+      stash: decode(match[1]),
+      sessionId: decode(match[2]),
+      partNumber: Number(match[3]),
+    };
+  }
+  match = /^\/v1\/stashes\/([^/]+)\/uploads\/([^/]+)\/(content|complete|resume)$/.exec(pathname);
+  if (match?.[1] && match[2] && match[3]) {
+    const routeId =
+      match[3] === "content"
+        ? "uploadSingleContent"
+        : match[3] === "complete"
+          ? "completeUploadSession"
+          : "resumeUploadSession";
+    if (routeId === "uploadSingleContent" ? method === "PUT" : method === "POST") {
+      return { routeId, stash: decode(match[1]), sessionId: decode(match[2]) };
+    }
+  }
+  match = /^\/v1\/stashes\/([^/]+)\/uploads\/([^/]+)$/.exec(pathname);
+  if ((method === "GET" || method === "DELETE") && match?.[1] && match[2]) {
+    return {
+      routeId: method === "GET" ? "getUploadSession" : "abortUploadSession",
+      stash: decode(match[1]),
+      sessionId: decode(match[2]),
+    };
+  }
+  match = /^\/v1\/stashes\/([^/]+)\/uploads\/(.+)$/.exec(pathname);
+  if (method === "POST" && match?.[1] && match[2]) {
+    return { routeId: "createUploadSession", stash: decode(match[1]), path: decode(match[2]) };
   }
 
   match = /^\/v1\/stashes\/([^/]+)\/files\/(.+)$/.exec(pathname);
@@ -509,6 +613,10 @@ function changesPage(rows: FakeVersionRow[], since: number | undefined, limit: n
     author: row.author,
     message: row.message,
     size: row.size,
+    representation: row.representation ?? "text",
+    contentAccess: row.kind === "delete" ? "deleted" : (row.contentAccess ?? "inline"),
+    contentType: row.contentType,
+    byteSize: row.size,
     createdAt: iso(row.createdAt),
   }));
   if (since !== undefined) {
@@ -536,6 +644,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const deleteGraceDays = options.deleteGraceDays ?? DEFAULT_DELETE_GRACE_DAYS;
   const gcOrphanMinAgeMs = options.gcOrphanMinAgeMs ?? DEFAULT_GC_ORPHAN_MIN_AGE_MS;
   const proposalTtlDays = options.proposalTtlDays ?? DEFAULT_PROPOSAL_TTL_DAYS;
+  const capabilities = options.capabilities ?? DEFAULT_CAPABILITIES;
   if (!Number.isSafeInteger(deleteGraceDays) || deleteGraceDays < 1) {
     throw new TypeError("deleteGraceDays must be a positive safe integer");
   }
@@ -579,6 +688,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       ],
     ]),
     gcRuns: [],
+    uploadSessions: new Map(),
   };
   let nextToken = 1;
   let nextChangeId = 1;
@@ -586,6 +696,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   let nextProposalSerial = 1;
   let nextGcRun = 1;
   let nextGcCursorSerial = 1;
+  let nextUploadSession = 1;
   const gcCursorPositions = new Map<string, { kind: GcKind; afterKey: string }>();
 
   interface EventSubscriber {
@@ -715,8 +826,15 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const bodyFor = (version: FakeVersionRow): string => {
     if (version.hash === null) return "";
     const body = state.blobs.get(version.stash)?.get(version.hash)?.body;
-    if (body === undefined) return fail("internal", "The fake version points at a missing blob.");
+    if (body === undefined || body === null)
+      return fail("unsupported-representation", "Binary content has no JSON body.");
     return body;
+  };
+  const bytesFor = (version: FakeVersionRow): Uint8Array => {
+    if (version.hash === null) return new Uint8Array();
+    const bytes = state.blobs.get(version.stash)?.get(version.hash)?.bytes;
+    if (bytes === undefined) return fail("internal", "The fake version points at a missing blob.");
+    return bytes;
   };
   const storeBlob = (stash: string, hash: string, body: string, createdAt: number): FakeBlobRow => {
     const rows = nested(state.blobs, stash);
@@ -730,7 +848,15 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       nextR2ObjectSerial += 1;
       state.r2Objects.set(r2Key, { key: r2Key, stash, hash, size, createdAt });
     }
-    const row: FakeBlobRow = { stash, hash, body, r2Key, size, createdAt };
+    const row: FakeBlobRow = {
+      stash,
+      hash,
+      body,
+      bytes: new TextEncoder().encode(body),
+      r2Key,
+      size,
+      createdAt,
+    };
     rows.set(hash, row);
     return row;
   };
@@ -1518,7 +1644,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
 
   const proposalBody = (row: FakeProposalRow): string => {
     const body = state.blobs.get(row.stash)?.get(row.blobHash)?.body;
-    if (body === undefined) return fail("internal", "The fake proposal points at a missing blob.");
+    if (body === undefined || body === null)
+      return fail("internal", "The fake proposal points at a missing blob.");
     return body;
   };
 
@@ -1838,6 +1965,10 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           headVersion: file.headVersion,
           hash: file.headHash,
           size: head.size,
+          representation: head.representation ?? "text",
+          contentAccess: file.deleted ? "deleted" : (head.contentAccess ?? "inline"),
+          contentType: head.contentType,
+          byteSize: head.size,
           deleted: file.deleted,
           updatedAt: iso(file.updatedAt),
         };
@@ -1890,7 +2021,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         meta: cloneMeta(version.meta),
         createdAt: iso(version.createdAt),
         deleted,
-        body: deleted ? null : bodyFor(version),
+        representation: version.representation ?? "text",
+        contentAccess: deleted ? "deleted" : (version.contentAccess ?? "inline"),
+        contentType: version.contentType,
+        byteSize: version.size,
+        body: deleted || version.contentAccess === "raw" ? null : bodyFor(version),
       },
       200,
       headers,
@@ -2012,7 +2147,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         kind: "delete",
         hash: null,
         size: 0,
-        contentType: DEFAULT_CONTENT_TYPE,
+        contentType: head.contentType,
+        representation: head.representation,
+        contentAccess: "deleted",
         rollbackOf: null,
         author: parsed.data.author ?? "",
         message: parsed.data.message ?? "",
@@ -2069,6 +2206,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         hash: target.hash,
         size: target.size,
         contentType: target.contentType,
+        representation: target.representation,
+        contentAccess: target.contentAccess,
         rollbackOf: target.version,
         author: parsed.data.author ?? "",
         message:
@@ -2088,6 +2227,14 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         identicalToHead: target.hash === head.hash,
         changeId: version.changeId,
         createdAt: iso(version.createdAt),
+        ...(target.representation === undefined
+          ? {}
+          : {
+              representation: target.representation,
+              contentType: target.contentType,
+              byteSize: target.size,
+              etag: target.hash,
+            }),
       },
       201,
     );
@@ -2119,8 +2266,385 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         message: version.message,
         meta: cloneMeta(version.meta),
         createdAt: iso(version.createdAt),
+        representation: version.representation ?? "text",
+        contentAccess: version.kind === "delete" ? "deleted" : (version.contentAccess ?? "inline"),
+        contentType: version.contentType,
+        byteSize: version.size,
       })),
       nextBefore: hasMore ? (page.at(-1)?.version ?? null) : null,
+    });
+  };
+
+  const uploadRecord = (row: FakeUploadSessionRow) => ({
+    id: row.id,
+    stash: row.stash,
+    path: row.path,
+    principal: { kind: "admin" as const },
+    state: row.state,
+    expectedVersion: row.expectedVersion,
+    declaredSize: row.declaredSize,
+    declaredHash: row.declaredHash,
+    representation: row.representation,
+    contentType: row.contentType,
+    mode: row.mode,
+    storageTier: row.storageTier,
+    partSize: row.partSize,
+    expiresAt: iso(row.expiresAt),
+    attemptGeneration: row.attemptGeneration,
+    uploadedSize: row.uploadedBytes?.byteLength ?? null,
+    uploadedHash: null,
+    finalizationLeaseOwner: null,
+    finalizationLeaseExpiresAt: null,
+    result: row.result,
+  });
+
+  const requireUpload = (stash: string, id: string): FakeUploadSessionRow => {
+    const row = state.uploadSessions.get(id);
+    if (row === undefined || row.stash !== stash)
+      return fail("not-found", "Upload session not found.");
+    if (row.state === "open" && row.expiresAt <= now()) row.state = "expired";
+    return row;
+  };
+
+  const sessionParts = (row: FakeUploadSessionRow) =>
+    [...row.parts.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([partNumber, bytes]) => ({
+        partNumber,
+        size: bytes.byteLength,
+        generation: row.attemptGeneration,
+        etag: `fake-part-${row.attemptGeneration}-${partNumber}-${bytes.byteLength}`,
+      }));
+
+  const handleCreateUpload = async (
+    request: Request,
+    stash: string,
+    path: string,
+  ): Promise<Response> => {
+    const parsed = CreateUploadSessionBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid upload session input.");
+    const key = idempotencyKey(request) ?? null;
+    const mode =
+      parsed.data.mode === "auto"
+        ? !parsed.data.resumable && parsed.data.size <= capabilities.limits.singleUploadMaxBytes
+          ? "single"
+          : "multipart"
+        : parsed.data.mode;
+    const existing = [...state.uploadSessions.values()].find(
+      (row) => row.stash === stash && row.createKey === key && key !== null,
+    );
+    if (
+      existing !== undefined &&
+      (existing.path !== path ||
+        existing.expectedVersion !== parsed.data.expectedVersion ||
+        existing.declaredSize !== parsed.data.size ||
+        existing.declaredHash !== (parsed.data.hash ?? null) ||
+        existing.representation !== parsed.data.representation ||
+        existing.contentType !== parsed.data.contentType ||
+        existing.mode !== mode)
+    )
+      return fail("idempotency-key-reused", "Idempotency-Key was reused.");
+    if (existing !== undefined)
+      return json(uploadRecord(existing), 201, { "Idempotent-Replayed": "true" });
+    const file = getFile(stash, path);
+    if (parsed.data.expectedVersion === null && file !== undefined)
+      return fail("exists", "File already exists.");
+    if (parsed.data.expectedVersion !== null && file === undefined)
+      return fail("not-found", "File not found.");
+    if (file !== undefined && parsed.data.expectedVersion !== file.headVersion)
+      return fail("stale", "Expected version is stale.", current(file, getHeadVersion(file)));
+    if (parsed.data.size > capabilities.limits.maxFileBytes)
+      return fail("payload-too-large", "The declared file size is too large.");
+    if (
+      mode === "single" &&
+      (parsed.data.resumable || parsed.data.size > capabilities.limits.singleUploadMaxBytes)
+    ) {
+      return fail(
+        parsed.data.resumable ? "validation" : "payload-too-large",
+        "Invalid single upload mode.",
+      );
+    }
+    if (mode === "multipart" && parsed.data.size === 0)
+      return fail("validation", "An empty file must use single upload mode.");
+    const row: FakeUploadSessionRow = {
+      id: `upl_fake_${String(nextUploadSession++).padStart(8, "0")}`,
+      stash,
+      path,
+      state: "open",
+      expectedVersion: parsed.data.expectedVersion,
+      declaredSize: parsed.data.size,
+      declaredHash: parsed.data.hash ?? null,
+      representation: parsed.data.representation,
+      contentType: parsed.data.contentType,
+      mode,
+      storageTier:
+        mode === "multipart" || parsed.data.size > capabilities.limits.d1InlineMaxBytes
+          ? "r2"
+          : "d1",
+      partSize: mode === "multipart" ? capabilities.limits.multipartPartBytes : null,
+      expiresAt: now() + capabilities.limits.uploadSessionTtlSeconds * 1_000,
+      attemptGeneration: 0,
+      uploadedBytes: null,
+      parts: new Map(),
+      result: null,
+      createKey: key,
+      completeKey: null,
+      uploadKey: null,
+      abortKey: null,
+      terminalCurrent: null,
+      skipIfUnchanged: parsed.data.skipIfUnchanged,
+    };
+    state.uploadSessions.set(row.id, row);
+    return json(uploadRecord(row), 201);
+  };
+
+  const handleUploadBytes = async (
+    request: Request,
+    row: FakeUploadSessionRow,
+    partNumber?: number,
+  ): Promise<Response> => {
+    const key = idempotencyKey(request) ?? null;
+    if (partNumber === undefined && row.state === "uploaded" && row.uploadKey === key) {
+      return json(uploadRecord(row), 202, { "Idempotent-Replayed": "true" });
+    }
+    if (row.state !== "open")
+      return fail(
+        row.state === "expired" ? "upload-session-expired" : "upload-session-not-open",
+        "Upload session does not accept bytes.",
+      );
+    const generation = Number(
+      new URL(request.url).searchParams.get("generation") ?? row.attemptGeneration,
+    );
+    if (generation !== row.attemptGeneration)
+      return fail("upload-session-not-open", "Upload generation is stale.");
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (partNumber === undefined) {
+      if (row.mode !== "single" || bytes.byteLength !== row.declaredSize)
+        return fail("upload-size-mismatch", "Upload size does not match its declaration.");
+      row.uploadedBytes = bytes;
+      row.uploadKey = key;
+      row.state = "uploaded";
+      return json(uploadRecord(row), 202);
+    }
+    if (row.mode !== "multipart" || row.partSize === null)
+      return fail("upload-session-not-open", "Upload session does not accept parts.");
+    const expectedParts = Math.ceil(row.declaredSize / row.partSize);
+    const expectedSize =
+      partNumber === expectedParts
+        ? row.declaredSize - row.partSize * (expectedParts - 1)
+        : row.partSize;
+    if (partNumber < 1 || partNumber > expectedParts || bytes.byteLength !== expectedSize)
+      return fail("upload-size-mismatch", "Upload part size is incorrect.");
+    row.parts.set(partNumber, bytes);
+    return json({ ...uploadRecord(row), parts: sessionParts(row) }, 202);
+  };
+
+  const handleCompleteUpload = async (
+    request: Request,
+    row: FakeUploadSessionRow,
+    resume = false,
+  ): Promise<Response> => {
+    const parsed = CompleteUploadSessionBody.safeParse(await requestJson(request));
+    if (!parsed.success || parsed.data.generation !== row.attemptGeneration)
+      return fail("validation", "Invalid upload completion input.");
+    const key = idempotencyKey(request) ?? null;
+    if (row.state === "stale") {
+      if (row.completeKey !== key)
+        return fail("idempotency-key-reused", "Idempotency-Key was reused.");
+      return json(
+        {
+          error: { code: "stale", message: "Expected version is stale." },
+          ...(row.terminalCurrent === null ? {} : { current: row.terminalCurrent }),
+        },
+        409,
+        { "Idempotent-Replayed": "true" },
+      );
+    }
+    if (row.state === "committed") {
+      if (row.completeKey !== key)
+        return fail("idempotency-key-reused", "Idempotency-Key was reused.");
+      return json(resume ? uploadRecord(row) : row.result, resume ? 200 : 201, {
+        "Idempotent-Replayed": "true",
+      });
+    }
+    if (resume && row.state === "open") return json(uploadRecord(row));
+    if (row.state !== "open" && row.state !== "uploaded")
+      return fail(
+        row.state === "expired" ? "upload-session-expired" : "upload-session-not-open",
+        "Upload session is not ready to complete.",
+      );
+    let bytes: Uint8Array;
+    if (row.mode === "single") {
+      if (row.uploadedBytes === null)
+        return fail("upload-session-not-open", "Upload session is not ready to complete.");
+      bytes = row.uploadedBytes;
+    } else {
+      const parts = sessionParts(row);
+      const expected = Math.ceil(row.declaredSize / (row.partSize ?? 1));
+      if (parts.length !== expected)
+        return fail("upload-size-mismatch", "Multipart upload is incomplete.");
+      bytes = new Uint8Array(row.declaredSize);
+      let offset = 0;
+      for (let part = 1; part <= expected; part += 1) {
+        const value = row.parts.get(part);
+        if (value === undefined)
+          return fail("upload-size-mismatch", "Multipart upload is incomplete.");
+        bytes.set(value, offset);
+        offset += value.byteLength;
+      }
+    }
+    const hash = await sha256Hex(bytes.slice().buffer);
+    if (row.declaredHash !== null && row.declaredHash !== hash) {
+      row.state = "failed";
+      return fail("upload-hash-mismatch", "Upload hash does not match its declaration.");
+    }
+    let text: string | null = null;
+    if (row.representation === "text") {
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        row.state = "failed";
+        return fail("unsupported-representation", "Text uploads must contain valid UTF-8.");
+      }
+    }
+    const file = getFile(row.stash, row.path);
+    if (file !== undefined && file.headVersion !== row.expectedVersion) {
+      row.state = "stale";
+      row.completeKey = key;
+      row.terminalCurrent = current(file, getHeadVersion(file));
+      return fail("stale", "Expected version is stale.", row.terminalCurrent);
+    }
+    if (row.skipIfUnchanged && file !== undefined && !file.deleted && file.headHash === hash) {
+      row.result = {
+        unchanged: true,
+        version: file.headVersion,
+        hash,
+        size: bytes.byteLength,
+        representation: row.representation,
+        contentType: row.contentType,
+      };
+    } else {
+      const version = append(row.stash, row.path, {
+        kind: "put",
+        hash,
+        size: bytes.byteLength,
+        contentType: row.contentType,
+        representation: row.representation,
+        contentAccess:
+          row.representation === "text" &&
+          bytes.byteLength <= capabilities.limits.jsonInlineMaxBytes
+            ? "inline"
+            : "raw",
+        rollbackOf: null,
+        author: "",
+        message: "",
+        meta: {},
+      });
+      const blob: FakeBlobRow = {
+        stash: row.stash,
+        hash,
+        body: text,
+        bytes: bytes.slice(),
+        r2Key: null,
+        size: bytes.byteLength,
+        createdAt: version.createdAt,
+      };
+      nested(state.blobs, row.stash).set(hash, blob);
+      row.result = {
+        version: version.version,
+        hash,
+        size: bytes.byteLength,
+        representation: row.representation,
+        contentType: row.contentType,
+        changeId: version.changeId,
+        createdAt: iso(version.createdAt),
+      };
+    }
+    row.state = "committed";
+    row.completeKey = key;
+    return json(resume ? uploadRecord(row) : row.result, resume ? 200 : 201);
+  };
+
+  const handleRaw = (
+    request: Request,
+    stash: string,
+    path: string,
+    requestedVersion?: number,
+  ): Response => {
+    const file = getFile(stash, path);
+    if (file === undefined)
+      return fail(
+        requestedVersion === undefined ? "not-found" : "version-not-found",
+        "File not found.",
+      );
+    const version =
+      requestedVersion === undefined
+        ? getHeadVersion(file)
+        : getVersion(stash, path, requestedVersion);
+    if (version === undefined) return fail("version-not-found", "Version not found.");
+    if (version.kind === "delete") return fail("file-deleted", "The file version is deleted.");
+    const all = bytesFor(version);
+    const etag = `"${version.hash ?? ""}"`;
+    if (ifNoneMatchMatches(request.headers.get("If-None-Match"), etag))
+      return new Response(null, {
+        status: 304,
+        headers: { ETag: etag, "X-Stash-Version": String(version.version) },
+      });
+    let start = 0;
+    let end = all.byteLength - 1;
+    let partial = false;
+    const range = request.headers.get("Range");
+    const ifRange = request.headers.get("If-Range");
+    if (range !== null && (ifRange === null || ifRange === etag)) {
+      const matched = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (matched === null || (matched[1] === "" && matched[2] === ""))
+        return json(
+          {
+            error: { code: "range-not-satisfiable", message: "The byte range is not satisfiable." },
+          },
+          416,
+          { "Content-Range": `bytes */${all.byteLength}` },
+        );
+      if (matched[1] === "") {
+        const suffix = BigInt(matched[2] ?? "0");
+        if (suffix < 1n)
+          return json(
+            {
+              error: {
+                code: "range-not-satisfiable",
+                message: "The byte range is not satisfiable.",
+              },
+            },
+            416,
+            { "Content-Range": `bytes */${all.byteLength}` },
+          );
+        start = suffix >= BigInt(all.byteLength) ? 0 : all.byteLength - Number(suffix);
+      } else {
+        start = Number(matched[1]);
+        end = matched[2] === "" ? end : Math.min(Number(matched[2]), end);
+      }
+      if (start > end || start >= all.byteLength)
+        return json(
+          {
+            error: { code: "range-not-satisfiable", message: "The byte range is not satisfiable." },
+          },
+          416,
+          { "Content-Range": `bytes */${all.byteLength}` },
+        );
+      partial = true;
+    }
+    const bytes = all.slice(start, end + 1);
+    const responseHeaders: Record<string, string> = {
+      ETag: etag,
+      "X-Stash-Version": String(version.version),
+      "Content-Type": version.contentType,
+      "Content-Length": String(bytes.byteLength),
+      "Accept-Ranges": "bytes",
+    };
+    if (partial) responseHeaders["Content-Range"] = `bytes ${start}-${end}/${all.byteLength}`;
+    return new Response(request.method === "HEAD" ? null : bytes, {
+      status: partial ? 206 : 200,
+      headers: responseHeaders,
     });
   };
 
@@ -2228,7 +2752,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     try {
       const match = routeMatch(request);
       if (match === undefined || !SUPPORTED_ROUTE_IDS.has(match.routeId)) return unsupported();
-      const principal = await authenticate(request);
+      const principal: Principal =
+        match.routeId === "getCapabilities" ? { kind: "admin" } : await authenticate(request);
       authorize(principal, match);
       const rateLimited = await applyRateLimit(principal, match.routeId);
       if (rateLimited !== undefined) return rateLimited;
@@ -2239,6 +2764,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         requireLiveStash(stash);
       }
       switch (match.routeId) {
+        case "getCapabilities":
+          return json(capabilities);
         case "me":
           return json(
             principal.kind === "admin"
@@ -2271,6 +2798,56 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           return handleRevokeToken(stash ?? "", match.tokenId ?? "");
         case "stashEvents":
           return handleEvents(request, stash ?? "", url);
+        case "getRawFile":
+        case "headRawFile":
+          return handleRaw(request, stash ?? "", path ?? "");
+        case "getRawVersion":
+        case "headRawVersion":
+          return handleRaw(request, stash ?? "", path ?? "", match.version);
+        case "createUploadSession":
+          return await handleCreateUpload(request, stash ?? "", path ?? "");
+        case "getUploadSession": {
+          const session = requireUpload(stash ?? "", match.sessionId ?? "");
+          return json({ ...uploadRecord(session), parts: sessionParts(session) });
+        }
+        case "uploadSingleContent":
+          return await handleUploadBytes(
+            request,
+            requireUpload(stash ?? "", match.sessionId ?? ""),
+          );
+        case "uploadPart":
+          return await handleUploadBytes(
+            request,
+            requireUpload(stash ?? "", match.sessionId ?? ""),
+            match.partNumber,
+          );
+        case "completeUploadSession":
+          return await handleCompleteUpload(
+            request,
+            requireUpload(stash ?? "", match.sessionId ?? ""),
+          );
+        case "resumeUploadSession":
+          return await handleCompleteUpload(
+            request,
+            requireUpload(stash ?? "", match.sessionId ?? ""),
+            true,
+          );
+        case "abortUploadSession": {
+          const session = requireUpload(stash ?? "", match.sessionId ?? "");
+          const key = idempotencyKey(request) ?? null;
+          const parsed = AbortUploadSessionBody.safeParse(await requestJson(request));
+          if (!parsed.success || parsed.data.generation !== session.attemptGeneration)
+            return fail("validation", "Invalid upload abort input.");
+          if (session.state === "aborted" && session.abortKey === key)
+            return json({ id: session.id, state: "aborted" }, 200, {
+              "Idempotent-Replayed": "true",
+            });
+          if (session.state === "committed" || session.state === "aborted")
+            return fail("upload-session-not-open", "Upload session cannot be aborted.");
+          session.state = "aborted";
+          session.abortKey = key;
+          return json({ id: session.id, state: "aborted" });
+        }
         case "listFiles":
           return handleListFiles(stash ?? "", url);
         case "getFile":
@@ -2347,6 +2924,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       state.versions.length = 0;
       state.idempotency.clear();
       state.gcRuns.length = 0;
+      state.uploadSessions.clear();
       for (const job of state.gcJobs.values()) {
         job.nextCursor = null;
         job.leaseOwner = null;
@@ -2361,6 +2939,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       nextProposalSerial = 1;
       nextGcRun = 1;
       nextGcCursorSerial = 1;
+      nextUploadSession = 1;
     },
   };
 }

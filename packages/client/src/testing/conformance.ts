@@ -1,6 +1,6 @@
 import { DIFF_MAX_BYTES, canonicalJson } from "@takazudo/zudo-history-stash-core";
 import type { JsonValue, RouteId } from "@takazudo/zudo-history-stash-core";
-import type { StashFetch } from "../client.js";
+import type { StashFetch } from "../transport.js";
 import { parseStashEventStream } from "../sse.js";
 import type { ConformanceOptions, ConformanceRateLimitTarget, ConformanceReport } from "./types.js";
 
@@ -33,6 +33,18 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "approveProposal",
   "rejectProposal",
   "stashEvents",
+  "getCapabilities",
+  "getRawFile",
+  "headRawFile",
+  "getRawVersion",
+  "headRawVersion",
+  "createUploadSession",
+  "getUploadSession",
+  "uploadSingleContent",
+  "uploadPart",
+  "completeUploadSession",
+  "resumeUploadSession",
+  "abortUploadSession",
 ] as const satisfies readonly RouteId[];
 
 type TraceToken =
@@ -43,6 +55,7 @@ interface TraceRequest {
   path: string;
   token?: TraceToken;
   body?: unknown;
+  rawBody?: Uint8Array;
   headers?: Record<string, string>;
 }
 
@@ -2014,6 +2027,251 @@ const TRACE: readonly TraceStep[] = [
       for (const run of runs) assertSubset(step, run, { jobId: "ledger", kind: "ledger" });
     },
   },
+  {
+    name: "binary capabilities expose configured transfer limits",
+    routeId: "getCapabilities",
+    request: () => ({ method: "GET", path: "/v1/capabilities", token: "none" }),
+    verify(response, body, context) {
+      const step = "binary capabilities expose configured transfer limits";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      const limits = record(value.limits, step);
+      if (
+        typeof limits.singleUploadMaxBytes !== "number" ||
+        typeof limits.multipartPartBytes !== "number"
+      ) {
+        traceFailure(step, "capability limits are missing");
+      }
+      remember(context, "multipartPartBytes", limits.multipartPartBytes);
+    },
+  },
+  {
+    name: "single binary session is metadata-only",
+    routeId: "createUploadSession",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/uploads/binary/conformance.bin`,
+      headers: { "Idempotency-Key": "conformance-binary-create" },
+      body: {
+        expectedVersion: null,
+        size: 6,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+      },
+    }),
+    verify(response, body, context) {
+      const step = "single binary session is metadata-only";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, {
+        state: "open",
+        declaredSize: 6,
+        representation: "binary",
+        mode: "single",
+      });
+      remember(context, "binarySession", value.id);
+      remember(context, "binaryGeneration", value.attemptGeneration);
+    },
+  },
+  {
+    name: "single upload preserves arbitrary invalid UTF-8 bytes",
+    routeId: "uploadSingleContent",
+    request: (context) => ({
+      method: "PUT",
+      path: `/v1/stashes/${context.stash}/uploads/${String(context.values.get("binarySession"))}/content`,
+      headers: { "Idempotency-Key": "conformance-binary-content" },
+      rawBody: new Uint8Array([0x89, 0x50, 0x00, 0xff, 0x0d, 0x0a]),
+    }),
+    verify(response, body) {
+      assertStatus("single upload preserves arbitrary invalid UTF-8 bytes", response, 202);
+      assertSubset("single upload preserves arbitrary invalid UTF-8 bytes", body, {
+        state: "uploaded",
+        uploadedSize: 6,
+      });
+    },
+  },
+  {
+    name: "single completion commits exactly one binary version",
+    routeId: "completeUploadSession",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/uploads/${String(context.values.get("binarySession"))}/complete`,
+      headers: { "Idempotency-Key": "conformance-binary-complete" },
+      body: { generation: context.values.get("binaryGeneration") },
+    }),
+    verify(response, body, context) {
+      const step = "single completion commits exactly one binary version";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, {
+        size: 6,
+        representation: "binary",
+        contentType: "application/octet-stream",
+      });
+      remember(context, "binaryVersion", value.version);
+    },
+  },
+  {
+    name: "committed upload status remains inspectable",
+    routeId: "getUploadSession",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/uploads/${String(context.values.get("binarySession"))}`,
+    }),
+    verify(response, body) {
+      assertStatus("committed upload status remains inspectable", response, 200);
+      assertSubset("committed upload status remains inspectable", body, {
+        state: "committed",
+        declaredSize: 6,
+      });
+    },
+  },
+  {
+    name: "completion resume is idempotent",
+    routeId: "resumeUploadSession",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/uploads/${String(context.values.get("binarySession"))}/resume`,
+      headers: { "Idempotency-Key": "conformance-binary-complete" },
+      body: { generation: context.values.get("binaryGeneration") },
+    }),
+    verify(response, body) {
+      assertStatus("completion resume is idempotent", response, 200);
+      assertSubset("completion resume is idempotent", body, { state: "committed" });
+    },
+  },
+  {
+    name: "raw current download streams exact bytes",
+    routeId: "getRawFile",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/raw/binary/conformance.bin`,
+    }),
+    streaming: true,
+    async verify(response) {
+      const step = "raw current download streams exact bytes";
+      assertStatus(step, response, 200);
+      assertEqual(
+        step,
+        JSON.stringify([...new Uint8Array(await response.arrayBuffer())]),
+        JSON.stringify([0x89, 0x50, 0x00, 0xff, 0x0d, 0x0a]),
+        "raw bytes",
+      );
+    },
+  },
+  {
+    name: "raw HEAD exposes exact current metadata",
+    routeId: "headRawFile",
+    request: (context) => ({
+      method: "HEAD",
+      path: `/v1/stashes/${context.stash}/raw/binary/conformance.bin`,
+    }),
+    verify(response) {
+      assertStatus("raw HEAD exposes exact current metadata", response, 200);
+      assertEqual(
+        "raw HEAD exposes exact current metadata",
+        response.headers.get("Content-Length"),
+        "6",
+        "content length",
+      );
+    },
+  },
+  {
+    name: "historical raw range is byte exact",
+    routeId: "getRawVersion",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/versions/${String(context.values.get("binaryVersion"))}/raw/binary/conformance.bin`,
+      headers: { Range: "bytes=1-3" },
+    }),
+    streaming: true,
+    async verify(response) {
+      assertStatus("historical raw range is byte exact", response, 206);
+      assertEqual(
+        "historical raw range is byte exact",
+        JSON.stringify([...new Uint8Array(await response.arrayBuffer())]),
+        JSON.stringify([0x50, 0x00, 0xff]),
+        "range bytes",
+      );
+    },
+  },
+  {
+    name: "historical raw HEAD exposes version metadata",
+    routeId: "headRawVersion",
+    request: (context) => ({
+      method: "HEAD",
+      path: `/v1/stashes/${context.stash}/versions/${String(context.values.get("binaryVersion"))}/raw/binary/conformance.bin`,
+    }),
+    verify(response, _body, context) {
+      assertStatus("historical raw HEAD exposes version metadata", response, 200);
+      assertEqual(
+        "historical raw HEAD exposes version metadata",
+        response.headers.get("X-Stash-Version"),
+        String(context.values.get("binaryVersion")),
+        "version header",
+      );
+    },
+  },
+  {
+    name: "multipart session accepts durable replacement parts",
+    routeId: "createUploadSession",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/uploads/binary/aborted.bin`,
+      headers: { "Idempotency-Key": "conformance-multipart-create" },
+      body: {
+        expectedVersion: null,
+        size: 4,
+        representation: "binary",
+        contentType: "application/zip",
+        mode: "multipart",
+        resumable: true,
+      },
+    }),
+    verify(response, body, context) {
+      assertStatus("multipart session accepts durable replacement parts", response, 201);
+      const value = record(body, "multipart session accepts durable replacement parts");
+      remember(context, "multipartSession", value.id);
+      remember(context, "multipartGeneration", value.attemptGeneration);
+    },
+  },
+  {
+    name: "multipart part upload reports durable part state",
+    routeId: "uploadPart",
+    request: (context) => ({
+      method: "PUT",
+      path: `/v1/stashes/${context.stash}/uploads/${String(context.values.get("multipartSession"))}/parts/1?generation=${String(context.values.get("multipartGeneration"))}`,
+      rawBody: new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+    }),
+    verify(response, body) {
+      assertStatus("multipart part upload reports durable part state", response, 202);
+      const parts = array(
+        record(body, "multipart multipart part").parts,
+        "multipart multipart part",
+      );
+      assertEqual(
+        "multipart part upload reports durable part state",
+        parts.length,
+        1,
+        "durable part count",
+      );
+    },
+  },
+  {
+    name: "multipart session can be durably aborted",
+    routeId: "abortUploadSession",
+    request: (context) => ({
+      method: "DELETE",
+      path: `/v1/stashes/${context.stash}/uploads/${String(context.values.get("multipartSession"))}`,
+      headers: { "Idempotency-Key": "conformance-multipart-abort" },
+      body: { generation: context.values.get("multipartGeneration") },
+    }),
+    verify(response, body) {
+      assertStatus("multipart session can be durably aborted", response, 200);
+      assertSubset("multipart session can be durably aborted", body, { state: "aborted" });
+    },
+  },
 ];
 
 /** Stable, serializable trace metadata for coverage and documentation checks. */
@@ -2086,10 +2344,18 @@ async function send(context: TraceContext, request: TraceRequest, step: string):
   const token = tokenFor(context, request.token, step);
   if (token !== undefined) headers.set("Authorization", `Bearer ${token}`);
   if (request.body !== undefined) headers.set("Content-Type", "application/json");
+  if (request.rawBody !== undefined) {
+    headers.set("Content-Type", "application/octet-stream");
+    headers.set("Content-Length", String(request.rawBody.byteLength));
+  }
   return context.fetch(`${context.baseUrl}${request.path}`, {
     method: request.method,
     headers,
-    ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+    ...(request.rawBody !== undefined
+      ? { body: request.rawBody.slice().buffer }
+      : request.body === undefined
+        ? {}
+        : { body: JSON.stringify(request.body) }),
   });
 }
 

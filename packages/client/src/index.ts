@@ -2,6 +2,7 @@
 export const VERSION = "0.0.0";
 
 export * from "./client.js";
+export * from "./binary.js";
 export type { EventsOptions, StashEventStream, StashLiveStatus } from "./events.js";
 export * from "./parse.js";
 export {

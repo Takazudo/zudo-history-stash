@@ -78,6 +78,16 @@ function optionalQuery(
 }
 
 export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
+  /**
+   * Flow-controlled RPC bridge for raw upload/download bodies. Request and Response are RPC-aware
+   * types, so their streams are not serialized into the RPC value payload.
+   */
+  async requestStream(request: Request, token: string): Promise<Response> {
+    request.headers.delete("authorization");
+    request.headers.set("Authorization", `Bearer ${token}`);
+    return app.fetch(request, this.env, this.ctx);
+  }
+
   async request(init: RpcRequest): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.delete("authorization");
