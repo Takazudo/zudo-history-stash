@@ -5,6 +5,7 @@ import type { AppEnv } from "../context.js";
 import { rateLimit } from "../rate-limit.js";
 import admin from "./admin.js";
 import changeSets from "./change-sets.js";
+import commits from "./commits.js";
 import diff from "./diff.js";
 import events from "./events.js";
 import files from "./files.js";
@@ -31,6 +32,7 @@ for (const route of ROUTES) {
 routes.route("/", meta);
 routes.route("/", admin);
 routes.route("/", changeSets);
+routes.route("/", commits);
 routes.route("/", files);
 routes.route("/", gc);
 routes.route("/", history);
