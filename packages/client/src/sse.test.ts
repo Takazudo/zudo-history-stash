@@ -64,6 +64,60 @@ describe("parseStashEventStream", () => {
     ]);
   });
 
+  it("parses commit and change-set frames while requiring commitId on changes", async () => {
+    const commit = {
+      type: "commit" as const,
+      commitId: "cmt_1787952000000deadbeef",
+      stash: "notes",
+      entryCount: 2,
+      firstChangeId: 10,
+      lastChangeId: 11,
+      origin: null,
+    };
+    const changeSet = {
+      type: "change-set" as const,
+      changeSetId: "chs_1787952000000deadbeef",
+      stash: "notes",
+      status: "applied" as const,
+      paths: ["a.md", "b.bin"],
+      origin: null,
+    };
+    const parsed = await collect(
+      textStream(
+        `event: commit\ndata: ${JSON.stringify(commit)}\n\n`,
+        `event: change\nid: 10\ndata: ${JSON.stringify({
+          type: "change",
+          changeId: 10,
+          commitId: commit.commitId,
+          stash: "notes",
+          path: "a.md",
+          version: 1,
+          kind: "put",
+          origin: null,
+          createdAt: "2026-08-28T01:02:03.000Z",
+        })}\n\n`,
+        `event: change-set\ndata: ${JSON.stringify(changeSet)}\n\n`,
+      ),
+    );
+
+    expect(parsed.map(({ event }) => event)).toEqual([
+      commit,
+      {
+        type: "change",
+        changeId: 10,
+        commitId: commit.commitId,
+        stash: "notes",
+        path: "a.md",
+        version: 1,
+        kind: "put",
+        origin: null,
+        createdAt: "2026-08-28T01:02:03.000Z",
+      },
+      changeSet,
+    ]);
+    expect(parsed[1]?.id).toBe("10");
+  });
+
   it("uses the first colon, removes only one optional space, and ignores unknown fields", async () => {
     const parsed = await collect(
       textStream(

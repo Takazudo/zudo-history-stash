@@ -1,12 +1,19 @@
 import {
   BODY_LIMIT_BYTES,
+  COMMIT_DIFF_INLINE_ENTRIES,
+  DIFF_MAX_BYTES,
   ChangesQuery,
+  ChangeSetDiffQuery,
+  CommitDiffQuery,
+  CreateChangeSetBody,
+  CreateCommitBody,
   CreateUploadSessionBody,
   CompleteUploadSessionBody,
   AbortUploadSessionBody,
   CreateStashBody,
   CreateTokenBody,
   DeleteFileBody,
+  decodeCanonicalBase64,
   DiffCandidateBody,
   DiffQuery,
   EventsQuery,
@@ -15,10 +22,18 @@ import {
   HistoryQuery,
   IDEMPOTENCY_KEY_MAX_CHARS,
   ListFilesQuery,
+  ListChangeSetsQuery,
+  ListCommitsQuery,
   ListStashesQuery,
+  MAX_COMMIT_INLINE_BYTES,
+  MAX_META_BYTES,
   MAX_BODY_BYTES,
   PutFileBody,
   R2_SPILL_BYTES,
+  RevertCommitBody,
+  ApproveChangeSetBody,
+  RejectChangeSetBody,
+  SnapshotQuery,
   ROUTES,
   RotateTokenBody,
   RollbackBody,
@@ -41,6 +56,16 @@ import {
 import type {
   Current,
   CapabilitiesResponse,
+  ChangeSetDiffResult,
+  ChangeSetEntryInput,
+  ChangeSetRecord,
+  CommitConflict,
+  CommitDiffResult,
+  CommitEntryInput,
+  CommitEntryRecord,
+  CommitResult,
+  CreateChangeSetBody as CreateChangeSetBodyType,
+  CreateCommitBody as CreateCommitBodyType,
   DiffSide,
   ErrorCode,
   GcKind,
@@ -55,6 +80,9 @@ import type {
   FakeBlobRow,
   FakeFileRow,
   FakeGcJobRow,
+  FakeChangeSetEntryRow,
+  FakeChangeSetRow,
+  FakeCommitRow,
   FakeIdempotencyRow,
   FakeMintTokenOptions,
   FakeR2ObjectRow,
@@ -79,6 +107,7 @@ const GC_LEASE_TTL_MS = 300_000;
 const MAX_R2_GC_PAGE_OBJECTS = 24;
 const SHA256_HASH = /^sha256-[0-9a-f]{64}$/;
 const LOWERCASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CHANGE_SET_ID = /^chs_\d{13}[0-9a-f]{8}$/;
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
 const DEFAULT_CAPABILITIES: CapabilitiesResponse = {
   representations: ["text", "binary"],
@@ -92,7 +121,7 @@ const DEFAULT_CAPABILITIES: CapabilitiesResponse = {
     httpRequestMaxBytes: 100_000_000,
     singleUploadMaxBytes: 32_000_000,
     maxFileBytes: 1_073_741_824,
-    diffMaxBytesPerSide: 1_000_000,
+    diffMaxBytesPerSide: DIFF_MAX_BYTES,
     multipartPartBytes: 8_388_608,
     maxMultipartParts: 10_000,
     maxOpenUploadSessionsPerStash: 32,
@@ -124,6 +153,18 @@ const SUPPORTED_ROUTE_IDS = new Set<RouteId>([
   "getStashChanges",
   "runGc",
   "listGcRuns",
+  "createCommit",
+  "getCommit",
+  "listCommits",
+  "getCommitDiff",
+  "revertCommit",
+  "getSnapshot",
+  "createChangeSet",
+  "listChangeSets",
+  "getChangeSet",
+  "getChangeSetDiff",
+  "approveChangeSet",
+  "rejectChangeSet",
   "stashEvents",
   "getRawFile",
   "headRawFile",
@@ -152,6 +193,18 @@ const LIVE_STASH_ROUTE_IDS = new Set<RouteId>([
   "getDiff",
   "diffCandidate",
   "getStashChanges",
+  "getCommit",
+  "listCommits",
+  "getCommitDiff",
+  "createCommit",
+  "revertCommit",
+  "getSnapshot",
+  "createChangeSet",
+  "listChangeSets",
+  "getChangeSet",
+  "getChangeSetDiff",
+  "approveChangeSet",
+  "rejectChangeSet",
   "stashEvents",
   "getRawFile",
   "headRawFile",
@@ -232,6 +285,7 @@ interface MatchedRoute {
   routeId: RouteId;
   stash?: string;
   path?: string;
+  id?: string;
   tokenId?: string;
   sessionId?: string;
   version?: number;
@@ -243,13 +297,21 @@ class FakeHttpError extends Error {
   readonly status: number;
   readonly current?: Current;
   readonly successorId?: string;
+  readonly conflicts?: CommitConflict[];
 
-  constructor(code: ErrorCode, message: string, current?: Current, successorId?: string) {
+  constructor(
+    code: ErrorCode,
+    message: string,
+    current?: Current,
+    successorId?: string,
+    conflicts?: CommitConflict[],
+  ) {
     super(message);
     this.code = code;
     this.status = statusForCode(code);
     this.current = current;
     this.successorId = successorId;
+    this.conflicts = conflicts;
   }
 }
 
@@ -278,6 +340,7 @@ function errorResponse(error: FakeHttpError): Response {
         ...(error.successorId === undefined ? {} : { successorId: error.successorId }),
       },
       ...(error.status === 409 && error.current !== undefined ? { current: error.current } : {}),
+      ...(error.conflicts === undefined ? {} : { conflicts: error.conflicts }),
     },
     error.status,
   );
@@ -331,19 +394,26 @@ function routeMatch(request: Request): MatchedRoute | undefined {
   }
 
   const skeletons: Array<[RegExp, RouteId, "GET" | "POST"]> = [
-    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+$/, "getCommit", "GET"],
-    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+\/diff$/, "getCommitDiff", "GET"],
-    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+\/revert$/, "revertCommit", "POST"],
+    [/^\/v1\/stashes\/([^/]+)\/commits\/([^/]+)$/, "getCommit", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/commits\/([^/]+)\/diff$/, "getCommitDiff", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/commits\/([^/]+)\/revert$/, "revertCommit", "POST"],
     [/^\/v1\/stashes\/([^/]+)\/snapshot$/, "getSnapshot", "GET"],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+$/, "getChangeSet", "GET"],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/diff$/, "getChangeSetDiff", "GET"],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/approve$/, "approveChangeSet", "POST"],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/reject$/, "rejectChangeSet", "POST"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/([^/]+)$/, "getChangeSet", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/([^/]+)\/diff$/, "getChangeSetDiff", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/([^/]+)\/approve$/, "approveChangeSet", "POST"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/([^/]+)\/reject$/, "rejectChangeSet", "POST"],
   ];
   for (const [pattern, routeId, routeMethod] of skeletons) {
     if (method !== routeMethod) continue;
     const skeleton = pattern.exec(pathname);
-    if (skeleton?.[1] !== undefined) return { routeId, stash: decode(skeleton[1]) };
+    if (skeleton?.[1] !== undefined) {
+      const id = skeleton[2];
+      return {
+        routeId,
+        stash: decode(skeleton[1]),
+        ...(id === undefined ? {} : { id: decode(id) }),
+      };
+    }
   }
 
   match = /^\/v1\/stashes\/([^/]+)\/tokens\/([^/]+)\/rotate$/.exec(pathname);
@@ -510,12 +580,12 @@ function resolveTokenExpiry(input: FakeMintTokenOptions, now: number): number | 
   return expiresAt;
 }
 
-function ordered<T extends { path: string }>(rows: T[]): T[] {
-  return rows.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-}
-
 function queryObject(url: URL): Record<string, string> {
   return Object.fromEntries(url.searchParams.entries());
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function ensureSafeInteger(value: number | undefined, name: string): void {
@@ -567,7 +637,7 @@ function changesPage(rows: FakeVersionRow[], since: number | undefined, limit: n
   const page = orderedRows.slice(0, limit);
   const changes = page.map((row) => ({
     changeId: row.changeId,
-    commitId: `cmt_fake_${row.changeId}`,
+    commitId: row.commitId,
     stash: row.stash,
     path: row.path,
     version: row.version,
@@ -579,6 +649,7 @@ function changesPage(rows: FakeVersionRow[], since: number | undefined, limit: n
     contentAccess: row.kind === "delete" ? "deleted" : (row.contentAccess ?? "inline"),
     contentType: row.contentType,
     byteSize: row.size,
+    etag: row.kind === "delete" ? null : row.hash,
     createdAt: iso(row.createdAt),
   }));
   if (since !== undefined) {
@@ -596,8 +667,9 @@ function changesPage(rows: FakeVersionRow[], since: number | undefined, limit: n
 }
 
 /**
- * Creates a small consumer fake. It models only the route IDs in the issue; all other endpoints
- * intentionally return 501 so a test cannot accidentally depend on an unmodelled server feature.
+ * Creates a small consumer fake. It models the explicitly exported conformance route set; all
+ * other endpoints intentionally return 501 so a test cannot accidentally depend on an unmodelled
+ * server feature.
  */
 export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const now = options.now ?? Date.now;
@@ -619,6 +691,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     r2Objects: new Map(),
     files: new Map(),
     versions: [],
+    commits: new Map(),
+    changeSets: new Map(),
     idempotency: new Map(),
     gcJobs: new Map<GcKind, FakeGcJobRow>([
       [
@@ -649,6 +723,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   };
   let nextToken = 1;
   let nextChangeId = 1;
+  let nextChangeSetId = 1;
   let nextR2ObjectSerial = 1;
   let nextGcRun = 1;
   let nextGcCursorSerial = 1;
@@ -767,7 +842,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const changeEvent = (version: FakeVersionRow, origin: string | null): StashEvent => ({
     type: "change",
     changeId: version.changeId,
-    commitId: `cmt_fake_${version.changeId}`,
+    commitId: version.commitId,
     stash: version.stash,
     path: version.path,
     version: version.version,
@@ -793,6 +868,139 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (bytes === undefined) return fail("internal", "The fake version points at a missing blob.");
     return bytes;
   };
+
+  const operationFor = (version: FakeVersionRow): CommitEntryRecord["op"] =>
+    version.copiedFrom === undefined
+      ? version.kind === "rollback"
+        ? "rollback"
+        : version.kind === "delete"
+          ? "delete"
+          : "put"
+      : "copy";
+
+  const commitEntry = (
+    version: FakeVersionRow,
+    op: CommitEntryRecord["op"] = operationFor(version),
+  ): CommitEntryRecord => {
+    const blob =
+      version.hash === null ? undefined : state.blobs.get(version.stash)?.get(version.hash);
+    const previous =
+      version.version > 1
+        ? getVersion(version.stash, version.path, version.version - 1)
+        : undefined;
+    return {
+      path: version.path,
+      op,
+      version: version.version,
+      kind: version.kind,
+      changeId: version.changeId,
+      hash: version.hash,
+      size: version.size,
+      contentType: version.contentType,
+      representation: version.representation ?? "text",
+      rollbackOf: version.rollbackOf,
+      ...(blob === undefined
+        ? {}
+        : { storageTier: blob.r2Key === null ? ("d1" as const) : ("r2" as const) }),
+      ...(version.copiedFrom === undefined ? {} : { copiedFrom: version.copiedFrom }),
+      ...(op === "rollback"
+        ? {
+            identicalToHead:
+              previous !== undefined &&
+              previous.hash === version.hash &&
+              previous.contentType === version.contentType &&
+              previous.representation === version.representation,
+          }
+        : {}),
+    };
+  };
+
+  const defaultCommitSource = (version: FakeVersionRow): string => operationFor(version);
+
+  const registerCommitEntry = (
+    version: FakeVersionRow,
+    options: {
+      source?: string;
+      sourceId?: string | null;
+      author?: string;
+      message?: string;
+      meta?: Record<string, JsonValue>;
+      createdBy?: string;
+      revertsCommitId?: string | null;
+      requestedOp?: CommitEntryRecord["op"];
+    } = {},
+  ): FakeCommitRow => {
+    const existing = state.commits.get(version.commitId);
+    if (existing !== undefined) {
+      const operation = options.requestedOp ?? operationFor(version);
+      if (!existing.entries.some((entry) => entry.changeId === version.changeId)) {
+        existing.entries.push(commitEntry(version, operation));
+        existing.entryCount = existing.entries.length;
+        existing.lastChangeId = version.changeId;
+        existing.requestedEntries.push(operation);
+      }
+      return existing;
+    }
+    const operation = options.requestedOp ?? operationFor(version);
+    const value: FakeCommitRow = {
+      id: version.commitId,
+      stash: version.stash,
+      source: options.source ?? defaultCommitSource(version),
+      sourceId: options.sourceId ?? null,
+      author: options.author ?? version.author,
+      message: options.message ?? version.message,
+      meta: cloneMeta(options.meta ?? version.meta),
+      entryCount: 1,
+      firstChangeId: version.changeId,
+      lastChangeId: version.changeId,
+      revertsCommitId: options.revertsCommitId ?? null,
+      createdBy: options.createdBy ?? "system",
+      createdAt: iso(version.createdAt),
+      entries: [commitEntry(version, operation)],
+      requestHash: null,
+      idempotencyKey: null,
+      requestedEntries: [operation],
+    };
+    state.commits.set(value.id, value);
+    return value;
+  };
+
+  const finalizeCommit = (
+    id: string,
+    options: {
+      source?: string;
+      sourceId?: string | null;
+      author?: string;
+      message?: string;
+      meta?: Record<string, JsonValue>;
+      createdBy?: string;
+      revertsCommitId?: string | null;
+      requestHash?: string | null;
+      idempotencyKey?: string | null;
+    },
+  ): FakeCommitRow => {
+    const commit = state.commits.get(id);
+    if (commit === undefined) return fail("internal", "The fake commit is unavailable.");
+    if (options.source !== undefined) commit.source = options.source;
+    if (options.sourceId !== undefined) commit.sourceId = options.sourceId;
+    if (options.author !== undefined) commit.author = options.author;
+    if (options.message !== undefined) commit.message = options.message;
+    if (options.meta !== undefined) commit.meta = cloneMeta(options.meta);
+    if (options.createdBy !== undefined) commit.createdBy = options.createdBy;
+    if (options.revertsCommitId !== undefined) commit.revertsCommitId = options.revertsCommitId;
+    if (options.requestHash !== undefined) commit.requestHash = options.requestHash;
+    if (options.idempotencyKey !== undefined) commit.idempotencyKey = options.idempotencyKey;
+    commit.entries = state.versions
+      .filter((version) => version.stash === commit.stash && version.commitId === commit.id)
+      .sort((left, right) => left.changeId - right.changeId)
+      .map((version, index) =>
+        commitEntry(version, commit.requestedEntries[index] ?? operationFor(version)),
+      );
+    commit.entryCount = commit.entries.length;
+    commit.firstChangeId = commit.entries[0]?.changeId ?? commit.firstChangeId;
+    commit.lastChangeId = commit.entries.at(-1)?.changeId ?? commit.lastChangeId;
+    return commit;
+  };
   const storeBlob = (stash: string, hash: string, body: string, createdAt: number): FakeBlobRow => {
     const rows = nested(state.blobs, stash);
     const existing = rows.get(hash);
@@ -812,6 +1020,40 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       bytes: new TextEncoder().encode(body),
       r2Key,
       size,
+      createdAt,
+    };
+    rows.set(hash, row);
+    return row;
+  };
+  const storeBinary = (
+    stash: string,
+    hash: string,
+    bytes: Uint8Array,
+    createdAt: number,
+  ): FakeBlobRow => {
+    const rows = nested(state.blobs, stash);
+    const existing = rows.get(hash);
+    if (existing !== undefined) return existing;
+    let r2Key: string | null = null;
+    if (bytes.byteLength > R2_SPILL_BYTES) {
+      const generation = `00000000-0000-4000-8000-${String(nextR2ObjectSerial).padStart(12, "0")}`;
+      r2Key = `v2/${stash}/${hash}/${generation}`;
+      nextR2ObjectSerial += 1;
+      state.r2Objects.set(r2Key, {
+        key: r2Key,
+        stash,
+        hash,
+        size: bytes.byteLength,
+        createdAt,
+      });
+    }
+    const row: FakeBlobRow = {
+      stash,
+      hash,
+      body: null,
+      bytes: bytes.slice(),
+      r2Key,
+      size: bytes.byteLength,
       createdAt,
     };
     rows.set(hash, row);
@@ -1042,7 +1284,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (version === undefined)
       return fail("internal", "The fake ledger points at a missing version.");
     const base = {
-      commitId: `cmt_fake_${version.changeId}`,
+      commitId: version.commitId,
       version: version.version,
       changeId: version.changeId,
       createdAt: iso(version.createdAt),
@@ -1138,14 +1380,24 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const append = (
     stash: string,
     path: string,
-    input: Omit<FakeVersionRow, "changeId" | "stash" | "path" | "version" | "createdAt">,
-    appendOptions: { createdAt?: number; origin?: string | null } = {},
+    input: Omit<
+      FakeVersionRow,
+      "changeId" | "stash" | "path" | "version" | "createdAt" | "commitId"
+    >,
+    appendOptions: {
+      createdAt?: number;
+      origin?: string | null;
+      commitId?: string;
+      publish?: boolean;
+      requestedOp?: CommitEntryRecord["op"];
+    } = {},
   ): FakeVersionRow => {
     const createdAt = appendOptions.createdAt ?? now();
     const file = getFile(stash, path);
     const row: FakeVersionRow = {
       ...input,
       changeId: nextChangeId,
+      commitId: appendOptions.commitId ?? `cmt_fake_${String(nextChangeId).padStart(8, "0")}`,
       stash,
       path,
       version: (file?.headVersion ?? 0) + 1,
@@ -1153,6 +1405,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     };
     nextChangeId += 1;
     state.versions.push(row);
+    registerCommitEntry(row, {
+      requestedOp: appendOptions.requestedOp,
+    });
     if (file === undefined) {
       nested(state.files, stash).set(path, {
         stash,
@@ -1169,7 +1424,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       file.deleted = row.kind === "delete";
       file.updatedAt = createdAt;
     }
-    broadcastEvent(stash, changeEvent(row, appendOptions.origin ?? null));
+    if (appendOptions.publish !== false) {
+      broadcastEvent(stash, changeEvent(row, appendOptions.origin ?? null));
+    }
     return row;
   };
 
@@ -1564,14 +1821,44 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const handleListFiles = (stash: string, url: URL): Response => {
     const parsed = ListFilesQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid file list query.");
-    const { after, includeDeleted, limit } = parsed.data;
-    const candidates = ordered([...(state.files.get(stash)?.values() ?? [])]).filter(
-      (file) => (includeDeleted || !file.deleted) && (after === undefined || file.path > after),
-    );
+    const { after, includeDeleted, limit, prefix, delimiter } = parsed.data;
+    const normalizedPrefix =
+      prefix === undefined ? undefined : prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+    if (normalizedPrefix !== undefined) {
+      const validation = validatePath(normalizedPrefix);
+      if (!validation.ok) return fail(validation.error, validation.message);
+    }
+    if (delimiter !== undefined && delimiter !== "/") {
+      return fail("validation", "delimiter must be '/'.");
+    }
+    const all = [...(state.files.get(stash)?.values() ?? [])]
+      .filter((file) => includeDeleted || !file.deleted)
+      .filter((file) =>
+        normalizedPrefix === undefined
+          ? true
+          : file.path >= `${normalizedPrefix}/` && file.path < `${normalizedPrefix}0`,
+      )
+      .map((file) => {
+        const relative =
+          normalizedPrefix === undefined
+            ? file.path
+            : file.path.slice(`${normalizedPrefix}/`.length);
+        const separator = delimiter === undefined ? -1 : relative.indexOf("/");
+        return separator < 0
+          ? { path: file.path, file }
+          : {
+              path: `${normalizedPrefix === undefined ? "" : `${normalizedPrefix}/`}${relative.slice(0, separator + 1)}`,
+              file: undefined,
+            };
+      });
+    const candidates = [...new Map(all.map((entry) => [entry.path, entry])).values()]
+      .filter((entry) => after === undefined || entry.path > after)
+      .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
     const hasMore = candidates.length > limit;
     const page = candidates.slice(0, limit);
     return json({
-      files: page.map((file) => {
+      files: page.flatMap(({ file }) => {
+        if (file === undefined) return [];
         const head = getHeadVersion(file);
         return {
           path: file.path,
@@ -1582,10 +1869,14 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           contentAccess: file.deleted ? "deleted" : (head.contentAccess ?? "inline"),
           contentType: head.contentType,
           byteSize: head.size,
+          etag: file.deleted ? null : head.hash,
           deleted: file.deleted,
           updatedAt: iso(file.updatedAt),
         };
       }),
+      ...(delimiter === undefined
+        ? {}
+        : { commonPrefixes: page.flatMap(({ path, file }) => (file === undefined ? [path] : [])) }),
       nextAfter: hasMore ? (page.at(-1)?.path ?? null) : null,
     });
   };
@@ -1707,6 +1998,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         hash: bodyHash,
         size,
         contentType,
+        representation: "text",
+        contentAccess: size <= capabilities.limits.jsonInlineMaxBytes ? "inline" : "raw",
         rollbackOf: null,
         author: parsed.data.author ?? "",
         message: parsed.data.message ?? "",
@@ -1715,10 +2008,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       { origin: requestOrigin(request) },
     );
     storeBlob(stash, bodyHash, parsed.data.body, version.createdAt);
+    finalizeCommit(version.commitId, {});
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
-        commitId: `cmt_fake_${version.changeId}`,
+        commitId: version.commitId,
         version: version.version,
         hash: bodyHash,
         size: version.size,
@@ -1771,10 +2065,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       },
       { origin: requestOrigin(request) },
     );
+    finalizeCommit(version.commitId, {});
     ledger(stash, key, requestHash, version, 200);
     return json(
       {
-        commitId: `cmt_fake_${version.changeId}`,
+        commitId: version.commitId,
         version: version.version,
         changeId: version.changeId,
         createdAt: iso(version.createdAt),
@@ -1837,10 +2132,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       },
       { origin: requestOrigin(request) },
     );
+    finalizeCommit(version.commitId, {});
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
-        commitId: `cmt_fake_${version.changeId}`,
+        commitId: version.commitId,
         version: version.version,
         hash: target.hash,
         rollbackOf: target.version,
@@ -1877,7 +2173,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       deleted: file.deleted,
       total: all.length,
       versions: page.map((version) => ({
-        commitId: `cmt_fake_${version.changeId}`,
+        commitId: version.commitId,
         version: version.version,
         kind: version.kind,
         hash: version.hash,
@@ -1891,6 +2187,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         contentAccess: version.kind === "delete" ? "deleted" : (version.contentAccess ?? "inline"),
         contentType: version.contentType,
         byteSize: version.size,
+        etag: version.kind === "delete" ? null : version.hash,
       })),
       nextBefore: hasMore ? (page.at(-1)?.version ?? null) : null,
     });
@@ -2216,8 +2513,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         createdAt: version.createdAt,
       };
       nested(state.blobs, row.stash).set(hash, blob);
+      finalizeCommit(version.commitId, {});
       row.result = {
-        commitId: `cmt_fake_${version.changeId}`,
+        commitId: version.commitId,
         version: version.version,
         hash,
         size: bytes.byteLength,
@@ -2329,7 +2627,16 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     return {
       row: version,
-      side: { version: version.version, hash: version.hash, deleted: version.kind === "delete" },
+      side: {
+        version: version.version,
+        hash: version.hash,
+        deleted: version.kind === "delete",
+        representation: version.representation ?? "text",
+        contentAccess: version.kind === "delete" ? "deleted" : (version.contentAccess ?? "inline"),
+        contentType: version.contentType,
+        byteSize: version.size,
+        etag: version.kind === "delete" ? null : version.hash,
+      },
     };
   };
 
@@ -2345,8 +2652,25 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     const from = resolveDiffSide(stash, path, parsed.data.from);
     const to = resolveDiffSide(stash, path, parsed.data.to);
+    if (
+      (!from.side.deleted && from.side.representation === "binary") ||
+      (!to.side.deleted && to.side.representation === "binary")
+    ) {
+      return json({ state: "binary", from: from.side, to: to.side });
+    }
     if (from.side.hash === to.side.hash) {
       return json({ state: "same", from: from.side, to: to.side });
+    }
+    if (
+      from.row.size > capabilities.limits.diffMaxBytesPerSide ||
+      to.row.size > capabilities.limits.diffMaxBytesPerSide
+    ) {
+      return json({
+        state: "oversized",
+        reason: "bytes",
+        from: from.side,
+        to: to.side,
+      });
     }
     return json({
       ...computeDiff({
@@ -2355,6 +2679,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         fromLabel: `a/${path}@v${from.row.version}`,
         toLabel: `b/${path}@v${to.row.version}`,
         context: parsed.data.context,
+        maxBytes: capabilities.limits.diffMaxBytesPerSide,
         maxUnifiedBytes: parsed.data.maxUnifiedBytes,
       }),
       from: from.side,
@@ -2387,6 +2712,16 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       return fail("validation", `context must be at most ${MAX_DIFF_CONTEXT}.`);
     }
     const from = resolveDiffSide(stash, path, parsed.data.from);
+    if (!from.side.deleted && from.side.representation === "binary") {
+      return json({ state: "binary" });
+    }
+    const candidateSize = utf8ByteLength(parsed.data.body);
+    if (
+      from.row.size > capabilities.limits.diffMaxBytesPerSide ||
+      candidateSize > capabilities.limits.diffMaxBytesPerSide
+    ) {
+      return json({ state: "oversized", reason: "bytes" });
+    }
     return json(
       computeDiff({
         fromText: from.side.deleted ? "" : bodyFor(from.row),
@@ -2394,8 +2729,1304 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         fromLabel: `a/${path}@v${from.row.version}`,
         toLabel: `b/${path}@candidate`,
         context: parsed.data.context,
+        maxBytes: capabilities.limits.diffMaxBytesPerSide,
       }),
     );
+  };
+
+  const principalName = (principal: Principal): string =>
+    principal.kind === "admin" ? "admin" : principal.tokenId;
+
+  const currentForPath = (stash: string, path: string): Current | null => {
+    const file = getFile(stash, path);
+    return file === undefined ? null : current(file, getHeadVersion(file));
+  };
+
+  const latestChangeId = (stash: string): number =>
+    state.versions.reduce(
+      (latest, version) => (version.stash === stash ? Math.max(latest, version.changeId) : latest),
+      0,
+    );
+
+  const encodeBase64 = (bytes: Uint8Array): string => {
+    let binary = "";
+    for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary);
+  };
+
+  const commitPublic = (commit: FakeCommitRow): CommitResult => ({
+    id: commit.id,
+    stash: commit.stash,
+    source: commit.source,
+    sourceId: commit.sourceId,
+    author: commit.author,
+    message: commit.message,
+    meta: cloneMeta(commit.meta),
+    entryCount: commit.entryCount,
+    firstChangeId: commit.firstChangeId,
+    lastChangeId: commit.lastChangeId,
+    revertsCommitId: commit.revertsCommitId,
+    createdBy: commit.createdBy,
+    createdAt: commit.createdAt,
+    entries: commit.entries.map((entry) => ({
+      ...entry,
+      ...(entry.copiedFrom === undefined ? {} : { copiedFrom: { ...entry.copiedFrom } }),
+    })),
+  });
+
+  const emitCommit = (commit: FakeCommitRow, origin: string | null): void => {
+    for (const entry of commit.entries) {
+      const version = getVersion(commit.stash, entry.path, entry.version);
+      if (version !== undefined) broadcastEvent(commit.stash, changeEvent(version, origin));
+    }
+    broadcastEvent(commit.stash, {
+      type: "commit",
+      commitId: commit.id,
+      stash: commit.stash,
+      entryCount: commit.entryCount,
+      firstChangeId: commit.firstChangeId,
+      lastChangeId: commit.lastChangeId,
+      origin,
+    });
+  };
+
+  const commitEntryConflicts = (
+    stash: string,
+    entries: readonly CommitEntryInput[],
+  ): CommitConflict[] => {
+    const conflicts: CommitConflict[] = [];
+    for (const entry of entries) {
+      const file = getFile(stash, entry.path);
+      const head = file === undefined ? undefined : getHeadVersion(file);
+      const present = file === undefined ? null : current(file, head!);
+      let refused =
+        entry.expectedVersion === null
+          ? file !== undefined
+          : file === undefined || file.headVersion !== entry.expectedVersion;
+      if (entry.op === "delete" && file?.deleted === true) refused = true;
+      if (entry.op === "rollback" || entry.op === "copy") {
+        const sourcePath = entry.op === "copy" ? entry.from.path : entry.path;
+        const sourceVersion = entry.op === "copy" ? entry.from.version : entry.toVersion;
+        const source = getVersion(stash, sourcePath, sourceVersion);
+        if (
+          source === undefined ||
+          source.hash === null ||
+          state.blobs.get(stash)?.get(source.hash) === undefined
+        ) {
+          refused = true;
+        }
+      }
+      if (refused) {
+        conflicts.push({
+          path: entry.path,
+          expectedVersion: entry.expectedVersion,
+          current: present,
+        });
+      }
+    }
+    return conflicts;
+  };
+
+  const throwCommitConflicts = (conflicts: CommitConflict[], notFoundOnNull = true): never => {
+    const first = conflicts[0];
+    if (conflicts.length === 1 && first?.current === null && notFoundOnNull) {
+      throw new FakeHttpError(
+        "not-found",
+        `File not found: ${first?.path ?? ""}`,
+        undefined,
+        undefined,
+        conflicts,
+      );
+    }
+    throw new FakeHttpError(
+      "commit-conflict",
+      "One or more commit entries conflict",
+      undefined,
+      undefined,
+      conflicts,
+    );
+  };
+
+  type PreparedCommitEntry = {
+    path: string;
+    requestedOp: CommitEntryRecord["op"];
+    input: Omit<
+      FakeVersionRow,
+      "changeId" | "stash" | "path" | "version" | "createdAt" | "commitId"
+    >;
+    textBody?: string;
+    binaryBody?: Uint8Array;
+  };
+
+  const stageCommitEntry = async (
+    stash: string,
+    entry: CommitEntryInput,
+    createdAt: number,
+    author: string,
+    message: string,
+    meta: Record<string, JsonValue>,
+  ): Promise<PreparedCommitEntry> => {
+    const common = {
+      author,
+      message,
+      meta: cloneMeta(meta),
+      rollbackOf: null,
+    };
+    if (entry.op === "delete") {
+      const head = getHeadVersion(getFile(stash, entry.path) as FakeFileRow);
+      return {
+        path: entry.path,
+        requestedOp: "delete",
+        input: {
+          ...common,
+          kind: "delete",
+          hash: null,
+          size: 0,
+          contentType: head.contentType,
+          representation: head.representation,
+          contentAccess: "deleted",
+        },
+      };
+    }
+    const source =
+      entry.op === "copy"
+        ? getVersion(stash, entry.from.path, entry.from.version)
+        : entry.op === "rollback"
+          ? getVersion(stash, entry.path, entry.toVersion)
+          : undefined;
+    if (entry.op !== "put" && (source === undefined || source.hash === null)) {
+      return fail("internal", "The fake commit source is unavailable.");
+    }
+    if (entry.op === "put") {
+      if ("bytesBase64" in entry) {
+        const bytes = decodeCanonicalBase64(entry.bytesBase64);
+        const hash = await sha256Hex(bytes.slice().buffer);
+        return {
+          path: entry.path,
+          requestedOp: "put",
+          binaryBody: bytes,
+          input: {
+            ...common,
+            kind: "put",
+            hash,
+            size: bytes.byteLength,
+            contentType: entry.contentType,
+            representation: "binary",
+            contentAccess: "raw",
+          },
+        };
+      }
+      const hash = await sha256Hex(entry.body);
+      const size = utf8ByteLength(entry.body);
+      return {
+        path: entry.path,
+        requestedOp: "put",
+        textBody: entry.body,
+        input: {
+          ...common,
+          kind: "put",
+          hash,
+          size,
+          contentType: entry.contentType ?? DEFAULT_CONTENT_TYPE,
+          representation: "text",
+          contentAccess: size <= capabilities.limits.jsonInlineMaxBytes ? "inline" : "raw",
+        },
+      };
+    }
+    const sourceRow = source as FakeVersionRow;
+    return {
+      path: entry.path,
+      requestedOp: entry.op,
+      input: {
+        ...common,
+        kind: entry.op === "rollback" ? "rollback" : "put",
+        hash: sourceRow.hash,
+        size: sourceRow.size,
+        contentType: sourceRow.contentType,
+        representation: sourceRow.representation,
+        contentAccess: sourceRow.contentAccess,
+        rollbackOf: entry.op === "rollback" ? sourceRow.version : null,
+        ...(entry.op === "copy"
+          ? { copiedFrom: { path: entry.from.path, version: entry.from.version } }
+          : {}),
+      },
+    };
+  };
+
+  type ApplyCommitOptions = {
+    stash: string;
+    entries: CommitEntryInput[];
+    author: string;
+    message: string;
+    meta: Record<string, JsonValue>;
+    expectedLastChangeId?: number;
+    idempotencyKey?: string;
+    requestHash: string;
+    createdBy: string;
+    source?: string;
+    sourceId?: string | null;
+    revertsCommitId?: string | null;
+    origin?: string | null;
+    publish?: boolean;
+  };
+
+  const applyCommit = async (options: ApplyCommitOptions): Promise<FakeCommitRow> => {
+    if (
+      options.expectedLastChangeId !== undefined &&
+      latestChangeId(options.stash) !== options.expectedLastChangeId
+    ) {
+      fail(
+        "stale",
+        `Expected last change ${options.expectedLastChangeId}, newest change is ${latestChangeId(options.stash)}`,
+      );
+    }
+    const conflicts = commitEntryConflicts(options.stash, options.entries);
+    if (conflicts.length > 0) throwCommitConflicts(conflicts);
+    const createdAt = now();
+    const commitId = `cmt_fake_${String(nextChangeId).padStart(8, "0")}`;
+    const stampedMeta = { ...options.meta, commitId };
+    if (utf8ByteLength(canonicalJson(stampedMeta)) > MAX_META_BYTES) {
+      fail("validation", "Stamped commit meta is too large.");
+    }
+    // Prepare hashes and source references before mutating the in-memory tables. Once this
+    // promise settles, the append loop is synchronous, so another request cannot observe a
+    // partially applied multi-entry commit.
+    const staged = await Promise.all(
+      options.entries.map((entry) =>
+        stageCommitEntry(
+          options.stash,
+          entry,
+          createdAt,
+          options.author,
+          options.message,
+          stampedMeta,
+        ),
+      ),
+    );
+    if (
+      options.expectedLastChangeId !== undefined &&
+      latestChangeId(options.stash) !== options.expectedLastChangeId
+    ) {
+      fail(
+        "stale",
+        `Expected last change ${options.expectedLastChangeId}, newest change is ${latestChangeId(options.stash)}`,
+      );
+    }
+    const finalConflicts = commitEntryConflicts(options.stash, options.entries);
+    if (finalConflicts.length > 0) throwCommitConflicts(finalConflicts);
+    for (const entry of staged) {
+      const version = append(options.stash, entry.path, entry.input, {
+        commitId,
+        createdAt,
+        publish: false,
+        requestedOp: entry.requestedOp,
+      });
+      if (entry.textBody !== undefined)
+        storeBlob(options.stash, version.hash!, entry.textBody, createdAt);
+      if (entry.binaryBody !== undefined)
+        storeBinary(options.stash, version.hash!, entry.binaryBody, createdAt);
+    }
+    const commit = finalizeCommit(commitId, {
+      source: options.source ?? "commit",
+      sourceId: options.sourceId ?? null,
+      author: options.author,
+      message: options.message,
+      meta: stampedMeta,
+      createdBy: options.createdBy,
+      revertsCommitId: options.revertsCommitId ?? null,
+      requestHash: options.requestHash,
+      idempotencyKey: options.idempotencyKey ?? null,
+    });
+    if (options.publish !== false) emitCommit(commit, options.origin ?? null);
+    return commit;
+  };
+
+  const commitRequestHash = async (input: CreateCommitBodyType): Promise<string> => {
+    const entries = await Promise.all(
+      input.entries.map(async (entry) => {
+        if (entry.op !== "put") return entry;
+        if ("bytesBase64" in entry) {
+          const bytes = decodeCanonicalBase64(entry.bytesBase64);
+          const { bytesBase64: _bytesBase64, ...rest } = entry;
+          return { ...rest, bytesHash: await sha256Hex(bytes.slice().buffer) };
+        }
+        const { body: _body, ...rest } = entry;
+        return { ...rest, bodyHash: await sha256Hex(entry.body) };
+      }),
+    );
+    return sha256Hex(
+      canonicalJson({
+        entries,
+        author: input.author ?? "",
+        message: input.message ?? "",
+        meta: input.meta ?? {},
+        expectedLastChangeId: input.expectedLastChangeId ?? null,
+      }),
+    );
+  };
+
+  const findCommitByKey = (stash: string, key: string | undefined): FakeCommitRow | undefined =>
+    key === undefined
+      ? undefined
+      : [...state.commits.values()].find(
+          (commit) => commit.stash === stash && commit.idempotencyKey === key,
+        );
+
+  const checkCommitReplay = (
+    commit: FakeCommitRow | undefined,
+    requestHash: string,
+  ): Response | undefined => {
+    if (commit === undefined) return undefined;
+    if (commit.requestHash !== requestHash) {
+      return errorResponse(
+        new FakeHttpError("idempotency-key-reused", "Idempotency key was used for another request"),
+      );
+    }
+    return json(commitPublic(commit), 201, { "Idempotent-Replayed": "true" });
+  };
+
+  const handleCreateCommit = async (
+    request: Request,
+    stash: string,
+    principal: Principal,
+  ): Promise<Response> => {
+    const candidate = await requestJson(request);
+    if (isRecord(candidate) && Array.isArray(candidate.entries)) {
+      let inlineBytes = 0;
+      for (const entry of candidate.entries) {
+        if (!isRecord(entry) || entry.op !== "put") continue;
+        if (typeof entry.bytesBase64 === "string") {
+          try {
+            inlineBytes += decodeCanonicalBase64(entry.bytesBase64).byteLength;
+          } catch {
+            return fail("validation", "Invalid binary commit body.");
+          }
+        } else if (typeof entry.body === "string") {
+          if (!isWellFormedString(entry.body)) {
+            return fail("body-not-well-formed", "Body is not well-formed Unicode.");
+          }
+          inlineBytes += utf8ByteLength(entry.body);
+        }
+      }
+      if (inlineBytes > MAX_COMMIT_INLINE_BYTES) {
+        return fail("payload-too-large", "Commit bodies are too large.");
+      }
+    }
+    const parsed = CreateCommitBody.safeParse(candidate);
+    if (!parsed.success) return fail("validation", "Invalid commit input.");
+    const key = idempotencyKey(request);
+    const requestHash = await commitRequestHash(parsed.data);
+    const replayed = checkCommitReplay(findCommitByKey(stash, key), requestHash);
+    if (replayed !== undefined) return replayed;
+    const commit = await applyCommit({
+      stash,
+      entries: parsed.data.entries,
+      author: parsed.data.author ?? "",
+      message: parsed.data.message ?? "",
+      meta: parsed.data.meta ?? {},
+      expectedLastChangeId: parsed.data.expectedLastChangeId,
+      idempotencyKey: key,
+      requestHash,
+      createdBy: principalName(principal),
+      origin: requestOrigin(request),
+    });
+    return json(commitPublic(commit), 201);
+  };
+
+  const requireCommit = (stash: string, id: string): FakeCommitRow => {
+    const commit = state.commits.get(id);
+    if (commit === undefined || commit.stash !== stash)
+      return fail("not-found", "Commit not found.");
+    return commit;
+  };
+
+  const handleGetCommit = (stash: string, id: string): Response =>
+    json(commitPublic(requireCommit(stash, id)));
+
+  const decodeCursor = (value: string): { createdAt: number; id: string } => {
+    let decoded: string;
+    try {
+      decoded = atob(value);
+    } catch {
+      return fail("validation", "Invalid commit cursor.");
+    }
+    const separator = decoded.indexOf(":");
+    const createdAt = Number(decoded.slice(0, separator));
+    const id = decoded.slice(separator + 1);
+    if (separator < 1 || !Number.isSafeInteger(createdAt) || createdAt < 0 || id.length === 0) {
+      return fail("validation", "Invalid commit cursor.");
+    }
+    return { createdAt, id };
+  };
+
+  const decodeChangeSetCursor = (value: string): { createdAt: number; id: string } => {
+    let decoded: string;
+    try {
+      decoded = atob(value);
+      if (btoa(decoded) !== value) return fail("validation", "Invalid change-set cursor.");
+    } catch {
+      return fail("validation", "Invalid change-set cursor.");
+    }
+    const separator = decoded.indexOf(":");
+    const createdAt = Number(decoded.slice(0, separator));
+    const id = decoded.slice(separator + 1);
+    if (
+      separator < 1 ||
+      !Number.isSafeInteger(createdAt) ||
+      !CHANGE_SET_ID.test(id) ||
+      Number(id.slice(4, 17)) !== createdAt
+    ) {
+      return fail("validation", "Invalid change-set cursor.");
+    }
+    return { createdAt, id };
+  };
+
+  const handleListCommits = (stash: string, url: URL): Response => {
+    const parsed = ListCommitsQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid commit list query.");
+    const cursor = parsed.data.after === undefined ? undefined : decodeCursor(parsed.data.after);
+    const matching = [...state.commits.values()]
+      .filter((commit) => commit.stash === stash)
+      .filter(
+        (commit) =>
+          parsed.data.path === undefined ||
+          commit.entries.some((entry) => entry.path === parsed.data.path),
+      )
+      .sort(
+        (left, right) =>
+          right.createdAt.localeCompare(left.createdAt) ||
+          (right.id < left.id ? -1 : right.id > left.id ? 1 : 0),
+      )
+      .filter((commit) => {
+        if (cursor === undefined) return true;
+        const createdAt = Date.parse(commit.createdAt);
+        return (
+          createdAt < cursor.createdAt || (createdAt === cursor.createdAt && commit.id < cursor.id)
+        );
+      });
+    const total = [...state.commits.values()]
+      .filter((commit) => commit.stash === stash)
+      .filter(
+        (commit) =>
+          parsed.data.path === undefined ||
+          commit.entries.some((entry) => entry.path === parsed.data.path),
+      ).length;
+    const hasMore = matching.length > parsed.data.limit;
+    const page = matching.slice(0, parsed.data.limit);
+    return json({
+      commits: page.map((commit) => {
+        const { entries: _entries, ...summary } = commitPublic(commit);
+        return summary;
+      }),
+      nextAfter:
+        hasMore && page.at(-1) !== undefined
+          ? btoa(`${Date.parse(page.at(-1)!.createdAt)}:${page.at(-1)!.id}`)
+          : null,
+      total,
+    });
+  };
+
+  const handleCommitDiff = (stash: string, id: string, url: URL): Response => {
+    const parsed = CommitDiffQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid commit diff query.");
+    const commit = requireCommit(stash, id);
+    const sourceEntries =
+      parsed.data.path === undefined
+        ? commit.entries
+        : commit.entries.filter((entry) => entry.path === parsed.data.path);
+    const truncated =
+      parsed.data.path === undefined && sourceEntries.length > COMMIT_DIFF_INLINE_ENTRIES;
+    const entries = sourceEntries.slice(0, COMMIT_DIFF_INLINE_ENTRIES).map((entry) => {
+      const to = getVersion(stash, entry.path, entry.version);
+      if (to === undefined) return fail("internal", "Stored commit content is unavailable.");
+      const previous =
+        entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
+      const from =
+        previous === undefined ? null : { version: previous.version, hash: previous.hash };
+      let diff: CommitDiffResult["entries"][number]["diff"];
+      if (
+        (previous?.hash !== null && (previous?.representation ?? "text") === "binary") ||
+        (to.hash !== null && (to.representation ?? "text") === "binary")
+      ) {
+        diff = { state: "binary" };
+      } else if (
+        (previous?.size ?? 0) > capabilities.limits.diffMaxBytesPerSide ||
+        to.size > capabilities.limits.diffMaxBytesPerSide
+      ) {
+        diff = { state: "oversized" };
+      } else {
+        diff = computeDiff({
+          fromText: previous === undefined || previous.kind === "delete" ? "" : bodyFor(previous),
+          toText: to.kind === "delete" ? "" : bodyFor(to),
+          fromLabel: `a/${entry.path}@v${String(previous?.version ?? 0)}`,
+          toLabel: `b/${entry.path}@v${String(to.version)}`,
+          context: parsed.data.context,
+          maxBytes: capabilities.limits.diffMaxBytesPerSide,
+        });
+        if (diff.state === "binary") return fail("internal", "Unexpected binary commit diff.");
+      }
+      return {
+        path: entry.path,
+        op: entry.op,
+        from,
+        to: { version: to.version, hash: to.hash },
+        diff,
+      };
+    });
+    return json({ entries, truncated });
+  };
+
+  const revertRequestHash = async (id: string, input: RevertCommitBody): Promise<string> =>
+    sha256Hex(
+      canonicalJson({
+        commitId: id,
+        author: input.author ?? "",
+        message: input.message ?? `Revert ${id}`,
+        meta: input.meta ?? {},
+      }),
+    );
+
+  const handleRevertCommit = async (
+    request: Request,
+    stash: string,
+    id: string,
+    principal: Principal,
+  ): Promise<Response> => {
+    const parsed = RevertCommitBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid revert input.");
+    const target = requireCommit(stash, id);
+    const key = idempotencyKey(request);
+    const requestHash = await revertRequestHash(id, parsed.data);
+    const prior = findCommitByKey(stash, key);
+    if (prior !== undefined) {
+      if (prior.requestHash !== requestHash) {
+        return fail("idempotency-key-reused", "Idempotency key was used for another request.");
+      }
+      const revertedPaths = new Set(prior.entries.map((entry) => entry.path));
+      const skipped = target.entries
+        .filter((entry) => !revertedPaths.has(entry.path))
+        .map((entry) => ({ path: entry.path, reason: "already-deleted" }));
+      return json(
+        {
+          ...commitPublic(prior),
+          ...(skipped.length === 0 ? {} : { skipped }),
+        },
+        201,
+        { "Idempotent-Replayed": "true" },
+      );
+    }
+    const entries: CommitEntryInput[] = [];
+    const skipped: { path: string; reason: string }[] = [];
+    for (const entry of target.entries) {
+      const file = getFile(stash, entry.path);
+      const head = file === undefined ? undefined : getHeadVersion(file);
+      const previous =
+        entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
+      const shouldDelete = entry.version === 1 || previous?.hash === null || previous === undefined;
+      if (shouldDelete && file?.headVersion === entry.version && file.deleted) {
+        skipped.push({ path: entry.path, reason: "already-deleted" });
+      } else if (shouldDelete) {
+        entries.push({ op: "delete", path: entry.path, expectedVersion: entry.version });
+      } else {
+        entries.push({
+          op: "rollback",
+          path: entry.path,
+          expectedVersion: entry.version,
+          toVersion: entry.version - 1,
+        });
+      }
+      void head;
+    }
+    if (entries.length === 0) return fail("validation", "nothing to revert");
+    const commit = await applyCommit({
+      stash,
+      entries,
+      author: parsed.data.author ?? "",
+      message: parsed.data.message ?? `Revert ${id}`,
+      meta: parsed.data.meta ?? {},
+      idempotencyKey: key,
+      requestHash,
+      createdBy: principalName(principal),
+      source: "revert",
+      revertsCommitId: id,
+      origin: requestOrigin(request),
+    });
+    return json(
+      {
+        ...commitPublic(commit),
+        ...(skipped.length === 0 ? {} : { skipped }),
+      },
+      201,
+    );
+  };
+
+  const changeSetStatus = (row: FakeChangeSetRow): FakeChangeSetRow["status"] =>
+    row.status === "open" && row.expiresAt <= now() ? "expired" : row.status;
+
+  const changeSetRecord = (row: FakeChangeSetRow): ChangeSetRecord => ({
+    id: row.id,
+    stash: row.stash,
+    status: changeSetStatus(row),
+    author: row.author,
+    message: row.message,
+    meta: cloneMeta(row.meta),
+    expiresAt: iso(row.expiresAt),
+    createdBy: row.createdBy,
+    createdAt: iso(row.createdAt),
+    decidedAt: row.decidedAt === null ? null : iso(row.decidedAt),
+    decidedBy: row.decidedBy,
+    decisionReason: row.decisionReason,
+    commitId: row.commitId,
+    entries: row.entries.map((entry) => ({
+      path: entry.path,
+      op: entry.op,
+      baseVersion: entry.baseVersion,
+      current: currentForPath(row.stash, entry.path),
+      stale: (getFile(row.stash, entry.path)?.headVersion ?? null) !== entry.baseVersion,
+    })),
+  });
+
+  const stageChangeSetEntry = (
+    stash: string,
+    entry: ChangeSetEntryInput,
+  ): FakeChangeSetEntryRow => {
+    const file = getFile(stash, entry.path);
+    if (entry.baseVersion === null) {
+      if (file !== undefined)
+        return fail(
+          "validation",
+          `Invalid change-set entry ${entry.path}: the path already exists.`,
+        );
+    } else {
+      if (file === undefined)
+        return fail(
+          "validation",
+          `Invalid change-set entry ${entry.path}: the base path does not exist.`,
+        );
+      if (getVersion(stash, entry.path, entry.baseVersion) === undefined) {
+        return fail(
+          "validation",
+          `Invalid change-set entry ${entry.path}: the base version does not exist.`,
+        );
+      }
+    }
+    if (entry.op === "delete") {
+      if (file === undefined || file.deleted) {
+        return fail("validation", `Invalid change-set entry ${entry.path}: the path is not live.`);
+      }
+      return { path: entry.path, op: entry.op, baseVersion: entry.baseVersion };
+    }
+    if (entry.op === "put") {
+      if ("bytesBase64" in entry) {
+        const bytes = decodeCanonicalBase64(entry.bytesBase64);
+        return {
+          path: entry.path,
+          op: entry.op,
+          baseVersion: entry.baseVersion,
+          bytes,
+          hash: "",
+          size: bytes.byteLength,
+          representation: "binary",
+          contentType: entry.contentType,
+          contentAccess: "raw",
+        };
+      }
+      return {
+        path: entry.path,
+        op: entry.op,
+        baseVersion: entry.baseVersion,
+        body: entry.body,
+        hash: "",
+        size: utf8ByteLength(entry.body),
+        representation: "text",
+        contentType: entry.contentType ?? DEFAULT_CONTENT_TYPE,
+        contentAccess:
+          utf8ByteLength(entry.body) <= capabilities.limits.jsonInlineMaxBytes ? "inline" : "raw",
+      };
+    }
+    const sourcePath = entry.op === "copy" ? entry.from.path : entry.path;
+    const sourceVersion = entry.op === "copy" ? entry.from.version : entry.toVersion;
+    const source = getVersion(stash, sourcePath, sourceVersion);
+    if (
+      source === undefined ||
+      source.hash === null ||
+      state.blobs.get(stash)?.get(source.hash) === undefined
+    ) {
+      return fail(
+        "validation",
+        `Invalid change-set entry ${entry.path}: source has no content blob.`,
+      );
+    }
+    return {
+      path: entry.path,
+      op: entry.op,
+      baseVersion: entry.baseVersion,
+      hash: source.hash,
+      size: source.size,
+      representation: source.representation,
+      contentType: source.contentType,
+      contentAccess: source.contentAccess,
+      ...(entry.op === "copy"
+        ? { copiedFrom: { path: entry.from.path, version: entry.from.version } }
+        : { toVersion: entry.toVersion }),
+    };
+  };
+
+  const changeSetRequestHash = async (input: CreateChangeSetBodyType): Promise<string> =>
+    sha256Hex(canonicalJson(input));
+
+  const handleCreateChangeSet = async (
+    request: Request,
+    stash: string,
+    principal: Principal,
+  ): Promise<Response> => {
+    const candidate = await requestJson(request);
+    if (isRecord(candidate) && Array.isArray(candidate.entries)) {
+      let inlineBytes = 0;
+      for (const entry of candidate.entries) {
+        if (!isRecord(entry) || entry.op !== "put") continue;
+        if (typeof entry.bytesBase64 === "string") {
+          try {
+            inlineBytes += decodeCanonicalBase64(entry.bytesBase64).byteLength;
+          } catch {
+            return fail("validation", "Invalid binary body.");
+          }
+        } else if (typeof entry.body === "string") {
+          if (!isWellFormedString(entry.body))
+            return fail("body-not-well-formed", "Body is not well-formed Unicode.");
+          inlineBytes += utf8ByteLength(entry.body);
+        }
+      }
+      if (inlineBytes > MAX_COMMIT_INLINE_BYTES)
+        return fail("payload-too-large", "Change-set bodies are too large.");
+    }
+    const parsed = CreateChangeSetBody.safeParse(candidate);
+    if (!parsed.success) return fail("validation", "Invalid change-set input.");
+    const key = idempotencyKey(request);
+    const requestHash = await changeSetRequestHash(parsed.data);
+    const prior =
+      key === undefined
+        ? undefined
+        : [...state.changeSets.values()].find(
+            (row) => row.stash === stash && row.idempotencyKey === key,
+          );
+    if (prior !== undefined) {
+      if (prior.requestHash !== requestHash)
+        return fail(
+          "idempotency-key-reused",
+          "Idempotency key was already used for a different change set.",
+        );
+      return json(changeSetRecord(prior), 201, { "Idempotent-Replayed": "true" });
+    }
+    if (
+      parsed.data.expectedLastChangeId !== undefined &&
+      latestChangeId(stash) !== parsed.data.expectedLastChangeId
+    ) {
+      return fail("commit-conflict", "Expected last change is stale.");
+    }
+    const createdAt = now();
+    const expiresAt =
+      parsed.data.expiresAt === undefined
+        ? createdAt + 14 * 86_400_000
+        : Date.parse(parsed.data.expiresAt);
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= createdAt)
+      return fail("validation", "expiresAt must be in the future.");
+    const id = `chs_${String(createdAt).padStart(13, "0")}${(nextChangeSetId++).toString(16).padStart(8, "0")}`;
+    const meta = { ...(parsed.data.meta ?? {}), changeSetId: id };
+    if (utf8ByteLength(canonicalJson(meta)) > MAX_META_BYTES) {
+      return fail("validation", "Stamped change-set meta is too large.");
+    }
+    // Hash and validate every candidate before publishing any blob or change-set row. This keeps
+    // create atomic from a consumer's perspective and matches the Worker's staged batch: an
+    // invalid later entry must not leave an earlier candidate blob behind.
+    const entries = await Promise.all(
+      parsed.data.entries.map(async (entry): Promise<FakeChangeSetEntryRow> => {
+        const staged = stageChangeSetEntry(stash, entry);
+        if (staged.op === "put") {
+          if (staged.body !== undefined) staged.hash = await sha256Hex(staged.body);
+          else if (staged.bytes !== undefined) {
+            staged.hash = await sha256Hex(staged.bytes.slice().buffer);
+          }
+        }
+        return staged;
+      }),
+    );
+    for (const entry of entries) {
+      const hash = entry.hash;
+      if (entry.op !== "put" || hash === undefined || hash === null || hash === "") continue;
+      if (entry.body !== undefined) storeBlob(stash, hash, entry.body, createdAt);
+      else if (entry.bytes !== undefined) storeBinary(stash, hash, entry.bytes, createdAt);
+    }
+    const row: FakeChangeSetRow = {
+      id,
+      stash,
+      status: "open",
+      author: parsed.data.author ?? "",
+      message: parsed.data.message ?? "",
+      meta,
+      expiresAt,
+      createdBy: principalName(principal),
+      createdAt,
+      decidedAt: null,
+      decidedBy: null,
+      decisionReason: null,
+      commitId: null,
+      expectedLastChangeId: parsed.data.expectedLastChangeId ?? null,
+      idempotencyKey: key ?? null,
+      requestHash: key === undefined ? null : requestHash,
+      entries,
+    };
+    state.changeSets.set(id, row);
+    broadcastEvent(stash, {
+      type: "change-set",
+      changeSetId: id,
+      stash,
+      status: "open",
+      paths: entries.map((entry) => entry.path),
+      origin: requestOrigin(request),
+    });
+    return json(changeSetRecord(row), 201);
+  };
+
+  const handleListChangeSets = (stash: string, url: URL): Response => {
+    const parsed = ListChangeSetsQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid change-set query.");
+    const status = parsed.data.status;
+    const cursor =
+      parsed.data.after === undefined ? undefined : decodeChangeSetCursor(parsed.data.after);
+    const matchesStatus = (row: FakeChangeSetRow): boolean => {
+      const computed = changeSetStatus(row);
+      return status === "all" || computed === status;
+    };
+    const matchesPath = (row: FakeChangeSetRow): boolean =>
+      parsed.data.path === undefined ||
+      row.entries.some((entry) => entry.path === parsed.data.path);
+    const all = [...state.changeSets.values()]
+      .filter((row) => row.stash === stash && matchesStatus(row) && matchesPath(row))
+      .sort(
+        (left, right) =>
+          right.createdAt - left.createdAt ||
+          (right.id < left.id ? -1 : right.id > left.id ? 1 : 0),
+      )
+      .filter((row) => {
+        if (cursor === undefined) return true;
+        return (
+          row.createdAt < cursor.createdAt ||
+          (row.createdAt === cursor.createdAt && row.id < cursor.id)
+        );
+      });
+    const total = [...state.changeSets.values()].filter(
+      (row) => row.stash === stash && matchesStatus(row) && matchesPath(row),
+    ).length;
+    const hasMore = all.length > parsed.data.limit;
+    const page = all.slice(0, parsed.data.limit);
+    return json({
+      changeSets: page.map(changeSetRecord),
+      nextAfter:
+        hasMore && page.at(-1) !== undefined
+          ? btoa(`${page.at(-1)!.createdAt}:${page.at(-1)!.id}`)
+          : null,
+      total,
+    });
+  };
+
+  const requireChangeSet = (stash: string, id: string): FakeChangeSetRow => {
+    if (!CHANGE_SET_ID.test(id)) return fail("validation", "Invalid change-set id.");
+    const row = state.changeSets.get(id);
+    if (row === undefined || row.stash !== stash) return fail("not-found", "Change set not found.");
+    return row;
+  };
+
+  const candidateVersion = (
+    row: FakeChangeSetRow,
+    entry: FakeChangeSetEntryRow,
+  ): {
+    hash: string | null;
+    size: number;
+    representation: "text" | "binary";
+    body: string | null;
+  } => {
+    if (entry.op === "delete") return { hash: null, size: 0, representation: "text", body: null };
+    if (entry.body !== undefined) {
+      return {
+        hash: entry.hash ?? null,
+        size: entry.size ?? utf8ByteLength(entry.body),
+        representation: "text",
+        body: entry.body,
+      };
+    }
+    const sourcePath =
+      entry.op === "copy"
+        ? entry.copiedFrom?.path
+        : row.entries.includes(entry)
+          ? entry.path
+          : undefined;
+    const sourceVersion = entry.op === "copy" ? entry.copiedFrom?.version : entry.toVersion;
+    const source =
+      sourcePath === undefined || sourceVersion === undefined
+        ? undefined
+        : getVersion(row.stash, sourcePath, sourceVersion);
+    const hash = entry.hash ?? source?.hash ?? null;
+    const blob = hash === null ? undefined : state.blobs.get(row.stash)?.get(hash);
+    return {
+      hash,
+      size: entry.size ?? source?.size ?? 0,
+      representation: entry.representation ?? source?.representation ?? "binary",
+      body: blob?.body ?? null,
+    };
+  };
+
+  const handleGetChangeSet = (stash: string, id: string): Response =>
+    json(changeSetRecord(requireChangeSet(stash, id)));
+
+  const handleChangeSetDiff = (stash: string, id: string, url: URL): Response => {
+    const parsed = ChangeSetDiffQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid change-set diff query.");
+    const row = requireChangeSet(stash, id);
+    let sourceEntries = row.entries;
+    if (parsed.data.path !== undefined) {
+      sourceEntries = sourceEntries.filter((entry) => entry.path === parsed.data.path);
+      if (sourceEntries.length === 0) return fail("not-found", "Change-set entry not found.");
+    }
+    const aggregateStale = sourceEntries.some(
+      (entry) => (getFile(stash, entry.path)?.headVersion ?? null) !== entry.baseVersion,
+    );
+    const truncated =
+      parsed.data.path === undefined && sourceEntries.length > COMMIT_DIFF_INLINE_ENTRIES;
+    const entries = sourceEntries.slice(0, COMMIT_DIFF_INLINE_ENTRIES).map((entry) => {
+      const baseRow =
+        entry.baseVersion === null ? undefined : getVersion(stash, entry.path, entry.baseVersion);
+      const headFile = getFile(stash, entry.path);
+      const head = headFile === undefined ? null : getHeadVersion(headFile);
+      const candidate = candidateVersion(row, entry);
+      const candidateCurrent =
+        entry.op === "delete"
+          ? null
+          : {
+              version: (entry.baseVersion ?? 0) + 1,
+              hash: candidate.hash,
+              deleted: false,
+              kind: entry.op === "rollback" ? ("rollback" as const) : ("put" as const),
+              author: row.author,
+              createdAt: iso(row.createdAt),
+            };
+      let diff: ChangeSetDiffResult["entries"][number]["diff"];
+      if (candidate.representation === "binary" || baseRow?.representation === "binary") {
+        diff = {
+          state: "binary",
+          base:
+            baseRow?.hash === null || baseRow === undefined
+              ? null
+              : { hash: baseRow.hash, size: baseRow.size },
+          candidate:
+            candidate.hash === null ? null : { hash: candidate.hash, size: candidate.size },
+        };
+      } else if (
+        (baseRow?.size ?? 0) > capabilities.limits.diffMaxBytesPerSide ||
+        candidate.size > capabilities.limits.diffMaxBytesPerSide
+      ) {
+        diff = { state: "oversized" };
+      } else {
+        const candidateText = candidate.body ?? "";
+        const computed = computeDiff({
+          fromText: baseRow === undefined || baseRow.kind === "delete" ? "" : bodyFor(baseRow),
+          toText: candidateText,
+          fromLabel:
+            entry.baseVersion === null
+              ? `a/${entry.path}@empty`
+              : `a/${entry.path}@v${entry.baseVersion}`,
+          toLabel: `b/${entry.path}@${id}`,
+          context: parsed.data.context,
+          maxBytes: capabilities.limits.diffMaxBytesPerSide,
+        });
+        if (computed.state === "binary")
+          return fail("internal", "Unexpected binary change-set diff.");
+        diff = computed;
+      }
+      return {
+        path: entry.path,
+        op: entry.op,
+        base:
+          baseRow === undefined
+            ? null
+            : {
+                version: baseRow.version,
+                hash: baseRow.hash,
+                deleted: baseRow.kind === "delete",
+                kind: baseRow.kind,
+                author: baseRow.author,
+                createdAt: iso(baseRow.createdAt),
+              },
+        candidate: candidateCurrent,
+        current: headFile === undefined ? null : current(headFile, head!),
+        stale: (headFile?.headVersion ?? null) !== entry.baseVersion,
+        diff,
+      };
+    });
+    return json({ entries, stale: aggregateStale, status: changeSetStatus(row), truncated });
+  };
+
+  const changeSetApprovalConflicts = (stash: string, row: FakeChangeSetRow): CommitConflict[] => {
+    const conflicts: CommitConflict[] = [];
+    for (const entry of row.entries) {
+      const file = getFile(stash, entry.path);
+      const head = file === undefined ? undefined : getHeadVersion(file);
+      const present = file === undefined ? null : current(file, head!);
+      let refused =
+        entry.baseVersion === null
+          ? file !== undefined
+          : file === undefined || file.headVersion !== entry.baseVersion;
+      if (entry.op === "delete" && file?.deleted) refused = true;
+      if (entry.op === "put") {
+        const blob =
+          entry.hash === undefined || entry.hash === null
+            ? undefined
+            : state.blobs.get(row.stash)?.get(entry.hash);
+        if (
+          entry.hash === undefined ||
+          entry.hash === null ||
+          blob === undefined ||
+          blob.size !== entry.size
+        )
+          refused = true;
+      } else if (entry.op === "copy" || entry.op === "rollback") {
+        const sourcePath = entry.op === "copy" ? entry.copiedFrom?.path : entry.path;
+        const sourceVersion = entry.op === "copy" ? entry.copiedFrom?.version : entry.toVersion;
+        const source =
+          sourcePath === undefined || sourceVersion === undefined
+            ? undefined
+            : getVersion(row.stash, sourcePath, sourceVersion);
+        if (
+          source === undefined ||
+          source.hash === null ||
+          state.blobs.get(row.stash)?.get(source.hash) === undefined
+        )
+          refused = true;
+      }
+      if (refused)
+        conflicts.push({ path: entry.path, expectedVersion: entry.baseVersion, current: present });
+    }
+    return conflicts;
+  };
+
+  const toCommitInput = (row: FakeChangeSetRow): CommitEntryInput[] =>
+    row.entries.map((entry) => {
+      if (entry.op === "delete")
+        return { op: "delete", path: entry.path, expectedVersion: entry.baseVersion as number };
+      if (entry.op === "copy")
+        return {
+          op: "copy",
+          path: entry.path,
+          expectedVersion: entry.baseVersion,
+          from: entry.copiedFrom!,
+        };
+      if (entry.op === "rollback")
+        return {
+          op: "rollback",
+          path: entry.path,
+          expectedVersion: entry.baseVersion as number,
+          toVersion: entry.toVersion!,
+        };
+      if (entry.representation === "binary") {
+        const blob =
+          entry.hash === undefined || entry.hash === null
+            ? undefined
+            : state.blobs.get(row.stash)?.get(entry.hash);
+        const bytes = entry.bytes ?? blob?.bytes;
+        if (bytes === undefined)
+          return fail("internal", "The fake binary candidate is unavailable.");
+        return {
+          op: "put",
+          path: entry.path,
+          expectedVersion: entry.baseVersion,
+          representation: "binary",
+          contentType: entry.contentType!,
+          bytesBase64: encodeBase64(bytes),
+        };
+      }
+      const blob =
+        entry.hash === undefined || entry.hash === null
+          ? undefined
+          : state.blobs.get(row.stash)?.get(entry.hash);
+      const body = entry.body ?? blob?.body;
+      if (body === undefined || body === null) {
+        return fail("internal", "The fake text candidate is unavailable.");
+      }
+      return {
+        op: "put",
+        path: entry.path,
+        expectedVersion: entry.baseVersion,
+        body,
+        contentType: entry.contentType,
+      };
+    });
+
+  const handleApproveChangeSet = async (
+    request: Request,
+    stash: string,
+    id: string,
+    principal: Principal,
+  ): Promise<Response> => {
+    const parsed = ApproveChangeSetBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid change-set approval input.");
+    const row = requireChangeSet(stash, id);
+    if (row.status === "applied" && row.commitId !== null) {
+      return json({ status: "applied", commit: commitPublic(requireCommit(stash, row.commitId)) });
+    }
+    if (row.status !== "open") return fail("change-set-closed", "Change set is already closed.");
+    if (row.expiresAt <= now()) return fail("change-set-expired", "Change set has expired.");
+    const conflicts = changeSetApprovalConflicts(stash, row);
+    if (conflicts.length > 0) {
+      const missingDelete =
+        conflicts.length === 1 &&
+        row.entries.find((entry) => entry.path === conflicts[0]?.path)?.op === "delete";
+      throwCommitConflicts(conflicts, missingDelete);
+    }
+    if (row.expectedLastChangeId !== null && latestChangeId(stash) !== row.expectedLastChangeId) {
+      return fail("commit-conflict", "Expected last change is stale.");
+    }
+    const commit = await applyCommit({
+      stash,
+      entries: toCommitInput(row),
+      author: parsed.data.author ?? row.author,
+      message: parsed.data.message ?? row.message,
+      meta: row.meta,
+      expectedLastChangeId: row.expectedLastChangeId ?? undefined,
+      requestHash: "",
+      createdBy: principalName(principal),
+      source: "change-set",
+      sourceId: id,
+      origin: requestOrigin(request),
+      publish: false,
+    });
+    row.status = "applied";
+    row.decidedAt = now();
+    row.decidedBy = principalName(principal);
+    row.decisionReason = null;
+    row.commitId = commit.id;
+    emitCommit(commit, requestOrigin(request));
+    broadcastEvent(stash, {
+      type: "change-set",
+      changeSetId: id,
+      stash,
+      status: "applied",
+      paths: commit.entries.map((entry) => entry.path),
+      origin: requestOrigin(request),
+    });
+    return json({ status: "applied", commit: commitPublic(commit) });
+  };
+
+  const handleRejectChangeSet = async (
+    request: Request,
+    stash: string,
+    id: string,
+    principal: Principal,
+  ): Promise<Response> => {
+    const parsed = RejectChangeSetBody.safeParse(await requestJson(request));
+    if (!parsed.success) return fail("validation", "Invalid change-set rejection input.");
+    const row = requireChangeSet(stash, id);
+    if (row.status !== "open") return fail("change-set-closed", "Change set is already closed.");
+    row.status = "rejected";
+    row.decidedAt = now();
+    row.decidedBy = principalName(principal);
+    row.decisionReason = parsed.data.reason ?? null;
+    broadcastEvent(stash, {
+      type: "change-set",
+      changeSetId: id,
+      stash,
+      status: "rejected",
+      paths: row.entries.map((entry) => entry.path),
+      origin: requestOrigin(request),
+    });
+    return json(changeSetRecord(row));
+  };
+
+  const handleSnapshot = (stash: string, url: URL): Response => {
+    const parsed = SnapshotQuery.safeParse(queryObject(url));
+    if (!parsed.success) return fail("validation", "Invalid snapshot query.");
+    const commitId = parsed.data.at.slice("commit:".length);
+    const commit = requireCommit(stash, commitId);
+    const normalizedPrefix =
+      parsed.data.prefix === undefined
+        ? undefined
+        : parsed.data.prefix.endsWith("/")
+          ? parsed.data.prefix.slice(0, -1)
+          : parsed.data.prefix;
+    if (normalizedPrefix !== undefined) {
+      const validation = validatePath(normalizedPrefix);
+      if (!validation.ok) return fail(validation.error, validation.message);
+    }
+    if (parsed.data.delimiter !== undefined && parsed.data.delimiter !== "/")
+      return fail("validation", "delimiter must be '/'.");
+    const candidatePaths = [
+      ...new Set(
+        state.versions
+          .filter((version) => version.stash === stash && version.changeId <= commit.lastChangeId)
+          .map((version) => version.path),
+      ),
+    ]
+      .map((path) => {
+        const versions = versionsFor(stash, path).filter(
+          (version) => version.changeId <= commit.lastChangeId,
+        );
+        return versions.sort((left, right) => right.changeId - left.changeId)[0];
+      })
+      .filter((version): version is FakeVersionRow => version !== undefined)
+      .filter((version) => parsed.data.includeDeleted || version.kind !== "delete")
+      .filter(
+        (version) =>
+          normalizedPrefix === undefined ||
+          (version.path >= `${normalizedPrefix}/` && version.path < `${normalizedPrefix}0`),
+      );
+    const values = candidatePaths.map((version) => {
+      const relative =
+        normalizedPrefix === undefined
+          ? version.path
+          : version.path.slice(`${normalizedPrefix}/`.length);
+      const separator = parsed.data.delimiter === undefined ? -1 : relative.indexOf("/");
+      if (separator < 0) return { path: version.path, version };
+      return {
+        path: `${normalizedPrefix === undefined ? "" : `${normalizedPrefix}/`}${relative.slice(0, separator + 1)}`,
+        version: undefined,
+      };
+    });
+    const deduped = [...new Map(values.map((value) => [value.path, value])).values()]
+      .filter((value) => parsed.data.after === undefined || value.path > parsed.data.after)
+      .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+    const hasMore = deduped.length > parsed.data.limit;
+    const page = deduped.slice(0, parsed.data.limit);
+    return json({
+      at: { commitId: commit.id, changeId: commit.lastChangeId },
+      files: page.flatMap(({ version }) => {
+        if (version === undefined) return [];
+        return [
+          {
+            path: version.path,
+            headVersion: version.version,
+            hash: version.hash,
+            size: version.size,
+            deleted: version.kind === "delete",
+            updatedAt: iso(version.createdAt),
+            representation: version.representation ?? "text",
+            contentAccess:
+              version.kind === "delete" ? "deleted" : (version.contentAccess ?? "inline"),
+            contentType: version.contentType,
+            byteSize: version.size,
+            etag: version.kind === "delete" ? null : version.hash,
+          },
+        ];
+      }),
+      ...(parsed.data.delimiter === undefined
+        ? {}
+        : {
+            commonPrefixes: page.flatMap(({ path, version }) =>
+              version === undefined ? [path] : [],
+            ),
+          }),
+      nextAfter: hasMore ? (page.at(-1)?.path ?? null) : null,
+    });
   };
 
   const handleChanges = (stash: string, url: URL): Response => {
@@ -2464,6 +4095,30 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           return await handleRotateToken(request, stash ?? "", match.tokenId ?? "");
         case "revokeToken":
           return handleRevokeToken(stash ?? "", match.tokenId ?? "");
+        case "createCommit":
+          return await handleCreateCommit(request, stash ?? "", principal);
+        case "getCommit":
+          return handleGetCommit(stash ?? "", match.id ?? "");
+        case "listCommits":
+          return handleListCommits(stash ?? "", url);
+        case "getCommitDiff":
+          return handleCommitDiff(stash ?? "", match.id ?? "", url);
+        case "revertCommit":
+          return await handleRevertCommit(request, stash ?? "", match.id ?? "", principal);
+        case "getSnapshot":
+          return handleSnapshot(stash ?? "", url);
+        case "createChangeSet":
+          return await handleCreateChangeSet(request, stash ?? "", principal);
+        case "listChangeSets":
+          return handleListChangeSets(stash ?? "", url);
+        case "getChangeSet":
+          return handleGetChangeSet(stash ?? "", match.id ?? "");
+        case "getChangeSetDiff":
+          return handleChangeSetDiff(stash ?? "", match.id ?? "", url);
+        case "approveChangeSet":
+          return await handleApproveChangeSet(request, stash ?? "", match.id ?? "", principal);
+        case "rejectChangeSet":
+          return await handleRejectChangeSet(request, stash ?? "", match.id ?? "", principal);
         case "stashEvents":
           return handleEvents(request, stash ?? "", url);
         case "getRawFile":
@@ -2567,6 +4222,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       state.r2Objects.clear();
       state.files.clear();
       state.versions.length = 0;
+      state.commits.clear();
+      state.changeSets.clear();
       state.idempotency.clear();
       state.gcRuns.length = 0;
       state.uploadSessions.clear();
@@ -2580,6 +4237,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       gcCursorPositions.clear();
       nextToken = 1;
       nextChangeId = 1;
+      nextChangeSetId = 1;
       nextR2ObjectSerial = 1;
       nextGcRun = 1;
       nextGcCursorSerial = 1;

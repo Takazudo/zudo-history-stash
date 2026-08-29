@@ -136,7 +136,37 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           error: { code: "internal", status: 500, message: "Demo write or history failed" },
         };
 
-  return Response.json({ get, put, history, rollback });
+  const commits = client.commits(DEMO_STASH);
+  const commitList = await commits.list({ limit: 1 });
+  const latestCommitId =
+    commitList.ok && commitList.value.commits[0] !== undefined
+      ? commitList.value.commits[0].id
+      : undefined;
+  const commit = latestCommitId === undefined ? null : await commits.get(latestCommitId);
+  const commitDiff = latestCommitId === undefined ? null : await commits.diff(latestCommitId);
+  const snapshot =
+    latestCommitId === undefined ? null : await files.snapshot({ at: `commit:${latestCommitId}` });
+
+  const changeSets = client.changeSets(DEMO_STASH);
+  const changeSetList = await changeSets.list({ status: "all", limit: 1 });
+  const latestChangeSetId =
+    changeSetList.ok && changeSetList.value.changeSets[0] !== undefined
+      ? changeSetList.value.changeSets[0].id
+      : undefined;
+  const changeSet =
+    latestChangeSetId === undefined ? null : await changeSets.get(latestChangeSetId);
+  const changeSetDiff =
+    latestChangeSetId === undefined ? null : await changeSets.diff(latestChangeSetId);
+
+  return Response.json({
+    get,
+    put,
+    history,
+    rollback,
+    commits: { list: commitList, get: commit, diff: commitDiff },
+    snapshot,
+    changeSets: { list: changeSetList, get: changeSet, diff: changeSetDiff },
+  });
 }
 
 export default { fetch: handleRequest } satisfies ExportedHandler<Env>;

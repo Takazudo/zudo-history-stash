@@ -9,10 +9,25 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import type {
   ApiError,
+  ApproveChangeSetBody,
+  ApproveChangeSetResult,
   CandidateDiffResult,
   CapabilitiesResponse,
+  ChangeSetDiffQuery,
+  ChangeSetDiffResult,
+  ChangeSetListResponse,
+  ChangeSetRecord,
   ChangesPage,
+  CommitConflict,
+  CommitDiffQuery,
+  CommitDiffResult,
+  CommitListResponse,
+  CommitRecord,
   CompleteUploadResult,
+  CreateChangeSetBody,
+  CreateChangeSetResult,
+  CreateCommitBody,
+  CreateCommitResult,
   CreateStashBody,
   CreateStashResult,
   CreateTokenBody,
@@ -34,6 +49,8 @@ import type {
   HistoryQuery,
   ImportBody,
   ImportResult,
+  ListChangeSetsQuery,
+  ListCommitsQuery,
   ParsedListGcRunsQuery,
   ListChangesResult,
   ListFilesQuery,
@@ -43,6 +60,10 @@ import type {
   MeResponse,
   PutFileBody,
   PutResult,
+  RejectChangeSetBody,
+  RejectChangeSetResult,
+  RevertCommitBody,
+  RevertCommitResult,
   RollbackBody,
   RollbackResult,
   RestoreStashResult,
@@ -51,6 +72,8 @@ import type {
   RotateTokenResult,
   RouteId,
   RouteMethod,
+  SnapshotResponse,
+  SnapshotQuery,
   StashRecord,
 } from "@takazudo/zudo-history-stash-core";
 import {
@@ -118,8 +141,23 @@ export type ClientFailure<Code extends ErrorCode = ErrorCode> = {
   ok: false;
   error: Omit<ApiError, "code"> & { code: Code };
   current?: Current;
+  /** Per-entry atomic commit/change-set conflicts, present for commit-conflict failures. */
+  conflicts?: CommitConflict[];
   retryAfter?: number;
 };
+
+/** The typed failure branch returned when an atomic commit fence rejects one or more entries. */
+export type CommitConflictFailure = ClientFailure<"commit-conflict"> & {
+  conflicts: CommitConflict[];
+};
+
+/** Narrows a business result to an atomic commit conflict with per-entry details. */
+export function isCommitConflict<T>(result: ClientResult<T>): result is CommitConflictFailure {
+  return !result.ok && result.error.code === "commit-conflict" && result.conflicts !== undefined;
+}
+
+/** Explicit error-oriented alias for callers that prefer this guard name. */
+export const isCommitConflictError = isCommitConflict;
 
 /** A client-facing business result. HTTP 4xx responses remain values, not thrown errors. */
 export type ClientResult<T> = ClientSuccess<T> | ClientFailure;
@@ -139,6 +177,16 @@ export type ListStashesOptions = Partial<ParsedListStashesQuery>;
 export type ListGcRunsOptions = Partial<ParsedListGcRunsQuery>;
 /** Options for listing files. */
 export type ListFilesOptions = Partial<ListFilesQuery>;
+/** Options for listing commits. */
+export type ListCommitsOptions = Partial<ListCommitsQuery>;
+/** Options for a commit diff. */
+export type CommitDiffOptions = Partial<CommitDiffQuery>;
+/** Options for listing change sets. */
+export type ListChangeSetsOptions = Partial<ListChangeSetsQuery>;
+/** Options for a change-set diff. */
+export type ChangeSetDiffOptions = Partial<ChangeSetDiffQuery>;
+/** A required commit selector and optional snapshot pagination/filter fields. */
+export type SnapshotOptions = Pick<SnapshotQuery, "at"> & Partial<Omit<SnapshotQuery, "at">>;
 /** Options for a change feed. */
 export type ChangesOptions = {
   since?: number;
@@ -312,6 +360,7 @@ export interface StashFilesClient {
     options?: MutationOptions,
   ): Promise<ClientResult<RollbackResult>>;
   list(options?: ListFilesOptions): Promise<ClientResult<FileListResponse>>;
+  snapshot(query: SnapshotOptions): Promise<ClientResult<SnapshotResponse>>;
   history(path: string, options?: HistoryOptions): Promise<ClientResult<GetHistoryResult>>;
   diff(path: string, options: DiffOptions): Promise<ClientResult<GetDiffResult>>;
   diffCandidate(path: string, input: DiffCandidateBody): Promise<ClientResult<CandidateDiffResult>>;
@@ -326,6 +375,35 @@ export interface StashFilesClient {
     options: UploadOptions,
   ): Promise<ClientResult<CompleteUploadResult>>;
   uploads: StashUploadSessionsClient;
+}
+
+/** Commit operations scoped to one stash. */
+export interface StashCommitsClient {
+  create(
+    input: CreateCommitBody,
+    options?: MutationOptions,
+  ): Promise<ClientResult<CreateCommitResult>>;
+  get(id: string): Promise<ClientResult<CommitRecord>>;
+  list(options?: ListCommitsOptions): Promise<ClientResult<CommitListResponse>>;
+  diff(id: string, options?: CommitDiffOptions): Promise<ClientResult<CommitDiffResult>>;
+  revert(
+    id: string,
+    input: RevertCommitBody,
+    options?: MutationOptions,
+  ): Promise<ClientResult<RevertCommitResult>>;
+}
+
+/** Reviewable change-set operations scoped to one stash. */
+export interface StashChangeSetsClient {
+  create(
+    input: CreateChangeSetBody,
+    options?: MutationOptions,
+  ): Promise<ClientResult<CreateChangeSetResult>>;
+  list(options?: ListChangeSetsOptions): Promise<ClientResult<ChangeSetListResponse>>;
+  get(id: string): Promise<ClientResult<ChangeSetRecord>>;
+  diff(id: string, options?: ChangeSetDiffOptions): Promise<ClientResult<ChangeSetDiffResult>>;
+  approve(id: string, input: ApproveChangeSetBody): Promise<ClientResult<ApproveChangeSetResult>>;
+  reject(id: string, input: RejectChangeSetBody): Promise<ClientResult<RejectChangeSetResult>>;
 }
 
 /** Administrative garbage-collection operations. */
@@ -356,6 +434,8 @@ export interface StashClient {
   admin: StashAdminClient;
   changes(options?: ChangesOptions): Promise<ClientResult<ChangesPage>>;
   files(stash: string): StashFilesClient;
+  commits(stash: string): StashCommitsClient;
+  changeSets(stash: string): StashChangeSetsClient;
   putLatest(
     stash: string,
     path: string,
@@ -450,6 +530,22 @@ export function createStashClient(options: StashClientOptions): StashClient {
     return validateFilePath<T>(path);
   };
 
+  const entryPaths = <T>(stash: string, input: unknown): ClientResult<T> | undefined => {
+    const invalidStash = stashError<T>(stash);
+    if (invalidStash !== undefined) return invalidStash;
+    if (!isRecord(input) || !Array.isArray(input.entries)) return undefined;
+    for (const entry of input.entries) {
+      if (!isRecord(entry) || typeof entry.path !== "string") continue;
+      const invalidPath = validateFilePath<T>(entry.path);
+      if (invalidPath !== undefined) return invalidPath;
+      if (entry.op === "copy" && isRecord(entry.from) && typeof entry.from.path === "string") {
+        const invalidSource = validateFilePath<T>(entry.from.path);
+        if (invalidSource !== undefined) return invalidSource;
+      }
+    }
+    return undefined;
+  };
+
   const binaryContext: BinaryClientContext = {
     send,
     authorizationToken,
@@ -530,8 +626,26 @@ export function createStashClient(options: StashClientOptions): StashClient {
           ["includeDeleted", listOptions.includeDeleted],
           ["limit", listOptions.limit],
           ["after", listOptions.after],
+          ["prefix", listOptions.prefix],
+          ["delimiter", listOptions.delimiter],
         ]),
       )) as ClientResult<FileListResponse>;
+    },
+    async snapshot(query) {
+      const invalid = stashError<SnapshotResponse>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<SnapshotResponse>(
+        "getSnapshot",
+        "GET",
+        target(route("getSnapshot", stash), [
+          ["at", query.at],
+          ["prefix", query.prefix],
+          ["delimiter", query.delimiter],
+          ["includeDeleted", query.includeDeleted],
+          ["limit", query.limit],
+          ["after", query.after],
+        ]),
+      )) as ClientResult<SnapshotResponse>;
     },
     async history(path, historyOptions = {}) {
       const invalid = filePath<GetHistoryResult>(stash, path);
@@ -629,6 +743,137 @@ export function createStashClient(options: StashClientOptions): StashClient {
       );
     },
     uploads: createUploadSessionsClient(binaryContext, stash),
+  });
+
+  const getCommitsClient = (stash: string): StashCommitsClient => ({
+    async create(input, mutationOptions = {}) {
+      const invalid = entryPaths<CreateCommitResult>(stash, input);
+      if (invalid !== undefined) return invalid;
+      const idempotencyKey = await mintKey(keyFactory, mutationOptions.idempotencyKey);
+      return (await call<CreateCommitResult>(
+        "createCommit",
+        "POST",
+        target(route("createCommit", stash)),
+        input,
+        idempotencyKey,
+      )) as ClientResult<CreateCommitResult>;
+    },
+    async get(id) {
+      const invalid = stashError<CommitRecord>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<CommitRecord>(
+        "getCommit",
+        "GET",
+        target(route("getCommit", stash, undefined, id)),
+      )) as ClientResult<CommitRecord>;
+    },
+    async list(listOptions = {}) {
+      const invalid = stashError<CommitListResponse>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<CommitListResponse>(
+        "listCommits",
+        "GET",
+        target(route("listCommits", stash), [
+          ["limit", listOptions.limit],
+          ["after", listOptions.after],
+          ["path", listOptions.path],
+        ]),
+      )) as ClientResult<CommitListResponse>;
+    },
+    async diff(id, diffOptions = {}) {
+      const invalid = stashError<CommitDiffResult>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<CommitDiffResult>(
+        "getCommitDiff",
+        "GET",
+        target(route("getCommitDiff", stash, undefined, id), [
+          ["context", diffOptions.context],
+          ["path", diffOptions.path],
+        ]),
+      )) as ClientResult<CommitDiffResult>;
+    },
+    async revert(id, input, mutationOptions = {}) {
+      const invalid = stashError<RevertCommitResult>(stash);
+      if (invalid !== undefined) return invalid;
+      const idempotencyKey = await mintKey(keyFactory, mutationOptions.idempotencyKey);
+      return (await call<RevertCommitResult>(
+        "revertCommit",
+        "POST",
+        target(route("revertCommit", stash, undefined, id)),
+        input,
+        idempotencyKey,
+      )) as ClientResult<RevertCommitResult>;
+    },
+  });
+
+  const getChangeSetsClient = (stash: string): StashChangeSetsClient => ({
+    async create(input, mutationOptions = {}) {
+      const invalid = entryPaths<CreateChangeSetResult>(stash, input);
+      if (invalid !== undefined) return invalid;
+      const idempotencyKey = await mintKey(keyFactory, mutationOptions.idempotencyKey);
+      return (await call<CreateChangeSetResult>(
+        "createChangeSet",
+        "POST",
+        target(route("createChangeSet", stash)),
+        input,
+        idempotencyKey,
+      )) as ClientResult<CreateChangeSetResult>;
+    },
+    async list(listOptions = {}) {
+      const invalid = stashError<ChangeSetListResponse>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<ChangeSetListResponse>(
+        "listChangeSets",
+        "GET",
+        target(route("listChangeSets", stash), [
+          ["status", listOptions.status],
+          ["path", listOptions.path],
+          ["limit", listOptions.limit],
+          ["after", listOptions.after],
+        ]),
+      )) as ClientResult<ChangeSetListResponse>;
+    },
+    async get(id) {
+      const invalid = stashError<ChangeSetRecord>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<ChangeSetRecord>(
+        "getChangeSet",
+        "GET",
+        target(route("getChangeSet", stash, undefined, id)),
+      )) as ClientResult<ChangeSetRecord>;
+    },
+    async diff(id, diffOptions = {}) {
+      const invalid = stashError<ChangeSetDiffResult>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<ChangeSetDiffResult>(
+        "getChangeSetDiff",
+        "GET",
+        target(route("getChangeSetDiff", stash, undefined, id), [
+          ["context", diffOptions.context],
+          ["path", diffOptions.path],
+        ]),
+      )) as ClientResult<ChangeSetDiffResult>;
+    },
+    async approve(id, input) {
+      const invalid = stashError<ApproveChangeSetResult>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<ApproveChangeSetResult>(
+        "approveChangeSet",
+        "POST",
+        target(route("approveChangeSet", stash, undefined, id)),
+        input,
+      )) as ClientResult<ApproveChangeSetResult>;
+    },
+    async reject(id, input) {
+      const invalid = stashError<RejectChangeSetResult>(stash);
+      if (invalid !== undefined) return invalid;
+      return (await call<RejectChangeSetResult>(
+        "rejectChangeSet",
+        "POST",
+        target(route("rejectChangeSet", stash, undefined, id)),
+        input,
+      )) as ClientResult<RejectChangeSetResult>;
+    },
   });
 
   const stashes = {
@@ -796,6 +1041,8 @@ export function createStashClient(options: StashClientOptions): StashClient {
     admin,
     changes,
     files: getFileClient,
+    commits: getCommitsClient,
+    changeSets: getChangeSetsClient,
     async putLatest(stash, path, body, putOptions = {}) {
       const invalid = filePath<PutResult>(stash, path);
       if (invalid !== undefined) return invalid;

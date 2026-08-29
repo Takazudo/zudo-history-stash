@@ -1,4 +1,4 @@
-import { createStashClient } from "@takazudo/zudo-history-stash";
+import { createStashClient, isCommitConflict } from "@takazudo/zudo-history-stash";
 import { describe, expect, it } from "vitest";
 import { API_BASE_URL, MUTATION_ALLOWED } from "./env.js";
 import { createAdminClient, uniqueStash, unwrap } from "./helpers.js";
@@ -602,6 +602,174 @@ describe("local-only HTTP mutation contract", () => {
         [3, "delete"],
         [2, "put"],
         [1, "put"],
+      ]);
+    },
+  );
+
+  it.runIf(MUTATION_ALLOWED)(
+    "commits atomically, exposes conflicts, reverts, and approves binary change sets",
+    async () => {
+      const admin = createAdminClient();
+      const stash = uniqueStash("commits");
+      unwrap(await admin.stashes.create({ name: stash }), "create commit fixture stash");
+      const commits = admin.commits(stash);
+      const commitInput = {
+        entries: [
+          {
+            op: "put" as const,
+            path: "commit/summary.md",
+            expectedVersion: null,
+            body: "atomic commit\n",
+          },
+          {
+            op: "put" as const,
+            path: "commit/payload.bin",
+            expectedVersion: null,
+            representation: "binary" as const,
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        author: "contract-suite",
+        message: "Create atomic fixture",
+        meta: { fixture: "commit-contract" },
+      };
+      const idempotencyKey = `commit-${crypto.randomUUID()}`;
+      const created = unwrap(
+        await commits.create(commitInput, { idempotencyKey }),
+        "create atomic commit",
+      );
+      expect(created.entryCount).toBe(2);
+      expect(created.entries.map(({ path }) => path)).toEqual([
+        "commit/summary.md",
+        "commit/payload.bin",
+      ]);
+      expect(created.entries[1]).toMatchObject({
+        representation: "binary",
+        hash: expect.any(String),
+      });
+
+      const replay = await commits.create(commitInput, { idempotencyKey });
+      expect(unwrap(replay, "replay atomic commit")).toEqual(created);
+      expect(replay.ok && replay.replayed).toBe(true);
+
+      const conflict = await commits.create(
+        {
+          entries: [
+            { op: "put", path: "commit/summary.md", expectedVersion: null, body: "stale\n" },
+            { op: "put", path: "commit/new.txt", expectedVersion: 1, body: "also stale\n" },
+          ],
+          message: "Must not partially apply",
+        },
+        { idempotencyKey: `conflict-${crypto.randomUUID()}` },
+      );
+      expect(isCommitConflict(conflict)).toBe(true);
+      if (!isCommitConflict(conflict)) throw new Error("commit conflict was not typed");
+      expect(conflict.conflicts).toHaveLength(2);
+      expect(conflict.conflicts.map(({ path }) => path)).toEqual([
+        "commit/summary.md",
+        "commit/new.txt",
+      ]);
+      const conflictProbe = await admin.files(stash).get("commit/new.txt");
+      expect(conflictProbe.ok).toBe(false);
+      if (conflictProbe.ok) throw new Error("atomic conflict partially created a file");
+      expect(conflictProbe.error.code).toBe("not-found");
+
+      const fetched = unwrap(await commits.get(created.id), "get atomic commit");
+      expect(fetched.entries).toHaveLength(2);
+      expect(unwrap(await commits.list({ path: "commit/summary.md" }), "list commits").total).toBe(
+        1,
+      );
+      const diff = unwrap(await commits.diff(created.id), "diff atomic commit");
+      expect(diff.entries).toHaveLength(2);
+      expect(diff.entries.find(({ path }) => path === "commit/payload.bin")?.diff).toEqual({
+        state: "binary",
+      });
+
+      const reverted = unwrap(
+        await commits.revert(
+          created.id,
+          { author: "contract-suite", message: "Revert fixture" },
+          {
+            idempotencyKey: `revert-${crypto.randomUUID()}`,
+          },
+        ),
+        "revert atomic commit",
+      );
+      expect(reverted.revertsCommitId).toBe(created.id);
+      expect(reverted.entries.every(({ kind }) => kind === "delete")).toBe(true);
+
+      const changeSets = admin.changeSets(stash);
+      const changeSet = unwrap(
+        await changeSets.create(
+          {
+            entries: [
+              {
+                op: "put",
+                path: "review/files/readme.md",
+                baseVersion: null,
+                body: "pending review\n",
+              },
+              {
+                op: "put",
+                path: "review/files/data.bin",
+                baseVersion: null,
+                representation: "binary",
+                contentType: "application/octet-stream",
+                bytesBase64: "AP8B",
+              },
+            ],
+            author: "contract-suite",
+            message: "Open binary review",
+            meta: { fixture: "change-set-contract" },
+          },
+          { idempotencyKey: `change-set-${crypto.randomUUID()}` },
+        ),
+        "create binary change set",
+      );
+      expect(changeSet.status).toBe("open");
+      expect(unwrap(await changeSets.list({ status: "open" }), "list open change sets").total).toBe(
+        1,
+      );
+      const changeSetDiff = unwrap(await changeSets.diff(changeSet.id), "diff binary change set");
+      expect(changeSetDiff.stale).toBe(false);
+      expect(
+        changeSetDiff.entries.find(({ path }) => path.endsWith("data.bin"))?.diff,
+      ).toMatchObject({
+        state: "binary",
+      });
+
+      const approved = unwrap(
+        await changeSets.approve(changeSet.id, {
+          author: "contract-suite",
+          message: "Approve binary review",
+        }),
+        "approve binary change set",
+      );
+      expect(approved.status).toBe("applied");
+      expect(approved.commit.source).toBe("change-set");
+      expect(approved.commit.entries).toHaveLength(2);
+      const approvedCommit = unwrap(
+        await commits.get(approved.commit.id),
+        "read applied change-set commit",
+      );
+      const history = unwrap(
+        await admin.files(stash).history("review/files/readme.md"),
+        "read applied history",
+      );
+      expect(history.versions[0]?.commitId).toBe(approvedCommit.id);
+      const changes = unwrap(await admin.files(stash).changes(), "read applied changes");
+      expect(changes.changes.filter(({ commitId }) => commitId === approvedCommit.id)).toHaveLength(
+        2,
+      );
+      const snapshot = unwrap(
+        await admin.files(stash).snapshot({ at: `commit:${approvedCommit.id}`, prefix: "review" }),
+        "snapshot at applied commit",
+      );
+      expect(snapshot.at.commitId).toBe(approvedCommit.id);
+      expect(snapshot.files.map(({ path }) => path)).toEqual([
+        "review/files/data.bin",
+        "review/files/readme.md",
       ]);
     },
   );

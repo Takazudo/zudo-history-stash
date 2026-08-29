@@ -54,6 +54,24 @@ function successfulFixture({ existing = false } = {}) {
         },
       };
     },
+    commits(stash) {
+      record("commits", stash);
+      return {
+        async create(input, options) {
+          record("commits.create", { input, options });
+          return { ok: true, value: { id: "cmt_seed" } };
+        },
+      };
+    },
+    changeSets(stash) {
+      record("changeSets", stash);
+      return {
+        async create(input, options) {
+          record("changeSets.create", { input, options });
+          return { ok: true, value: { id: "chs_seed" } };
+        },
+      };
+    },
   };
   const createClient = (options) => {
     record("createClient", options);

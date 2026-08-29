@@ -54,11 +54,33 @@ describe("example RPC consumer", () => {
       put: { ok: boolean; value?: { version: number } };
       history: { ok: boolean; value?: { versions: unknown[] } };
       rollback: { ok: boolean; value?: { rollbackOf: number } };
+      commits: {
+        list: { ok: boolean; value?: { commits: Array<{ id: string }> } };
+        get: { ok: boolean; value?: { id: string } } | null;
+        diff: { ok: boolean; value?: { entries: unknown[] } } | null;
+      };
+      snapshot: { ok: boolean; value?: { at: { commitId: string } } } | null;
+      changeSets: {
+        list: { ok: boolean; value?: { changeSets: unknown[] } };
+        get: null;
+        diff: null;
+      };
     };
     expect(result.get).toMatchObject({ ok: false, error: { code: "not-found" } });
     expect(result.put).toMatchObject({ ok: true, value: { version: 1 } });
     expect(result.history).toMatchObject({ ok: true, value: { versions: [{ version: 1 }] } });
     expect(result.rollback).toMatchObject({ ok: true, value: { rollbackOf: 1 } });
+    expect(result.commits.list.ok).toBe(true);
+    expect(result.commits.list.value?.commits.length).toBeGreaterThan(0);
+    expect(result.commits.get).toMatchObject({ ok: true, value: { id: expect.any(String) } });
+    expect(result.commits.diff).toMatchObject({ ok: true, value: { entries: expect.any(Array) } });
+    expect(result.snapshot).toMatchObject({
+      ok: true,
+      value: { at: { commitId: expect.any(String) } },
+    });
+    expect(result.changeSets.list).toMatchObject({ ok: true, value: { changeSets: [] } });
+    expect(result.changeSets.get).toBeNull();
+    expect(result.changeSets.diff).toBeNull();
 
     const second = await handleRequest(triggeredRequest("/demo"), exampleEnv(token.token));
     const secondResult = (await second.json()) as {
