@@ -36,7 +36,7 @@ interface RecordedPut {
   idempotencyKey: string | null;
 }
 
-interface RecordedProposal {
+interface RecordedChangeSet {
   serializedBody: string;
   idempotencyKey: string | null;
 }
@@ -45,11 +45,11 @@ interface Fixture {
   client: StashClient;
   head: FileRecordWithEtag;
   puts: RecordedPut[];
-  proposals: RecordedProposal[];
+  changeSetRequests: RecordedChangeSet[];
   deferNextPut: () => () => void;
-  deferNextProposal: () => () => void;
+  deferNextChangeSet: () => () => void;
   failNextPutBeforeSend: () => void;
-  failNextProposalBeforeSend: () => void;
+  failNextChangeSetBeforeSend: () => void;
   failNextPutResponse: () => void;
 }
 
@@ -64,7 +64,7 @@ interface FakeBackedHostProps {
   onDiscard?: () => void;
   onSaved?: (completion: SaveReviewCompletion) => void;
   stash?: string;
-  onProposed?: (changeSet: ChangeSetRecord) => void;
+  onChangeSetCreated?: (changeSet: ChangeSetRecord) => void;
 }
 
 async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
@@ -72,15 +72,15 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
   const fake = createFakeStash({ adminToken });
   fake.createStash(STASH);
   const puts: RecordedPut[] = [];
-  const proposals: RecordedProposal[] = [];
+  const changeSetRequests: RecordedChangeSet[] = [];
   let putGate: Promise<void> | null = null;
-  let proposalGate: Promise<void> | null = null;
+  let changeSetGate: Promise<void> | null = null;
   let rejectedBeforeSend = 0;
-  let rejectedProposalBeforeSend = 0;
+  let rejectedChangeSetBeforeSend = 0;
   let lostResponses = 0;
   const fetch: StashFetch = async (input, init) => {
     const isPut = init?.method === "PUT";
-    const isProposal =
+    const isChangeSetRequest =
       init?.method === "POST" &&
       new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith(
         "/change-sets",
@@ -101,19 +101,19 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
         await gate;
       }
     }
-    if (isProposal) {
-      if (typeof init.body !== "string") throw new Error("Expected a JSON proposal body");
-      proposals.push({
+    if (isChangeSetRequest) {
+      if (typeof init.body !== "string") throw new Error("Expected a JSON change-set body");
+      changeSetRequests.push({
         serializedBody: init.body,
         idempotencyKey: new Headers(init.headers).get("Idempotency-Key"),
       });
-      if (rejectedProposalBeforeSend > 0) {
-        rejectedProposalBeforeSend -= 1;
-        throw new TypeError("proposal request not sent");
+      if (rejectedChangeSetBeforeSend > 0) {
+        rejectedChangeSetBeforeSend -= 1;
+        throw new TypeError("change-set request not sent");
       }
-      if (proposalGate !== null) {
-        const gate = proposalGate;
-        proposalGate = null;
+      if (changeSetGate !== null) {
+        const gate = changeSetGate;
+        changeSetGate = null;
         await gate;
       }
     }
@@ -151,7 +151,7 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
     client,
     head: loaded.value,
     puts,
-    proposals,
+    changeSetRequests,
     deferNextPut() {
       let release: () => void = () => {};
       putGate = new Promise<void>((resolveGate) => {
@@ -159,9 +159,9 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
       });
       return release;
     },
-    deferNextProposal() {
+    deferNextChangeSet() {
       let release: () => void = () => {};
-      proposalGate = new Promise<void>((resolveGate) => {
+      changeSetGate = new Promise<void>((resolveGate) => {
         release = resolveGate;
       });
       return release;
@@ -169,8 +169,8 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
     failNextPutBeforeSend() {
       rejectedBeforeSend += 1;
     },
-    failNextProposalBeforeSend() {
-      rejectedProposalBeforeSend += 1;
+    failNextChangeSetBeforeSend() {
+      rejectedChangeSetBeforeSend += 1;
     },
     failNextPutResponse() {
       lostResponses += 1;
@@ -189,7 +189,7 @@ function FakeBackedHost({
   onDiscard = vi.fn(),
   onSaved = vi.fn(),
   stash,
-  onProposed,
+  onChangeSetCreated,
 }: FakeBackedHostProps) {
   const machine = useSaveMachine({
     client: fixture.client,
@@ -210,7 +210,7 @@ function FakeBackedHost({
       onDiscard={onDiscard}
       onSaved={onSaved}
       stash={stash}
-      onProposed={onProposed}
+      onChangeSetCreated={onChangeSetCreated}
     />
   );
 }
@@ -342,18 +342,18 @@ beforeEach(() => {
 });
 
 describe("SaveReviewDialog", () => {
-  it("proposes the exact draft as a one-entry change set without saving head", async () => {
+  it("creates the exact draft as a one-entry change set without saving head", async () => {
     const fixture = await makeFixture("base\n");
     render(
       <StashUiProvider client={fixture.client}>
         <FakeBackedHost draft={"candidate\n"} fixture={fixture} stash={STASH} />
       </StashUiProvider>,
     );
-    const propose = screen.getByRole("button", { name: "Propose as change set" });
-    await waitFor(() => expect(propose.hasAttribute("disabled")).toBe(false));
-    await userEvent.click(propose);
+    const createChangeSet = screen.getByRole("button", { name: "Create change set" });
+    await waitFor(() => expect(createChangeSet.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(createChangeSet);
     const reviewLink = await screen.findByRole("link", { name: "Open change set" });
-    const submitted = JSON.parse(fixture.proposals[0]?.serializedBody ?? "null") as Record<
+    const submitted = JSON.parse(fixture.changeSetRequests[0]?.serializedBody ?? "null") as Record<
       string,
       unknown
     >;
@@ -362,58 +362,58 @@ describe("SaveReviewDialog", () => {
     ]);
     expect(fixture.puts).toHaveLength(0);
     expect(reviewLink.getAttribute("href")).toMatch(new RegExp(`^/s/${STASH}/change-sets/chs_`));
-    expect(screen.getByRole("button", { name: "Proposed" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Created" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("locks proposal submission synchronously against same-tick double activation", async () => {
+  it("locks change-set creation synchronously against same-tick double activation", async () => {
     const fixture = await makeFixture("base\n");
-    const release = fixture.deferNextProposal();
-    const onProposed = vi.fn();
+    const release = fixture.deferNextChangeSet();
+    const onChangeSetCreated = vi.fn();
     render(
       <StashUiProvider client={fixture.client}>
         <FakeBackedHost
           draft={"candidate\n"}
           fixture={fixture}
           stash={STASH}
-          onProposed={onProposed}
+          onChangeSetCreated={onChangeSetCreated}
         />
       </StashUiProvider>,
     );
-    const propose = screen.getByRole("button", { name: "Propose as change set" });
-    await waitFor(() => expect(propose.hasAttribute("disabled")).toBe(false));
+    const createChangeSet = screen.getByRole("button", { name: "Create change set" });
+    await waitFor(() => expect(createChangeSet.hasAttribute("disabled")).toBe(false));
     act(() => {
-      fireEvent.click(propose);
-      fireEvent.click(propose);
+      fireEvent.click(createChangeSet);
+      fireEvent.click(createChangeSet);
     });
-    await waitFor(() => expect(fixture.proposals).toHaveLength(1));
+    await waitFor(() => expect(fixture.changeSetRequests).toHaveLength(1));
     release();
-    await waitFor(() => expect(onProposed).toHaveBeenCalledTimes(1));
-    expect(fixture.proposals).toHaveLength(1);
+    await waitFor(() => expect(onChangeSetCreated).toHaveBeenCalledTimes(1));
+    expect(fixture.changeSetRequests).toHaveLength(1);
   });
 
-  it("retries an ambiguous proposal failure with the exact frozen body and key", async () => {
+  it("retries an ambiguous change-set failure with the exact frozen body and key", async () => {
     const fixture = await makeFixture("base\n");
-    fixture.failNextProposalBeforeSend();
-    const onProposed = vi.fn();
+    fixture.failNextChangeSetBeforeSend();
+    const onChangeSetCreated = vi.fn();
     render(
       <StashUiProvider client={fixture.client}>
         <FakeBackedHost
           draft={"candidate\n"}
           fixture={fixture}
           stash={STASH}
-          onProposed={onProposed}
+          onChangeSetCreated={onChangeSetCreated}
         />
       </StashUiProvider>,
     );
-    const propose = screen.getByRole("button", { name: "Propose as change set" });
-    await waitFor(() => expect(propose.hasAttribute("disabled")).toBe(false));
-    await userEvent.click(propose);
+    const createChangeSet = screen.getByRole("button", { name: "Create change set" });
+    await waitFor(() => expect(createChangeSet.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(createChangeSet);
     await screen.findByRole("alert");
-    const first = fixture.proposals[0];
-    await userEvent.click(screen.getByRole("button", { name: "Retry proposal" }));
-    await waitFor(() => expect(onProposed).toHaveBeenCalledTimes(1));
-    expect(fixture.proposals).toHaveLength(2);
-    expect(fixture.proposals[1]).toEqual(first);
+    const first = fixture.changeSetRequests[0];
+    await userEvent.click(screen.getByRole("button", { name: "Retry change set" }));
+    await waitFor(() => expect(onChangeSetCreated).toHaveBeenCalledTimes(1));
+    expect(fixture.changeSetRequests).toHaveLength(2);
+    expect(fixture.changeSetRequests[1]).toEqual(first);
   });
   it("reviews and saves exact CRLF bytes through the fake backend with exact-once completion", async () => {
     const fixture = await makeFixture("base\r\n");

@@ -909,6 +909,48 @@ describe("stash administration routes", () => {
   });
 });
 
+describe("fake change-set ordering", () => {
+  it("canonicalizes stored and public entries by path like the D1 Worker", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const created = await request(fake, "/v1/stashes/demo/change-sets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entries: [
+          { op: "put", path: "sdk/review.txt", baseVersion: null, body: "review\n" },
+          {
+            op: "put",
+            path: "sdk/review.bin",
+            baseVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+      }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as {
+      id: string;
+      entries: Array<{ path: string }>;
+    };
+    expect(createdBody.entries.map(({ path }) => path)).toEqual([
+      "sdk/review.bin",
+      "sdk/review.txt",
+    ]);
+    expect([...fake.state.changeSets.values()][0]?.entries.map(({ path }) => path)).toEqual([
+      "sdk/review.bin",
+      "sdk/review.txt",
+    ]);
+
+    const diff = await request(fake, `/v1/stashes/demo/change-sets/${createdBody.id}/diff`);
+    expect(diff.status).toBe(200);
+    const diffBody = (await diff.json()) as { entries: Array<{ path: string }> };
+    expect(diffBody.entries.map(({ path }) => path)).toEqual(["sdk/review.bin", "sdk/review.txt"]);
+  });
+});
+
 describe("token administration and capabilities", () => {
   it("stores only hashes, lists newest first, and resolves read/write principals", async () => {
     let timestamp = Date.parse("2026-08-26T00:00:00.000Z");

@@ -268,6 +268,22 @@ function ReadOnlyChangeSetReview({
   );
 }
 
+function writableReviewKey(stash: string, record: ChangeSetRecord): string {
+  return `${stash}:${record.id}:${JSON.stringify({
+    status: record.status,
+    decidedAt: record.decidedAt,
+    entries: record.entries.map((entry) => ({
+      path: entry.path,
+      op: entry.op,
+      baseVersion: entry.baseVersion,
+      currentVersion: entry.current?.version ?? null,
+      currentHash: entry.current?.hash ?? null,
+      currentDeleted: entry.current?.deleted ?? null,
+      stale: entry.stale,
+    })),
+  })}`;
+}
+
 export default function ChangeSetPage() {
   const { stash, id } = useParams();
   const { client } = useStashClient();
@@ -302,7 +318,23 @@ export default function ChangeSetPage() {
     void changeSet.reload().catch(() => undefined);
   }
 
-  const record = changeSet.state === "ready" ? changeSet.value : null;
+  const target = stash && id ? `${stash}:${id}` : null;
+  const [retainedRecord, setRetainedRecord] = useState<{
+    target: string;
+    value: ChangeSetRecord;
+  } | null>(null);
+  const readyRecord = changeSet.state === "ready" ? changeSet.value : null;
+  useEffect(() => {
+    if (readyRecord !== null && target !== null) {
+      setRetainedRecord({ target, value: readyRecord });
+    }
+  }, [readyRecord, target]);
+  const record =
+    changeSet.state === "ready"
+      ? changeSet.value
+      : retainedRecord?.target === target
+        ? retainedRecord.value
+        : null;
   return (
     <Page
       title="Change set"
@@ -324,7 +356,7 @@ export default function ChangeSetPage() {
         <ErrorBanner
           error={new Error("The stash name or change-set id is missing from this URL.")}
         />
-      ) : changeSet.state === "loading" ? (
+      ) : changeSet.state === "loading" && record === null ? (
         <p className="loading-copy" role="status">
           Loading change set…
         </p>
@@ -345,7 +377,7 @@ export default function ChangeSetPage() {
         </p>
       ) : capability.canWrite ? (
         <ChangeSetReview
-          key={`${stash}:${record.id}:${record.status}:${record.decidedAt ?? ""}`}
+          key={writableReviewKey(stash, record)}
           stash={stash}
           changeSet={record}
           onDecision={handleDecision}

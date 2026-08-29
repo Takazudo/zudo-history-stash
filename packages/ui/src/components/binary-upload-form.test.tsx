@@ -67,6 +67,12 @@ describe("BinaryUploadForm", () => {
       token: readToken,
       fetch: fake.fetch,
     });
+    const principal = await client.me();
+    expect(principal).toMatchObject({
+      ok: true,
+      value: { principal: "stash", stash: "notes", scope: "read" },
+    });
+    vi.spyOn(client, "me").mockResolvedValue(principal);
     render(
       <StashUiProvider client={client}>
         <BinaryUploadForm onUploaded={vi.fn()} stash="notes" />

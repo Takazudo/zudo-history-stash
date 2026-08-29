@@ -3365,6 +3365,13 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const changeSetStatus = (row: FakeChangeSetRow): FakeChangeSetRow["status"] =>
     row.status === "open" && row.expiresAt <= now() ? "expired" : row.status;
 
+  const canonicalChangeSetEntries = (
+    entries: readonly FakeChangeSetEntryRow[],
+  ): FakeChangeSetEntryRow[] =>
+    [...entries].sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    );
+
   const changeSetRecord = (row: FakeChangeSetRow): ChangeSetRecord => ({
     id: row.id,
     stash: row.stash,
@@ -3379,7 +3386,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     decidedBy: row.decidedBy,
     decisionReason: row.decisionReason,
     commitId: row.commitId,
-    entries: row.entries.map((entry) => ({
+    entries: canonicalChangeSetEntries(row.entries).map((entry) => ({
       path: entry.path,
       op: entry.op,
       baseVersion: entry.baseVersion,
@@ -3541,17 +3548,19 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     // Hash and validate every candidate before publishing any blob or change-set row. This keeps
     // create atomic from a consumer's perspective and matches the Worker's staged batch: an
     // invalid later entry must not leave an earlier candidate blob behind.
-    const entries = await Promise.all(
-      parsed.data.entries.map(async (entry): Promise<FakeChangeSetEntryRow> => {
-        const staged = stageChangeSetEntry(stash, entry);
-        if (staged.op === "put") {
-          if (staged.body !== undefined) staged.hash = await sha256Hex(staged.body);
-          else if (staged.bytes !== undefined) {
-            staged.hash = await sha256Hex(staged.bytes.slice().buffer);
+    const entries = canonicalChangeSetEntries(
+      await Promise.all(
+        parsed.data.entries.map(async (entry): Promise<FakeChangeSetEntryRow> => {
+          const staged = stageChangeSetEntry(stash, entry);
+          if (staged.op === "put") {
+            if (staged.body !== undefined) staged.hash = await sha256Hex(staged.body);
+            else if (staged.bytes !== undefined) {
+              staged.hash = await sha256Hex(staged.bytes.slice().buffer);
+            }
           }
-        }
-        return staged;
-      }),
+          return staged;
+        }),
+      ),
     );
     for (const entry of entries) {
       const hash = entry.hash;
@@ -3685,7 +3694,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const parsed = ChangeSetDiffQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid change-set diff query.");
     const row = requireChangeSet(stash, id);
-    let sourceEntries = row.entries;
+    let sourceEntries = canonicalChangeSetEntries(row.entries);
     if (parsed.data.path !== undefined) {
       sourceEntries = sourceEntries.filter((entry) => entry.path === parsed.data.path);
       if (sourceEntries.length === 0) return fail("not-found", "Change-set entry not found.");

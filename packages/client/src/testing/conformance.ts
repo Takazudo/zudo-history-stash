@@ -1390,11 +1390,21 @@ const TRACE: readonly TraceStep[] = [
       const step = "multi-entry commit creates atomically";
       assertStatus(step, response, 201);
       const value = record(body, step);
-      assertSubset(step, value, { entryCount: 2, source: "commit", firstChangeId: 8 });
+      assertSubset(step, value, { entryCount: 2, source: "commit" });
+      const firstChangeId = value.firstChangeId;
+      if (
+        typeof firstChangeId !== "number" ||
+        !Number.isSafeInteger(firstChangeId) ||
+        firstChangeId < 1
+      ) {
+        traceFailure(step, "firstChangeId must be a positive safe integer");
+      }
       if (typeof value.id !== "string") traceFailure(step, "missing commit id");
       remember(context, "sdkCommitId", value.id);
       const entries = array(value.entries, step);
       assertEqual(step, entries.length, 2, "entries.length");
+      const firstEntry = record(entries[0], step);
+      assertEqual(step, firstEntry.changeId, firstChangeId, "firstChangeId");
       assertSubset(step, entries[1], { path: "sdk/beta.bin", representation: "binary", size: 3 });
     },
   },
@@ -1539,7 +1549,7 @@ const TRACE: readonly TraceStep[] = [
       },
     }),
     201,
-    () => ({ status: "open", entries: [{ path: "sdk/review.txt" }, { path: "sdk/review.bin" }] }),
+    () => ({ status: "open", entries: [{ path: "sdk/review.bin" }, { path: "sdk/review.txt" }] }),
     (body, _response, context) =>
       remember(context, "sdkChangeSetId", record(body, "change set").id),
   ),
@@ -1555,7 +1565,7 @@ const TRACE: readonly TraceStep[] = [
     {
       stale: false,
       status: "open",
-      entries: [{ path: "sdk/review.txt" }, { path: "sdk/review.bin", diff: { state: "binary" } }],
+      entries: [{ path: "sdk/review.bin", diff: { state: "binary" } }, { path: "sdk/review.txt" }],
     },
   ),
   responseStep(
