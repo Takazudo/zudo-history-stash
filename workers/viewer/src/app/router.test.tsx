@@ -10,6 +10,10 @@ const protectedRoutes = [
   ["/s/notes/f/folder/readme.txt", "folder/readme.txt"],
   ["/s/notes/diff/folder/readme.txt?from=1&to=head", "Diff: folder/readme.txt"],
   ["/s/notes/edit/folder/readme.txt", "folder/readme.txt"],
+  ["/s/notes/commits", "Commits"],
+  ["/s/notes/commits/cmt_1756108800000abcdef12", "Commit"],
+  ["/s/notes/change-sets", "Change sets"],
+  ["/s/notes/change-sets/chs_1756108800000abcdef12", "Change set"],
   ["/s/notes/new", "New file"],
   ["/s/notes/tokens", "Tokens"],
 ] as const;
@@ -77,6 +81,54 @@ beforeEach(() => {
       if (url.pathname.endsWith("/v1/admin/gc/runs")) {
         return Response.json({ runs: [] });
       }
+      if (url.pathname.endsWith("/commits")) {
+        return Response.json({ commits: [], nextAfter: null, total: 0 });
+      }
+      if (url.pathname.includes("/commits/") && url.pathname.endsWith("/diff")) {
+        return Response.json({ entries: [], truncated: false });
+      }
+      if (url.pathname.includes("/commits/")) {
+        return Response.json({
+          id: "cmt_1756108800000abcdef12",
+          stash: "notes",
+          source: "manual",
+          sourceId: null,
+          author: "admin",
+          message: "Fixture commit",
+          meta: {},
+          entryCount: 0,
+          firstChangeId: 0,
+          lastChangeId: 0,
+          revertsCommitId: null,
+          createdBy: "admin",
+          createdAt: "2026-08-25T08:00:00.000Z",
+          entries: [],
+        });
+      }
+      if (url.pathname.endsWith("/change-sets")) {
+        return Response.json({ changeSets: [], nextAfter: null, total: 0 });
+      }
+      if (url.pathname.includes("/change-sets/") && url.pathname.endsWith("/diff")) {
+        return Response.json({ entries: [], stale: false, status: "open", truncated: false });
+      }
+      if (url.pathname.includes("/change-sets/")) {
+        return Response.json({
+          id: "chs_1756108800000abcdef12",
+          stash: "notes",
+          status: "open",
+          author: "admin",
+          message: "Fixture change set",
+          meta: {},
+          expiresAt: "2026-09-01T00:00:00.000Z",
+          createdBy: "admin",
+          createdAt: "2026-08-25T08:00:00.000Z",
+          decidedAt: null,
+          decidedBy: null,
+          decisionReason: null,
+          commitId: null,
+          entries: [],
+        });
+      }
       return Response.json(
         url.pathname.endsWith("/tokens") ? { tokens: [] } : { principal: "admin" },
       );
@@ -93,6 +145,10 @@ describe("viewer routes", () => {
       "/s/:stash/f/*",
       "/s/:stash/diff/*",
       "/s/:stash/edit/*",
+      "/s/:stash/commits",
+      "/s/:stash/commits/:id",
+      "/s/:stash/change-sets",
+      "/s/:stash/change-sets/:id",
       "/s/:stash/new",
       "/s/:stash/tokens",
     ]);

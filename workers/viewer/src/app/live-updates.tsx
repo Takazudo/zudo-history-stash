@@ -191,6 +191,11 @@ export function ViewerLiveUpdatesProvider({
         const orderedChanges = [...changes.values()].sort(
           (left, right) => left.changeId - right.changeId,
         );
+        // A commit frame represents one atomic write across the stash. Keep its reconciliation
+        // whole-stash and never expose a path hint even if a transport supplies one. Change-set
+        // frames are scheduled once per affected path by useLiveChanges; retaining each request's
+        // hint lets consumers prefetch every path without replacing the authoritative feed rows.
+        const hintedPath = request.reason === "commit" ? undefined : request.path;
         const results = await Promise.allSettled(
           listeners.map((listener) => {
             const signal = AbortSignal.any([request.signal, listener.controller.signal]);
@@ -199,7 +204,7 @@ export function ViewerLiveUpdatesProvider({
               full,
               checkpoint: request.checkpoint,
               changes: orderedChanges,
-              ...(request.path === undefined ? {} : { hintedPath: request.path }),
+              ...(hintedPath === undefined ? {} : { hintedPath }),
               signal,
             };
             return settleWithSignal(

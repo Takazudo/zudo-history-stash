@@ -5,6 +5,10 @@ import FilePage from "../pages/file.js";
 import HomePage from "../pages/home.js";
 import LoginPage from "../pages/login.js";
 import NewFilePage from "../pages/new-file.js";
+import ChangeSetPage from "../pages/change-set.js";
+import ChangeSetsPage from "../pages/change-sets.js";
+import CommitPage from "../pages/commit.js";
+import CommitsPage from "../pages/commits.js";
 import StashPage from "../pages/stash.js";
 import TokensPage from "../pages/tokens.js";
 import { RequireToken } from "./auth/require-token.js";
@@ -37,6 +41,10 @@ export const VIEWER_ROUTE_PATHS = [
   "/s/:stash/f/*",
   "/s/:stash/diff/*",
   "/s/:stash/edit/*",
+  "/s/:stash/commits",
+  "/s/:stash/commits/:id",
+  "/s/:stash/change-sets",
+  "/s/:stash/change-sets/:id",
   "/s/:stash/new",
   "/s/:stash/tokens",
 ] as const;
@@ -54,6 +62,18 @@ export const viewerRoutes: RouteObject[] = [
           { path: "/s/:stash/f/*", element: <FilePage /> },
           { path: "/s/:stash/diff/*", element: <DiffPage /> },
           { path: "/s/:stash/edit/*", element: <EditPage />, handle: { liveAccess: "write" } },
+          { path: "/s/:stash/commits", element: <CommitsPage /> },
+          {
+            path: "/s/:stash/commits/:id",
+            element: <CommitPage />,
+            handle: { liveAccess: "write" },
+          },
+          { path: "/s/:stash/change-sets", element: <ChangeSetsPage /> },
+          {
+            path: "/s/:stash/change-sets/:id",
+            element: <ChangeSetPage />,
+            handle: { liveAccess: "write" },
+          },
           { path: "/s/:stash/new", element: <NewFilePage />, handle: { liveAccess: "write" } },
           { path: "/s/:stash/tokens", element: <TokensPage />, handle: { liveAccess: "admin" } },
         ],

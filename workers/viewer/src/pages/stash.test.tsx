@@ -181,6 +181,28 @@ describe("StashPage", () => {
     expect(screen.getByRole("button", { name: "Delete stash" })).toBeTruthy();
   });
 
+  it("links recent history surfaces and shows the authoritative open change-set count", async () => {
+    const base = createFakeViewerClient();
+    const client = createFakeViewerClient({
+      changeSets: (stash) => ({
+        ...base.changeSets(stash),
+        list: async () => ({
+          ok: true as const,
+          value: { changeSets: [], nextAfter: null, total: 3 },
+        }),
+      }),
+    });
+    renderViewerRoute("/s/notes", client);
+
+    await screen.findByText("This stash has no live files.");
+    expect(screen.getByRole("link", { name: "Commits" }).getAttribute("href")).toBe(
+      "/s/notes/commits",
+    );
+    expect(screen.getByRole("link", { name: "Change sets (3 open)" }).getAttribute("href")).toBe(
+      "/s/notes/change-sets",
+    );
+  });
+
   it("shows only New file to a matching write principal", async () => {
     const remove = vi.fn(async () => ({
       ok: true as const,
