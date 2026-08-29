@@ -13,9 +13,11 @@ importRoutes.post(
     if (!result.success) throw new StashError("validation", "Invalid import input.");
   }),
   async (c) => {
+    const principal = c.get("principal");
     const importer = createImport(c.env, {
-      now: Date.now,
-      createId: () => crypto.randomUUID(),
+      now: c.get("deps").now,
+      createId: c.get("deps").createId,
+      createdBy: principal.kind === "admin" ? "admin" : principal.tokenId,
     });
     const stash = c.get("routeStash").name;
     const input = c.req.valid("json");

@@ -12,6 +12,7 @@ import { createStashStore } from "../../src/d1/store.js";
 import type { Env } from "../../src/env.js";
 import { request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
+import { seedCommit } from "../helpers/seed-rows.js";
 
 const STASH = "spilled-read";
 const BASE = `http://stash.test/v1/stashes/${STASH}`;
@@ -99,11 +100,17 @@ async function seedFile(
         .run();
     }
 
+    const commitId = await seedCommit(
+      STASH,
+      `cmt_spilled_${path}_${version}`,
+      createdAt,
+      kind,
+    );
     await bindings.DB.prepare(
       `INSERT INTO versions (
         stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-        rollback_of, author, message, meta_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'text/plain; charset=utf-8', ?, ?, ?, ?, ?)`,
+        rollback_of, author, message, meta_json, created_at, commit_id
+      ) VALUES (?, ?, ?, ?, ?, ?, 'text/plain; charset=utf-8', ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         STASH,
@@ -117,6 +124,7 @@ async function seedFile(
         `version ${version}`,
         JSON.stringify({ version }),
         createdAt,
+        commitId,
       )
       .run();
     versions.push({

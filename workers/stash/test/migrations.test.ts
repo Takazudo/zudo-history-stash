@@ -70,6 +70,22 @@ describe("D1 migrations", () => {
       { name: "id", desc: 1 },
     ]);
 
+    const commitIndexes = await env.DB.prepare("PRAGMA index_list(commits)").all<{
+      name: string;
+      partial: number;
+    }>();
+    expect(commitIndexes.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "commits_stash_created", partial: 0 }),
+        expect.objectContaining({ name: "commits_stash_idempotency", partial: 1 }),
+        expect.objectContaining({ name: "commits_stash_last_change", partial: 0 }),
+      ]),
+    );
+    const versionIndexes = await env.DB.prepare("PRAGMA index_list(versions)").all<{
+      name: string;
+    }>();
+    expect(versionIndexes.results.map(({ name }) => name)).toContain("versions_stash_commit");
+
     await expect(env.DB.prepare("SELECT 1 FROM proposals").first()).rejects.toThrow();
 
     const jobs = await env.DB.prepare(
@@ -176,6 +192,25 @@ describe("D1 migrations", () => {
       "SELECT deleted_at FROM stashes WHERE name = 'upgrade'",
     ).first<{ deleted_at: number | null }>();
     expect(upgradedStash).toEqual({ deleted_at: null });
+    const legacyCommit = await env.UPGRADE_DB.prepare(
+      `SELECT id, stash_name, source, entry_count, change_count, sealed,
+         first_change_id, last_change_id, created_by
+       FROM commits WHERE id = 'cmt_legacy_1'`,
+    ).first();
+    expect(legacyCommit).toEqual({
+      id: "cmt_legacy_1",
+      stash_name: "upgrade",
+      source: "put",
+      entry_count: 1,
+      change_count: 1,
+      sealed: 1,
+      first_change_id: 1,
+      last_change_id: 1,
+      created_by: "legacy",
+    });
+    await expect(
+      env.UPGRADE_DB.prepare("SELECT commit_id FROM versions WHERE id = 1").first(),
+    ).resolves.toEqual({ commit_id: "cmt_legacy_1" });
     await expect(
       env.UPGRADE_DB.prepare(
         `SELECT b.body, b.size_bytes, v.representation, v.application_etag, v.content_storage, f.head_hash
@@ -213,10 +248,14 @@ describe("D1 migrations", () => {
       0, 255, 1, 2,
     ]);
     await env.UPGRADE_DB.prepare(
+      `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+       VALUES ('cmt_upgrade_bytes', 'upgrade', 'put', 1, 'test', 2)`,
+    ).run();
+    await env.UPGRADE_DB.prepare(
       `INSERT INTO versions
          (stash_name, path, version, kind, blob_hash, size_bytes, representation,
-          application_etag, content_storage, created_at)
-       VALUES ('upgrade', 'raw.bin', 1, 'put', ?, 4, 'binary', ?, 'bytes', 2)`,
+          application_etag, content_storage, created_at, commit_id)
+       VALUES ('upgrade', 'raw.bin', 1, 'put', ?, 4, 'binary', ?, 'bytes', 2, 'cmt_upgrade_bytes')`,
     )
       .bind(byteHash, byteHash)
       .run();
@@ -309,14 +348,19 @@ describe("D1 migrations", () => {
     await env.DB.prepare(
       "INSERT INTO stashes (name, description, meta_json, created_at) VALUES ('alpha', '', '{}', 1)",
     ).run();
+    await env.DB.prepare(
+      `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+       VALUES ('cmt_constraint_a', 'alpha', 'delete', 1, 'test', 1),
+              ('cmt_constraint_b', 'alpha', 'rollback', 1, 'test', 1)`,
+    ).run();
     await expect(
       env.DB.prepare(
-        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at) VALUES ('alpha','a',1,'delete','sha256-x',1)",
+        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at,commit_id) VALUES ('alpha','a',1,'delete','sha256-x',1,'cmt_constraint_a')",
       ).run(),
     ).rejects.toThrow();
     await expect(
       env.DB.prepare(
-        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at) VALUES ('alpha','b',1,'rollback','sha256-x',1)",
+        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at,commit_id) VALUES ('alpha','b',1,'rollback','sha256-x',1,'cmt_constraint_b')",
       ).run(),
     ).rejects.toThrow();
     await expect(

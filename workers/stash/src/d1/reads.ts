@@ -109,6 +109,7 @@ export interface ReadHistoryPage {
 
 export interface ReadChangeItem {
   changeId: number;
+  commitId: string;
   stash: string;
   path: string;
   version: number;
@@ -339,7 +340,7 @@ function mapFileSource(
 
 function mapVersion(row: HistoryVersionRow, jsonInlineMaxBytes: number): ReadVersionRecord {
   return {
-    commitId: `legacy:${row.change_id}`,
+    commitId: row.commit_id,
     version: row.version,
     kind: row.kind,
     hash: row.hash,
@@ -368,6 +369,7 @@ function mapFileSummary(row: FileSummaryRow, jsonInlineMaxBytes: number): ReadFi
 function mapChange(row: ChangeRow, jsonInlineMaxBytes: number): ReadChangeItem {
   return {
     changeId: row.change_id,
+    commitId: row.commit_id,
     stash: row.stash,
     path: row.path,
     version: row.version,

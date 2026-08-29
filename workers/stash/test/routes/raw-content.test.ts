@@ -5,6 +5,7 @@ import { contentDisposition, parseByteRange } from "../../src/routes/raw-content
 import type { Env } from "../../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
+import { seedCommit } from "../helpers/seed-rows.js";
 
 const STASH = "raw-content";
 const BASE = `http://stash.test/v1/stashes/${STASH}`;
@@ -63,12 +64,18 @@ async function seedPath(path: string, inputs: readonly SeedInput[]): Promise<str
           .run();
       }
     }
+    const commitId = await seedCommit(
+      STASH,
+      `cmt_raw_${path}_${version}`,
+      version,
+      deleted ? "delete" : "put",
+    );
     await env.DB.prepare(
       `INSERT INTO versions
          (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
           author, message, meta_json, created_at, representation, application_etag,
-          content_storage)
-       VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '{}', ?, ?, ?, ?)`,
+          content_storage, commit_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '', '', '{}', ?, ?, ?, ?, ?)`,
     )
       .bind(
         STASH,
@@ -82,6 +89,7 @@ async function seedPath(path: string, inputs: readonly SeedInput[]): Promise<str
         input.representation,
         hash,
         input.storage,
+        commitId,
       )
       .run();
   }

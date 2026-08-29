@@ -32,6 +32,7 @@ import {
   type LedgerInsert,
 } from "./sql/writes.js";
 import type { StoreDependencies } from "./store.js";
+import { mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 
@@ -54,6 +55,7 @@ interface VersionMetaRow extends VersionRow {
 
 export interface WriteOptions {
   idempotencyKey?: string;
+  createdBy?: string;
 }
 
 export type StoreWriteResult<T> =
@@ -174,7 +176,7 @@ async function replay<T>(
   const row = await readVersion(db, ledger.stash_name, ledger.path, ledger.version);
   if (!row) return failure("internal", 500, "Idempotency result is missing");
   const base = {
-    commitId: `legacy:${row.id}`,
+    commitId: row.commit_id,
     version: row.version,
     changeId: row.id,
     createdAt: new Date(row.created_at).toISOString(),
@@ -226,8 +228,16 @@ function batchWon(results: D1Result[]): boolean {
   return results.at(-1)?.meta.changes === 1;
 }
 
-function changeId(results: D1Result[], versionStatementIndex: number): number | null {
-  const id = results[versionStatementIndex]?.meta.last_row_id;
+async function committedChangeId(
+  db: D1DatabaseSession,
+  stash: string,
+  commitId: string,
+): Promise<number | null> {
+  const rows = await db
+    .prepare(SELECT_COMMIT_VERSIONS)
+    .bind(stash, commitId)
+    .all<{ id: number }>();
+  const id = rows.results.length === 1 ? rows.results[0]?.id : undefined;
   return typeof id === "number" && id > 0 ? id : null;
 }
 
@@ -300,11 +310,14 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     const prepared = await prepareBlob(env, stash, hash, input.body, deps.createBlobGeneration);
     await deps.onBeforeCommit?.();
     const createdAt = deps.now();
+    const commitId = mintCommitId(createdAt, deps.createId);
     const ledger: LedgerInsert | undefined = options.idempotencyKey
       ? { key: options.idempotencyKey, requestHash, statusCode: 201 }
       : undefined;
     const batchInput = {
       stash,
+      commitId,
+      createdBy: options.createdBy ?? "system",
       path,
       expectedVersion: input.expectedVersion,
       hash,
@@ -324,11 +337,11 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
           : putUpdateBatch(db, batchInput),
       );
       if (batchWon(results)) {
-        const id = changeId(results, 1);
+        const id = await committedChangeId(db, stash, commitId);
         if (id === null) return failure("internal", 500, "Missing put change id");
         return created(
           {
-            commitId: `legacy:${id}`,
+            commitId,
             version: (input.expectedVersion ?? 0) + 1,
             hash,
             size,
@@ -400,6 +413,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
 
     await deps.onBeforeCommit?.();
     const createdAt = deps.now();
+    const commitId = mintCommitId(createdAt, deps.createId);
     const ledger: LedgerInsert | undefined = options.idempotencyKey
       ? { key: options.idempotencyKey, requestHash, statusCode: 200 }
       : undefined;
@@ -407,6 +421,8 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       const results = await db.batch(
         deleteBatch(db, {
           stash,
+          commitId,
+          createdBy: options.createdBy ?? "system",
           path,
           expectedVersion: input.expectedVersion,
           author: input.author ?? "",
@@ -416,11 +432,11 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
         }),
       );
       if (batchWon(results)) {
-        const id = changeId(results, 0);
+        const id = await committedChangeId(db, stash, commitId);
         if (id === null) return failure("internal", 500, "Missing delete change id");
         return created(
           {
-            commitId: `legacy:${id}`,
+            commitId,
             version: input.expectedVersion + 1,
             changeId: id,
             createdAt: new Date(createdAt).toISOString(),
@@ -503,6 +519,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
 
     await deps.onBeforeCommit?.();
     const createdAt = deps.now();
+    const commitId = mintCommitId(createdAt, deps.createId);
     const ledger: LedgerInsert | undefined = options.idempotencyKey
       ? { key: options.idempotencyKey, requestHash, statusCode: 201 }
       : undefined;
@@ -510,6 +527,8 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
       const results = await db.batch(
         rollbackBatch(db, {
           stash,
+          commitId,
+          createdBy: options.createdBy ?? "system",
           path,
           expectedVersion: input.expectedVersion,
           toVersion: input.toVersion,
@@ -521,11 +540,11 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
         }),
       );
       if (batchWon(results)) {
-        const id = changeId(results, 0);
+        const id = await committedChangeId(db, stash, commitId);
         if (id === null) return failure("internal", 500, "Missing rollback change id");
         return created(
           {
-            commitId: `legacy:${id}`,
+            commitId,
             version: input.expectedVersion + 1,
             hash: target.blob_hash,
             rollbackOf: input.toVersion,

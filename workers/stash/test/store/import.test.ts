@@ -710,6 +710,9 @@ describe("history import store", () => {
       },
     ];
     const built = importBatch(db, {
+      commitId: "cmt_batch_fence",
+      createdBy: "test",
+      createdAt: 1_001,
       stash: "batch-fence",
       path: "race.txt",
       expectedVersion: 1,

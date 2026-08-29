@@ -198,10 +198,12 @@ files.put("/v1/stashes/:stash/files/:path{.+}", async (c) => {
   const path = filePath(c);
   const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
-  const store = createStashStore(c.env);
+  const store = createStashStore(c.env, c.get("deps"));
+  const principal = c.get("principal");
   const result = unwrapWrite(
     await store.writes.put(stash, path, await putBody(c), {
       idempotencyKey: key,
+      createdBy: principal.kind === "admin" ? "admin" : principal.tokenId,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
@@ -227,10 +229,12 @@ files.post("/v1/stashes/:stash/delete/:path{.+}", async (c) => {
   const path = filePath(c);
   const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
-  const store = createStashStore(c.env);
+  const store = createStashStore(c.env, c.get("deps"));
+  const principal = c.get("principal");
   const result = unwrapWrite(
     await store.writes.delete(stash, path, await deleteBody(c), {
       idempotencyKey: key,
+      createdBy: principal.kind === "admin" ? "admin" : principal.tokenId,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");
@@ -256,10 +260,12 @@ files.post("/v1/stashes/:stash/rollback/:path{.+}", async (c) => {
   const path = filePath(c);
   const stash = c.get("routeStash").name;
   const key = idempotencyKey(c);
-  const store = createStashStore(c.env);
+  const store = createStashStore(c.env, c.get("deps"));
+  const principal = c.get("principal");
   const result = unwrapWrite(
     await store.writes.rollback(stash, path, await rollbackBody(c), {
       idempotencyKey: key,
+      createdBy: principal.kind === "admin" ? "admin" : principal.tokenId,
     }),
   );
   if (result.replayed) c.header("Idempotent-Replayed", "true");

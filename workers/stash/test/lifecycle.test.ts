@@ -5,6 +5,7 @@ import { createAdminStore } from "../src/d1/admin-store.js";
 import type { Env } from "../src/env.js";
 import { resetDatabase } from "./helpers/app.js";
 import { createTestEnv } from "./helpers/env.js";
+import { seedCommit } from "./helpers/seed-rows.js";
 
 const STASH = "lifecycle-store";
 const DELETED_AT = 1_900_000_000_000;
@@ -57,12 +58,13 @@ async function seedHistoryAndTokens(): Promise<void> {
   )
     .bind(STASH, DELETED_AT - 900)
     .run();
+  const commitId = await seedCommit(STASH, "cmt_lifecycle_1", DELETED_AT - 800);
   await env.DB.prepare(
     `INSERT INTO versions
-       (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at)
-     VALUES (?, 'file.txt', 1, 'put', 'hash-one', 4, 'author', 'message', ?)`,
+       (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at, commit_id)
+     VALUES (?, 'file.txt', 1, 'put', 'hash-one', 4, 'author', 'message', ?, ?)`,
   )
-    .bind(STASH, DELETED_AT - 800)
+    .bind(STASH, DELETED_AT - 800, commitId)
     .run();
   await env.DB.prepare(
     `INSERT INTO files

@@ -255,6 +255,8 @@ describe("stash writes", () => {
     const before = await counts(stash);
     const results = await db.batch(
       rollbackBatch(db, {
+        commitId: "cmt_tombstone_refusal",
+        createdBy: "test",
         stash,
         path: "hole.txt",
         expectedVersion: 2,

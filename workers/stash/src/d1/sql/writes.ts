@@ -1,4 +1,5 @@
 import type { PreparedBlob } from "../blobs.js";
+import { commitInsertStatement, sealStatement } from "./commits.js";
 
 /**
  * Every mutation has one operation predicate F, and that exact predicate is applied to every
@@ -18,6 +19,8 @@ export interface LedgerInsert {
 }
 
 export type PutBatchInput = {
+  commitId: string;
+  createdBy: string;
   stash: string;
   path: string;
   expectedVersion: number | null;
@@ -32,6 +35,8 @@ export type PutBatchInput = {
 } & PreparedBlob;
 
 export interface DeleteBatchInput {
+  commitId: string;
+  createdBy: string;
   stash: string;
   path: string;
   expectedVersion: number;
@@ -42,6 +47,8 @@ export interface DeleteBatchInput {
 }
 
 export interface RollbackBatchInput {
+  commitId: string;
+  createdBy: string;
   stash: string;
   path: string;
   expectedVersion: number;
@@ -56,6 +63,7 @@ export interface RollbackBatchInput {
 type Preparer = Pick<D1DatabaseSession, "prepare">;
 
 export interface VersionInsertInput {
+  commitId: string;
   stash: string;
   path: string;
   version: number;
@@ -185,8 +193,8 @@ export function versionInsert(
     .prepare(
       `INSERT INTO versions
         (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-         rollback_of, author, message, meta_json, created_at)
-       SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ? WHERE ${operationFence.sql}`,
+         rollback_of, author, message, meta_json, created_at, commit_id)
+       SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ?, ? WHERE ${operationFence.sql}`,
     )
     .bind(
       input.stash,
@@ -199,6 +207,7 @@ export function versionInsert(
       input.message,
       input.metaJson,
       input.createdAt,
+      input.commitId,
       ...operationFence.params,
     );
 }
@@ -298,13 +307,42 @@ function putStatements(
   ];
 }
 
+function commitStatement(
+  db: Preparer,
+  input: PutBatchInput | DeleteBatchInput | RollbackBatchInput,
+  source: "put" | "delete" | "rollback",
+  operationFence: SqlFragment,
+): D1PreparedStatement {
+  return commitInsertStatement(
+    db,
+    {
+      id: input.commitId,
+      stash_name: input.stash,
+      source,
+      source_id: null,
+      author: input.author,
+      message: input.message,
+      meta_json: "metaJson" in input ? input.metaJson : "{}",
+      entry_count: 1,
+      reverts_commit_id: null,
+      idempotency_key: input.ledger?.key ?? null,
+      request_hash: input.ledger?.requestHash ?? null,
+      created_by: input.createdBy,
+      created_at: input.createdAt,
+    },
+    operationFence,
+  );
+}
+
 export function putUpdateBatch(db: Preparer, input: PutBatchInput): D1PreparedStatement[] {
   if (input.expectedVersion === null) throw new Error("putUpdateBatch requires expectedVersion");
   const operationFence = fence.put(input.stash, input.path, input.expectedVersion);
   const version = input.expectedVersion + 1;
   return [
+    commitStatement(db, input, "put", operationFence),
     ...putStatements(db, input, operationFence, version),
     headWrite(db, { ...input, version }, operationFence),
+    sealStatement(db, { stash: input.stash, id: input.commitId }),
   ];
 }
 
@@ -313,8 +351,10 @@ export function putCreateBatch(db: Preparer, input: PutBatchInput): D1PreparedSt
     throw new Error("putCreateBatch requires null expectedVersion");
   const operationFence = fence.create(input.stash, input.path);
   return [
+    commitStatement(db, input, "put", operationFence),
     ...putStatements(db, input, operationFence, 1),
     headWrite(db, { ...input, version: 1 }, operationFence),
+    sealStatement(db, { stash: input.stash, id: input.commitId }),
   ];
 }
 
@@ -322,14 +362,15 @@ export function deleteBatch(db: Preparer, input: DeleteBatchInput): D1PreparedSt
   const operationFence = fence.delete(input.stash, input.path, input.expectedVersion);
   const version = input.expectedVersion + 1;
   return [
+    commitStatement(db, input, "delete", operationFence),
     db
       .prepare(
         `INSERT INTO versions
           (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
            rollback_of, author, message, meta_json, created_at,
-           representation, application_etag, content_storage)
+           representation, application_etag, content_storage, commit_id)
          SELECT ?, ?, ?, 'delete', NULL, 0, current.content_type,
-           NULL, ?, ?, '{}', ?, current.representation, NULL, current.content_storage
+           NULL, ?, ?, '{}', ?, current.representation, NULL, current.content_storage, ?
          FROM versions AS current
          WHERE current.stash_name = ? AND current.path = ? AND current.version = ?
            AND ${operationFence.sql}`,
@@ -341,6 +382,7 @@ export function deleteBatch(db: Preparer, input: DeleteBatchInput): D1PreparedSt
         input.author,
         input.message,
         input.createdAt,
+        input.commitId,
         input.stash,
         input.path,
         input.expectedVersion,
@@ -366,6 +408,7 @@ export function deleteBatch(db: Preparer, input: DeleteBatchInput): D1PreparedSt
         input.path,
         version,
       ),
+    sealStatement(db, { stash: input.stash, id: input.commitId }),
   ];
 }
 
@@ -378,15 +421,16 @@ export function rollbackBatch(db: Preparer, input: RollbackBatchInput): D1Prepar
   );
   const version = input.expectedVersion + 1;
   return [
+    commitStatement(db, input, "rollback", operationFence),
     db
       .prepare(
         `INSERT INTO versions
           (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
            rollback_of, author, message, meta_json, created_at,
-           representation, application_etag, content_storage)
+           representation, application_etag, content_storage, commit_id)
          SELECT ?, ?, ?, 'rollback', target.blob_hash, target.size_bytes, target.content_type,
            target.version, ?, COALESCE(NULLIF(?, ''), 'Rollback to v' || target.version), ?, ?,
-           target.representation, target.application_etag, target.content_storage
+           target.representation, target.application_etag, target.content_storage, ?
          FROM versions target
          WHERE target.stash_name = ? AND target.path = ? AND target.version = ?
            AND ${operationFence.sql}`,
@@ -399,6 +443,7 @@ export function rollbackBatch(db: Preparer, input: RollbackBatchInput): D1Prepar
         input.message,
         input.metaJson,
         input.createdAt,
+        input.commitId,
         input.stash,
         input.path,
         input.toVersion,
@@ -427,5 +472,6 @@ export function rollbackBatch(db: Preparer, input: RollbackBatchInput): D1Prepar
         input.path,
         version,
       ),
+    sealStatement(db, { stash: input.stash, id: input.commitId }),
   ];
 }

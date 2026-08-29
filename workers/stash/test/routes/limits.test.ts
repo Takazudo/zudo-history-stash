@@ -12,6 +12,7 @@ import type { Env } from "../../src/env.js";
 import { request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv, wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
 import { escapedImportRequest, type EncodedRequest } from "../helpers/large-json.js";
+import { seedCommit } from "../helpers/seed-rows.js";
 
 const STASH = "route-limits";
 const BASE = `http://stash.test/v1/stashes/${STASH}`;
@@ -235,11 +236,12 @@ describe.sequential("raised request and text limits", () => {
     )
       .bind(STASH, hash, body, R2_SPILL_BYTES + 1, createdAt)
       .run();
+    const commitId = await seedCommit(STASH, "cmt_limits_legacy", createdAt);
     await env.DB.prepare(
       `INSERT INTO versions (
         stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-        rollback_of, author, message, meta_json, created_at
-      ) VALUES (?, ?, 1, 'put', ?, ?, 'text/plain; charset=utf-8', NULL, ?, ?, ?, ?)`,
+        rollback_of, author, message, meta_json, created_at, commit_id
+      ) VALUES (?, ?, 1, 'put', ?, ?, 'text/plain; charset=utf-8', NULL, ?, ?, ?, ?, ?)`,
     )
       .bind(
         STASH,
@@ -250,6 +252,7 @@ describe.sequential("raised request and text limits", () => {
         "pre-spill row",
         '{"source":"legacy"}',
         createdAt,
+        commitId,
       )
       .run();
     await env.DB.prepare(
