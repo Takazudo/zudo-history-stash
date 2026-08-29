@@ -207,6 +207,106 @@ describe("controlled commit races and invariants", () => {
     expect(await idempotencyRows(stash, "stale")).toBe(0);
   });
 
+  it("lets a prefix-scoped commit survive an unrelated raced write while whole-stash CAS refuses it", async () => {
+    async function raceDocsWrite(stash: string, expectedLastChangePrefix?: string) {
+      await seedStash(stash);
+      await seedFile(stash, "site/existing.txt");
+      const newest = await seedFile(stash, "docs/existing.txt");
+      let afterCompetitor: Awaited<ReturnType<typeof counts>> | null = null;
+      const commits = createCommits(
+        workerEnv,
+        deps({
+          onBeforeCommit: async () => {
+            const competitor = await store(9_000).writes.put(stash, "docs/other.txt", {
+              body: "competitor",
+              expectedVersion: null,
+            });
+            if (!competitor.ok) throw new Error("Docs competitor failed");
+            afterCompetitor = await counts(stash);
+          },
+        }),
+      );
+      const result = await commits.createCommit(
+        stash,
+        {
+          entries: [
+            { op: "put", path: "site/candidate.txt", expectedVersion: null, body: "candidate" },
+          ],
+          expectedLastChangeId: newest.changeId,
+          ...(expectedLastChangePrefix === undefined ? {} : { expectedLastChangePrefix }),
+        },
+        { principal: "test" },
+      );
+      return { result, afterCompetitor };
+    }
+
+    const scoped = await raceDocsWrite("race-prefix-docs", "site");
+    expect(scoped.result.ok).toBe(true);
+    if (!scoped.result.ok) throw new Error("Expected prefix-scoped commit to succeed");
+    await expect(
+      workerEnv.DB.prepare(
+        `SELECT v.path, v.commit_id, c.sealed
+         FROM versions AS v JOIN commits AS c ON c.id = v.commit_id
+         WHERE v.stash_name = ? AND v.commit_id = ?`,
+      )
+        .bind("race-prefix-docs", scoped.result.value.id)
+        .all(),
+    ).resolves.toMatchObject({
+      results: [
+        {
+          path: "site/candidate.txt",
+          commit_id: scoped.result.value.id,
+          sealed: 1,
+        },
+      ],
+    });
+
+    const whole = await raceDocsWrite("race-whole-docs");
+    expect(whole.result).toMatchObject({
+      ok: false,
+      error: { code: "stale", status: 409 },
+    });
+    expect(whole.result).not.toHaveProperty("conflicts");
+    expect(await counts("race-whole-docs")).toEqual(whole.afterCompetitor);
+  });
+
+  it("refuses a prefix-scoped commit after a raced write under that prefix without leaking rows", async () => {
+    const stash = "race-prefix-site";
+    await seedStash(stash);
+    await seedFile(stash, "site/existing.txt");
+    const newest = await seedFile(stash, "docs/existing.txt");
+    let afterCompetitor: Awaited<ReturnType<typeof counts>> | null = null;
+    const commits = createCommits(
+      workerEnv,
+      deps({
+        onBeforeCommit: async () => {
+          const competitor = await store(9_000).writes.put(stash, "site/other.txt", {
+            body: "competitor",
+            expectedVersion: null,
+          });
+          if (!competitor.ok) throw new Error("Site competitor failed");
+          afterCompetitor = await counts(stash);
+        },
+      }),
+    );
+
+    const refused = await commits.createCommit(
+      stash,
+      {
+        entries: [
+          { op: "put", path: "site/candidate.txt", expectedVersion: null, body: "candidate" },
+        ],
+        expectedLastChangeId: newest.changeId,
+        expectedLastChangePrefix: "site",
+      },
+      { principal: "test" },
+    );
+
+    expect(refused).toMatchObject({ ok: false, error: { code: "stale", status: 409 } });
+    expect(refused).not.toHaveProperty("conflicts");
+    expect(await counts(stash)).toEqual(afterCompetitor);
+  });
+
   it("rolls back a forced missing head write and classifies the durable re-read as internal", async () => {
     const stash = "race-seal-check";
     await seedStash(stash);
@@ -314,6 +414,7 @@ describe("controlled commit races and invariants", () => {
     await seedStash(stash);
     const first = await seedFile(stash, "before.txt");
     let competitorId = -1;
+    let competitorCommitId = "";
     const commits = createCommits(
       workerEnv,
       deps({
@@ -326,6 +427,7 @@ describe("controlled commit races and invariants", () => {
             throw new Error("Competitor failed");
           }
           competitorId = competitor.value.changeId;
+          competitorCommitId = competitor.value.commitId;
         },
       }),
     );
@@ -351,6 +453,25 @@ describe("controlled commit races and invariants", () => {
     ]);
     expect(result.value.firstChangeId).toBe(competitorId + 1);
     expect(result.value.lastChangeId).toBe(competitorId + 3);
+
+    // The raw D1 batch guarantee is proved separately in commit-gate-proofs.test.ts under
+    // "change-id contiguity proof"; this is the corresponding store-level contract.
+    const block = await workerEnv.DB.prepare(
+      `SELECT id, path, commit_id FROM versions
+       WHERE stash_name = ? AND id BETWEEN ? AND ? ORDER BY id`,
+    )
+      .bind(stash, result.value.firstChangeId, result.value.lastChangeId)
+      .all<{ id: number; path: string; commit_id: string }>();
+    expect(block.results).toHaveLength(3);
+    expect(block.results.every(({ commit_id }) => commit_id === result.value.id)).toBe(true);
+    expect(block.results.map(({ path }) => path)).toEqual(["one.txt", "two.txt", "three.txt"]);
+
+    await expect(
+      store().reads.resolveCommitAtChange(stash, result.value.firstChangeId),
+    ).resolves.toBe(competitorCommitId);
+    await expect(store().reads.resolveCommitAtChange(stash, competitorId)).resolves.toBe(
+      competitorCommitId,
+    );
   });
 
   it("calls onCommitted once for a new commit and never for its replay", async () => {
