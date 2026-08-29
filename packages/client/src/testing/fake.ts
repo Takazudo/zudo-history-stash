@@ -2982,6 +2982,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     meta: Record<string, JsonValue>;
     expectedLastChangeId?: number;
     expectedLastChangePrefix?: string;
+    expectedLastChangeErrorCode?: "stale" | "commit-conflict";
     idempotencyKey?: string;
     requestHash: string;
     createdBy: string;
@@ -3022,8 +3023,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           : ` for prefix "${options.expectedLastChangePrefix}"`;
       return `Expected last change ${options.expectedLastChangeId}${prefix}, newest change is ${newestExpectedChangeId()}`;
     };
+    const expectedChangeErrorCode = options.expectedLastChangeErrorCode ?? "stale";
     if (expectedChangeIsStale()) {
-      fail("stale", expectedChangeMessage());
+      fail(expectedChangeErrorCode, expectedChangeMessage());
     }
     const conflicts = commitEntryConflicts(options.stash, options.entries);
     if (conflicts.length > 0) throwCommitConflicts(conflicts);
@@ -3049,7 +3051,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       ),
     );
     if (expectedChangeIsStale()) {
-      fail("stale", expectedChangeMessage());
+      fail(expectedChangeErrorCode, expectedChangeMessage());
     }
     const finalConflicts = commitEntryConflicts(options.stash, options.entries);
     if (finalConflicts.length > 0) throwCommitConflicts(finalConflicts);
@@ -3611,7 +3613,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const prefixResult = pathPrefixRange(parsed.data.expectedLastChangePrefix);
     if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
     const prefixRange = prefixResult.range;
-    const newestExpectedChangeId =
+    const newestExpectedChangeId = (): number =>
       prefixRange === null
         ? latestChangeId(stash)
         : state.versions.reduce(
@@ -3623,6 +3625,13 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
                 : latest,
             0,
           );
+    const expectedChangeIsStale = (): boolean => {
+      if (parsed.data.expectedLastChangeId === undefined) return false;
+      const newest = newestExpectedChangeId();
+      return prefixRange === null
+        ? newest !== parsed.data.expectedLastChangeId
+        : newest > parsed.data.expectedLastChangeId;
+    };
     const key = idempotencyKey(request);
     const requestHash = await changeSetRequestHash(parsed.data);
     const prior =
@@ -3639,12 +3648,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         );
       return json(changeSetRecord(prior), 201, { "Idempotent-Replayed": "true" });
     }
-    if (
-      parsed.data.expectedLastChangeId !== undefined &&
-      (prefixRange === null
-        ? newestExpectedChangeId !== parsed.data.expectedLastChangeId
-        : newestExpectedChangeId > parsed.data.expectedLastChangeId)
-    ) {
+    if (expectedChangeIsStale()) {
       return fail("commit-conflict", "Expected last change is stale.");
     }
     const createdAt = now();
@@ -3676,6 +3680,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         }),
       ),
     );
+    if (expectedChangeIsStale()) {
+      return fail("commit-conflict", "Expected last change is stale.");
+    }
     for (const entry of entries) {
       const hash = entry.hash;
       if (entry.op !== "put" || hash === undefined || hash === null || hash === "") continue;
@@ -4004,7 +4011,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const prefixResult = pathPrefixRange(row.expectedLastChangePrefix ?? undefined);
     if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
     const prefixRange = prefixResult.range;
-    const newestExpectedChangeId =
+    const newestExpectedChangeId = (): number =>
       prefixRange === null
         ? latestChangeId(stash)
         : state.versions.reduce(
@@ -4016,6 +4023,13 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
                 : latest,
             0,
           );
+    const expectedChangeIsStale = (): boolean => {
+      if (row.expectedLastChangeId === null) return false;
+      const newest = newestExpectedChangeId();
+      return prefixRange === null
+        ? newest !== row.expectedLastChangeId
+        : newest > row.expectedLastChangeId;
+    };
     const conflicts = changeSetApprovalConflicts(stash, row);
     if (conflicts.length > 0) {
       const missingDelete =
@@ -4023,12 +4037,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         row.entries.find((entry) => entry.path === conflicts[0]?.path)?.op === "delete";
       throwCommitConflicts(conflicts, missingDelete);
     }
-    if (
-      row.expectedLastChangeId !== null &&
-      (prefixRange === null
-        ? newestExpectedChangeId !== row.expectedLastChangeId
-        : newestExpectedChangeId > row.expectedLastChangeId)
-    ) {
+    if (expectedChangeIsStale()) {
       return fail("commit-conflict", "Expected last change is stale.");
     }
     const commit = await applyCommit({
@@ -4039,6 +4048,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       meta: row.meta,
       expectedLastChangeId: row.expectedLastChangeId ?? undefined,
       expectedLastChangePrefix: row.expectedLastChangePrefix ?? undefined,
+      expectedLastChangeErrorCode: "commit-conflict",
       requestHash: "",
       createdBy: principalName(principal),
       source: "change-set",
