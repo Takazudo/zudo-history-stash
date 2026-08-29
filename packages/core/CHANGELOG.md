@@ -4,7 +4,7 @@ All notable changes to `@takazudo/zudo-history-stash-core` are documented in thi
 
 The format is based on Keep a Changelog, and release notes are generated from the changelog MDX pages.
 
-## [0.2.0] - 2026-08-29
+## [0.2.0]
 
 - Add atomic multi-path commits, commit-boundary snapshots, immutable change sets, commit reverts,
   binary candidates, and stored-version copy entries.
@@ -14,7 +14,7 @@ The format is based on Keep a Changelog, and release notes are generated from th
 - Add `commit-conflict`, `change-set-expired`, and `change-set-closed` outcomes and the shared commit
   and change-set limits.
 
-## [0.1.0] - 2026-08-25
+## [0.1.0]
 
 - Define the complete v1 route table, principals, request/response types, strict Zod schemas, and
   stable error codes.

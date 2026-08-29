@@ -25,18 +25,20 @@ jobs:
     outputs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
+        with:
+          persist-credentials: false
+
       - name: Check deploy credentials
         id: check
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          if [[ -n "$CLOUDFLARE_API_TOKEN" && -n "$CLOUDFLARE_ACCOUNT_ID" ]]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Cloudflare secrets are not configured; viewer deployment is skipped."
-          fi
+          PRODUCTION_DEPLOY_DISABLED: ${{ vars.PRODUCTION_DEPLOY_DISABLED }}
+          DEPLOY_TARGET: viewer Worker
+          DEPLOY_WRANGLER_CONFIG: workers/viewer/wrangler.toml
+        run: bash scripts/deploy-gate.sh
 
   build-deploy:
     name: Build and deploy viewer Worker
