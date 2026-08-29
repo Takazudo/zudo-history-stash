@@ -18,6 +18,10 @@ represents the file path; HTTP references use OpenAPI braces such as `{stash}` a
 | `/s/:stash/diff/*` | Positive `from` (default 1), positive `to` or `head`, and accepted `context`. | Read. |
 | `/s/:stash/edit/*` | Optional positive `from` source version. | Write. |
 | `/s/:stash/new` | No query. | Write. |
+| `/s/:stash/commits` | Optional path filter. | Read. |
+| `/s/:stash/commits/:id` | Commit detail and per-entry diffs; revert controls require write. | Read. |
+| `/s/:stash/change-sets` | Optional status and path filters. | Read. |
+| `/s/:stash/change-sets/:id` | Review detail; approve/reject controls require write. | Read. |
 | `/s/:stash/tokens` | No query. | Admin. |
 
 Encode stash IDs with `encodeURIComponent`. Encode file paths one segment at a time so

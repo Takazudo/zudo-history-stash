@@ -18,6 +18,10 @@ category: reference
 | `/s/:stash/diff/*` | 正の `from`（デフォルト 1）、正の `to` または `head`、受け入れ可能な `context`。 | Read。 |
 | `/s/:stash/edit/*` | 任意の正の `from` source version。 | Write。 |
 | `/s/:stash/new` | Query なし。 | Write。 |
+| `/s/:stash/commits` | 任意の path filter。 | Read。 |
+| `/s/:stash/commits/:id` | commit detail と entry ごとの diff。revert control には write が必要。 | Read。 |
+| `/s/:stash/change-sets` | 任意の status/path filter。 | Read。 |
+| `/s/:stash/change-sets/:id` | review detail。approve/reject control には write が必要。 | Read。 |
 | `/s/:stash/tokens` | Query なし。 | Admin。 |
 
 stash ID は `encodeURIComponent` で encode します。ファイルパスは segment ごとに encode し、

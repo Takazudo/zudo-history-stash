@@ -1,30 +1,109 @@
 ---
 title: コミットとスナップショット
-description: 複数パスのアトミック書き込み、履歴、差分、revert、snapshot。
+description: 複数パスのアトミック書き込み、コミット履歴、差分、revert、snapshot。
 sidebar_position: 184
 category: reference
 ---
+
+commit は変更を永続化する単位です。単一パス、upload、rollback、import の API から行った書き込みも含め、
+成功したすべてのファイル変更は必ず一つの commit に属します。commit API ではさらに、1〜20 個のパス操作を
+一つの単位として適用できます。全 entry が version を追加して head を進めるか、どれも適用されないかの
+どちらかです。
+
+entry のパスは重複できません。`copy` の参照元は同じ stash にすでに保存されている `{ path, version }` で、
+同じリクエスト内の出力先を参照することはできません。text の `put` は `body`、binary は
+`representation: "binary"`、`contentType`、canonical な `bytesBase64` を使います。`delete` と
+`rollback` には、存在する正の head version が必要です。
+
+各 entry の `expectedVersion: null` は「新規作成のみ」を意味し、整数の場合は現在の head と一致する必要が
+あります。任意の `expectedLastChangeId` を加えると、stash 全体にもフェンスを設定できます。サーバーは
+すべてのフェンスをまとめて判定します。entry fence の失敗時は、失敗した entry だけをルートの
+`conflicts[]` に入れます。失敗が一つだけで `current` が `null` なら `404 not-found`、それ以外の entry fence
+失敗は `409 commit-conflict` です。`expectedLastChangeId` fence の失敗は entry ごとの conflict を伴わない
+`409 stale` です。競合していない entry だけを適用することはありません。関係する head をすべて再取得し、
+意図を確認して新しい commit を組み立ててください。自動 merge や rebase は行われません。
 
 ### `POST /v1/stashes/{stash}/commits`
 
 **Contract:** operation `createCommit`; principal `write`; transport `any`.
 
+一つのアトミックな commit を作成します。`entries` は必須で、`author`、`message`、JSON の `meta`、
+`expectedLastChangeId` は任意です。entry の decode 後の合計 content は、JSON request size とは独立して
+5,000,000 byte が上限です。
+
+```json
+{
+  "entries": [
+    {
+      "op": "put",
+      "path": "site/index.html",
+      "expectedVersion": 4,
+      "body": "<!doctype html><title>History</title>\n",
+      "contentType": "text/html"
+    },
+    {
+      "op": "copy",
+      "path": "site/logo.png",
+      "expectedVersion": null,
+      "from": { "path": "assets/logo.png", "version": 2 }
+    }
+  ],
+  "author": "site-builder",
+  "message": "Publish site"
+}
+```
+
+成功時は `201 CommitResult` です。順序を保った `entries` には割り当てられた `version` と `changeId` が入り、
+外側の record には `id`、`entryCount`、`firstChangeId`、`lastChangeId` が含まれます。
+`Idempotency-Key` を指定すると、canonical な stash/request の組を永続的に識別します。同一内容の再実行は
+元の結果と `Idempotent-Replayed: true` を返し、同じ key で内容を変えると
+`422 idempotency-key-reused` になります。
+
 ### `GET /v1/stashes/{stash}/commits/{id}`
 
 **Contract:** operation `getCommit`; principal `read`; transport `any`.
+
+順序を保った entry を含む `200 CommitRecord` を返します。`source` と任意の `sourceId` は commit の作成元を
+表し、`revertsCommitId` は revert の対象がある場合にその commit を示します。entry の metadata には、
+結果となる不変 version の representation、content type、hash、size に加え、必要に応じて copy や rollback の
+由来が含まれます。本文は file または raw-version route から読み取ります。
 
 ### `GET /v1/stashes/{stash}/commits`
 
 **Contract:** operation `listCommits`; principal `read`; transport `any`.
 
+新しい順に summary を一覧表示します。`path` はその完全一致パスを含む commit だけに絞り込みます。`limit` は
+既定値 50、最大 200 です。`after` は不透明な `(createdAt, id)` cursor なので、変更せず次の request に渡して
+ください。response は `commits`、`nextAfter`、filter 適用後の全件数 `total` を返します。
+
 ### `GET /v1/stashes/{stash}/commits/{id}/diff`
 
 **Contract:** operation `getCommitDiff`; principal `read`; transport `any`.
+
+commit の before-to-after diff を上限付きで返します。`context` は負でない context line 数、`path` は完全一致の
+entry 一つを選びます。`path` がない場合に展開するのは最大 `COMMIT_DIFF_INLINE_ENTRIES` 件で、response の
+`truncated` が省略の有無を示します。各結果は `from` と `to` の version/hash を持ちます。text は `ready`、
+`same`、`oversized` のいずれかです。binary など diff 対象外の content は、text を捏造せず明示的な metadata
+state を返します。
 
 ### `POST /v1/stashes/{stash}/commits/{id}/revert`
 
 **Contract:** operation `revertCommit`; principal `write`; transport `any`.
 
+指定した commit の全 entry を現在の head に対して打ち消す、新しいアトミック commit を作成します。元の
+commit を消したり、履歴を過去へ戻したりはしません。元の commit が作成したパスには tombstone を追加し、
+更新または削除したパスには直前の状態を復元する新しい version を追加します。一つでも現在の head が対象
+commit の結果と一致しなければ、revert 全体がルートの `conflicts[]` を伴って失敗します。不一致が一つだけで
+`current` が `null` なら `404 not-found`、それ以外の不一致は `409 commit-conflict` です。
+
+body の `author`、`message`、`meta` は任意です。成功時は `201 CommitResult` を返し、`revertsCommitId` に
+対象を設定します。`Idempotency-Key` の永続的な replay semantics は commit 作成時と同じです。
+
 ### `GET /v1/stashes/{stash}/snapshot`
 
 **Contract:** operation `getSnapshot`; principal `read`; transport `any`.
+
+commit 境界時点のファイル状態を一覧表示します。必須 selector は `at=commit:{id}` です。任意の `prefix`、
+`delimiter`、`includeDeleted`、`limit`、不透明な `after` は
+[ファイル、履歴、差分](./files-history-and-diffs.mdx#prefix-listing-and-commit-snapshots)で説明します。
+snapshot は不変履歴から導出する読み取りであり、保存済み tree、branch、可動 reference ではありません。

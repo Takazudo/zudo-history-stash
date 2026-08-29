@@ -1,0 +1,129 @@
+---
+title: directory を一つの単位として commit する
+description: HTML、CSS、画像を一つの prefix 配下へ SDK のアトミック commit で公開します。
+sidebar_position: 85
+category: guides
+---
+
+Stash の directory は保存済み object ではなく、命名規則です。local tree を一つの path prefix に対応付け、
+変更された file を commit entry として送ります。plan が 20 entry、decode 後の content 合計 5,000,000 byte の
+上限内なら、すべての file head が一つのアトミック commit で進みます。それより大きい tree では複数 commit が
+必要です。各 chunk はアトミックですが、directory 全体はアトミックではありません。
+
+local tree が次の構成だとします。
+
+```text
+example-site/
+├── index.html
+├── styles.css
+└── images/
+    └── logo.png
+```
+
+prefix `site` の下では、それぞれ `site/index.html`、`site/styles.css`、`site/images/logo.png` になります。
+prefix によって `site` resource が作られるわけではありません。
+
+## SDK で一つの commit を組み立てる
+
+最初の公開では、全パスに `expectedVersion: null` を使います。UTF-8 の HTML/CSS は text、PNG は canonical
+base64 の binary として送ります。`commits.create` は型付き business result を返し、array の一部だけを
+適用することはありません。
+
+```js
+import { readFile } from "node:fs/promises";
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+const client = createStashClient({
+  baseUrl: process.env.STASH_URL,
+  token: process.env.STASH_WRITE_TOKEN,
+});
+
+const [html, css, logo] = await Promise.all([
+  readFile("example-site/index.html", "utf8"),
+  readFile("example-site/styles.css", "utf8"),
+  readFile("example-site/images/logo.png"),
+]);
+
+const result = await client.commits("demo").create(
+  {
+    entries: [
+      {
+        op: "put",
+        path: "site/index.html",
+        expectedVersion: null,
+        body: html,
+        contentType: "text/html; charset=utf-8",
+      },
+      {
+        op: "put",
+        path: "site/styles.css",
+        expectedVersion: null,
+        body: css,
+        contentType: "text/css; charset=utf-8",
+      },
+      {
+        op: "put",
+        path: "site/images/logo.png",
+        expectedVersion: null,
+        representation: "binary",
+        contentType: "image/png",
+        bytesBase64: logo.toString("base64"),
+      },
+    ],
+    author: "site-builder",
+    message: "Publish example site",
+  },
+  { idempotencyKey: "example-site:initial" },
+);
+
+if (!result.ok) {
+  if (result.conflicts !== undefined) console.error(result.conflicts);
+  throw new Error(result.error.message);
+}
+console.log(result.value.id);
+```
+
+二回目以降の同期では、`files.list({ prefix: "site" })` を全 page について呼び出し、remote の
+`headVersion` と hash を保持します。hash が同じ file には entry が不要です。置き換えと削除には現在の正の
+version を `expectedVersion` として使い、パスが存在しない場合だけ `null` を使います。どれか一つの fence で
+負けても、サーバーはどの entry も書き込まず、失敗した path をルートの `conflicts[]` に含めます。失敗が一つ
+だけで現在の head が存在しない場合は `404 not-found`、それ以外の entry fence 失敗は
+`409 commit-conflict` です。prefix を再取得して新しい操作を組み立て、内容を変えたまま古い idempotency key を
+再利用しないでください。
+
+## repository helper を使う
+
+repository checkout から `scripts/commit-dir.mjs` を使うと、directory walk、head 一覧の pagination、hash 比較、
+text/binary encoding、entry 導出を実行できます。まず job を検証し、その summary を preview します。
+
+```bash
+STASH_WRITE_TOKEN=your-write-token \
+  node scripts/commit-dir.mjs example-site site demo \
+  --base-url https://stash.example \
+  --job-id example-site-20260829 \
+  --dry-run
+```
+
+書き込むときは `--dry-run` を外します。同じ `--job-id` を維持するのは、同一の導出済み job が中断されて
+replay するときだけです。chunk key は `<jobId>:<zero-based-chunk-index>` です。local file、remote expectation、
+metadata、option のどれかを変えたら、新しい job ID を選んでください。
+
+主な option は次のとおりです。
+
+- `--prune` は prefix 配下にある live remote path のうち、local にないものを delete entry にします。
+- `--change-set` は commit を適用せず、導出した entry を open review candidate として保存します。
+- `--expected-last-change-id N` は各 path fence に加えて stash 全体の fence を設定します。
+- `--author`、`--message`、`--meta JSON` は作成する各 chunk に metadata を付けます。
+- `--directory`、`--prefix`、`--stash` は三つの positional argument の名前付き形式です。`--token` は
+  `STASH_WRITE_TOKEN`、`STASH_ADMIN_TOKEN`、`STASH_TOKEN` の代わりに使えます。
+
+20 entry を超えて複数 chunk が必要になると、helper は目立つ warning を表示します。その結果を一つの
+アトミックな directory 公開と呼んではいけません。導出した chunk の `put` content が decode 後の合計 byte
+上限を超える場合も拒否するので、source をより小さい release に分割してください。同じ stash 全体の
+`--expected-last-change-id` が全 chunk へ送られるため、最初の commit が stash cursor を変更すると、後続 chunk は
+その fence で正しく失敗し得ます。directory 全体の atomicity が必要なら、release を明示的に分割または調整して
+ください。
+
+HTML、CSS、画像 metadata を公開前に人がレビューする場合は `--change-set` を使います。新しく作成された各 open
+record を[change-set API](../reference/http-api/change-sets.mdx)または Viewer で確認し、一つの commit として
+approve します。approve は全 path fence を再検査し、stale candidate を rebase しません。

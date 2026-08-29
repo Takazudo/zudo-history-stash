@@ -5,26 +5,106 @@ sidebar_position: 185
 category: reference
 ---
 
+change set は、file head を動かさずにレビューするため、1〜20 個の不変な candidate entry を保存します。
+status は `open`、`applied`、`rejected`、`expired` のいずれかです。作成時に各パスの `baseVersion` を記録して
+candidate content を staging し、承認時には同じ entry を厳密に一つのアトミック commit として適用します。
+承認処理が新しい head へ rebase、merge、差し替えを行うことはありません。
+
+entry は commit と同じ `put`、binary `put`、`copy`、`delete`、`rollback` の形ですが、フェンス名は
+`baseVersion` です。パスは重複できず、`copy` の参照元は出力先集合に含まれない保存済み version である必要が
+あります。binary content は作成時に decode して staging するため、レビューや承認は呼び出し元が元の bytes を
+保持しているかどうかに依存しません。
+
+現在の head が記録済み base と異なると、open record は stale になります。record/diff の `stale` は読み取り
+時点の観測結果であり lock ではありません。承認時には decision batch 内で aggregate fence を再評価するため、
+直前の読み取りが non-stale でも承認できるとは限りません。fence の失敗時は、失敗した entry をルートの
+`conflicts[]` に含めます。存在しない `delete` 対象一つだけが失敗した場合は `404 not-found`、それ以外の entry
+conflict は `409 commit-conflict` です。競合を解決して新しい change set を作成してください。close 済み
+record は不変であり、再び open にはできません。
+
 ### `POST /v1/stashes/{stash}/change-sets`
 
 **Contract:** operation `createChangeSet`; principal `write`; transport `any`.
+
+有効期限付きのレビュー候補を作成します。`entries` は必須です。`author`、`message`、JSON の `meta`、
+`expiresAt`、stash 全体をフェンスする `expectedLastChangeId` は任意です。`expiresAt` を省略すると Worker が
+`CHANGE_SET_TTL_DAYS` から算出し、repository に commit 済みの deployment の既定値は 14 日です。作成時、null の base には
+head が存在しないこと、整数の base には path/version が存在することを要求します。その version が現在の
+head より古ければ、新しい record は作成時から stale です。version の追加や file head の移動は行いません。
+
+```json
+{
+  "entries": [
+    {
+      "op": "put",
+      "path": "site/index.html",
+      "baseVersion": 4,
+      "body": "<!doctype html><title>Reviewed</title>\n",
+      "contentType": "text/html"
+    },
+    {
+      "op": "delete",
+      "path": "site/old.css",
+      "baseVersion": 2
+    }
+  ],
+  "author": "site-builder",
+  "message": "Review the next site release"
+}
+```
+
+成功時は `201 ChangeSetRecord` です。`Idempotency-Key` により同一の canonical create request を安全に
+replay できます。完全一致なら `Idempotent-Replayed: true` を返し、同じ key で内容を変えると
+`422 idempotency-key-reused` になります。response には decision field、`commitId`、entry ごとの
+`current`/`stale` 観測結果が含まれます。open の間はすべての decision field と `commitId` が `null` です。
 
 ### `GET /v1/stashes/{stash}/change-sets`
 
 **Contract:** operation `listChangeSets`; principal `read`; transport `any`.
 
+新しい順に record を一覧表示します。`status` の既定値は `open` です。`applied`、`rejected`、`expired`、
+`all` は明示して使います。`path` は完全一致パスを含む record だけに絞り込みます。`limit` は既定値 50、
+最大 200 です。不透明な `after` cursor は変更せず渡してください。response は `changeSets`、`nextAfter`、
+filter 適用後の全件数 `total` を返します。record を読み取ると、有効期限切れは `expired` として反映されます。
+
 ### `GET /v1/stashes/{stash}/change-sets/{id}`
 
 **Contract:** operation `getChangeSet`; principal `read`; transport `any`.
+
+不変な candidate-entry metadata と現在の staleness を含む `200 ChangeSetRecord` を返します。applied record の
+`commitId` は結果の commit を示し、rejected/expired record では null です。decision metadata には terminal
+decision の日時、実行者、理由が記録されます。review content は上限付き diff result で表現され、保存済み
+candidate を編集または置換する route はありません。
 
 ### `GET /v1/stashes/{stash}/change-sets/{id}/diff`
 
 **Contract:** operation `getChangeSetDiff`; principal `read`; transport `any`.
 
+記録済み base と candidate を entry ごとに比較し、stale 判定に使った現在の head も報告します。`context` は
+負でない context line 数、`path` は完全一致の entry 一つを選びます。`path` がない場合に展開するのは inline
+上限までで、response の `truncated` が省略の有無を示します。text は通常の `ready`、`same`、`oversized`、
+binary は base/candidate の hash と size を返します。binary を text patch に変換することはありません。
+
 ### `POST /v1/stashes/{stash}/change-sets/{id}/approve`
 
 **Contract:** operation `approveChangeSet`; principal `write`; transport `any`.
 
+open かつ期限内の record を claim し、全 candidate を一つの commit として適用します。body では、その commit
+に使う `author` と `message` を任意に上書きできます。成功時は
+`200 { status: "applied", commit }` です。保存済み change set も `status: "applied"` になり、
+`commit.id` を参照します。
+
+承認は保存済み terminal state により冪等です。applied record の承認を繰り返すと、保存済みの結果を返します。
+base が stale なら、ルートの `conflicts[]` を返します。存在しない `delete` 対象一つだけが失敗した場合は
+`404 not-found`、それ以外の entry conflict は `409 commit-conflict` です。期限切れは
+`409 change-set-expired`、競合する terminal decision は `409 change-set-closed` です。stash 全体の fence が
+stale の場合も、entry ごとの conflict を伴わない `409 commit-conflict` です。どの失敗でも partial commit が
+見えることはありません。
+
 ### `POST /v1/stashes/{stash}/change-sets/{id}/reject`
 
 **Contract:** operation `rejectChangeSet`; principal `write`; transport `any`.
+
+version を追加せず head も動かさずに、open change set を close します。任意の `reason` は decision metadata
+とともに保存されます。成功時は `200 ChangeSetRecord` で、`status: "rejected"` です。それ以降は reject の
+繰り返しを含むすべての decision attempt が `409 change-set-closed` を返し、状態を変更しません。

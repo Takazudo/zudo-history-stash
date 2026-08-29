@@ -43,7 +43,9 @@ Read [TESTING.md](TESTING.md) before choosing a test level or running a browser 
 - Keep `[secrets]` declarations and CI-injected secret values separate from committed vars.
 - Wrangler 4.125.0 accepts `[secrets] required = ["STASH_ADMIN_TOKEN"]` in `wrangler.toml`, including `[env.preview.secrets]`. `wrangler types --include-runtime=false` includes the secret in generated Env declarations, and `wrangler deploy --dry-run` succeeds. Keep the required-secret declarations and the Wrangler/Env drift test; no fallback startup assertion is needed.
 - `@cloudflare/vitest-plugin` 1.0 isolates D1 per test file, not per test. Any file with stateful tests must reset application tables in `beforeEach` via `resetDatabase()`; do not assume a fresh database between `it()` blocks.
-- In a D1 batch, every statement must carry the operation's fence and the head write must be last; `meta.changes === 1` is the only success verdict.
+- In a D1 write batch, every entry statement must carry the operation's fence and each head write must follow its version insert.
+- For a commit batch, keep the seal `UPDATE` last and treat only that statement's `meta.changes === 1` as the verdict; never infer success from an earlier gate or entry statement.
+- Never rely on per-statement `meta.last_row_id` to harvest version/change IDs; a zero-row fenced insert can retain a stale value. Query the inserted rows by commit ID instead.
 - History is immutable: never `UPDATE` or `DELETE` rows in `versions`.
 - Do not add `node:*` imports to Workers. The smoke script is the deliberate exception required to send the browser navigation `Sec-Fetch-Mode` header.
 - Never use `~` in paths; use an explicit absolute path or an environment variable.

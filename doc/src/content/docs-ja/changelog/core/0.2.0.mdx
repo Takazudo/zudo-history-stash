@@ -1,0 +1,15 @@
+---
+title: 0.2.0
+description: アトミック commit と不変 change-set protocol。
+sidebar_position: 1
+category: changelog
+---
+
+Released: 2026-08-29
+
+- 複数パスのアトミック commit、commit 境界 snapshot、不変 change set、commit revert、binary candidate、
+  保存済み version の copy entry を追加しました。
+- 以前のレビュー候補機能を削除しました。同等のレビュー workflow には一 entry の change set を使います。
+- 単一パス route からの書き込みも含め、全 version と change-feed item で `commitId` を必須にしました。
+- `commit-conflict`、`change-set-expired`、`change-set-closed` outcome と、commit/change set 共通の上限を
+  追加しました。
