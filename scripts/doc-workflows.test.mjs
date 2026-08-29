@@ -80,8 +80,6 @@ const GITHUB_CONTEXT_ALLOWLIST = {
 const CREDENTIAL_PROBE_NOTICES = {
   "Check preview credentials":
     "::notice::Cloudflare credentials are incomplete; documentation preview skipped.",
-  "Check production credentials":
-    "::notice::Cloudflare credentials are incomplete; live documentation deploy skipped.",
 };
 
 function escapeRegExp(value) {
@@ -271,9 +269,13 @@ function assertPermissions(block, expected, indent) {
   assert.deepEqual(directMap(block, "permissions", indent), expected);
 }
 
-function assertCommonSourceSafety(source) {
+function assertCommonSourceSafety(source, { allowedVarsExpressions = [] } = {}) {
+  const sourceWithoutAllowedVars = allowedVarsExpressions.reduce(
+    (remaining, expression) => remaining.replaceAll(expression, ""),
+    source,
+  );
   assert.doesNotMatch(source, /pull_request_target/u);
-  assert.doesNotMatch(source, /\bvars(?:\.|\s*\[)/u);
+  assert.doesNotMatch(sourceWithoutAllowedVars, /\bvars(?:\.|\s*\[)/u);
   assert.doesNotMatch(source, /\bsecrets\s*\[/u);
   assert.doesNotMatch(source, /\bgithub\s*\[\s*["']token["']\s*\]/u);
   assert.doesNotMatch(source, /cloudflare\/wrangler-action/u);
@@ -476,6 +478,17 @@ function assertBooleanCredentialProbe(step) {
   );
 }
 
+function assertSharedGateStep(step, { target, config }) {
+  assert.equal(stepScalar(step, "id"), "credentials");
+  assert.equal(stepRun(step), "bash scripts/deploy-gate.sh");
+  assert.deepEqual(stepMap(step, "env"), {
+    ...CLOUDFLARE_SECRET_EXPRESSIONS,
+    PRODUCTION_DEPLOY_DISABLED: "${{ vars.PRODUCTION_DEPLOY_DISABLED }}",
+    DEPLOY_TARGET: target,
+    DEPLOY_WRANGLER_CONFIG: config,
+  });
+}
+
 function assertChecks(source, pins) {
   assertCommonSourceSafety(source);
   assertGithubContextAllowlist(source, "checks");
@@ -510,7 +523,9 @@ function assertChecks(source, pins) {
 }
 
 function assertDeploy(source, pins) {
-  assertCommonSourceSafety(source);
+  assertCommonSourceSafety(source, {
+    allowedVarsExpressions: ["${{ vars.PRODUCTION_DEPLOY_DISABLED }}"],
+  });
   assertGithubContextAllowlist(source, "deploy");
   assertExactEvents(source, {
     push: { branches: ["main"], paths: expectedPaths("doc-deploy") },
@@ -553,7 +568,10 @@ function assertDeploy(source, pins) {
   );
   assert.ok(aggregate < history && history < dryRun && dryRun < probe && probe < live);
   assert.deepEqual(stepMap(steps[dryRun], "env"), {});
-  assertBooleanCredentialProbe(steps[probe]);
+  assertSharedGateStep(steps[probe], {
+    target: "documentation site",
+    config: "doc/wrangler.toml",
+  });
   assert.equal(stepScalar(steps[live], "if"), "steps.credentials.outputs.ready == 'true'");
   assert.deepEqual(stepMap(steps[live], "env"), {
     CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
@@ -915,6 +933,20 @@ describe("documentation workflows", () => {
               "      - name: Run documentation aggregate",
               "        env:",
               "          GH_CONTEXT: ${{ toJSON(github) }}",
+              "        run: pnpm b4push:doc",
+            ].join("\n"),
+          ),
+        },
+      ],
+      [
+        "unapproved repository variable added",
+        {
+          preview: original.preview.replace(
+            "      - name: Run documentation aggregate\n        run: pnpm b4push:doc",
+            [
+              "      - name: Run documentation aggregate",
+              "        env:",
+              "          UNAPPROVED_VAR: ${{ vars.SOMETHING_ELSE }}",
               "        run: pnpm b4push:doc",
             ].join("\n"),
           ),
