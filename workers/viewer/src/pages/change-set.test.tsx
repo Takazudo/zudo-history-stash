@@ -6,7 +6,7 @@ import type {
   StashChangeSetsClient,
   StashCommitsClient,
 } from "@takazudo/zudo-history-stash";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { createFakeViewerClient } from "../test/fake-viewer-client.js";
@@ -246,6 +246,84 @@ describe("ChangeSetPage", () => {
     expect(
       (await screen.findByRole("status", { name: "Commit creation confirmation" })).textContent,
     ).toContain("Change set approved as commit cmt_approved.");
+  });
+
+  it("keeps an in-progress decision dialog mounted during a live refresh", async () => {
+    const value = changeSet();
+    let releaseRefresh!: (result: ClientResult<ChangeSetRecord>) => void;
+    const pendingRefresh = new Promise<ClientResult<ChangeSetRecord>>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let blockRefresh = false;
+    const get = vi.fn(async () => (blockRefresh ? pendingRefresh : { ok: true as const, value }));
+    renderViewerPage(
+      "/s/notes/change-sets/chs_1",
+      "/s/:stash/change-sets/:id",
+      <ChangeSetPage />,
+      clientWithReview(admin, {
+        get,
+        diff: async () => emptyDiff(),
+      }),
+      { liveAccess: "write" },
+    );
+
+    await screen.findByRole("button", { name: "Approve" });
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    const dialog = await screen.findByRole("dialog", { name: "Approve change set" });
+    const author = within(dialog).getByRole("textbox", { name: "Author" });
+    await userEvent.type(author, "Grace");
+
+    const callsBeforeRefresh = get.mock.calls.length;
+    blockRefresh = true;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
+
+    expect(screen.getByRole("dialog", { name: "Approve change set" })).toBe(dialog);
+    expect((author as HTMLInputElement).value).toBe("Grace");
+    expect(within(dialog).getByRole("button", { name: "Approve and apply" })).toBeTruthy();
+
+    await act(async () => releaseRefresh({ ok: true, value }));
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: "Approve change set" })).toBe(dialog),
+    );
+  });
+
+  it("adopts a relevant entry refresh and closes a now-stale decision dialog", async () => {
+    const value = changeSet();
+    const staleValue = changeSet({
+      entries: [{ ...value.entries[0]!, stale: true }],
+    });
+    let releaseRefresh!: (result: ClientResult<ChangeSetRecord>) => void;
+    let pendingRefresh: Promise<ClientResult<ChangeSetRecord>> | null = null;
+    const get = vi.fn(async () => pendingRefresh ?? { ok: true as const, value });
+    renderViewerPage(
+      "/s/notes/change-sets/chs_1",
+      "/s/:stash/change-sets/:id",
+      <ChangeSetPage />,
+      clientWithReview(admin, {
+        get,
+        diff: async () => emptyDiff(),
+      }),
+      { liveAccess: "write" },
+    );
+
+    await screen.findByRole("button", { name: "Approve" });
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await screen.findByRole("dialog", { name: "Approve change set" });
+
+    pendingRefresh = new Promise<ClientResult<ChangeSetRecord>>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const callsBeforeRefresh = get.mock.calls.length;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
+    pendingRefresh = null;
+    await act(async () => releaseRefresh({ ok: true, value: staleValue }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Approve change set" })).toBeNull(),
+    );
+    expect(screen.getByText("This change set contains stale entries.")).toBeTruthy();
   });
 
   it("shows loading and request errors, plus missing parameters", async () => {

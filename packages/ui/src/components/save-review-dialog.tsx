@@ -43,8 +43,8 @@ export interface SaveReviewDialogProps {
   onClose: () => void;
   onDiscard: () => void;
   onSaved: (completion: SaveReviewCompletion) => void;
-  /** When supplied with stash, offers a one-entry review proposal instead of writing head. */
-  onProposed?: (changeSet: ChangeSetRecord) => void;
+  /** When supplied with stash, offers a one-entry change set instead of writing head. */
+  onChangeSetCreated?: (changeSet: ChangeSetRecord) => void;
 }
 
 interface SameAsHeadSnapshot {
@@ -54,12 +54,12 @@ interface SameAsHeadSnapshot {
   same: boolean;
 }
 
-interface ProposalAttempt {
+interface ChangeSetAttempt {
   readonly input: Parameters<StashChangeSetsClient["create"]>[0];
   readonly options: Readonly<{ idempotencyKey: string }>;
 }
 
-function freezeProposalAttempt({
+function freezeChangeSetAttempt({
   path,
   baseVersion,
   body,
@@ -73,7 +73,7 @@ function freezeProposalAttempt({
   contentType?: string;
   author: string;
   message: string;
-}): ProposalAttempt {
+}): ChangeSetAttempt {
   const input: Parameters<StashChangeSetsClient["create"]>[0] = {
     entries: [{ op: "put", path, baseVersion, body, ...(contentType ? { contentType } : {}) }],
     author,
@@ -87,7 +87,7 @@ function freezeProposalAttempt({
   return Object.freeze({ input, options: Object.freeze({ idempotencyKey: crypto.randomUUID() }) });
 }
 
-function ProposeChangeSetButton({
+function CreateChangeSetButton({
   stash,
   path,
   baseVersion,
@@ -96,7 +96,7 @@ function ProposeChangeSetButton({
   author,
   message,
   disabled,
-  onProposed,
+  onChangeSetCreated,
 }: {
   stash: string;
   path: string;
@@ -106,24 +106,24 @@ function ProposeChangeSetButton({
   author: string;
   message: string;
   disabled: boolean;
-  onProposed?: (changeSet: ChangeSetRecord) => void;
+  onChangeSetCreated?: (changeSet: ChangeSetRecord) => void;
 }) {
   const client = useStashClient();
   const hrefFor = useStashHref();
-  const [proposing, setProposing] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [failed, setFailed] = useState(false);
   const [created, setCreated] = useState<ChangeSetRecord | null>(null);
-  const proposingRef = useRef(false);
-  const attemptRef = useRef<ProposalAttempt | null>(null);
-  async function propose() {
-    if (disabled || proposingRef.current) return;
-    proposingRef.current = true;
-    setProposing(true);
+  const creatingRef = useRef(false);
+  const attemptRef = useRef<ChangeSetAttempt | null>(null);
+  async function createChangeSet() {
+    if (disabled || creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
     setFailed(false);
     setCreated(null);
     const attempt =
       attemptRef.current ??
-      freezeProposalAttempt({ path, baseVersion, body, contentType, author, message });
+      freezeChangeSetAttempt({ path, baseVersion, body, contentType, author, message });
     attemptRef.current = attempt;
     try {
       const result = await client.changeSets(stash).create(attempt.input, attempt.options);
@@ -133,40 +133,43 @@ function ProposeChangeSetButton({
       } else {
         attemptRef.current = null;
         setCreated(result.value);
-        onProposed?.(result.value);
+        onChangeSetCreated?.(result.value);
       }
     } catch {
       // An ambiguous transport failure retains the exact frozen request for safe replay.
       setFailed(true);
     } finally {
-      proposingRef.current = false;
-      setProposing(false);
+      creatingRef.current = false;
+      setCreating(false);
     }
   }
   return (
     <>
       {failed ? (
         <span role="alert">
-          Could not propose this change set. Retry replays the exact previous request when delivery
+          Could not create this change set. Retry replays the exact previous request when delivery
           is unknown.
         </span>
       ) : null}
       {created ? (
         <span role="status">
-          Proposed for review:{" "}
+          Created for review:{" "}
           <Anchor href={hrefFor({ kind: "change-set", stash, id: created.id })}>
             Open change set
           </Anchor>
         </span>
       ) : null}
-      <Button disabled={disabled || proposing || created !== null} onClick={() => void propose()}>
-        {proposing
-          ? "Proposing…"
+      <Button
+        disabled={disabled || creating || created !== null}
+        onClick={() => void createChangeSet()}
+      >
+        {creating
+          ? "Creating…"
           : created
-            ? "Proposed"
+            ? "Created"
             : failed
-              ? "Retry proposal"
-              : "Propose as change set"}
+              ? "Retry change set"
+              : "Create change set"}
       </Button>
     </>
   );
@@ -236,7 +239,7 @@ function SaveReviewDialogOpen({
   onClose,
   onDiscard,
   onSaved,
-  onProposed,
+  onChangeSetCreated,
 }: Omit<SaveReviewDialogProps, "open">) {
   const titleId = useId();
   const descriptionId = useId();
@@ -640,7 +643,7 @@ function SaveReviewDialogOpen({
                     : primaryLabel}
               </Button>
               {stash ? (
-                <ProposeChangeSetButton
+                <CreateChangeSetButton
                   author={author}
                   baseVersion={displayHead.version}
                   body={exactDraft}
@@ -649,7 +652,7 @@ function SaveReviewDialogOpen({
                   message={message}
                   path={displayHead.path}
                   stash={stash}
-                  onProposed={onProposed}
+                  onChangeSetCreated={onChangeSetCreated}
                 />
               ) : null}
             </>

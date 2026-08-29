@@ -1,7 +1,12 @@
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { Buffer } from "node:buffer";
 import { webcrypto } from "node:crypto";
 import { afterEach, vi } from "vitest";
+
+// The workspace runs UI and workerd suites concurrently. Leave enough room for
+// passive effects and async queries to settle under CI load while Vitest's
+// five-second test timeout still bounds genuine failures.
+configure({ asyncUtilTimeout: 3_000 });
 
 // The minimum supported Node release rejects jsdom-realm BufferSource values
 // in Web Crypto. Bridge digest inputs into Node's realm so browser upload code
