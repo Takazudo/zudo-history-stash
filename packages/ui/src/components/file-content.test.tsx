@@ -35,6 +35,7 @@ async function uploadedFile(
       contentAccess: ["inline", "raw", "deleted"],
       transferModes: ["json", "single", "multipart"],
       storageTiers: ["d1", "r2"],
+      commitEntryKinds: ["put", "copy", "delete", "rollback"],
       limits: {
         jsonInlineMaxBytes: 2,
         d1InlineMaxBytes: 2,

@@ -504,7 +504,7 @@ export const CurrentSchema = z.strictObject({
 });
 
 const CommitOperationSchema = z.enum(["put", "copy", "delete", "rollback"]);
-export const CommitEntryRecordSchema = z.strictObject({
+export const CommitEntryRecordSchema: z.ZodType<CommitEntryRecord> = z.strictObject({
   path: z.string(),
   op: CommitOperationSchema,
   version: IntegerSchema,
@@ -596,7 +596,7 @@ export const ChangeSetListResponseSchema = z.strictObject({
   nextAfter: z.string().nullable(),
   total: NonNegativeIntegerSchema,
 });
-export const ChangeSetDiffResultSchema = z.strictObject({
+export const ChangeSetDiffResultSchema: z.ZodType<ChangeSetDiffResult> = z.strictObject({
   entries: z.array(
     z.strictObject({
       path: z.string(),
