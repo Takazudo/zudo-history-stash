@@ -5,9 +5,19 @@ sidebar_position: 2
 category: getting-started
 ---
 
-`pnpm add @takazudo/zudo-history-stash` で isomorphic なクライアントパッケージを追加します。
-パッケージルートからのみ import してください。公開クライアントと型は、Node.js、ブラウザバンドル、
-Cloudflare Workers で動作します。現在の Node.js、pnpm、パッケージの要件については、
+クライアントパッケージはまだ npm に公開されていません。このリポジトリをクローンし、
+ワークスペースのルートでパッケージをビルドしてください。
+
+```bash
+pnpm install
+pnpm build:libs
+```
+
+その後、ワークスペース内では `packages/client` のパッケージを依存関係として指定します。ワークスペース外で
+利用する場合は、`pnpm pack` を `packages/client` で実行し、生成された tarball ファイルをインストールしてください。
+
+インポートはパッケージルートからのみ行ってください。公開クライアントと型は、Node.js、
+ブラウザバンドル、Cloudflare Workers で動作します。現在の Node.js、pnpm、パッケージの要件については、
 [バージョン](../reference/versions.mdx)を参照してください。
 
 ランタイムが対応していても、すべての認証情報をあらゆるランタイムに置いて安全というわけでは

@@ -38,11 +38,17 @@ capacity and at most 10,000 parts; 1 GiB is a correctness ceiling, not a perform
 
 ## Consumer guide
 
-Install the isomorphic client in a Node.js application, browser bundle, or Worker:
+The packages are not published to npm yet. Clone this repository and build them from the workspace
+root:
 
 ```bash
-pnpm add @takazudo/zudo-history-stash
+pnpm install
+pnpm build:libs
 ```
+
+Then depend on the workspace package at `packages/client`. For use outside the workspace, run
+`pnpm pack` in `packages/client` and install the generated tarball. The isomorphic client works in
+a Node.js application, browser bundle, or Worker.
 
 The client returns typed business outcomes and keeps compare-and-set versions explicit:
 
