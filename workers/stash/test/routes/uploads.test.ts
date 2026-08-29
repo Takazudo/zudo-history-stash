@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { sha256Hex, type StashEvent } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
+import { GC_ORPHAN_MIN_AGE_MS, createGcEngine } from "../../src/gc.js";
 import { bearer, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
 
@@ -158,6 +159,58 @@ describe("single raw upload lifecycle", () => {
       custom,
     );
     expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("retires unchanged single-upload R2 staging for orphan collection", async () => {
+    const bytes = new Uint8Array([4, 3, 2, 1]);
+    const custom = bindings({ D1_INLINE_MAX_BYTES: "1" });
+    const application = createApp();
+    const createCandidate = async (expectedVersion: number | null, key: string) => {
+      const response = await create(
+        {
+          expectedVersion,
+          size: bytes.byteLength,
+          representation: "binary",
+          contentType: "application/octet-stream",
+          mode: "single",
+          resumable: false,
+          ...(expectedVersion === null ? {} : { skipIfUnchanged: true }),
+        },
+        key,
+        custom,
+        application,
+      );
+      return (await response.json<{ id: string }>()).id;
+    };
+
+    const firstId = await createCandidate(null, "create-r2-first");
+    expect((await raw(firstId, bytes, "upload-r2-first", {}, custom, application)).status).toBe(
+      202,
+    );
+    expect((await complete(firstId, "complete-r2-first", custom, application)).status).toBe(201);
+
+    const unchangedId = await createCandidate(1, "create-r2-unchanged");
+    expect(
+      (await raw(unchangedId, bytes, "upload-r2-unchanged", {}, custom, application)).status,
+    ).toBe(202);
+    const staged = await env.DB.prepare("SELECT staged_r2_key FROM upload_sessions WHERE id = ?")
+      .bind(unchangedId)
+      .first<{ staged_r2_key: string }>();
+    expect((await complete(unchangedId, "complete-r2-unchanged", custom, application)).status).toBe(
+      200,
+    );
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM upload_objects WHERE session_id = ?")
+        .bind(unchangedId)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
+
+    const orphan = await custom.BLOBS.head(staged!.staged_r2_key);
+    expect(orphan).not.toBeNull();
+    await createGcEngine(custom, {
+      now: () => orphan!.uploaded.getTime() + GC_ORPHAN_MIN_AGE_MS + 1,
+    }).run({ kind: "r2-orphans", dryRun: false, maxObjects: 24 });
+    await expect(custom.BLOBS.head(staged!.staged_r2_key)).resolves.toBeNull();
   });
 
   it("validates split UTF-8 fatally while arbitrary binary bytes succeed", async () => {

@@ -27,10 +27,16 @@ export interface MultipartBucketStats {
   abortFailuresRemaining?: number;
 }
 
+export interface SyntheticMultipartHooks {
+  beforeComplete?: () => void | Promise<void>;
+  beforeBodyRead?: () => void | Promise<void>;
+}
+
 /** Synthetic multipart seam for correctness tests; deliberately does not emulate R2's 5 MiB floor. */
 export function withSyntheticMultipart(
   bindings: Env,
   stats: MultipartBucketStats = { creates: 0, completes: 0, aborts: 0 },
+  hooks: SyntheticMultipartHooks = {},
 ): Env {
   const uploads = new Map<
     string,
@@ -71,6 +77,7 @@ export function withSyntheticMultipart(
       },
       async complete(parts) {
         if (state.aborted || state.completed) throw new Error("Multipart upload is terminal");
+        await hooks.beforeComplete?.();
         const chunks = parts.map(({ partNumber, etag }) => {
           const part = state.parts.get(partNumber);
           if (part === undefined || part.etag !== etag)
@@ -110,6 +117,48 @@ export function withSyntheticMultipart(
         };
       }
       if (property === "resumeMultipartUpload") return resumed;
+      if (property === "get" && hooks.beforeBodyRead !== undefined) {
+        return async (...args: Parameters<R2Bucket["get"]>) => {
+          const object = await target.get(...args);
+          if (object === null) return null;
+          const reader = object.body.getReader();
+          let released = false;
+          const release = () => {
+            if (released) return;
+            released = true;
+            reader.releaseLock();
+          };
+          const body = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              try {
+                await hooks.beforeBodyRead?.();
+                const read = await reader.read();
+                if (read.done) {
+                  release();
+                  controller.close();
+                } else {
+                  controller.enqueue(read.value);
+                }
+              } catch (error) {
+                await reader.cancel(error).catch(() => undefined);
+                release();
+                controller.error(error);
+              }
+            },
+            async cancel(reason) {
+              await reader.cancel(reason).catch(() => undefined);
+              release();
+            },
+          });
+          return new Proxy(object, {
+            get(targetObject, bodyProperty) {
+              if (bodyProperty === "body") return body;
+              const value = Reflect.get(targetObject, bodyProperty, targetObject);
+              return typeof value === "function" ? value.bind(targetObject) : value;
+            },
+          });
+        };
+      }
       const value = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
