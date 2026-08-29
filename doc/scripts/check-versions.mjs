@@ -52,7 +52,7 @@ export async function checkVersions(repositoryRoot) {
     throw new Error("version model must not use runtime node:fs access");
   }
   for (const [name, source] of Object.entries(VERSION_SOURCES)) {
-    if (!model.includes(`from \"${source}\"`) && !model.includes(`from '${source}'`)) {
+    if (!model.includes(`from "${source}"`) && !model.includes(`from '${source}'`)) {
       throw new Error(`version model is not wired to ${name} source ${source}`);
     }
   }
@@ -91,7 +91,8 @@ export async function checkVersions(repositoryRoot) {
         throw new Error(`${label} versions page must render ${name} exactly once`);
       }
     }
-    if (/\b(?:v)?\d+\.\d+(?:\.\d+)?\b/.test(source)) {
+    const sourceWithoutInlineCode = source.replace(/(`+)([^`\n]*?)\1/g, "");
+    if (/\b(?:v)?\d+\.\d+(?:\.\d+)?\b/.test(sourceWithoutInlineCode)) {
       throw new Error(`${label} versions page contains a copied numeric version literal`);
     }
   }

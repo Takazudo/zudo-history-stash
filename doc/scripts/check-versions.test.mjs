@@ -84,6 +84,15 @@ test("version checker accepts one source-derived model wired to both locales", a
   });
 });
 
+test("version checker ignores numeric versions inside inline code spans", async (t) => {
+  const root = await versionFixture(t);
+  for (const locale of ["docs", "docs-ja"]) {
+    const path = join(root, `doc/src/content/${locale}/reference/versions.mdx`);
+    await writeFile(path, `${await readFile(path, "utf8")}\nPre-release placeholder: \`0.0.0\`\n`);
+  }
+  await assert.doesNotReject(checkVersions(root));
+});
+
 test("version checker rejects wrong source, missing field, detached locale, copied literal, and runtime fs", async (t) => {
   await t.test("wrong source", async (t) => {
     const root = await versionFixture(t);
