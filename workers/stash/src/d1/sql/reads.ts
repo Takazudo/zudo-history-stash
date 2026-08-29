@@ -98,8 +98,113 @@ export const SELECT_FILES = `
    AND v.version = f.head_version
   WHERE f.stash_name = ?
     AND (? = 1 OR f.deleted = 0)
+    AND (? IS NULL OR (f.path >= ? AND f.path < ?))
     AND (? IS NULL OR f.path > ?)
+    AND (? IS NULL OR instr(substr(f.path, length(COALESCE(?, '')) + 1), '/') = 0)
   ORDER BY f.path ASC
+  LIMIT ?
+`;
+
+export const SELECT_FILE_COMMON_PREFIXES = `
+  SELECT DISTINCT
+    substr(
+      f.path,
+      1,
+      length(COALESCE(?, '')) +
+        instr(substr(f.path, length(COALESCE(?, '')) + 1), '/')
+    ) AS common_prefix
+  FROM files AS f
+  WHERE f.stash_name = ?
+    AND (? = 1 OR f.deleted = 0)
+    AND (? IS NULL OR (f.path >= ? AND f.path < ?))
+    AND (? IS NULL OR (
+      substr(
+        f.path,
+        1,
+        length(COALESCE(?, '')) +
+          instr(substr(f.path, length(COALESCE(?, '')) + 1), '/')
+      ) > ?
+    ))
+    AND (? IS NOT NULL)
+    AND instr(substr(f.path, length(COALESCE(?, '')) + 1), '/') > 0
+  ORDER BY common_prefix ASC
+  LIMIT ?
+`;
+
+export const SELECT_SNAPSHOT_COMMIT = `
+  SELECT id AS commit_id, last_change_id
+  FROM commits
+  WHERE stash_name = ?
+    AND id = ?
+    AND sealed = 1
+    AND last_change_id IS NOT NULL
+  LIMIT 1
+`;
+
+export const SELECT_SNAPSHOT_FILES = `
+  SELECT
+    f.path AS path,
+    s.version AS head_version,
+    s.blob_hash AS hash,
+    s.size_bytes AS size,
+    CASE WHEN s.kind = 'delete' THEN 1 ELSE 0 END AS deleted,
+    s.created_at AS updated_at,
+    s.content_type AS content_type,
+    s.representation AS representation,
+    s.application_etag AS application_etag
+  FROM files AS f
+  JOIN versions AS s
+    ON s.id = (
+      SELECT v.id
+      FROM versions AS v
+      WHERE v.stash_name = f.stash_name
+        AND v.path = f.path
+        AND v.id <= ?
+      ORDER BY v.version DESC
+      LIMIT 1
+    )
+  WHERE f.stash_name = ?
+    AND (? = 1 OR s.kind <> 'delete')
+    AND (? IS NULL OR (f.path >= ? AND f.path < ?))
+    AND (? IS NULL OR f.path > ?)
+    AND (? IS NULL OR instr(substr(f.path, length(COALESCE(?, '')) + 1), '/') = 0)
+  ORDER BY f.path ASC
+  LIMIT ?
+`;
+
+export const SELECT_SNAPSHOT_COMMON_PREFIXES = `
+  SELECT DISTINCT
+    substr(
+      f.path,
+      1,
+      length(COALESCE(?, '')) +
+        instr(substr(f.path, length(COALESCE(?, '')) + 1), '/')
+    ) AS common_prefix
+  FROM files AS f
+  JOIN versions AS s
+    ON s.id = (
+      SELECT v.id
+      FROM versions AS v
+      WHERE v.stash_name = f.stash_name
+        AND v.path = f.path
+        AND v.id <= ?
+      ORDER BY v.version DESC
+      LIMIT 1
+    )
+  WHERE f.stash_name = ?
+    AND (? = 1 OR s.kind <> 'delete')
+    AND (? IS NULL OR (f.path >= ? AND f.path < ?))
+    AND (? IS NULL OR (
+      substr(
+        f.path,
+        1,
+        length(COALESCE(?, '')) +
+          instr(substr(f.path, length(COALESCE(?, '')) + 1), '/')
+      ) > ?
+    ))
+    AND (? IS NOT NULL)
+    AND instr(substr(f.path, length(COALESCE(?, '')) + 1), '/') > 0
+  ORDER BY common_prefix ASC
   LIMIT ?
 `;
 
