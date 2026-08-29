@@ -4,7 +4,12 @@ This repository is a Cloudflare-based, versioned text store with rollback, on-de
 
 ## Development status
 
-This project is pre-release work in progress with no users, no consumers, and no production data that must be preserved. Breaking changes are acceptable and expected: the HTTP contract, SDK API, viewer URL scheme, D1 schema, and stored data may be redesigned, migrated destructively, or reset when that is the clearest path. Do not design for backward compatibility, do not add compatibility facades, deprecation shims, or migration paths for existing rows, and do not wait for operator-acceptance gates whose only purpose is protecting existing data or mixed-version compatibility. Continue to protect credentials and account boundaries. This section is removed when the project is explicitly declared released.
+This project is pre-release work in progress with no users, no consumers, and no production data that must be preserved. Breaking changes are acceptable and expected: the HTTP contract, SDK API, viewer URL scheme, D1 schema, and stored data may be redesigned, migrated destructively, or reset when that is the clearest path. Do not design for backward compatibility, do not add compatibility facades, deprecation shims, or migration paths for existing rows, and do not wait for operator-acceptance gates whose only purpose is protecting existing data or mixed-version compatibility. Continue to protect credentials and account boundaries. This project remains pre-release, and this section stays in force until both conditions are met:
+
+- [#183](https://github.com/Takazudo/zudo-history-stash/issues/183) is closed as verified.
+- [#224](https://github.com/Takazudo/zudo-history-stash/issues/224) is landed: the content-sweep GC job is merged to `main`.
+
+Meeting both conditions does not publish anything. The owner then cuts the first `vX.Y.Z` release via `/l-make-release` and removes this section; only the owner may remove it. If unsure whether contract-breaking work is still free, check [#183](https://github.com/Takazudo/zudo-history-stash/issues/183) and [#224](https://github.com/Takazudo/zudo-history-stash/issues/224) rather than guess.
 
 ## Tech stack
 
