@@ -79,6 +79,17 @@ interface StashLifecycleRecord {
   restorable: boolean;
 }
 
+interface LiveChangeSetRecord {
+  id: string;
+  status: "open" | "applied" | "rejected" | "expired";
+  commitId: string | null;
+}
+
+interface LiveApprovalResult {
+  status: "applied";
+  commit: { id: string };
+}
+
 function authorization(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` };
 }
@@ -1086,4 +1097,184 @@ test("@live admin runs an R2 garbage-collection dry page through the viewer", as
   await expect(currentRun).toContainText("r2-orphans");
   await expect(currentRun).toContainText("none");
   expect(pageErrors).toEqual([]);
+});
+
+test("@live creates, approves, and lists a change set through the viewer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const pageErrors = capturePageErrors(page);
+  await waitForDemo(request);
+  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const path = `e2e/change-set-${runId}.md`;
+  const reviewMessage = `Browser review ${runId}`;
+  const approvalMessage = `Approve browser review ${runId}`;
+  let changeSetId: string | null = null;
+  let commitId: string | null = null;
+  let primaryFailure: unknown = null;
+  const cleanupFailures: Error[] = [];
+
+  try {
+    const createdResponse = await request.post("/api/v1/stashes/demo/change-sets", {
+      headers: {
+        ...ADMIN_AUTHORIZATION,
+        "Idempotency-Key": idempotencyKey("change-set-create"),
+      },
+      data: {
+        entries: [
+          {
+            op: "put",
+            path,
+            baseVersion: null,
+            body: `# Browser change-set ${runId}\n\nCreated through the API.\n`,
+            contentType: "text/markdown",
+          },
+        ],
+        author: "viewer-live-change-set",
+        message: reviewMessage,
+        meta: { fixture: "viewer-live-change-set" },
+      },
+    });
+    await requireStatus(createdResponse, 201, "create live change set");
+    const created = (await createdResponse.json()) as LiveChangeSetRecord & {
+      entries?: unknown[];
+    };
+    expect(created).toMatchObject({
+      id: expect.stringMatching(/^chs_/u),
+      status: "open",
+      commitId: null,
+      entries: [expect.objectContaining({ path, op: "put", stale: false })],
+    });
+    changeSetId = created.id;
+
+    await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
+      token: ADMIN_TOKEN,
+    });
+    await page.goto(`/s/demo/change-sets/${changeSetId}`);
+    await expect(page.getByRole("heading", { name: reviewMessage })).toBeVisible();
+    await expect(page.locator(`[data-diff-path="${path}"]`)).toBeVisible();
+
+    await page.getByRole("button", { name: "Approve" }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve change set" });
+    await dialog.getByRole("textbox", { name: "Author" }).fill("viewer-live-browser");
+    await dialog.getByRole("textbox", { name: "Commit message" }).fill(approvalMessage);
+    const approvalResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "POST" &&
+        url.pathname === `/api/v1/stashes/demo/change-sets/${changeSetId}/approve`
+      );
+    });
+    await dialog.getByRole("button", { name: "Approve and apply" }).click();
+    const approvalResponse = await approvalResponsePromise;
+    await requireStatus(approvalResponse, 200, "approve live change set");
+    const approval = (await approvalResponse.json()) as LiveApprovalResult;
+    expect(approval).toMatchObject({
+      status: "applied",
+      commit: { id: expect.stringMatching(/^cmt_/u) },
+    });
+    commitId = approval.commit.id;
+
+    await expect(page).toHaveURL((url) => url.pathname === `/s/demo/commits/${commitId}`);
+    await expect(page.getByRole("heading", { name: approvalMessage })).toBeVisible();
+    await expect(page.locator(`[data-diff-path="${path}"]`)).toBeVisible();
+
+    await page.goto("/s/demo");
+    const recent = page.getByRole("region", { name: "Recent changes" });
+    await expect(recent.getByRole("link", { name: `Commit ${commitId}` })).toBeVisible();
+    await expect(recent.getByRole("link", { name: path, exact: true })).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  } catch (error: unknown) {
+    primaryFailure = error;
+  } finally {
+    try {
+      await page.close();
+    } catch (error: unknown) {
+      cleanupFailures.push(errorFrom(error));
+    }
+
+    if (commitId === null && changeSetId !== null) {
+      try {
+        const currentResponse = await request.get(
+          `/api/v1/stashes/demo/change-sets/${changeSetId}`,
+          { headers: ADMIN_AUTHORIZATION },
+        );
+        await requireStatus(currentResponse, 200, "read live change set for cleanup");
+        const current = (await currentResponse.json()) as LiveChangeSetRecord;
+        commitId = current.commitId;
+        if (current.status === "open") {
+          const rejected = await request.post(
+            `/api/v1/stashes/demo/change-sets/${changeSetId}/reject`,
+            {
+              headers: {
+                ...ADMIN_AUTHORIZATION,
+                "Idempotency-Key": idempotencyKey("change-set-cleanup-reject"),
+              },
+              data: { reason: "Cleanup for viewer live e2e" },
+            },
+          );
+          await requireStatus(rejected, 200, "reject live change set during cleanup");
+        }
+      } catch (error: unknown) {
+        cleanupFailures.push(errorFrom(error));
+      }
+    }
+
+    if (commitId !== null) {
+      try {
+        const reverted = await request.post(`/api/v1/stashes/demo/commits/${commitId}/revert`, {
+          headers: {
+            ...ADMIN_AUTHORIZATION,
+            "Idempotency-Key": idempotencyKey("change-set-cleanup-revert"),
+          },
+          data: {
+            author: "viewer-live-cleanup",
+            message: "Remove the live change-set fixture",
+            meta: { fixture: "viewer-live-change-set-cleanup" },
+          },
+        });
+        await requireStatus(reverted, 201, "revert live change-set commit during cleanup");
+        const revertResult = (await reverted.json()) as {
+          entries?: Array<{ path?: unknown; version?: unknown }>;
+        };
+        const revertedEntry = revertResult.entries?.find((entry) => entry.path === path);
+        const tombstoneVersion = revertedEntry?.version;
+        if (
+          typeof tombstoneVersion !== "number" ||
+          !Number.isSafeInteger(tombstoneVersion) ||
+          tombstoneVersion < 1
+        ) {
+          cleanupFailures.push(
+            new Error("change-set cleanup revert did not return a valid version"),
+          );
+        } else {
+          const proof = await request.get(`/api/v1/stashes/demo/files/${path}`, {
+            headers: ADMIN_AUTHORIZATION,
+          });
+          await requireStatus(proof, 404, `verify tombstone ${path}`);
+          const proofBody = (await proof.json()) as {
+            error?: { code?: unknown };
+            current?: { version?: unknown; deleted?: unknown };
+          };
+          if (
+            proofBody.error?.code !== "file-deleted" ||
+            proofBody.current?.version !== tombstoneVersion ||
+            proofBody.current.deleted !== true
+          ) {
+            cleanupFailures.push(new Error(`cleanup tombstone proof was malformed for ${path}`));
+          }
+        }
+      } catch (error: unknown) {
+        cleanupFailures.push(errorFrom(error));
+      }
+    }
+  }
+
+  if (primaryFailure !== null || cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
+      "live change-set browser flow or its verified cleanup failed",
+    );
+  }
 });
