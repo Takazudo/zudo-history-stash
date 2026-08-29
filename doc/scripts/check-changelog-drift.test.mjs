@@ -233,10 +233,7 @@ test("the real bilingual changelog inventory has the exact schema and per-field 
         const dateLines = source.match(/^(?:Released|リリース日): .*$/gmu) ?? [];
         assert.ok(dateLines.length <= 1, `${locale}:${relativePath} has at most one release date`);
         if (dateLines.length === 1) {
-          assert.match(
-            dateLines[0],
-            new RegExp(`^${marker}: [0-9]{4}-[0-9]{2}-[0-9]{2}$`, "u"),
-          );
+          assert.match(dateLines[0], new RegExp(`^${marker}: [0-9]{4}-[0-9]{2}-[0-9]{2}$`, "u"));
         }
         if (release[2] === "0.1.0") {
           if (locale === "en") {
