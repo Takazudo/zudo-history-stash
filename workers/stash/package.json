@@ -7,6 +7,7 @@
     "build": "wrangler deploy --dry-run --outdir=dist",
     "test": "bash test/run-with-reaper.sh",
     "test:contract": "vitest run --config vitest.contract.config.ts",
+    "probe:commit-batch": "node scripts/probe-commit-batch.mjs",
     "smoke:multipart": "node scripts/multipart-smoke.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
