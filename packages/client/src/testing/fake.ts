@@ -2981,6 +2981,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     message: string;
     meta: Record<string, JsonValue>;
     expectedLastChangeId?: number;
+    expectedLastChangePrefix?: string;
     idempotencyKey?: string;
     requestHash: string;
     createdBy: string;
@@ -2992,14 +2993,37 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   };
 
   const applyCommit = async (options: ApplyCommitOptions): Promise<FakeCommitRow> => {
-    if (
-      options.expectedLastChangeId !== undefined &&
-      latestChangeId(options.stash) !== options.expectedLastChangeId
-    ) {
-      fail(
-        "stale",
-        `Expected last change ${options.expectedLastChangeId}, newest change is ${latestChangeId(options.stash)}`,
-      );
+    const prefixResult = pathPrefixRange(options.expectedLastChangePrefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const newestExpectedChangeId = (): number =>
+      prefixRange === null
+        ? latestChangeId(options.stash)
+        : state.versions.reduce(
+            (latest, version) =>
+              version.stash === options.stash &&
+              version.path >= prefixRange.lo &&
+              version.path < prefixRange.hi
+                ? Math.max(latest, version.changeId)
+                : latest,
+            0,
+          );
+    const expectedChangeIsStale = (): boolean => {
+      if (options.expectedLastChangeId === undefined) return false;
+      const newest = newestExpectedChangeId();
+      return prefixRange === null
+        ? newest !== options.expectedLastChangeId
+        : newest > options.expectedLastChangeId;
+    };
+    const expectedChangeMessage = (): string => {
+      const prefix =
+        options.expectedLastChangePrefix === undefined
+          ? ""
+          : ` for prefix "${options.expectedLastChangePrefix}"`;
+      return `Expected last change ${options.expectedLastChangeId}${prefix}, newest change is ${newestExpectedChangeId()}`;
+    };
+    if (expectedChangeIsStale()) {
+      fail("stale", expectedChangeMessage());
     }
     const conflicts = commitEntryConflicts(options.stash, options.entries);
     if (conflicts.length > 0) throwCommitConflicts(conflicts);
@@ -3024,14 +3048,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         ),
       ),
     );
-    if (
-      options.expectedLastChangeId !== undefined &&
-      latestChangeId(options.stash) !== options.expectedLastChangeId
-    ) {
-      fail(
-        "stale",
-        `Expected last change ${options.expectedLastChangeId}, newest change is ${latestChangeId(options.stash)}`,
-      );
+    if (expectedChangeIsStale()) {
+      fail("stale", expectedChangeMessage());
     }
     const finalConflicts = commitEntryConflicts(options.stash, options.entries);
     if (finalConflicts.length > 0) throwCommitConflicts(finalConflicts);
@@ -3082,6 +3100,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         message: input.message ?? "",
         meta: input.meta ?? {},
         expectedLastChangeId: input.expectedLastChangeId ?? null,
+        expectedLastChangePrefix: input.expectedLastChangePrefix ?? null,
       }),
     );
   };
@@ -3146,6 +3165,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       message: parsed.data.message ?? "",
       meta: parsed.data.meta ?? {},
       expectedLastChangeId: parsed.data.expectedLastChangeId,
+      expectedLastChangePrefix: parsed.data.expectedLastChangePrefix,
       idempotencyKey: key,
       requestHash,
       createdBy: principalName(principal),
@@ -3588,6 +3608,21 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     const parsed = CreateChangeSetBody.safeParse(candidate);
     if (!parsed.success) return fail("validation", "Invalid change-set input.");
+    const prefixResult = pathPrefixRange(parsed.data.expectedLastChangePrefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const newestExpectedChangeId =
+      prefixRange === null
+        ? latestChangeId(stash)
+        : state.versions.reduce(
+            (latest, version) =>
+              version.stash === stash &&
+              version.path >= prefixRange.lo &&
+              version.path < prefixRange.hi
+                ? Math.max(latest, version.changeId)
+                : latest,
+            0,
+          );
     const key = idempotencyKey(request);
     const requestHash = await changeSetRequestHash(parsed.data);
     const prior =
@@ -3606,7 +3641,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     if (
       parsed.data.expectedLastChangeId !== undefined &&
-      latestChangeId(stash) !== parsed.data.expectedLastChangeId
+      (prefixRange === null
+        ? newestExpectedChangeId !== parsed.data.expectedLastChangeId
+        : newestExpectedChangeId > parsed.data.expectedLastChangeId)
     ) {
       return fail("commit-conflict", "Expected last change is stale.");
     }
@@ -3660,6 +3697,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       decisionReason: null,
       commitId: null,
       expectedLastChangeId: parsed.data.expectedLastChangeId ?? null,
+      expectedLastChangePrefix: parsed.data.expectedLastChangePrefix ?? null,
       idempotencyKey: key ?? null,
       requestHash: key === undefined ? null : requestHash,
       entries,
@@ -3963,6 +4001,21 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     if (row.status !== "open") return fail("change-set-closed", "Change set is already closed.");
     if (row.expiresAt <= now()) return fail("change-set-expired", "Change set has expired.");
+    const prefixResult = pathPrefixRange(row.expectedLastChangePrefix ?? undefined);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const newestExpectedChangeId =
+      prefixRange === null
+        ? latestChangeId(stash)
+        : state.versions.reduce(
+            (latest, version) =>
+              version.stash === stash &&
+              version.path >= prefixRange.lo &&
+              version.path < prefixRange.hi
+                ? Math.max(latest, version.changeId)
+                : latest,
+            0,
+          );
     const conflicts = changeSetApprovalConflicts(stash, row);
     if (conflicts.length > 0) {
       const missingDelete =
@@ -3970,7 +4023,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         row.entries.find((entry) => entry.path === conflicts[0]?.path)?.op === "delete";
       throwCommitConflicts(conflicts, missingDelete);
     }
-    if (row.expectedLastChangeId !== null && latestChangeId(stash) !== row.expectedLastChangeId) {
+    if (
+      row.expectedLastChangeId !== null &&
+      (prefixRange === null
+        ? newestExpectedChangeId !== row.expectedLastChangeId
+        : newestExpectedChangeId > row.expectedLastChangeId)
+    ) {
       return fail("commit-conflict", "Expected last change is stale.");
     }
     const commit = await applyCommit({
@@ -3980,6 +4038,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       message: parsed.data.message ?? row.message,
       meta: row.meta,
       expectedLastChangeId: row.expectedLastChangeId ?? undefined,
+      expectedLastChangePrefix: row.expectedLastChangePrefix ?? undefined,
       requestHash: "",
       createdBy: principalName(principal),
       source: "change-set",

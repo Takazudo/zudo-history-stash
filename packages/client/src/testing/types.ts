@@ -171,6 +171,7 @@ export interface FakeChangeSetRow {
   decisionReason: string | null;
   commitId: string | null;
   expectedLastChangeId: number | null;
+  expectedLastChangePrefix: string | null;
   idempotencyKey: string | null;
   requestHash: string | null;
   entries: FakeChangeSetEntryRow[];
