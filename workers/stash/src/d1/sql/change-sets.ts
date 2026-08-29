@@ -182,6 +182,8 @@ export interface ChangeSetDecisionSqlInput {
   commitId: string;
   now: number;
   decidedBy: string;
+  prefixLo: string | null;
+  prefixHi: string | null;
 }
 
 /**
@@ -199,9 +201,17 @@ export function claimChangeSetStatement(
          decision_reason = NULL, commit_id = ?
        WHERE stash_name = ? AND id = ? AND status = 'open' AND expires_at > ?
          AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
-         AND (expected_last_change_id IS NULL OR expected_last_change_id = COALESCE(
-           (SELECT MAX(id) FROM versions WHERE stash_name = change_sets.stash_name), 0
-         ))
+         AND (
+           expected_last_change_id IS NULL
+           OR (? IS NULL AND expected_last_change_id = COALESCE(
+             (SELECT MAX(id) FROM versions WHERE stash_name = change_sets.stash_name), 0
+           ))
+           OR (? IS NOT NULL AND NOT EXISTS (
+             SELECT 1 FROM versions
+             WHERE stash_name = change_sets.stash_name
+               AND id > change_sets.expected_last_change_id AND path >= ? AND path < ?
+           ))
+         )
          AND NOT EXISTS (
            SELECT 1
            FROM change_set_entries AS e
@@ -302,6 +312,10 @@ export function claimChangeSetStatement(
       input.id,
       input.now,
       input.stash,
+      input.prefixLo,
+      input.prefixLo,
+      input.prefixLo,
+      input.prefixHi,
     );
 }
 

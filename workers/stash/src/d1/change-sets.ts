@@ -815,17 +815,27 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       if (row.expires_at <= now) {
         throw new StashError("change-set-expired", "Change set has expired.");
       }
+      const prefixResult = pathPrefixRange(row.expected_last_change_prefix ?? undefined);
+      if (!prefixResult.ok) {
+        throw new StashError("commit-conflict", prefixResult.message);
+      }
+      const prefixRange = prefixResult.range;
       const entries = await entriesFor(db, id);
       const initialConflicts = await approvalConflicts(db, row, entries);
       if (initialConflicts.length > 0) throwConflicts(initialConflicts, entries);
       const latest = await db
-        .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
-        .bind(stash)
+        .prepare(
+          `SELECT COALESCE(MAX(id), 0) AS id FROM versions
+           WHERE stash_name = ? AND (? IS NULL OR (path >= ? AND path < ?))`,
+        )
+        .bind(stash, prefixRange?.lo ?? null, prefixRange?.lo ?? null, prefixRange?.hi ?? null)
         .first<{ id: number }>();
-      if (
+      const expectedLastChangeConflict =
         row.expected_last_change_id !== null &&
-        (latest?.id ?? 0) !== row.expected_last_change_id
-      ) {
+        (prefixRange === null
+          ? (latest?.id ?? 0) !== row.expected_last_change_id
+          : (latest?.id ?? 0) > row.expected_last_change_id);
+      if (expectedLastChangeConflict) {
         throw new StashError(
           "commit-conflict",
           `Expected last change ${row.expected_last_change_id}, newest change is ${latest?.id ?? 0}.`,
@@ -861,6 +871,8 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
         commitId,
         now,
         decidedBy: options.decidedBy ?? "system",
+        prefixLo: prefixRange?.lo ?? null,
+        prefixHi: prefixRange?.hi ?? null,
       });
       let results: D1Result<unknown>[] | null = null;
       try {
@@ -895,14 +907,29 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       const finalEntries = await entriesFor(db, id);
       const conflicts = await approvalConflicts(db, finalRow, finalEntries);
       if (conflicts.length > 0) throwConflicts(conflicts, finalEntries);
+      const finalPrefixResult = pathPrefixRange(finalRow.expected_last_change_prefix ?? undefined);
+      if (!finalPrefixResult.ok) {
+        throw new StashError("commit-conflict", finalPrefixResult.message);
+      }
+      const finalPrefixRange = finalPrefixResult.range;
       const newest = await db
-        .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
-        .bind(stash)
+        .prepare(
+          `SELECT COALESCE(MAX(id), 0) AS id FROM versions
+           WHERE stash_name = ? AND (? IS NULL OR (path >= ? AND path < ?))`,
+        )
+        .bind(
+          stash,
+          finalPrefixRange?.lo ?? null,
+          finalPrefixRange?.lo ?? null,
+          finalPrefixRange?.hi ?? null,
+        )
         .first<{ id: number }>();
-      if (
+      const finalExpectedLastChangeConflict =
         finalRow.expected_last_change_id !== null &&
-        (newest?.id ?? 0) !== finalRow.expected_last_change_id
-      ) {
+        (finalPrefixRange === null
+          ? (newest?.id ?? 0) !== finalRow.expected_last_change_id
+          : (newest?.id ?? 0) > finalRow.expected_last_change_id);
+      if (finalExpectedLastChangeConflict) {
         throw new StashError(
           "commit-conflict",
           `Expected last change ${finalRow.expected_last_change_id}, newest change is ${newest?.id ?? 0}.`,
