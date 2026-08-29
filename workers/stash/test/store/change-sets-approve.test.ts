@@ -271,6 +271,73 @@ describe("change-set decisions", () => {
     ).resolves.toMatchObject({ status: "applied" });
   });
 
+  it("uses the stored prefix to approve after an unrelated write races the claim", async () => {
+    const stash = "approve-prefix-stored-docs-race";
+    await seedStash(stash);
+    const base = store(31_000);
+    await seedFile(stash, "site/existing.txt", "site");
+    const newestChangeId = await seedFile(stash, "docs/existing.txt", "docs");
+    const created = await base.changeSets.createChangeSet(stash, {
+      entries: [{ op: "put", path: "site/candidate.txt", baseVersion: null, body: "candidate" }],
+      expectedLastChangeId: newestChangeId,
+      expectedLastChangePrefix: "site",
+    });
+    const changes = createChangeSets(workerEnv, {
+      ...dependencies(32_000),
+      onBeforeCommit: async () => {
+        const competitor = await base.writes.put(stash, "docs/other.txt", {
+          body: "competitor",
+          expectedVersion: null,
+        });
+        if (!competitor.ok) throw new Error("Docs prefix competitor failed");
+      },
+    });
+
+    // Approval input has no prefix: the CAS must rebuild it from change_sets storage.
+    await expect(changes.approveChangeSet(stash, created.value.id, {})).resolves.toMatchObject({
+      status: "applied",
+      commit: { entries: [{ path: "site/candidate.txt" }] },
+    });
+    await expect(base.changeSets.getChangeSet(stash, created.value.id)).resolves.toMatchObject({
+      status: "applied",
+    });
+    await expect(counts(stash)).resolves.toEqual({ commits: 4, versions: 4, files: 4 });
+  });
+
+  it("uses the stored prefix to refuse a raced write under that prefix without leaking rows", async () => {
+    const stash = "approve-prefix-stored-site-race";
+    await seedStash(stash);
+    const base = store(31_000);
+    await seedFile(stash, "site/existing.txt", "site");
+    const newestChangeId = await seedFile(stash, "docs/existing.txt", "docs");
+    const created = await base.changeSets.createChangeSet(stash, {
+      entries: [{ op: "put", path: "site/candidate.txt", baseVersion: null, body: "candidate" }],
+      expectedLastChangeId: newestChangeId,
+      expectedLastChangePrefix: "site",
+    });
+    let afterCompetitor: Awaited<ReturnType<typeof counts>> | null = null;
+    const changes = createChangeSets(workerEnv, {
+      ...dependencies(32_000),
+      onBeforeCommit: async () => {
+        const competitor = await base.writes.put(stash, "site/other.txt", {
+          body: "competitor",
+          expectedVersion: null,
+        });
+        if (!competitor.ok) throw new Error("Site prefix competitor failed");
+        afterCompetitor = await counts(stash);
+      },
+    });
+
+    // Approval input has no prefix: the stored site prefix must still govern this claim.
+    await expect(changes.approveChangeSet(stash, created.value.id, {})).rejects.toMatchObject({
+      code: "commit-conflict",
+    });
+    await expect(base.changeSets.getChangeSet(stash, created.value.id)).resolves.toMatchObject({
+      status: "open",
+    });
+    await expect(counts(stash)).resolves.toEqual(afterCompetitor);
+  });
+
   it("atomically refuses a prefix-scoped set when its prefix changes before the claim", async () => {
     const stash = "approve-prefix-race";
     await seedStash(stash);
