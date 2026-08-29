@@ -719,6 +719,17 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           updatedAt: 0,
         },
       ],
+      [
+        "content",
+        {
+          kind: "content",
+          nextCursor: null,
+          leaseOwner: null,
+          leaseGeneration: 0,
+          leaseUntil: null,
+          updatedAt: 0,
+        },
+      ],
     ]),
     gcRuns: [],
     uploadSessions: new Map(),
@@ -1669,6 +1680,47 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         last === undefined || start + page.length >= candidates.length
           ? null
           : nextGcCursor(kind, last.key);
+    } else if (kind === "content") {
+      const candidates = [...state.blobs.entries()]
+        .flatMap(([stash, rows]) =>
+          [...rows.entries()].map(([hash, row]) => ({ key: `${stash}\u0000${hash}`, row })),
+        )
+        .sort((left, right) => left.key.localeCompare(right.key));
+      const start = pageStart(candidates, inputCursor, kind);
+      const page = candidates.slice(start, start + maxObjects);
+      run.scanned = page.length;
+      // The fake reuses the orphan grace; its live change-set check deliberately differs from
+      // the Worker's separate GC_CONTENT_MIN_AGE_MS and expires_at > now - grace rules.
+      const eligible = page.filter(({ row: blob }) => {
+        const referencedByVersion = state.versions.some(
+          (version) => version.stash === blob.stash && version.hash === blob.hash,
+        );
+        const referencedByChangeSet = [...state.changeSets.values()].some(
+          (changeSet) =>
+            changeSet.stash === blob.stash &&
+            changeSet.status === "open" &&
+            changeSet.expiresAt > startedAt &&
+            changeSet.entries.some((entry) => entry.hash === blob.hash),
+        );
+        return (
+          !referencedByVersion &&
+          !referencedByChangeSet &&
+          startedAt - blob.createdAt > gcOrphanMinAgeMs
+        );
+      });
+      run.eligible = eligible.length;
+      if (!dryRun) {
+        for (const { row: blob } of eligible) {
+          state.blobs.get(blob.stash)?.delete(blob.hash);
+        }
+        run.deleted = eligible.length;
+      }
+      const last = page.at(-1);
+      run.cursor =
+        last === undefined || start + page.length >= candidates.length
+          ? null
+          : nextGcCursor(kind, last.key);
+      // Content rows leave R2 objects for the existing r2-orphans job to reclaim in a later phase.
     } else {
       const candidates = ledgerCandidates();
       const start = pageStart(candidates, inputCursor, kind);
@@ -1696,6 +1748,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (!parsed.success) return fail("validation", "Invalid garbage-collection run query.");
     pruneGcRuns("r2-orphans");
     pruneGcRuns("ledger");
+    pruneGcRuns("content");
     const runs = state.gcRuns
       .filter((run) => parsed.data.kind === undefined || run.kind === parsed.data.kind)
       .sort(compareGcRuns)
