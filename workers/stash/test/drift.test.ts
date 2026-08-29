@@ -45,6 +45,7 @@ describe("Wrangler and Env drift", () => {
       "BLOBS",
       "CHANGE_SET_TTL_DAYS",
       "DB",
+      "GC_CONTENT_MIN_AGE_MS",
       "GC_LEASE_TTL_MS",
       "GC_ORPHAN_MIN_AGE_MS",
       "RL_DIFF",
