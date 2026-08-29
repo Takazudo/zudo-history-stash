@@ -27,6 +27,98 @@ const GUIDE_VERSIONS = [
   },
 ];
 
+const SITE_FILES = [
+  {
+    path: "site/index.html",
+    contentType: "text/html; charset=utf-8",
+    body: [
+      "<!doctype html>",
+      '<html lang="en">',
+      "  <head>",
+      '    <meta charset="utf-8">',
+      '    <meta name="viewport" content="width=device-width, initial-scale=1">',
+      "    <title>History Stash Demo Site</title>",
+      '    <link rel="stylesheet" href="/site/styles.css">',
+      "  </head>",
+      "  <body>",
+      '    <main class="card">',
+      '      <img src="/site/assets/mark.svg" width="64" height="64" alt="">',
+      '      <p class="eyebrow">History Stash</p>',
+      "      <h1>Review a live site change</h1>",
+      "      <p>This small fixture is committed as one directory-shaped change.</p>",
+      '      <a href="/site/about.html">Read the fixture notes</a>',
+      "    </main>",
+      "  </body>",
+      "</html>",
+      "",
+    ].join("\n"),
+  },
+  {
+    path: "site/styles.css",
+    contentType: "text/css; charset=utf-8",
+    body: [
+      ":root {",
+      "  color-scheme: light;",
+      "  font-family: system-ui, sans-serif;",
+      "  background: #f4f7fb;",
+      "  color: #172033;",
+      "}",
+      "",
+      "body {",
+      "  display: grid;",
+      "  min-height: 100vh;",
+      "  place-items: center;",
+      "  margin: 0;",
+      "}",
+      "",
+      ".card {",
+      "  max-width: 36rem;",
+      "  padding: 3rem;",
+      "  border: 1px solid #d9e2f0;",
+      "  border-radius: 1rem;",
+      "  background: white;",
+      "  box-shadow: 0 1rem 3rem rgb(23 32 51 / 12%);",
+      "}",
+      "",
+      ".eyebrow {",
+      "  color: #4666a3;",
+      "  font-size: 0.8rem;",
+      "  font-weight: 700;",
+      "  letter-spacing: 0.12em;",
+      "  text-transform: uppercase;",
+      "}",
+      "",
+    ].join("\n"),
+  },
+  {
+    path: "site/about.html",
+    contentType: "text/html; charset=utf-8",
+    body: [
+      "<!doctype html>",
+      '<html lang="en">',
+      "  <body>",
+      "    <main>",
+      "      <h1>Fixture notes</h1>",
+      "      <p>This page is included to exercise prefix listing and multi-entry commits.</p>",
+      "    </main>",
+      "  </body>",
+      "</html>",
+      "",
+    ].join("\n"),
+  },
+  {
+    path: "site/assets/mark.svg",
+    contentType: "image/svg+xml; charset=utf-8",
+    body: [
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="History Stash">',
+      '  <rect width="64" height="64" rx="14" fill="#4666a3"/>',
+      '  <path d="M18 17h28v8H26v7h16v8H26v7h20v8H18z" fill="white"/>',
+      "</svg>",
+      "",
+    ].join("\n"),
+  },
+];
+
 function usage() {
   return "Usage: node scripts/seed-dev.mjs [--base-url URL] [--reset] [--large] [--ci]";
 }
@@ -279,6 +371,66 @@ async function seedCommitAndChangeSet(client, stashName) {
   if (!changeSet.ok) throw resultError("Creating the seed open change set", changeSet);
 }
 
+async function seedSiteDirectory(client, stashName) {
+  const commit = await client.commits(stashName).create(
+    {
+      entries: [...SITE_FILES]
+        .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+        .map(({ body, contentType, path }) => ({
+          op: "put",
+          path,
+          expectedVersion: null,
+          body,
+          contentType,
+        })),
+      author: "seed-dev",
+      message: "Seed site directory fixture",
+      meta: { fixture: "seed-dev-site-commit" },
+    },
+    { idempotencyKey: "seed-dev-site-commit" },
+  );
+  if (!commit.ok) throw resultError("Creating the seed site directory commit", commit);
+
+  const baseStyles = SITE_FILES.find(({ path }) => path === "site/styles.css")?.body ?? "";
+  const changeSet = await client.changeSets(stashName).create(
+    {
+      entries: [
+        {
+          op: "put",
+          path: "site/index.html",
+          baseVersion: 1,
+          body: [
+            "<!doctype html>",
+            '<html lang="en">',
+            "  <body>",
+            '    <main class="card">',
+            '      <p class="eyebrow">History Stash</p>',
+            "      <h1>Pending reviewer copy</h1>",
+            "      <p>This candidate remains open until a reviewer approves it.</p>",
+            "    </main>",
+            "  </body>",
+            "</html>",
+            "",
+          ].join("\n"),
+          contentType: "text/html; charset=utf-8",
+        },
+        {
+          op: "put",
+          path: "site/styles.css",
+          baseVersion: 1,
+          body: `${baseStyles}\n.card {\n  border-color: #6888c7;\n}\n`,
+          contentType: "text/css; charset=utf-8",
+        },
+      ],
+      author: "seed-dev",
+      message: "Seed open site review",
+      meta: { fixture: "seed-dev-site-change-set" },
+    },
+    { idempotencyKey: "seed-dev-site-change-set" },
+  );
+  if (!changeSet.ok) throw resultError("Creating the open site change set", changeSet);
+}
+
 export async function runSeed({
   argv = process.argv.slice(2),
   env = process.env,
@@ -330,6 +482,7 @@ export async function runSeed({
   await seedDeletedNote(writer, stashName);
   await rollbackGuide(writer, stashName);
   await seedCommitAndChangeSet(writer, stashName);
+  await seedSiteDirectory(writer, stashName);
   const largeResult = large ? await seedLargeFile(writer, stashName) : null;
 
   log(`Seeded stash "${stashName}" through ${baseUrl}.`);

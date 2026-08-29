@@ -244,6 +244,25 @@ To preserve the fixture while exercising a reset,
 `node scripts/seed-dev.mjs --base-url http://localhost:8787/api --reset` uses a fresh
 `demo-reset-...` stash because stash deletion is deferred.
 
+### Commit a directory
+
+`commit:dir` compares a local directory with the remote heads under a portable prefix, then sends
+changed files as deterministic, idempotent commits. Set a write token in the environment; the tool
+never prints it:
+
+```bash
+STASH_WRITE_TOKEN=... pnpm commit:dir -- ./site site demo \
+  --base-url http://localhost:8787/api --job-id site-demo-1
+```
+
+Use `--dry-run` to inspect the plan, `--prune` to delete remote files missing locally, or
+`--change-set` to leave the result open for review. A directory larger than the 20-entry commit
+limit is split into separately atomic chunks, so the whole directory is not one transaction; keep
+the same `--job-id` to replay the exact recorded chunks safely after an interrupted run. The replay
+plan is kept outside the walked tree under `~/.cache/zudo-history-stash/commit-dir/` (or the
+`COMMIT_DIR_STATE_DIR` override); changing local bytes or options under an existing job id is
+rejected, so choose a new id for a new job.
+
 ## Lifecycle and GC confirmation
 
 The final local proof is split deliberately: `pnpm b4push` covers the ordinary workspace, the
