@@ -2,16 +2,12 @@ import {
   BODY_LIMIT_BYTES,
   IDEMPOTENCY_KEY_MAX_CHARS,
   MAX_BODY_BYTES,
-  MAX_META_BYTES,
-  R2_SPILL_BYTES,
   ROUTES,
   sha256Hex,
   type GcRunResult,
   type RouteId,
-  type StashEvent,
 } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
-import { createStashClient } from "../../src/index.js";
 import { parseStashEventStream } from "../../src/sse.js";
 import {
   CONFORMANCE_SUPPORTED_ROUTE_IDS,
