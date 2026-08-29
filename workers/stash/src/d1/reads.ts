@@ -10,7 +10,8 @@ import {
   type JsonValue,
   type Representation,
   type VersionKind,
-  validatePath,
+  pathPrefixRange,
+  type PathPrefixRange,
 } from "@takazudo/zudo-history-stash-core";
 import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
@@ -227,10 +228,7 @@ function validateString(value: string, name: string): string {
   return value;
 }
 
-interface PathRange {
-  lo: string | null;
-  hi: string | null;
-}
+type PathRange = PathPrefixRange | { lo: null; hi: null };
 
 interface NormalizedListOptions {
   includeDeleted: boolean;
@@ -241,12 +239,10 @@ interface NormalizedListOptions {
 }
 
 function normalizePrefix(value: string | undefined): PathRange {
-  if (value === undefined) return { lo: null, hi: null };
-  const prefix = validateString(value, "prefix");
-  const path = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
-  const result = validatePath(path);
+  const prefix = value === undefined ? undefined : validateString(value, "prefix");
+  const result = pathPrefixRange(prefix);
   if (!result.ok) throw new StashError(result.error, result.message);
-  return { lo: `${path}/`, hi: `${path}0` };
+  return result.range ?? { lo: null, hi: null };
 }
 
 function normalizeListOptions(options: ListFilesOptions): NormalizedListOptions {
