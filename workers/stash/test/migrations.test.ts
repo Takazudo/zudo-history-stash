@@ -85,6 +85,11 @@ describe("D1 migrations", () => {
       name: string;
     }>();
     expect(versionIndexes.results.map(({ name }) => name)).toContain("versions_stash_commit");
+    const versionColumns = await env.DB.prepare("PRAGMA table_info(versions)").all<{
+      name: string;
+      notnull: number;
+    }>();
+    expect(versionColumns.results.find(({ name }) => name === "commit_id")?.notnull).toBe(1);
 
     await expect(env.DB.prepare("SELECT 1 FROM proposals").first()).rejects.toThrow();
 

@@ -3,9 +3,9 @@ import { commitInsertStatement, sealStatement } from "./commits.js";
 
 /**
  * Every mutation has one operation predicate F, and that exact predicate is applied to every
- * statement in its batch. The files/head statement is always last and also requires the newly
- * inserted version row to exist. Only `results.at(-1)?.meta.changes === 1` decides success. If F
- * refuses a mutation, every statement changes zero rows, leaving all four write tables untouched.
+ * statement in its batch. The commit insert is first, the files/head statement is immediately
+ * before the seal, and the seal is the final verdict. Only `results.at(-1)?.meta.changes === 1`
+ * decides success. If F refuses a mutation, every statement changes zero rows.
  */
 export interface SqlFragment {
   sql: string;

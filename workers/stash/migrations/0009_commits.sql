@@ -1,5 +1,5 @@
 CREATE TABLE commits (
-  id                TEXT PRIMARY KEY,
+  id                TEXT PRIMARY KEY, /* 'cmt_' + 13-digit epoch ms + 8 hex; legacy: 'cmt_legacy_' || versions.id */
   stash_name        TEXT NOT NULL REFERENCES stashes(name),
   source            TEXT NOT NULL CHECK (source IN ('put','delete','rollback','import','upload','change-set','revert','commit')),
   source_id         TEXT,

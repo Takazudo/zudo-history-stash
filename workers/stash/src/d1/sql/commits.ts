@@ -10,7 +10,12 @@ export type CommitInsertRow = Omit<
 
 export function mintCommitId(now: number, createId: () => string): string {
   const timestamp = String(now).padStart(13, "0");
-  const randomHex = createId().replace(/[^0-9a-f]/gi, "").slice(0, 8).padEnd(8, "0");
+  let hash = 0x811c9dc5;
+  for (const character of createId()) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const randomHex = (hash >>> 0).toString(16).padStart(8, "0");
   return `cmt_${timestamp}${randomHex}`;
 }
 
