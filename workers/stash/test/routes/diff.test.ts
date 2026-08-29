@@ -87,6 +87,11 @@ function version(versionNumber: number, hash: string): ReadVersionRecord {
     message: "",
     meta: {},
     createdAt: new Date(versionNumber).toISOString(),
+    representation: "text",
+    contentAccess: "inline",
+    contentType: "text/plain; charset=utf-8",
+    byteSize: 5,
+    etag: hash,
   };
 }
 
@@ -115,8 +120,26 @@ describe("GET stash diff", () => {
     >();
     expect(json).toEqual({
       ...expected,
-      from: { version: 1, hash: "sha256-alpha-one", deleted: false },
-      to: { version: 2, hash: "sha256-alpha-two", deleted: false },
+      from: {
+        version: 1,
+        hash: "sha256-alpha-one",
+        deleted: false,
+        representation: "text",
+        contentAccess: "inline",
+        contentType: "text/plain; charset=utf-8",
+        byteSize: 9,
+        etag: "sha256-alpha-one",
+      },
+      to: {
+        version: 2,
+        hash: "sha256-alpha-two",
+        deleted: false,
+        representation: "text",
+        contentAccess: "inline",
+        contentType: "text/markdown",
+        byteSize: 9,
+        etag: "sha256-alpha-two",
+      },
     });
     expect(json.state).toBe("ready");
     if (json.state !== "ready" || expected.state !== "ready") {
@@ -174,7 +197,8 @@ describe("GET stash diff", () => {
 
   it("returns same for equal hashes without loading either body", async () => {
     const versions = [version(2, "same-hash"), version(1, "same-hash")];
-    const getFile: StashReads["getFile"] = vi.fn(async () => null);
+    const getFileSource: StashReads["getFileSource"] = vi.fn(async () => null);
+    const materializeText: StashReads["materializeText"] = vi.fn(async () => "");
     const listHistory: StashReads["listHistory"] = vi.fn(async (_stash, path, options = {}) => {
       const before = options.before ?? Number.POSITIVE_INFINITY;
       return {
@@ -200,25 +224,30 @@ describe("GET stash diff", () => {
       });
       await next();
     });
-    routeApp.route("/", createDiffRoutes({ createReads: () => ({ getFile, listHistory }) }));
+    routeApp.route(
+      "/",
+      createDiffRoutes({ createReads: () => ({ getFileSource, materializeText, listHistory }) }),
+    );
 
     const response = await request(
       routeApp,
       "http://example.test/v1/stashes/fake/diff/equal.txt?from=1&to=head",
     );
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    await expect(response.json()).resolves.toMatchObject({
       state: "same",
       from: { version: 1, hash: "same-hash", deleted: false },
       to: { version: 2, hash: "same-hash", deleted: false },
     });
-    expect(getFile).not.toHaveBeenCalled();
+    expect(getFileSource).not.toHaveBeenCalled();
+    expect(materializeText).not.toHaveBeenCalled();
   });
 
   it("retries a head observation interrupted by a concurrent commit", async () => {
     const versions = [version(2, "same-hash"), version(1, "same-hash")];
     let observations = 0;
-    const getFile: StashReads["getFile"] = vi.fn(async () => null);
+    const getFileSource: StashReads["getFileSource"] = vi.fn(async () => null);
+    const materializeText: StashReads["materializeText"] = vi.fn(async () => "");
     const listHistory: StashReads["listHistory"] = vi.fn(async (_stash, path, options = {}) => {
       observations += 1;
       if (observations === 1) {
@@ -255,7 +284,10 @@ describe("GET stash diff", () => {
       });
       await next();
     });
-    routeApp.route("/", createDiffRoutes({ createReads: () => ({ getFile, listHistory }) }));
+    routeApp.route(
+      "/",
+      createDiffRoutes({ createReads: () => ({ getFileSource, materializeText, listHistory }) }),
+    );
 
     const response = await request(
       routeApp,
@@ -264,7 +296,8 @@ describe("GET stash diff", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ state: "same" });
     expect(listHistory).toHaveBeenCalledTimes(3);
-    expect(getFile).not.toHaveBeenCalled();
+    expect(getFileSource).not.toHaveBeenCalled();
+    expect(materializeText).not.toHaveBeenCalled();
   });
 
   it("returns both byte and complexity oversized states", async () => {

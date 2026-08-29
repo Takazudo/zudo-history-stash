@@ -19,17 +19,18 @@ describe("API reference route coverage", () => {
 
   it("pins the raised limits, storage tiers, orphan caveat, and deferred work", () => {
     const limits = section("Limits and storage tiers");
-    expect(limits).toContain("5,000,000 UTF-8 bytes");
-    expect(limits).toContain("32 MiB (33,554,432 bytes)");
-    expect(limits).toContain("524,288 bytes");
-    expect(limits).toContain("private R2");
-    expect(limits).toContain("content-addressed orphan");
-    expect(limits).toContain("future GC");
+    const normalizedLimits = limits.replace(/\s+/gu, " ");
+    expect(normalizedLimits).toContain("5,000,000 UTF-8 bytes");
+    expect(normalizedLimits).toContain("32 MiB (33,554,432 bytes)");
+    expect(normalizedLimits).toContain("524,288 bytes");
+    expect(normalizedLimits).toContain("private R2");
+    expect(normalizedLimits).toContain("content-addressed orphan");
+    expect(normalizedLimits).toContain("future GC");
 
     const deferred = section("Deferred");
-    expect(deferred).toContain("binary request bodies");
-    expect(deferred).toContain("byte-range reads");
-    expect(deferred).toContain("download endpoints");
+    expect(deferred).not.toContain("binary request bodies");
+    expect(deferred).not.toContain("byte-range reads");
+    expect(deferred).not.toContain("download endpoints");
     expect(deferred).not.toContain("R2 spill");
   });
 

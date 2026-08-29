@@ -14,6 +14,7 @@ import {
   useStashHref,
   Anchor,
 } from "../provider/hooks.js";
+import { Bytes } from "./bytes.js";
 import { Button } from "../primitives/button.js";
 import { Dialog } from "../primitives/dialog.js";
 import { Notice } from "../primitives/notice.js";
@@ -111,6 +112,9 @@ function DiffStats({ diff }: { diff: GetDiffResult }) {
   }
   if (diff.state === "same") {
     return <strong aria-label="0 lines added, 0 lines removed">+0 −0</strong>;
+  }
+  if (diff.state === "binary") {
+    return <strong>Binary comparison is metadata-only</strong>;
   }
   return <strong>Diff preview unavailable ({diff.reason})</strong>;
 }
@@ -317,6 +321,10 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
                 <span>
                   Head v{preview.head.version} → target v{target.version}
                 </span>
+                <span className="zhs-rollback-dialog__target-metadata">
+                  Target: {target.representation ?? "text"} · {target.contentType ?? "unknown type"}{" "}
+                  · <Bytes value={target.byteSize ?? target.size} />
+                </span>
                 <DiffStats diff={preview.diff} />
               </div>
               {diffHref ? <Anchor href={diffHref}>Open full diff</Anchor> : null}
@@ -338,6 +346,12 @@ export function RollbackDialog({ stash, path, target, onClose, onSuccess }: Roll
             {preview.diff.state === "oversized" ? (
               <p className="zhs-rollback-dialog__preview-notice">
                 Preview unavailable: diff too large
+              </p>
+            ) : null}
+
+            {preview.diff.state === "binary" ? (
+              <p className="zhs-rollback-dialog__preview-notice">
+                Binary comparison is metadata-only; content is not decoded in the rollback preview.
               </p>
             ) : null}
 

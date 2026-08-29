@@ -1,5 +1,13 @@
 import type { DiffResult } from "./diff.js";
 import type { JsonValue } from "./canonical.js";
+import type {
+  ContentAccess,
+  Representation,
+  StorageTier,
+  UploadMode,
+  ResolvedContent,
+} from "./binary.js";
+import type { UploadCompletionResult, UploadPartRecord, UploadSessionRecord } from "./upload.js";
 
 export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
@@ -66,7 +74,45 @@ export type ErrorCode =
   | "payload-too-large"
   | "idempotency-key-reused"
   | "rollback-target-tombstone"
+  | "unsupported-representation"
+  | "upload-session-not-open"
+  | "upload-session-expired"
+  | "upload-size-mismatch"
+  | "upload-hash-mismatch"
+  | "range-not-satisfiable"
   | "internal";
+
+/**
+ * Additive byte metadata. Fields are optional on the legacy JSON model so existing callers remain
+ * source-compatible; servers fill the documented text/inline defaults for pre-migration rows.
+ */
+export interface CompatibleContentMetadata {
+  representation?: Representation;
+  contentAccess?: ContentAccess;
+  contentType?: string;
+  byteSize?: number;
+  etag?: string | null;
+}
+
+export interface CapabilitiesResponse {
+  representations: readonly Representation[];
+  contentAccess: readonly ContentAccess[];
+  transferModes: readonly ["json", "single", "multipart"];
+  storageTiers: readonly StorageTier[];
+  limits: {
+    jsonInlineMaxBytes: number;
+    d1InlineMaxBytes: number;
+    httpRequestMaxBytes: number;
+    singleUploadMaxBytes: number;
+    maxFileBytes: number;
+    diffMaxBytesPerSide: number;
+    multipartPartBytes: number;
+    maxMultipartParts: 10_000;
+    maxOpenUploadSessionsPerStash: number;
+    maxReservedUploadBytesPerStash: number;
+    uploadSessionTtlSeconds: number;
+  };
+}
 
 export interface Current {
   version: number;
@@ -213,7 +259,7 @@ export type RotateTokenResult = CreatedToken & {
   predecessor: { id: string; expiresAt: string | null };
 };
 export type RevokeTokenResult = undefined;
-export interface FileSummary {
+export interface FileSummary extends CompatibleContentMetadata {
   path: string;
   headVersion: number;
   hash: string | null;
@@ -225,7 +271,7 @@ export interface FileListResponse {
   files: FileSummary[];
   nextAfter: string | null;
 }
-export interface FileRecord {
+export interface FileRecord extends CompatibleContentMetadata {
   path: string;
   version: number;
   hash: string | null;
@@ -238,7 +284,12 @@ export interface FileRecord {
   deleted: boolean;
   body: string | null;
 }
-export interface VersionRecord {
+export type ResolvedFileRecord = Omit<
+  FileRecord,
+  "body" | "deleted" | "contentAccess" | "representation"
+> &
+  ResolvedContent;
+export interface VersionRecord extends CompatibleContentMetadata {
   version: number;
   kind: VersionKind;
   hash: string | null;
@@ -257,7 +308,7 @@ export interface HistoryPage {
   versions: VersionRecord[];
   nextBefore: number | null;
 }
-export interface ChangeItem {
+export interface ChangeItem extends CompatibleContentMetadata {
   changeId: number;
   stash: string;
   path: string;
@@ -301,13 +352,17 @@ export interface RollbackResult {
   identicalToHead: boolean;
   changeId: number;
   createdAt: string;
+  representation?: Representation;
+  contentType?: string;
+  byteSize?: number;
+  etag?: string;
 }
 export interface ImportResult {
   path: string;
   headVersion: number;
   firstChangeId: number;
 }
-export interface DiffSide {
+export interface DiffSide extends CompatibleContentMetadata {
   version: number;
   hash: string | null;
   deleted: boolean;
@@ -315,6 +370,23 @@ export interface DiffSide {
 export type FileDiffResult = DiffResult & { from: DiffSide; to: DiffSide };
 export type GetDiffResult = FileDiffResult;
 export type CandidateDiffResult = DiffResult;
+export type CreateUploadSessionResult = UploadSessionRecord;
+export type GetUploadSessionResult = UploadSessionRecord & { parts: UploadPartRecord[] };
+export type CompleteUploadResult = UploadCompletionResult;
+export interface AbortUploadResult {
+  id: string;
+  state: "aborted";
+}
+export interface CreateUploadSessionInput {
+  expectedVersion: number | null;
+  size: number;
+  hash?: string;
+  representation: Representation;
+  contentType: string;
+  mode?: UploadMode | "auto";
+  resumable?: boolean;
+  skipIfUnchanged?: boolean;
+}
 export type CreateProposalResult = ProposalRecord;
 export type ListProposalsResult = ProposalListResponse;
 export type GetProposalResult = ProposalWithBody;

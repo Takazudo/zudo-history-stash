@@ -3,6 +3,11 @@ import { ERROR_CODES } from "../errors.js";
 import type { DiffResult, DiffHunk, DiffStats } from "../diff.js";
 import type {
   CandidateDiffResult,
+  CapabilitiesResponse,
+  CreateUploadSessionResult,
+  GetUploadSessionResult,
+  CompleteUploadResult,
+  AbortUploadResult,
   ChangesPage,
   ChangeItem,
   CreateStashResult,
@@ -72,11 +77,40 @@ const MetaSchema = z.record(z.string(), z.json());
 const IntegerSchema = z.number().int();
 const NonNegativeIntegerSchema = IntegerSchema.nonnegative();
 const NullableHashSchema = HashSchema.nullable();
+const RepresentationSchema = z.enum(["text", "binary"]);
+const ContentAccessSchema = z.enum(["inline", "raw", "deleted"]);
+const CompatibleContentFields = {
+  representation: RepresentationSchema.optional(),
+  contentAccess: ContentAccessSchema.optional(),
+  contentType: z.string().optional(),
+  byteSize: NonNegativeIntegerSchema.optional(),
+  etag: NullableHashSchema.optional(),
+};
 
 export const HealthResponseSchema = z.strictObject({
   ok: z.literal(true),
   service: z.literal("zudo-history-stash"),
   marker: z.literal("ZHS_HEALTH_OK"),
+});
+
+export const CapabilitiesResponseSchema: z.ZodType<CapabilitiesResponse> = z.strictObject({
+  representations: z.tuple([z.literal("text"), z.literal("binary")]),
+  contentAccess: z.tuple([z.literal("inline"), z.literal("raw"), z.literal("deleted")]),
+  transferModes: z.tuple([z.literal("json"), z.literal("single"), z.literal("multipart")]),
+  storageTiers: z.tuple([z.literal("d1"), z.literal("r2")]),
+  limits: z.strictObject({
+    jsonInlineMaxBytes: z.number().int().positive(),
+    d1InlineMaxBytes: z.number().int().positive(),
+    httpRequestMaxBytes: z.number().int().positive(),
+    singleUploadMaxBytes: z.number().int().positive(),
+    maxFileBytes: z.number().int().positive(),
+    diffMaxBytesPerSide: z.number().int().positive(),
+    multipartPartBytes: z.number().int().positive(),
+    maxMultipartParts: z.literal(10_000),
+    maxOpenUploadSessionsPerStash: z.number().int().positive(),
+    maxReservedUploadBytesPerStash: z.number().int().positive(),
+    uploadSessionTtlSeconds: z.number().int().positive(),
+  }),
 });
 
 export const MeResponseSchema = z.union([
@@ -162,6 +196,7 @@ export const FileSummarySchema = z.strictObject({
   size: NonNegativeIntegerSchema,
   deleted: z.boolean(),
   updatedAt: TimestampSchema,
+  ...CompatibleContentFields,
 });
 
 export const FileListResponseSchema = z.strictObject({
@@ -181,6 +216,7 @@ export const FileRecordSchema = z.strictObject({
   createdAt: TimestampSchema,
   deleted: z.boolean(),
   body: z.string().nullable(),
+  ...CompatibleContentFields,
 });
 
 export const VersionRecordSchema = z.strictObject({
@@ -193,6 +229,7 @@ export const VersionRecordSchema = z.strictObject({
   message: z.string(),
   meta: MetaSchema,
   createdAt: TimestampSchema,
+  ...CompatibleContentFields,
 });
 
 export const HistoryPageSchema = z.strictObject({
@@ -214,6 +251,7 @@ export const ChangeItemSchema = z.strictObject({
   message: z.string(),
   size: NonNegativeIntegerSchema,
   createdAt: TimestampSchema,
+  ...CompatibleContentFields,
 });
 
 export const ChangesPageSchema: z.ZodType<ChangesPage> = z.union([
@@ -257,6 +295,10 @@ export const RollbackResultSchema = z.strictObject({
   identicalToHead: z.boolean(),
   changeId: NonNegativeIntegerSchema,
   createdAt: TimestampSchema,
+  representation: RepresentationSchema.optional(),
+  contentType: z.string().optional(),
+  byteSize: NonNegativeIntegerSchema.optional(),
+  etag: HashSchema.optional(),
 });
 
 export const ImportResultSchema = z.strictObject({
@@ -337,6 +379,80 @@ export const DiffSideSchema = z.strictObject({
   version: NonNegativeIntegerSchema,
   hash: NullableHashSchema,
   deleted: z.boolean(),
+  ...CompatibleContentFields,
+});
+
+export const UploadCommitResultSchema = z.strictObject({
+  version: z.number().int().positive(),
+  hash: HashSchema,
+  size: NonNegativeIntegerSchema,
+  representation: RepresentationSchema,
+  contentType: z.string(),
+  changeId: z.number().int().positive(),
+  createdAt: TimestampSchema,
+});
+
+export const UploadCompletionResultSchema = z.union([
+  UploadCommitResultSchema,
+  z.strictObject({
+    unchanged: z.literal(true),
+    version: z.number().int().positive(),
+    hash: HashSchema,
+    size: NonNegativeIntegerSchema,
+    representation: RepresentationSchema,
+    contentType: z.string(),
+  }),
+]);
+
+export const UploadPartRecordSchema = z.strictObject({
+  partNumber: z.number().int().min(1).max(10_000),
+  size: NonNegativeIntegerSchema,
+  generation: NonNegativeIntegerSchema,
+  etag: z.string(),
+});
+
+export const UploadSessionRecordSchema = z.strictObject({
+  id: z.string(),
+  stash: z.string(),
+  path: z.string(),
+  principal: z.union([
+    z.strictObject({ kind: z.literal("admin") }),
+    z.strictObject({ kind: z.literal("stash"), tokenId: z.string() }),
+  ]),
+  state: z.enum([
+    "open",
+    "uploaded",
+    "finalizing",
+    "committed",
+    "aborted",
+    "expired",
+    "stale",
+    "failed",
+  ]),
+  expectedVersion: z.number().int().positive().nullable(),
+  declaredSize: NonNegativeIntegerSchema,
+  declaredHash: HashSchema.nullable(),
+  representation: RepresentationSchema,
+  contentType: z.string(),
+  mode: z.enum(["single", "multipart"]),
+  storageTier: z.enum(["d1", "r2"]),
+  partSize: z.number().int().positive().nullable(),
+  expiresAt: TimestampSchema,
+  attemptGeneration: NonNegativeIntegerSchema,
+  uploadedSize: NonNegativeIntegerSchema.nullable(),
+  uploadedHash: HashSchema.nullable(),
+  finalizationLeaseOwner: z.string().nullable(),
+  finalizationLeaseExpiresAt: TimestampSchema.nullable(),
+  result: UploadCompletionResultSchema.nullable(),
+});
+
+export const GetUploadSessionResultSchema = UploadSessionRecordSchema.extend({
+  parts: z.array(UploadPartRecordSchema),
+});
+
+export const AbortUploadResultSchema = z.strictObject({
+  id: z.string(),
+  state: z.literal("aborted"),
 });
 
 export const DiffHunkSchema = z.strictObject({
@@ -354,6 +470,7 @@ export const DiffStatsSchema = z.strictObject({
 
 export const DiffResultSchema = z.union([
   z.strictObject({ state: z.literal("same") }),
+  z.strictObject({ state: z.literal("binary") }),
   z.strictObject({ state: z.literal("oversized"), reason: z.enum(["bytes", "complexity"]) }),
   z.strictObject({
     state: z.literal("ready"),
@@ -365,6 +482,11 @@ export const DiffResultSchema = z.union([
 ]);
 
 export const FileDiffResultSchema: z.ZodType<FileDiffResult> = z.union([
+  z.strictObject({
+    state: z.literal("binary"),
+    from: DiffSideSchema,
+    to: DiffSideSchema,
+  }),
   z.strictObject({
     state: z.literal("same"),
     from: DiffSideSchema,
@@ -409,6 +531,7 @@ const ProposalDiffFields = {
 
 export const ProposalDiffResultSchema: z.ZodType<ProposalDiffResult> = z.union([
   z.strictObject({ state: z.literal("same"), ...ProposalDiffFields }),
+  z.strictObject({ state: z.literal("binary"), ...ProposalDiffFields }),
   z.strictObject({
     state: z.literal("oversized"),
     reason: z.enum(["bytes", "complexity"]),
@@ -439,6 +562,7 @@ export const ErrorResponseSchema = z.strictObject({
 
 interface ResponseTypeMap {
   HealthResponse: HealthResponse;
+  CapabilitiesResponse: CapabilitiesResponse;
   MeResponse: MeResponse;
   StashRecord: StashRecord;
   StashSummary: StashSummary;
@@ -484,6 +608,10 @@ interface ResponseTypeMap {
   Current: Current;
   ErrorDetail: ErrorDetail;
   ErrorResponse: ErrorResponse;
+  CreateUploadSessionResult: CreateUploadSessionResult;
+  GetUploadSessionResult: GetUploadSessionResult;
+  CompleteUploadResult: CompleteUploadResult;
+  AbortUploadResult: AbortUploadResult;
   ListStashesResult: ListStashesResult;
   ListTokensResult: ListTokensResult;
   ListFilesResult: ListFilesResult;
@@ -496,6 +624,7 @@ interface ResponseTypeMap {
 
 export const RESPONSE_SCHEMAS = {
   HealthResponse: HealthResponseSchema,
+  CapabilitiesResponse: CapabilitiesResponseSchema,
   MeResponse: MeResponseSchema,
   StashRecord: StashRecordSchema,
   StashSummary: StashSummarySchema,
@@ -541,6 +670,10 @@ export const RESPONSE_SCHEMAS = {
   Current: CurrentSchema,
   ErrorDetail: ErrorDetailSchema,
   ErrorResponse: ErrorResponseSchema,
+  CreateUploadSessionResult: UploadSessionRecordSchema,
+  GetUploadSessionResult: GetUploadSessionResultSchema,
+  CompleteUploadResult: UploadCompletionResultSchema,
+  AbortUploadResult: AbortUploadResultSchema,
   ListStashesResult: StashListResponseSchema,
   ListTokensResult: TokenListResponseSchema,
   ListFilesResult: FileListResponseSchema,

@@ -3,9 +3,11 @@
 @import "./stateful.css";
 @import "./tokens-panel.css";
 @import "../components/create-stash-dialog.css";
+@import "../components/binary-upload-form.css";
 @import "../components/delete-file-dialog.css";
 @import "../components/delete-stash-dialog.css";
 @import "../components/edit-workbench.css";
+@import "../components/file-content.css";
 @import "../components/history-rail.css";
 @import "../components/live-indicator.css";
 @import "../components/gc-panel.css";

@@ -45,6 +45,7 @@ const body = wellFormed.refine(
   `Body exceeds ${MAX_BODY_BYTES} UTF-8 bytes`,
 );
 const expectedVersion = z.number().int().positive().nullable();
+const sha256 = z.string().regex(/^sha256-[0-9a-f]{64}$/);
 const author = boundedString(MAX_AUTHOR_BYTES).optional();
 const message = boundedString(MAX_MESSAGE_BYTES).optional();
 const metaObject = z
@@ -255,6 +256,34 @@ export const RejectProposalBody = z.strictObject({
 });
 export const ProposalDiffQuery = z.strictObject({ context: optionalQueryInteger(0) });
 
+/** Metadata-only creation request; content bytes always travel on a raw upload route. */
+export const CreateUploadSessionBody = z.strictObject({
+  expectedVersion,
+  size: z.number().int().nonnegative(),
+  hash: sha256.optional(),
+  representation: z.enum(["text", "binary"]),
+  contentType: boundedString(1_024),
+  mode: z.enum(["auto", "single", "multipart"]).default("auto"),
+  resumable: z.boolean().default(false),
+  skipIfUnchanged: z.boolean().default(false),
+});
+
+export const CompleteUploadSessionBody = z.strictObject({
+  generation: z.number().int().nonnegative(),
+});
+
+export const AbortUploadSessionBody = z.strictObject({
+  generation: z.number().int().nonnegative(),
+});
+
+export const UploadPartQuery = z.strictObject({
+  generation: nonEmptyQueryInteger(0),
+});
+
+export const RawContentQuery = z.strictObject({
+  version: optionalQueryInteger(1),
+});
+
 export const StashReadyEventSchema = z.strictObject({
   type: z.literal("ready"),
   head: z.number().int().nonnegative().nullable(),
@@ -317,4 +346,10 @@ export type ParsedListProposalsQuery = z.output<typeof ListProposalsQuery>;
 export type ApproveProposalBody = z.infer<typeof ApproveProposalBody>;
 export type RejectProposalBody = z.infer<typeof RejectProposalBody>;
 export type ProposalDiffQuery = z.infer<typeof ProposalDiffQuery>;
+export type CreateUploadSessionBody = z.input<typeof CreateUploadSessionBody>;
+export type ParsedCreateUploadSessionBody = z.output<typeof CreateUploadSessionBody>;
+export type CompleteUploadSessionBody = z.infer<typeof CompleteUploadSessionBody>;
+export type AbortUploadSessionBody = z.infer<typeof AbortUploadSessionBody>;
+export type UploadPartQuery = z.infer<typeof UploadPartQuery>;
+export type RawContentQuery = z.infer<typeof RawContentQuery>;
 export type StashClientId = z.infer<typeof StashClientIdSchema>;

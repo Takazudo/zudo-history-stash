@@ -253,8 +253,26 @@ describe("local-only HTTP mutation contract", () => {
       expect(diff).toEqual({
         state: "oversized",
         reason: "bytes",
-        from: { version: 1, hash: first.hash, deleted: false },
-        to: { version: 2, hash: second.hash, deleted: false },
+        from: {
+          version: 1,
+          hash: first.hash,
+          deleted: false,
+          representation: "text",
+          contentAccess: "inline",
+          contentType: "text/plain; charset=utf-8",
+          byteSize: LARGE_FILE_BYTES,
+          etag: first.hash,
+        },
+        to: {
+          version: 2,
+          hash: second.hash,
+          deleted: false,
+          representation: "text",
+          contentAccess: "inline",
+          contentType: "text/plain; charset=utf-8",
+          byteSize: 16,
+          etag: second.hash,
+        },
       });
 
       const rollback = unwrap(

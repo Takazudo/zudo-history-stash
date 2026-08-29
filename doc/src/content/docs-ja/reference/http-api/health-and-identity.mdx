@@ -13,6 +13,14 @@ category: reference
 health marker を返します。network または infrastructure の失敗は route レベルの業務エラー契約の
 範囲外です。
 
+### `GET /v1/capabilities`
+
+**Contract:** operation `getCapabilities`; principal `open`; transport `fetch-only`.
+
+デプロイ済みの transfer と storage の capabilities、および raw single と multipart upload の正確な byte
+設定を返します。クライアントは platform plan を推測したり、サイズの閾値を representation の判断に使ったりせず、
+この response から transfer mode を選択してください。
+
 ### `GET /v1/me`
 
 **Contract:** operation `me`; principal `any`; transport `any`.

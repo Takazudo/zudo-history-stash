@@ -48,6 +48,26 @@ Viewer の URL はナビゲーション状態であり、アクセス権の証�
 | `/s/:stash/new` | ファイルを作成します。 |
 | `/s/:stash/tokens` | 管理者専用のトークン管理です。 |
 
+## バイナリの upload と raw download
+
+新規ファイルのルートには、テキストエディターと capabilities 駆動の raw upload form があります。
+representation（`text` または `binary`）、content access（`inline`、`raw`、`deleted`）、transfer
+（`json`、`single`、`multipart`）、storage（`d1`、`r2`）、diff eligibility は独立しています。
+5,000,000 バイトを超えても自動的に binary にはなりません。raw API で送った正しい UTF-8 は `text` のままです。
+form はサーバーの single-upload 上限までは一つの request、それを超えると再開可能な multipart を使います。
+compare-and-set の head が stale の場合は競合として表示します。
+
+ファイルページが preview するのは、上限付きの UTF-8 text と許可リストにある PNG/JPEG/WebP/GIF の raster
+画像だけです。それ以外の binary と大きすぎる text は download 専用で、active content は埋め込みません。
+履歴の raw link は選択した version を保持し、削除済み version は空ファイルとして黙って表示せず metadata を
+表示します。
+
+大きな認証済み download では、File System Access に対応するブラウザーは response を選択したファイルへ
+直接 stream します。未対応ブラウザーは Blob にバッファリングせず、**32 MiB（33,554,432 bytes）を超える
+raw download を意図的に拒否**します。download がキャンセルまたは失敗した場合はファイルページから再試行するか、
+上限付き range または信頼できる外部 client を使ってください。bearer token を URL に入れてはいけません。
+復旧や比較では、表示された version、size、hash、ETag を確認してください。
+
 ## 読み込み時の head をフェンスとして編集する
 
 保存時には、ドラフトとともに読み込んだ head を compare-and-set のフェンスとして使います。別の書き込み元が

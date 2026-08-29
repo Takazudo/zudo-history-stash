@@ -75,7 +75,7 @@ describe("file history route", () => {
       ],
       nextBefore: 2,
     });
-    expect(firstPage.versions[0]).toEqual({
+    expect(firstPage.versions[0]).toMatchObject({
       version: 3,
       kind: "rollback",
       hash: expect.stringMatching(/^sha256-/),
@@ -85,6 +85,11 @@ describe("file history route", () => {
       message: "Rollback to v1",
       meta: {},
       createdAt: expect.stringMatching(/Z$/),
+      representation: "text",
+      contentAccess: "inline",
+      contentType: "text/plain; charset=utf-8",
+      byteSize: "ZHS_HISTORY_BODY_MUST_NOT_LEAK_ONE".length,
+      etag: expect.stringMatching(/^sha256-/),
     });
 
     const second = await get(`/history/docs/history.txt?limit=2&before=${firstPage.nextBefore}`);
@@ -158,7 +163,7 @@ describe("per-stash changes route", () => {
       nextSince: ids[1],
       hasMore: true,
     });
-    expect(ascendingPage.changes[0]).toEqual({
+    expect(ascendingPage.changes[0]).toMatchObject({
       changeId: ids[0],
       stash: STASH,
       path: "a.txt",
@@ -168,6 +173,11 @@ describe("per-stash changes route", () => {
       message: "",
       size: 2,
       createdAt: expect.stringMatching(/Z$/),
+      representation: "text",
+      contentAccess: "inline",
+      contentType: "text/plain; charset=utf-8",
+      byteSize: 2,
+      etag: expect.stringMatching(/^sha256-/),
     });
     const ascendingNext = await get(`/changes?since=${ascendingPage.nextSince}&limit=2`);
     await expect(ascendingNext.json()).resolves.toMatchObject({

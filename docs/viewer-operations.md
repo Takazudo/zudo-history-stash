@@ -74,6 +74,31 @@ Keep the full query string when sharing a historical file or diff. A direct requ
 write/admin route stays capability-gated and must not prefetch stash data before `/v1/me` confirms
 the principal.
 
+## Raw upload, preview, and download recovery
+
+The new-file route offers both the text editor and the capability-driven raw upload form. Uploads
+keep representation (`text` or `binary`), transfer (`json`, `single`, or `multipart`), content
+access (`inline`, `raw`, or `deleted`), and storage tier (`d1` or `r2`) independent. A body above
+5,000,000 bytes is not automatically binary: valid UTF-8 can remain `text` when it is uploaded as
+raw content. The form reads `/v1/capabilities`, uses a single request up to the configured single
+limit, and uses resumable multipart parts above it. A write token and the expected head are still
+required; a stale head is a conflict, not an invitation to overwrite.
+
+File pages fetch raw content with the authenticated client. Valid UTF-8 is previewed only up to the
+configured text-preview bound; larger text remains text but is download-only. Binary content is
+download-only except for bounded, allowlisted PNG/JPEG/WebP/GIF previews. Active content is never
+embedded. Deleted versions expose metadata and a raw-history link only; a deleted head is not
+silently treated as an empty file.
+
+For a large authenticated download, a browser with the File System Access API streams the response
+directly into the operator-selected file and does not buffer the R2-scale body. Unsupported
+browsers deliberately refuse a raw download above **32 MiB (33,554,432 bytes)** instead of
+buffering it into a Blob. A failed or cancelled transfer closes the response; retry from the file
+page, and use a range request or an external trusted client for recovery rather than copying the
+bearer token into a URL. A successful download is not proof that a later version is unchanged:
+use the displayed hash/ETag and version, and re-fetch with conditional headers when checking
+history.
+
 ## Operator checklist
 
 1. Confirm the Viewer is covered by the intended Access application and identity policy.

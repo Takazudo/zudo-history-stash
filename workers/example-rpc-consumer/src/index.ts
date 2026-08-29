@@ -3,16 +3,21 @@ import {
   type FileGetResult,
   type StashRpcEntrypoint,
 } from "@takazudo/zudo-history-stash";
+import { runRpcMultipartSmoke } from "./multipart-smoke.js";
 
 export interface Env {
   STASH: Fetcher;
   STASH_RPC: StashRpcEntrypoint;
   STASH_TOKEN: string;
+  RPC_SMOKE_TRIGGER_TOKEN?: string;
+  MULTIPART_SMOKE_STASH?: string;
 }
 
 export const DEMO_STASH = "example-rpc-demo";
 export const DEMO_PATH = "demo.txt";
+export const BINARY_DEMO_PATH = "demo.bin";
 const DEMO_BODY = "Written by the example RPC consumer.\n";
+const GATED_PATHS = new Set(["/demo", "/binary-demo", "/multipart-smoke"]);
 
 function versionForPut(get: FileGetResult): number | null | undefined {
   if (get.ok) return "value" in get ? get.value.version : undefined;
@@ -25,13 +30,48 @@ function rollbackTarget(get: FileGetResult, putVersion: number): number {
   return putVersion;
 }
 
+function timingSafeTextEqual(left: string, right: string): boolean {
+  const encoder = new TextEncoder();
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  let different = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    different |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+  return different === 0;
+}
+
+function triggerGate(request: Request, env: Env): Response | null {
+  const triggerToken = env.RPC_SMOKE_TRIGGER_TOKEN;
+  if (triggerToken === undefined || triggerToken.length === 0) {
+    return new Response("Not found", { status: 404 });
+  }
+  if (!timingSafeTextEqual(request.headers.get("Authorization") ?? "", `Bearer ${triggerToken}`)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  return null;
+}
+
 /**
  * Demonstrates one typed RPC client sequence. It is exported so hosts can test the consumer
  * without deploying this example Worker.
  */
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  if (url.pathname !== "/demo") return new Response("Not found", { status: 404 });
+  if (!GATED_PATHS.has(url.pathname)) return new Response("Not found", { status: 404 });
+  const gated = triggerGate(request, env);
+  if (gated !== null) return gated;
+  if (url.pathname === "/multipart-smoke") {
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405, headers: { Allow: "POST" } });
+    }
+    try {
+      return Response.json(await runRpcMultipartSmoke(env));
+    } catch {
+      return Response.json({ ok: false, checks: [] }, { status: 500 });
+    }
+  }
   if (request.method !== "GET") {
     return new Response("Method not allowed", { status: 405, headers: { Allow: "GET" } });
   }
@@ -39,6 +79,28 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   const client = createStashClient({
     transport: { kind: "rpc", binding: env.STASH_RPC, token: env.STASH_TOKEN },
   });
+  if (url.pathname === "/binary-demo") {
+    const files = client.files(DEMO_STASH);
+    const current = await files.get(BINARY_DEMO_PATH);
+    const expectedVersion = versionForPut(current);
+    if (expectedVersion === undefined) return Response.json({ current }, { status: 500 });
+    const uploaded = await files.upload(
+      BINARY_DEMO_PATH,
+      new Uint8Array([0x89, 0x50, 0x00, 0xff, 0x0d, 0x0a]),
+      {
+        expectedVersion,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        idempotencyKey: `example-rpc-binary-${expectedVersion ?? "new"}`,
+      },
+    );
+    if (!uploaded.ok) return Response.json({ uploaded }, { status: uploaded.error.status });
+    const downloaded = await files.raw.get(BINARY_DEMO_PATH);
+    if (!downloaded.ok || "notModified" in downloaded)
+      return Response.json({ downloaded }, { status: 500 });
+    const bytes = await downloaded.value.bytes(64);
+    return Response.json({ uploaded, bytes: [...bytes] });
+  }
   const files = client.files(DEMO_STASH);
   const get = await files.get(DEMO_PATH);
   const expectedVersion = versionForPut(get);

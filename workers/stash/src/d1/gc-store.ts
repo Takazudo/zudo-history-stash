@@ -89,6 +89,14 @@ export interface LedgerRow {
   created_at: number;
 }
 
+export interface MultipartCleanupRow {
+  id: string;
+  attempt_generation: number;
+  staged_r2_key: string;
+  r2_upload_id: string;
+  r2_completed_at: number | null;
+}
+
 function changed(result: D1Result): number {
   return result.meta.changes;
 }
@@ -212,20 +220,104 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
       if (keys.length === 0) return new Set();
       const found = new Set<string>();
       const session = env.DB.withSession("first-primary");
-      for (let offset = 0; offset < keys.length; offset += 100) {
-        const chunk = keys.slice(offset, offset + 100);
+      for (let offset = 0; offset < keys.length; offset += 30) {
+        const chunk = keys.slice(offset, offset + 30);
         budget.charge();
         const sql = selectReferencedR2Keys.replace(
-          "__PLACEHOLDERS__",
+          /__PLACEHOLDERS__/g,
           chunk.map(() => "?").join(", "),
         );
         const rows = await session
           .prepare(sql)
-          .bind(...chunk)
+          .bind(...chunk, ...chunk, ...chunk)
           .all<{ r2_key: string }>();
         for (const row of rows.results) found.add(row.r2_key);
       }
       return found;
+    },
+
+    async deleteLedgerAndCleanupUploadStaging(
+      rows: readonly LedgerRow[],
+      ledgerCutoff: number,
+      stagingCutoff: number,
+      now: number,
+      cleanupLimit: number,
+    ): Promise<{ deleted: number; cleanup: MultipartCleanupRow[] }> {
+      budget.charge();
+      const session = env.DB.withSession("first-primary");
+      const ledgerStatements =
+        rows.length === 0 ? [] : deleteLedgerRows(session, rows, ledgerCutoff);
+      const results = await session.batch([
+        ...ledgerStatements,
+        session
+          .prepare(
+            `UPDATE upload_sessions SET state = 'expired', reservation_released_at = ?,
+               updated_at = ?
+             WHERE state IN ('open','uploaded') AND expires_at <= ?
+               AND NOT EXISTS (SELECT 1 FROM upload_part_writes
+                 WHERE session_id = upload_sessions.id
+                   AND generation = upload_sessions.attempt_generation)`,
+          )
+          .bind(now, now, now),
+        session
+          .prepare(
+            `DELETE FROM upload_staged_bytes
+           WHERE created_at < ? AND EXISTS (
+             SELECT 1 FROM upload_sessions sessions
+             WHERE sessions.id = upload_staged_bytes.session_id
+               AND sessions.attempt_generation = upload_staged_bytes.generation
+               AND sessions.state IN ('committed','aborted','expired','stale','failed')
+           )`,
+          )
+          .bind(stagingCutoff),
+        session
+          .prepare(
+            `DELETE FROM upload_parts
+           WHERE recorded_at < ? AND EXISTS (
+             SELECT 1 FROM upload_sessions sessions
+             WHERE sessions.id = upload_parts.session_id
+               AND sessions.attempt_generation = upload_parts.generation
+               AND sessions.state IN ('committed','aborted','expired','stale','failed')
+           )`,
+          )
+          .bind(stagingCutoff),
+        session
+          .prepare(
+            `SELECT id, attempt_generation, staged_r2_key, r2_upload_id, r2_completed_at
+             FROM upload_sessions
+             WHERE upload_mode = 'multipart' AND staged_r2_key IS NOT NULL
+               AND r2_upload_id IS NOT NULL
+               AND state IN ('aborted','expired','stale','failed')
+               AND NOT EXISTS (SELECT 1 FROM upload_part_writes
+                 WHERE session_id = upload_sessions.id
+                   AND generation = upload_sessions.attempt_generation)
+             ORDER BY updated_at, id LIMIT ?`,
+          )
+          .bind(Math.max(0, cleanupLimit)),
+      ]);
+      const candidateResult = results.at(-1);
+      const cleanup = (candidateResult?.results ?? []) as MultipartCleanupRow[];
+      return {
+        deleted: results
+          .slice(0, ledgerStatements.length)
+          .reduce((total, result) => total + changed(result), 0),
+        cleanup,
+      };
+    },
+
+    async removeMultipartCleanupRows(rows: readonly MultipartCleanupRow[]): Promise<void> {
+      if (rows.length === 0) return;
+      budget.charge();
+      await env.DB.batch(
+        rows.map((row) =>
+          env.DB.prepare(
+            `DELETE FROM upload_objects WHERE session_id = ? AND generation = ?
+               AND purpose IN ('multipart','staging')
+               AND EXISTS (SELECT 1 FROM upload_sessions WHERE id = ?
+                 AND state IN ('aborted','expired','stale','failed'))`,
+          ).bind(row.id, row.attempt_generation, row.id),
+        ),
+      );
     },
 
     async ledgerPage(
@@ -241,14 +333,6 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
         .bind(cutoff, createdAt, createdAt, rowid, limit)
         .all<LedgerRow>();
       return rows.results;
-    },
-
-    async deleteLedger(rows: readonly LedgerRow[], cutoff: number): Promise<number> {
-      if (rows.length === 0) return 0;
-      budget.charge();
-      const session = env.DB.withSession("first-primary");
-      const results = await session.batch(deleteLedgerRows(session, rows, cutoff));
-      return results.reduce((total, result) => total + changed(result), 0);
     },
 
     async listRuns(kind: GcJobKind | undefined, limit: number): Promise<GcRunResult[]> {

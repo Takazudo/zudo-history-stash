@@ -3,6 +3,7 @@ import {
   type GcRunResult,
   type ParsedRunGcBody,
 } from "@takazudo/zudo-history-stash-core";
+import { isStagingObjectKey } from "./byte-writes.js";
 import { parseBlobKey } from "./d1/blobs.js";
 import {
   GcBudgetExhaustedError,
@@ -199,7 +200,9 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
         : invalidCursor()
       : null;
 
-    const valid = listed.objects.filter(({ key }) => parseBlobKey(key) !== null);
+    const valid = listed.objects.filter(
+      ({ key }) => parseBlobKey(key) !== null || isStagingObjectKey(key),
+    );
     const referenced = await store.referencedR2Keys(valid.map(({ key }) => key));
     await dependencies.hooks.afterReferences?.();
     const cutoff = dependencies.now() - orphanMinAgeMs;
@@ -255,7 +258,34 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
         ? encodeLedgerCursor(boundary.created_at, boundary.rowid)
         : null;
     await store.heartbeat(run, dependencies.now());
-    const deleted = run.dryRun ? 0 : await store.deleteLedger(page, cutoff);
+    const cleanupLimit = run.dryRun
+      ? 0
+      : Math.min(input.maxObjects, Math.floor(Math.max(0, dependencies.budget.remaining - 3) / 2));
+    const ledgerCleanup = run.dryRun
+      ? { deleted: 0, cleanup: [] }
+      : await store.deleteLedgerAndCleanupUploadStaging(
+          page,
+          cutoff,
+          dependencies.now() - orphanMinAgeMs,
+          dependencies.now(),
+          cleanupLimit,
+        );
+    const deleted = ledgerCleanup.deleted;
+    if (!run.dryRun) {
+      const cleaned = [];
+      for (const row of ledgerCleanup.cleanup) {
+        dependencies.budget.charge();
+        const completed = await env.BLOBS.head(row.staged_r2_key);
+        dependencies.budget.charge();
+        if (completed !== null) {
+          await env.BLOBS.delete(row.staged_r2_key);
+        } else {
+          await env.BLOBS.resumeMultipartUpload(row.staged_r2_key, row.r2_upload_id).abort();
+        }
+        cleaned.push(row);
+      }
+      await store.removeMultipartCleanupRows(cleaned);
+    }
     return store.finish(run, {
       nextCursor,
       scanned: page.length,

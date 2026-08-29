@@ -20,6 +20,152 @@ export interface WrapBlobsOptions {
   count?: BlobCallCounts;
 }
 
+export interface MultipartBucketStats {
+  creates: number;
+  completes: number;
+  aborts: number;
+  abortFailuresRemaining?: number;
+}
+
+export interface SyntheticMultipartHooks {
+  beforeComplete?: () => void | Promise<void>;
+  beforeBodyRead?: () => void | Promise<void>;
+}
+
+/** Synthetic multipart seam for correctness tests; deliberately does not emulate R2's 5 MiB floor. */
+export function withSyntheticMultipart(
+  bindings: Env,
+  stats: MultipartBucketStats = { creates: 0, completes: 0, aborts: 0 },
+  hooks: SyntheticMultipartHooks = {},
+): Env {
+  const uploads = new Map<
+    string,
+    {
+      key: string;
+      options?: R2MultipartOptions;
+      parts: Map<number, { bytes: Uint8Array; etag: string }>;
+      aborted: boolean;
+      completed: boolean;
+    }
+  >();
+  let serial = 0;
+
+  function resumed(key: string, uploadId: string): R2MultipartUpload {
+    const state = uploads.get(uploadId);
+    if (state === undefined || state.key !== key) throw new Error("Unknown multipart upload");
+    return {
+      key,
+      uploadId,
+      async uploadPart(partNumber, value) {
+        if (state.aborted || state.completed) throw new Error("Multipart upload is terminal");
+        const bytes =
+          value instanceof ReadableStream
+            ? new Uint8Array(await new Response(value).arrayBuffer())
+            : new Uint8Array(await new Response(value as BodyInit).arrayBuffer());
+        const etag = `fake-${uploadId}-${partNumber}-${++serial}`;
+        state.parts.set(partNumber, { bytes, etag });
+        return { partNumber, etag };
+      },
+      async abort() {
+        if ((stats.abortFailuresRemaining ?? 0) > 0) {
+          stats.abortFailuresRemaining = (stats.abortFailuresRemaining ?? 0) - 1;
+          throw new Error("Injected multipart abort failure");
+        }
+        if (!state.aborted && !state.completed) stats.aborts += 1;
+        state.aborted = true;
+        state.parts.clear();
+      },
+      async complete(parts) {
+        if (state.aborted || state.completed) throw new Error("Multipart upload is terminal");
+        await hooks.beforeComplete?.();
+        const chunks = parts.map(({ partNumber, etag }) => {
+          const part = state.parts.get(partNumber);
+          if (part === undefined || part.etag !== etag)
+            throw new Error("Invalid multipart manifest");
+          return part.bytes;
+        });
+        const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const object = await bindings.BLOBS.put(key, bytes, state.options);
+        if (object === null) throw new Error("Synthetic multipart put failed");
+        state.completed = true;
+        stats.completes += 1;
+        return object;
+      },
+    };
+  }
+
+  const blobs = new Proxy(bindings.BLOBS, {
+    get(target, property) {
+      if (property === "createMultipartUpload") {
+        return async (key: string, options?: R2MultipartOptions) => {
+          const uploadId = `fake-upload-${++serial}`;
+          uploads.set(uploadId, {
+            key,
+            options,
+            parts: new Map(),
+            aborted: false,
+            completed: false,
+          });
+          stats.creates += 1;
+          return resumed(key, uploadId);
+        };
+      }
+      if (property === "resumeMultipartUpload") return resumed;
+      if (property === "get" && hooks.beforeBodyRead !== undefined) {
+        return async (...args: Parameters<R2Bucket["get"]>) => {
+          const object = await target.get(...args);
+          if (object === null) return null;
+          const reader = object.body.getReader();
+          let released = false;
+          const release = () => {
+            if (released) return;
+            released = true;
+            reader.releaseLock();
+          };
+          const body = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              try {
+                await hooks.beforeBodyRead?.();
+                const read = await reader.read();
+                if (read.done) {
+                  release();
+                  controller.close();
+                } else {
+                  controller.enqueue(read.value);
+                }
+              } catch (error) {
+                await reader.cancel(error).catch(() => undefined);
+                release();
+                controller.error(error);
+              }
+            },
+            async cancel(reason) {
+              await reader.cancel(reason).catch(() => undefined);
+              release();
+            },
+          });
+          return new Proxy(object, {
+            get(targetObject, bodyProperty) {
+              if (bodyProperty === "body") return body;
+              const value = Reflect.get(targetObject, bodyProperty, targetObject);
+              return typeof value === "function" ? value.bind(targetObject) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { ...bindings, BLOBS: blobs };
+}
+
 function allowAllRateLimiter(): RateLimiter {
   return {
     limit: () => Promise.resolve({ success: true }),
@@ -48,6 +194,16 @@ export function createTestEnv(
       GC_LEASE_TTL_MS: env.GC_LEASE_TTL_MS,
       PROPOSAL_TTL_DAYS: env.PROPOSAL_TTL_DAYS,
       STASH_EVENTS_MAX_STREAM_MS: env.STASH_EVENTS_MAX_STREAM_MS,
+      JSON_INLINE_MAX_BYTES: env.JSON_INLINE_MAX_BYTES,
+      D1_INLINE_MAX_BYTES: env.D1_INLINE_MAX_BYTES,
+      HTTP_REQUEST_MAX_BYTES: env.HTTP_REQUEST_MAX_BYTES,
+      SINGLE_UPLOAD_MAX_BYTES: env.SINGLE_UPLOAD_MAX_BYTES,
+      MAX_FILE_BYTES: env.MAX_FILE_BYTES,
+      DIFF_MAX_BYTES: env.DIFF_MAX_BYTES,
+      MULTIPART_PART_BYTES: env.MULTIPART_PART_BYTES,
+      MAX_OPEN_UPLOAD_SESSIONS: env.MAX_OPEN_UPLOAD_SESSIONS,
+      MAX_RESERVED_UPLOAD_BYTES: env.MAX_RESERVED_UPLOAD_BYTES,
+      UPLOAD_SESSION_TTL_SECONDS: env.UPLOAD_SESSION_TTL_SECONDS,
       ...overrides.env,
     },
     deps: {

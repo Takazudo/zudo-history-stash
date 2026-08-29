@@ -80,6 +80,10 @@ const goldenFileBody = {
   createdAt: GOLDEN_RESPONSES.file.createdAt,
   deleted: GOLDEN_RESPONSES.file.deleted,
   body: GOLDEN_RESPONSES.file.body,
+  representation: GOLDEN_RESPONSES.file.representation,
+  contentAccess: GOLDEN_RESPONSES.file.contentAccess,
+  contentType: GOLDEN_RESPONSES.file.contentType,
+  byteSize: GOLDEN_RESPONSES.file.byteSize,
 };
 
 const rollbackResult = {

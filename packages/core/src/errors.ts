@@ -21,6 +21,12 @@ export const ERROR_CODES = [
   "payload-too-large",
   "idempotency-key-reused",
   "rollback-target-tombstone",
+  "unsupported-representation",
+  "upload-session-not-open",
+  "upload-session-expired",
+  "upload-size-mismatch",
+  "upload-hash-mismatch",
+  "range-not-satisfiable",
   "internal",
 ] as const satisfies readonly ErrorCode[];
 
@@ -49,6 +55,12 @@ const STATUSES: Record<(typeof ERROR_CODES)[number], number> = {
   "payload-too-large": 413,
   "idempotency-key-reused": 422,
   "rollback-target-tombstone": 422,
+  "unsupported-representation": 422,
+  "upload-session-not-open": 409,
+  "upload-session-expired": 410,
+  "upload-size-mismatch": 422,
+  "upload-hash-mismatch": 422,
+  "range-not-satisfiable": 416,
   internal: 500,
 };
 

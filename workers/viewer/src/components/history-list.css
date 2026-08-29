@@ -87,6 +87,12 @@
   overflow-wrap: anywhere;
 }
 
+.file-metadata__item dd > code {
+  overflow-wrap: anywhere;
+  font-family: var(--font-family-mono);
+  font-size: var(--text-xs);
+}
+
 .file-metadata__message {
   overflow-wrap: break-word;
 }

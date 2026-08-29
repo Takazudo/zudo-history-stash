@@ -1,2 +1,17 @@
 # Local-only convention used by dev:full, the seed, contract tests, and @live Playwright lane.
 STASH_ADMIN_TOKEN=dev-admin-token
+# Byte policies are pinned in wrangler.toml. Override them here only for deliberate local testing:
+# JSON_INLINE_MAX_BYTES=5000000
+# D1_INLINE_MAX_BYTES=524288
+# HTTP_REQUEST_MAX_BYTES=100000000
+# SINGLE_UPLOAD_MAX_BYTES=33554432
+# MAX_FILE_BYTES=100000000
+# DIFF_MAX_BYTES=524288
+# MULTIPART_PART_BYTES=8388608
+# MAX_OPEN_UPLOAD_SESSIONS=8
+# MAX_RESERVED_UPLOAD_BYTES=500000000
+# UPLOAD_SESSION_TTL_SECONDS=86400
+# Invariants include D1_INLINE_MAX_BYTES<=1500000, MAX_FILE_BYTES<=1073741824,
+# MAX_RESERVED_UPLOAD_BYTES>=MAX_FILE_BYTES, and ceil(MAX_FILE_BYTES/MULTIPART_PART_BYTES)<=10000.
+# Production multipart parts must be at least 5242880 bytes. A 1 GiB setting is a correctness
+# ceiling, not a performance certification; normal tests inject small limits and never allocate it.

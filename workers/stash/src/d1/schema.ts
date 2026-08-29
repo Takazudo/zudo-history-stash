@@ -29,6 +29,16 @@ export interface BlobRow {
   created_at: number;
 }
 
+export interface ByteBlobRow {
+  stash_name: string;
+  hash: string;
+  body_bytes: ArrayBuffer | null;
+  r2_key: string | null;
+  storage_generation: number;
+  size_bytes: number;
+  created_at: number;
+}
+
 export interface FileRow {
   stash_name: string;
   path: string;
@@ -53,6 +63,88 @@ export interface VersionRow {
   message: string;
   meta_json: string;
   created_at: number;
+  representation: "text" | "binary";
+  application_etag: string | null;
+  content_storage: "legacy" | "bytes";
+}
+
+export type UploadSessionState =
+  "open" | "uploaded" | "finalizing" | "committed" | "aborted" | "expired" | "stale" | "failed";
+
+export interface UploadSessionRow {
+  id: string;
+  stash_name: string;
+  path: string;
+  principal_kind: "admin" | "stash";
+  principal_id: string | null;
+  expected_version: number | null;
+  declared_size: number;
+  declared_hash: string | null;
+  representation: "text" | "binary";
+  content_type: string;
+  upload_mode: "single" | "multipart";
+  storage_tier: "d1" | "r2";
+  part_size: number | null;
+  state: UploadSessionState;
+  expires_at: number;
+  attempt_generation: number;
+  create_fingerprint: string;
+  upload_fingerprint: string | null;
+  complete_fingerprint: string | null;
+  uploaded_size: number | null;
+  uploaded_hash: string | null;
+  staged_r2_key: string | null;
+  r2_upload_id: string | null;
+  r2_completed_at: number | null;
+  verification_completed_at: number | null;
+  finalization_lease_owner: string | null;
+  finalization_lease_until: number | null;
+  result_status: number | null;
+  result_json: string | null;
+  error_code: string | null;
+  reservation_released_at: number | null;
+  created_at: number;
+  updated_at: number;
+  skip_if_unchanged: 0 | 1;
+  event_published_at: number | null;
+  event_publish_owner: string | null;
+  event_publish_until: number | null;
+  event_origin: string | null;
+}
+
+export interface UploadStagedBytesRow {
+  session_id: string;
+  generation: number;
+  body_bytes: ArrayBuffer;
+  size_bytes: number;
+  hash: string;
+  created_at: number;
+}
+
+export interface UploadPartRow {
+  session_id: string;
+  generation: number;
+  part_number: number;
+  size_bytes: number;
+  r2_etag: string;
+  recorded_at: number;
+}
+
+export interface UploadPartWriteRow {
+  session_id: string;
+  generation: number;
+  part_number: number;
+  owner: string;
+  started_at: number;
+}
+
+export interface UploadObjectRow {
+  object_key: string;
+  session_id: string;
+  generation: number;
+  purpose: "multipart" | "staging" | "committed";
+  created_at: number;
+  completed_at: number | null;
 }
 
 export interface IdempotencyRow {
@@ -124,6 +216,12 @@ export const TABLE_NAMES = [
   "gc_jobs",
   "gc_runs",
   "proposals",
+  "byte_blobs",
+  "upload_sessions",
+  "upload_staged_bytes",
+  "upload_parts",
+  "upload_part_writes",
+  "upload_objects",
 ] as const;
 
 export const TABLE_COLUMNS = {
@@ -157,6 +255,9 @@ export const TABLE_COLUMNS = {
     "message",
     "meta_json",
     "created_at",
+    "representation",
+    "application_etag",
+    "content_storage",
   ],
   idempotency: [
     "stash_name",
@@ -204,6 +305,73 @@ export const TABLE_COLUMNS = {
     "applied_version",
     "applied_change_id",
   ],
+  byte_blobs: [
+    "stash_name",
+    "hash",
+    "body_bytes",
+    "r2_key",
+    "storage_generation",
+    "size_bytes",
+    "created_at",
+  ],
+  upload_sessions: [
+    "id",
+    "stash_name",
+    "path",
+    "principal_kind",
+    "principal_id",
+    "expected_version",
+    "declared_size",
+    "declared_hash",
+    "representation",
+    "content_type",
+    "upload_mode",
+    "storage_tier",
+    "part_size",
+    "state",
+    "expires_at",
+    "attempt_generation",
+    "create_fingerprint",
+    "upload_fingerprint",
+    "complete_fingerprint",
+    "uploaded_size",
+    "uploaded_hash",
+    "staged_r2_key",
+    "r2_upload_id",
+    "r2_completed_at",
+    "verification_completed_at",
+    "finalization_lease_owner",
+    "finalization_lease_until",
+    "result_status",
+    "result_json",
+    "error_code",
+    "reservation_released_at",
+    "created_at",
+    "updated_at",
+    "skip_if_unchanged",
+    "event_published_at",
+    "event_publish_owner",
+    "event_publish_until",
+    "event_origin",
+  ],
+  upload_staged_bytes: [
+    "session_id",
+    "generation",
+    "body_bytes",
+    "size_bytes",
+    "hash",
+    "created_at",
+  ],
+  upload_parts: ["session_id", "generation", "part_number", "size_bytes", "r2_etag", "recorded_at"],
+  upload_part_writes: ["session_id", "generation", "part_number", "owner", "started_at"],
+  upload_objects: [
+    "object_key",
+    "session_id",
+    "generation",
+    "purpose",
+    "created_at",
+    "completed_at",
+  ],
 } as const satisfies Record<(typeof TABLE_NAMES)[number], readonly string[]>;
 
 export interface DatabaseSchema {
@@ -216,4 +384,10 @@ export interface DatabaseSchema {
   gc_jobs: GcJobRow;
   gc_runs: GcRunRow;
   proposals: ProposalRow;
+  byte_blobs: ByteBlobRow;
+  upload_sessions: UploadSessionRow;
+  upload_staged_bytes: UploadStagedBytesRow;
+  upload_parts: UploadPartRow;
+  upload_part_writes: UploadPartWriteRow;
+  upload_objects: UploadObjectRow;
 }

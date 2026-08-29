@@ -59,6 +59,8 @@ export type ListStashesRpcOptions = ListStashesOptions;
 /** The minimal named RPC binding exposed by the stash Worker. */
 export interface StashRpcBinding {
   request(init: RpcRequest): Promise<Response>;
+  /** Optional flow-controlled bridge used for request/response byte streams. */
+  requestStream?(request: Request, token: string): Promise<Response>;
 }
 
 /**

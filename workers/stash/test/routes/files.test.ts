@@ -126,7 +126,13 @@ describe("file route reads", () => {
       expect(response.status).toBe(200);
       const record = await response.json<Record<string, unknown>>();
       expect(record).toMatchObject({ path, version: 1, body, deleted: false, kind: "put" });
-      expect(record).not.toHaveProperty("contentType");
+      expect(record).toMatchObject({
+        representation: "text",
+        contentAccess: "inline",
+        contentType: "text/plain; charset=utf-8",
+        byteSize: new TextEncoder().encode(body).byteLength,
+        etag: expect.stringMatching(/^sha256-/),
+      });
       expect(record).not.toHaveProperty("rollbackOf");
     }
   });
@@ -331,13 +337,17 @@ describe("file route writes", () => {
     });
     expect(first.status).toBe(201);
     const firstBody = await first.json();
-    expect(firstBody).toEqual({
+    expect(firstBody).toMatchObject({
       version: 4,
       hash: expect.stringMatching(/^sha256-/),
       rollbackOf: 1,
       identicalToHead: false,
       changeId: expect.any(Number),
       createdAt: expect.stringMatching(/Z$/),
+      representation: "text",
+      contentType: "text/plain; charset=utf-8",
+      byteSize: 3,
+      etag: expect.stringMatching(/^sha256-/),
     });
     const replay = await jsonApi("POST", "/rollback/rollback.txt", input, {
       headers: { "Idempotency-Key": "rollback-ledger" },

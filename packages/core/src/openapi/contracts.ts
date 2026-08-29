@@ -24,21 +24,38 @@ import {
   RunGcBody,
   RotateTokenBody,
   STASH_CLIENT_ID_HEADER,
+  AbortUploadSessionBody,
+  CompleteUploadSessionBody,
+  CreateUploadSessionBody,
+  UploadPartQuery,
 } from "../schemas.js";
 import type { RouteId, RouteTransport } from "../routes.js";
 import type { RESPONSE_SCHEMAS } from "./responses.js";
 import type { SAMPLES } from "./samples.js";
 
-export type RequestHeader = "Idempotency-Key" | "If-None-Match" | typeof STASH_CLIENT_ID_HEADER;
+export type RequestHeader =
+  | "Idempotency-Key"
+  | "If-None-Match"
+  | "If-Range"
+  | "Range"
+  | "Content-Length"
+  | typeof STASH_CLIENT_ID_HEADER;
 export type ResponseHeader =
   | "ETag"
   | "X-Stash-Version"
   | "Idempotent-Replayed"
   | "Retry-After"
   | "Cache-Control"
-  | "X-Accel-Buffering";
-export type ResponseStatus = 200 | 201 | 204 | 304;
-export type ResponseMediaType = "application/json" | "text/event-stream";
+  | "X-Accel-Buffering"
+  | "Accept-Ranges"
+  | "Content-Length"
+  | "Content-Range"
+  | "Content-Type"
+  | "Content-Disposition"
+  | "X-Content-Type-Options";
+export type ResponseStatus = 200 | 201 | 202 | 204 | 206 | 304;
+export type ResponseMediaType =
+  "application/json" | "application/octet-stream" | "text/event-stream";
 
 export interface RouteResponse {
   schema?: keyof typeof RESPONSE_SCHEMAS;
@@ -61,6 +78,9 @@ export interface RouteContract {
   principalNote: string;
   query?: ZodType;
   body?: ZodType;
+  /** Exact byte stream body; mutually exclusive with the JSON `body` schema. */
+  rawBody?: true;
+  requestMediaType?: "application/json" | "application/octet-stream";
   requestHeaders?: RequestHeader[];
   responses: Partial<Record<ResponseStatus, RouteResponse>>;
   errors: RouteError[];
@@ -86,6 +106,22 @@ const eventStreamResponse = (
   schema: keyof typeof RESPONSE_SCHEMAS,
   headers: ResponseHeader[],
 ): RouteResponse => ({ description, schema, headers, mediaType: "text/event-stream" });
+
+const RAW_RESPONSE_HEADERS: ResponseHeader[] = [
+  "ETag",
+  "X-Stash-Version",
+  "Accept-Ranges",
+  "Content-Length",
+  "Content-Range",
+  "Content-Type",
+  "Content-Disposition",
+  "X-Content-Type-Options",
+];
+const rawResponse = (description: string): RouteResponse => ({
+  description,
+  headers: RAW_RESPONSE_HEADERS,
+  mediaType: "application/octet-stream",
+});
 
 const error = (
   code: ErrorCode,
@@ -278,6 +314,7 @@ export const ROUTE_CONTRACTS = {
       error("stale", true),
       error("exists", true),
       error("payload-too-large"),
+      error("unsupported-representation"),
       error("internal"),
     ],
     wildcardPath: false,
@@ -341,6 +378,7 @@ export const ROUTE_CONTRACTS = {
       error("not-found"),
       error("payload-too-large"),
       error("idempotency-key-reused"),
+      error("unsupported-representation"),
       rateLimited(),
       error("internal"),
     ],
@@ -647,6 +685,7 @@ export const ROUTE_CONTRACTS = {
       error("not-found"),
       error("version-not-found"),
       error("payload-too-large"),
+      error("unsupported-representation"),
       rateLimited(),
       error("internal"),
     ],
@@ -662,5 +701,301 @@ export const ROUTE_CONTRACTS = {
     },
     errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
     wildcardPath: false,
+  },
+  getCapabilities: {
+    summary: "Get server capabilities",
+    description:
+      "Publishes authoritative exact-content byte limits. The HTTP request ceiling is operator supplied; it is not inferred from the Worker plan.",
+    principalNote: "open; no capability or token is required.",
+    responses: {
+      200: response(
+        "The server's binary and large-object capabilities.",
+        "CapabilitiesResponse",
+        "CapabilitiesResponse",
+      ),
+    },
+    errors: [error("internal")],
+    wildcardPath: false,
+    transport: "fetch-only",
+  },
+  getRawFile: {
+    summary: "Download current raw content",
+    description: "Streams the current version's exact bytes using the application SHA-256 ETag.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    requestHeaders: ["If-None-Match", "If-Range", "Range"],
+    responses: {
+      200: rawResponse("Complete content."),
+      206: rawResponse("One byte range."),
+      304: noContentResponse("The ETag matched.", ["ETag"]),
+    },
+    errors: [
+      error("invalid-path"),
+      error("unauthorized"),
+      error("not-found"),
+      error("file-deleted"),
+      error("range-not-satisfiable", false, undefined, ["Content-Range"]),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: true,
+    transport: "fetch-only",
+  },
+  headRawFile: {
+    summary: "Inspect current raw content",
+    description: "Returns the same status and metadata headers as current raw GET without a body.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    requestHeaders: ["If-None-Match", "If-Range", "Range"],
+    responses: {
+      200: noContentResponse("Complete content metadata.", RAW_RESPONSE_HEADERS),
+      206: noContentResponse("Range metadata.", RAW_RESPONSE_HEADERS),
+      304: noContentResponse("The ETag matched.", ["ETag"]),
+    },
+    errors: [
+      error("invalid-path"),
+      error("unauthorized"),
+      error("not-found"),
+      error("file-deleted"),
+      error("range-not-satisfiable", false, undefined, ["Content-Range"]),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: true,
+    transport: "fetch-only",
+  },
+  getRawVersion: {
+    summary: "Download historical raw content",
+    description: "Streams one immutable historical version's exact bytes.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    requestHeaders: ["If-None-Match", "If-Range", "Range"],
+    responses: {
+      200: rawResponse("Complete historical content."),
+      206: rawResponse("One historical byte range."),
+      304: noContentResponse("The ETag matched.", ["ETag"]),
+    },
+    errors: [
+      error("invalid-path"),
+      error("unauthorized"),
+      error("not-found"),
+      error("version-not-found"),
+      error("file-deleted"),
+      error("range-not-satisfiable", false, undefined, ["Content-Range"]),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: true,
+    transport: "fetch-only",
+  },
+  headRawVersion: {
+    summary: "Inspect historical raw content",
+    description:
+      "Returns the same status and metadata headers as historical raw GET without a body.",
+    principalNote: "read; administrator or a matching read/write stash token.",
+    requestHeaders: ["If-None-Match", "If-Range", "Range"],
+    responses: {
+      200: noContentResponse("Historical content metadata.", RAW_RESPONSE_HEADERS),
+      206: noContentResponse("Historical range metadata.", RAW_RESPONSE_HEADERS),
+      304: noContentResponse("The ETag matched.", ["ETag"]),
+    },
+    errors: [
+      error("invalid-path"),
+      error("unauthorized"),
+      error("not-found"),
+      error("version-not-found"),
+      error("file-deleted"),
+      error("range-not-satisfiable", false, undefined, ["Content-Range"]),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: true,
+    transport: "fetch-only",
+  },
+  createUploadSession: {
+    summary: "Create a raw upload session",
+    description:
+      "Reserves declared exact content bytes and chooses single or multipart transfer plus D1 or R2 staging. Repeating the same idempotency fingerprint replays the session.",
+    principalNote: "write; administrator or a matching write stash token.",
+    body: CreateUploadSessionBody,
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    responses: {
+      201: response(
+        "The created or replayed upload session.",
+        "CreateUploadSessionResult",
+        "CreateUploadSessionResult",
+        ["Idempotent-Replayed"],
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("invalid-path"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("stale", true),
+      error("payload-too-large"),
+      error("idempotency-key-reused"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: true,
+    transport: "fetch-only",
+  },
+  getUploadSession: {
+    summary: "Get upload session status",
+    description:
+      "Returns durable state and server-recorded current-generation multipart parts without exposing R2 identifiers.",
+    principalNote: "write; the session-bound administrator or matching stash principal.",
+    responses: {
+      200: response("Upload status and parts.", "GetUploadSessionResult", "GetUploadSessionResult"),
+    },
+    errors: [error("unauthorized"), error("scope"), error("not-found"), rateLimited()],
+    wildcardPath: false,
+    transport: "fetch-only",
+  },
+  uploadSingleContent: {
+    summary: "Upload single raw content",
+    description:
+      "Consumes and validates one raw byte stream for a single-mode session. The upload fingerprint is distinct from creation and completion fingerprints.",
+    principalNote: "write; the session-bound administrator or matching stash principal.",
+    requestHeaders: ["Content-Length", "Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    rawBody: true,
+    requestMediaType: "application/octet-stream",
+    responses: {
+      202: response(
+        "The durable uploaded session.",
+        "CreateUploadSessionResult",
+        "CreateUploadSessionResult",
+        ["Idempotent-Replayed"],
+      ),
+    },
+    errors: [
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("upload-session-not-open"),
+      error("upload-session-expired"),
+      error("upload-size-mismatch"),
+      error("upload-hash-mismatch"),
+      error("body-not-well-formed"),
+      error("payload-too-large"),
+      error("idempotency-key-reused"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+    transport: "fetch-only",
+  },
+  uploadPart: {
+    summary: "Upload or replace one multipart part",
+    description:
+      "Streams one raw part and records only the server-returned R2 ETag for the current generation.",
+    principalNote: "write; the session-bound administrator or matching stash principal.",
+    query: UploadPartQuery,
+    requestHeaders: ["Content-Length", STASH_CLIENT_ID_HEADER],
+    rawBody: true,
+    requestMediaType: "application/octet-stream",
+    responses: {
+      202: response("Updated upload status.", "GetUploadSessionResult", "GetUploadSessionResult"),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("upload-session-not-open"),
+      error("upload-session-expired"),
+      error("upload-size-mismatch"),
+      error("payload-too-large"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+    transport: "fetch-only",
+  },
+  completeUploadSession: {
+    summary: "Complete or replay an upload",
+    description:
+      "Acquires the finalization lease, verifies staged bytes, rechecks CAS, and atomically commits one version; retries replay the durable result.",
+    principalNote: "write; the session-bound administrator or matching stash principal.",
+    body: CompleteUploadSessionBody,
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    responses: {
+      201: response("The committed file version.", "CompleteUploadResult", "CompleteUploadResult", [
+        "Idempotent-Replayed",
+      ]),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("stale", true),
+      error("upload-session-not-open"),
+      error("upload-session-expired"),
+      error("upload-size-mismatch"),
+      error("upload-hash-mismatch"),
+      error("body-not-well-formed"),
+      error("idempotency-key-reused"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+    transport: "fetch-only",
+  },
+  resumeUploadSession: {
+    summary: "Resume upload finalization",
+    description:
+      "Resumes recovery from durable D1/R2 staging or takes over a finalization lease after expiry.",
+    principalNote: "write; the session-bound administrator or matching stash principal.",
+    body: CompleteUploadSessionBody,
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    responses: {
+      200: response(
+        "Current durable session or replayed result.",
+        "CreateUploadSessionResult",
+        "CreateUploadSessionResult",
+        ["Idempotent-Replayed"],
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("upload-session-expired"),
+      error("idempotency-key-reused"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+    transport: "fetch-only",
+  },
+  abortUploadSession: {
+    summary: "Abort an upload session",
+    description:
+      "Generation-fenced abort competes with finalization for one winner and is replayable after success.",
+    principalNote: "write; the session-bound administrator or matching stash principal.",
+    body: AbortUploadSessionBody,
+    requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    responses: {
+      200: response(
+        "The terminal aborted session identity.",
+        "AbortUploadResult",
+        "AbortUploadResult",
+        ["Idempotent-Replayed"],
+      ),
+    },
+    errors: [
+      error("validation"),
+      error("unauthorized"),
+      error("scope"),
+      error("not-found"),
+      error("upload-session-not-open"),
+      error("upload-session-expired"),
+      error("idempotency-key-reused"),
+      rateLimited(),
+      error("internal"),
+    ],
+    wildcardPath: false,
+    transport: "fetch-only",
   },
 } as const satisfies Record<RouteId, RouteContract>;

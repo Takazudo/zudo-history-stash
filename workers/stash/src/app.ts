@@ -5,17 +5,29 @@ import { cors } from "hono/cors";
 import { requireToken } from "./auth.js";
 import type { AppDependencies, AppEnv } from "./context.js";
 import { onError } from "./errors.js";
-import { healthResponse } from "./routes/meta.js";
+import { capabilitiesResponse, healthResponse } from "./routes/meta.js";
 import routes from "./routes/index.js";
 
 const ALLOW_HEADERS = [
   "Authorization",
   "Content-Type",
   "If-None-Match",
+  "If-Range",
+  "Range",
   "Idempotency-Key",
   "X-Stash-Client-Id",
 ];
-const EXPOSE_HEADERS = ["ETag", "X-Stash-Version", "Idempotent-Replayed", "Retry-After"];
+const EXPOSE_HEADERS = [
+  "ETag",
+  "X-Stash-Version",
+  "Idempotent-Replayed",
+  "Retry-After",
+  "Accept-Ranges",
+  "Content-Length",
+  "Content-Range",
+  "Content-Disposition",
+  "X-Content-Type-Options",
+];
 
 function allowedOrigins(value: string): Set<string> {
   return new Set(
@@ -26,7 +38,12 @@ function allowedOrigins(value: string): Set<string> {
   );
 }
 
-const defaultDependencies: AppDependencies = { now: () => Date.now() };
+const defaultDependencies: AppDependencies = {
+  now: () => Date.now(),
+  createId: () => crypto.randomUUID(),
+  uploadLeaseMs: 30_000,
+  uploadHooks: {},
+};
 
 export function createApp(dependencies: Partial<AppDependencies> = {}): Hono<AppEnv> {
   const deps = { ...defaultDependencies, ...dependencies };
@@ -43,16 +60,20 @@ export function createApp(dependencies: Partial<AppDependencies> = {}): Hono<App
     }
     return cors({ origin, allowHeaders: ALLOW_HEADERS, exposeHeaders: EXPOSE_HEADERS })(c, next);
   });
-  app.use(
-    "*",
-    bodyLimit({
-      maxSize: BODY_LIMIT_BYTES,
-      onError: () => {
-        throw new StashError("payload-too-large", "The request payload is too large.");
-      },
-    }),
-  );
+  const limitJsonBody = bodyLimit({
+    maxSize: BODY_LIMIT_BYTES,
+    onError: () => {
+      throw new StashError("payload-too-large", "The request payload is too large.");
+    },
+  });
+  app.use("*", async (c, next) => {
+    const rawUpload =
+      c.req.method === "PUT" &&
+      /^\/v1\/stashes\/[^/]+\/uploads\/[^/]+\/(?:content|parts\/[^/]+)$/.test(c.req.path);
+    return rawUpload ? next() : limitJsonBody(c, next);
+  });
   app.get("/v1/health", (c) => c.json(healthResponse));
+  app.get("/v1/capabilities", (c) => c.json(capabilitiesResponse(c.env)));
   app.use("/v1/*", requireToken);
   app.route("/", routes);
   app.notFound((c) =>

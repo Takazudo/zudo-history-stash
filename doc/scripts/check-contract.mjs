@@ -74,6 +74,18 @@ export const ROUTE_OWNERS = new Map(
     getHistory: "http-api/files-history-and-diffs.mdx",
     getDiff: "http-api/files-history-and-diffs.mdx",
     diffCandidate: "http-api/files-history-and-diffs.mdx",
+    getCapabilities: "http-api/health-and-identity.mdx",
+    getRawFile: "http-api/files-history-and-diffs.mdx",
+    headRawFile: "http-api/files-history-and-diffs.mdx",
+    getRawVersion: "http-api/files-history-and-diffs.mdx",
+    headRawVersion: "http-api/files-history-and-diffs.mdx",
+    createUploadSession: "http-api/files-history-and-diffs.mdx",
+    getUploadSession: "http-api/files-history-and-diffs.mdx",
+    abortUploadSession: "http-api/files-history-and-diffs.mdx",
+    uploadSingleContent: "http-api/files-history-and-diffs.mdx",
+    uploadPart: "http-api/files-history-and-diffs.mdx",
+    completeUploadSession: "http-api/files-history-and-diffs.mdx",
+    resumeUploadSession: "http-api/files-history-and-diffs.mdx",
   }),
 );
 
@@ -401,7 +413,7 @@ function guideFactContracts(core, locale, diagnostics) {
       {
         name: "rpc-payload-boundaries",
         path: GUIDE_FACT_PATHS[1],
-        text: `RPC raises neither the platform nor API limits. Cloudflare's outer serialized RPC call is capped at ${bodyLimitMiB} MiB, including envelope overhead, so an application payload of exactly ${bodyLimitBytes} bytes is not guaranteed to reach dispatch. Independently, Stash caps the complete encoded \`Request\` body with \`BODY_LIMIT_BYTES\` at ${bodyLimitBytes} bytes (${bodyLimitMiB} MiB), while each stored text body is capped with \`MAX_BODY_BYTES\` at ${maxBodyBytes} UTF-8 bytes.`,
+        text: `RPC raises neither the platform nor API limits. Cloudflare's outer serialized RPC value payload is capped at ${bodyLimitMiB} MiB, including envelope overhead, so an application value of exactly ${bodyLimitBytes} bytes is not guaranteed to reach dispatch. A \`Request\` or \`Response\` sent through the flow-controlled \`requestStream()\` bridge is RPC-aware: its body stream is not serialized into that value payload. The SDK selects this bridge for raw, capabilities, and upload routes when the binding exposes it. That transport boundary is independent from Stash's content policy: the compatibility JSON/proposal/import path is text-only with a ${maxBodyBytes} UTF-8-byte body rule, while raw uploads preserve either text or binary and use the capability settings (\`HTTP_REQUEST_MAX_BYTES=100000000\`, \`SINGLE_UPLOAD_MAX_BYTES=33554432\`, and multipart above the single limit). Above ${maxBodyBytes} bytes does not imply binary; valid UTF-8 remains text. Representation, content access, transfer, storage tier, and diff eligibility are independent. Use the stream bridge or an HTTP service binding when a structured RPC value cannot fit the envelope; multipart selection still follows server capabilities rather than serving as an RPC-size workaround. Do not claim runtime Cloudflare-plan discovery.`,
       },
     ];
   }
@@ -424,7 +436,7 @@ function guideFactContracts(core, locale, diagnostics) {
       {
         name: "rpc-payload-boundaries",
         path: GUIDE_FACT_PATHS[1],
-        text: `RPC を使用しても、プラットフォームと API のどちらの上限も引き上げられません。Cloudflare の外側のシリアライズ済み RPC 呼び出しは、エンベロープのオーバーヘッドを含めて ${bodyLimitMiB} MiB に制限されるため、ちょうど ${bodyLimitBytes} バイトのアプリケーションペイロードがディスパッチまで到達するとは限りません。これとは独立して、Stash はエンコード済み \`Request\` 本文全体を \`BODY_LIMIT_BYTES\` により ${bodyLimitBytes} バイト（${bodyLimitMiB} MiB）に制限し、保存される各テキスト本文を \`MAX_BODY_BYTES\` により ${maxBodyBytes} UTF-8 バイトに制限します。`,
+        text: `RPC を使用しても、プラットフォームと API のどちらの上限も引き上げられません。Cloudflare の外側のシリアライズ済み RPC value payload は、エンベロープのオーバーヘッドを含めて ${bodyLimitMiB} MiB に制限されるため、ちょうど ${bodyLimitBytes} バイトのアプリケーション value がディスパッチまで到達するとは限りません。\`Request\` または \`Response\` を flow-controlled \`requestStream()\` bridge で渡す場合は RPC-aware であり、body stream はその value payload にシリアライズされません。binding が公開していれば、SDK は raw、capabilities、upload route にこの bridge を選びます。この transport 境界は Stash の content policy とは独立しています。互換性 JSON/proposal/import 経路はテキスト専用で ${maxBodyBytes} UTF-8 byte の本文ルールを使います。一方 raw upload は text または binary をそのまま保持し、capabilities の設定（\`HTTP_REQUEST_MAX_BYTES=100000000\`、\`SINGLE_UPLOAD_MAX_BYTES=33554432\`、および single 上限を超えた場合の multipart）を使います。${maxBodyBytes} byte を超えても binary とは限らず、正しい UTF-8 は text のままです。representation、content access、transfer、storage tier、diff eligibility は独立しています。stream bridge または HTTP service binding は、structured RPC value が envelope に収まらない場合に使います。multipart の選択は RPC size の回避策ではなく、引き続き server capabilities に従います。Cloudflare plan の runtime discovery を前提にしないでください。`,
       },
     ];
   }

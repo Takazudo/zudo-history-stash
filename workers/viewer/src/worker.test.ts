@@ -22,7 +22,10 @@ describe("viewer proxy", () => {
       headers: {
         authorization: "Bearer secret",
         "content-type": "application/json",
+        "content-length": "11",
         "if-none-match": `"v1-hash"`,
+        "if-range": `"v1-hash"`,
+        range: "bytes=0-10",
         "idempotency-key": "request-1",
         "x-stash-client-id": "tab-viewer-1",
         cookie: "must-not-forward=1",
@@ -38,9 +41,12 @@ describe("viewer proxy", () => {
     const headers = new Headers(forwardedInit?.headers);
     expect([...headers.keys()]).toEqual([
       "authorization",
+      "content-length",
       "content-type",
       "idempotency-key",
       "if-none-match",
+      "if-range",
+      "range",
       "x-stash-client-id",
     ]);
     expect(headers.get("x-stash-client-id")).toBe("tab-viewer-1");

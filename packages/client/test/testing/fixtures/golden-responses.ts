@@ -342,6 +342,10 @@ export const GOLDEN_RESPONSES = {
     createdAt: GOLDEN_CREATED_AT,
     deleted: false,
     body: "hello",
+    representation: "text",
+    contentAccess: "inline",
+    contentType: "text/plain; charset=utf-8",
+    byteSize: 5,
     etag: `"v1-${GOLDEN_HELLO_HASH}"`,
   },
   stale: {
@@ -373,6 +377,10 @@ export const GOLDEN_RESPONSES = {
     createdAt: GOLDEN_CREATED_AT,
     deleted: true,
     body: null,
+    representation: "text",
+    contentAccess: "deleted",
+    contentType: "text/plain; charset=utf-8",
+    byteSize: 0,
     etag: '"v2-deleted"',
   },
 } as const;

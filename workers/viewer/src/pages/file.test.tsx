@@ -754,21 +754,26 @@ describe("FilePage", () => {
 
     const rendered = renderFileRoute("/s/notes/f/docs/readme.txt", client);
     const statsThree = await screen.findByLabelText("Change stats for v3: Not requested");
-    const statsTwo = screen.getByLabelText("Change stats for v2: Not requested");
-    const observerThree = observers.find((observer) => observer.targets.has(statsThree));
-    const observerTwo = observers.find((observer) => observer.targets.has(statsTwo));
-    expect(observerThree).toBeTruthy();
-    expect(observerTwo).toBeTruthy();
+    const statsTwo = await screen.findByLabelText("Change stats for v2: Not requested");
+    const observerFor = (target: Element) =>
+      observers.find((observer) => observer.targets.has(target));
+    await waitFor(() => {
+      expect(observerFor(statsThree)).toBeTruthy();
+      expect(observerFor(statsTwo)).toBeTruthy();
+    });
+    const observerThree = observerFor(statsThree);
+    const observerTwo = observerFor(statsTwo);
+    if (!observerThree || !observerTwo) throw new Error("Missing history row observer");
 
-    act(() => observerThree?.trigger(statsThree, true));
+    act(() => observerThree.trigger(statsThree, true));
     await waitFor(() => expect(diff).toHaveBeenCalledTimes(1));
     expect(diff).toHaveBeenCalledWith("docs/readme.txt", { from: 2, to: 3 });
     expect(diffSignals[0]?.aborted).toBe(false);
 
-    act(() => observerThree?.trigger(statsThree, false));
+    act(() => observerThree.trigger(statsThree, false));
     await waitFor(() => expect(diffSignals[0]?.aborted).toBe(true));
 
-    act(() => observerTwo?.trigger(statsTwo, true));
+    act(() => observerTwo.trigger(statsTwo, true));
     await waitFor(() => expect(diff).toHaveBeenCalledTimes(2));
     expect(diff).toHaveBeenLastCalledWith("docs/readme.txt", { from: 1, to: 2 });
     expect(diffSignals[1]?.aborted).toBe(false);

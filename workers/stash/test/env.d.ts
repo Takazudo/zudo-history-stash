@@ -24,6 +24,16 @@ declare global {
       GC_LEASE_TTL_MS: string;
       PROPOSAL_TTL_DAYS: string;
       STASH_EVENTS_MAX_STREAM_MS: string;
+      JSON_INLINE_MAX_BYTES: string;
+      D1_INLINE_MAX_BYTES: string;
+      HTTP_REQUEST_MAX_BYTES: string;
+      SINGLE_UPLOAD_MAX_BYTES: string;
+      MAX_FILE_BYTES: string;
+      DIFF_MAX_BYTES: string;
+      MULTIPART_PART_BYTES: string;
+      MAX_OPEN_UPLOAD_SESSIONS: string;
+      MAX_RESERVED_UPLOAD_BYTES: string;
+      UPLOAD_SESSION_TTL_SECONDS: string;
       TEST_MIGRATIONS: D1Migration[];
       STASH_RPC: TestStashRpcBinding;
     }

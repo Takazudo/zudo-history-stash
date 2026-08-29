@@ -3,6 +3,7 @@ import { buildDiffModel } from "@takazudo/zudo-history-stash-core";
 import {
   DiffControls,
   DiffPane,
+  Bytes,
   KindBadge,
   useDiffViewPreferences,
 } from "@takazudo/zudo-history-stash-ui";
@@ -102,6 +103,21 @@ function RawVersionLinks({
       <Link to={`/s/${stash}/f/${path}?version=${result.to.version}`}>
         Open v{result.to.version} raw{result.to.deleted ? " (deleted)" : ""}
       </Link>
+    </div>
+  );
+}
+
+function DiffMetadata({ label, side }: { label: string; side: GetDiffResult["from"] }) {
+  return (
+    <div className="diff-state-card__metadata">
+      <strong>
+        {label} v{side.version}
+      </strong>
+      <span>Representation: {side.representation ?? "unknown"}</span>
+      <span>Content access: {side.deleted ? "deleted" : (side.contentAccess ?? "unknown")}</span>
+      <span>Content type: {side.contentType ?? "unknown"}</span>
+      <span>Size: {side.byteSize === undefined ? "unknown" : <Bytes value={side.byteSize} />}</span>
+      <span>Hash: {side.hash ?? "none"}</span>
     </div>
   );
 }
@@ -372,6 +388,21 @@ export default function DiffPage() {
               No differences between v{diff.value.from.version} and v{diff.value.to.version}
             </h3>
             <p>Both versions contain the same text.</p>
+          </section>
+        ) : null}
+
+        {diff.state === "ready" && diff.value.state === "binary" && stash && path ? (
+          <section className="diff-state-card" role="status">
+            <h3>Binary comparison — metadata only</h3>
+            <p>
+              These versions are binary or raw-only, so the viewer does not decode them into a text
+              diff. Download either immutable version to inspect the exact bytes.
+            </p>
+            <div className="diff-state-card__metadata-grid">
+              <DiffMetadata label="From" side={diff.value.from} />
+              <DiffMetadata label="To" side={diff.value.to} />
+            </div>
+            <RawVersionLinks path={path} result={diff.value} stash={stash} />
           </section>
         ) : null}
 

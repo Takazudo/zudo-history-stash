@@ -12,7 +12,9 @@ import type {
   ApproveProposalBody,
   ApproveProposalResult,
   CandidateDiffResult,
+  CapabilitiesResponse,
   ChangesPage,
+  CompleteUploadResult,
   CreateProposalBody,
   CreateStashBody,
   CreateStashResult,
@@ -61,6 +63,17 @@ import type {
   RouteMethod,
   StashRecord,
 } from "@takazudo/zudo-history-stash-core";
+import {
+  createUploadSessionsClient,
+  getRaw,
+  upload,
+  type BinaryClientContext,
+  type RawDownloadOptions,
+  type RawDownloadResult,
+  type StashUploadSessionsClient,
+  type UploadOptions,
+  type UploadSource,
+} from "./binary.js";
 import type { StashRpcBinding } from "./rpc-types.js";
 import { createStashEventStream, type EventsOptions, type StashEventStream } from "./events.js";
 import { parseClientResponse, StashHttpError } from "./parse.js";
@@ -359,6 +372,16 @@ export interface StashFilesClient {
   diff(path: string, options: DiffOptions): Promise<ClientResult<GetDiffResult>>;
   diffCandidate(path: string, input: DiffCandidateBody): Promise<ClientResult<CandidateDiffResult>>;
   changes(options?: ChangesOptions): Promise<ClientResult<ListChangesResult>>;
+  raw: {
+    get(path: string, options?: RawDownloadOptions): Promise<RawDownloadResult>;
+    head(path: string, options?: RawDownloadOptions): Promise<RawDownloadResult>;
+  };
+  upload(
+    path: string,
+    source: UploadSource,
+    options: UploadOptions,
+  ): Promise<ClientResult<CompleteUploadResult>>;
+  uploads: StashUploadSessionsClient;
 }
 
 /** Proposal operations scoped to one stash. */
@@ -388,6 +411,7 @@ export interface StashAdminClient {
 /** The complete typed client returned by {@link createStashClient}. */
 export interface StashClient {
   health(): Promise<ClientResult<HealthResponse>>;
+  capabilities(): Promise<ClientResult<CapabilitiesResponse>>;
   me(): Promise<ClientResult<MeResponse>>;
   stashes: {
     list(options?: ListStashesOptions): Promise<ClientResult<ListStashesResult>>;
@@ -494,6 +518,13 @@ export function createStashClient(options: StashClientOptions): StashClient {
     const stashResult = stashError<T>(stash);
     if (stashResult !== undefined) return stashResult;
     return validateFilePath<T>(path);
+  };
+
+  const binaryContext: BinaryClientContext = {
+    send,
+    authorizationToken,
+    clientId,
+    mintKey: (supplied) => mintKey(keyFactory, supplied),
   };
 
   const getFileClient = (stash: string): StashFilesClient => ({
@@ -624,6 +655,50 @@ export function createStashClient(options: StashClientOptions): StashClient {
         ]),
       )) as ClientResult<ListChangesResult>;
     },
+    raw: {
+      async get(path, rawOptions = {}) {
+        const invalid = filePath<never>(stash, path);
+        if (invalid !== undefined) return invalid;
+        return getRaw(binaryContext, stash, path, rawOptions);
+      },
+      async head(path, rawOptions = {}) {
+        const invalid = filePath<never>(stash, path);
+        if (invalid !== undefined) return invalid;
+        return getRaw(binaryContext, stash, path, rawOptions, true);
+      },
+    },
+    async upload(path, source, uploadOptions) {
+      const invalid = filePath<never>(stash, path);
+      if (invalid !== undefined) return invalid;
+      const capabilities = (await call<CapabilitiesResponse>(
+        "getCapabilities",
+        "GET",
+        target(route("getCapabilities")),
+      )) as ClientResult<CapabilitiesResponse>;
+      if (!capabilities.ok) return capabilities;
+      return upload(
+        binaryContext,
+        stash,
+        path,
+        source,
+        uploadOptions,
+        capabilities.value,
+        async (body, idempotencyKey) =>
+          (await call(
+            "putFile",
+            "PUT",
+            target(route("putFile", stash, path)),
+            {
+              body,
+              expectedVersion: uploadOptions.expectedVersion,
+              skipIfUnchanged: uploadOptions.skipIfUnchanged,
+              contentType: uploadOptions.contentType,
+            },
+            idempotencyKey,
+          )) as ClientResult<PutResult>,
+      );
+    },
+    uploads: createUploadSessionsClient(binaryContext, stash),
   });
 
   const getProposalClient = (stash: string): StashProposalsClient => ({
@@ -843,6 +918,13 @@ export function createStashClient(options: StashClientOptions): StashClient {
         "GET",
         target(route("health")),
       )) as ClientResult<HealthResponse>;
+    },
+    async capabilities() {
+      return (await call<CapabilitiesResponse>(
+        "getCapabilities",
+        "GET",
+        target(route("getCapabilities")),
+      )) as ClientResult<CapabilitiesResponse>;
     },
     async me() {
       return (await call<MeResponse>("me", "GET", target(route("me")))) as ClientResult<MeResponse>;

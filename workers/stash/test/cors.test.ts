@@ -14,10 +14,10 @@ describe("CORS", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
     expect(response.headers.get("Access-Control-Allow-Headers")).toBe(
-      "Authorization,Content-Type,If-None-Match,Idempotency-Key,X-Stash-Client-Id",
+      "Authorization,Content-Type,If-None-Match,If-Range,Range,Idempotency-Key,X-Stash-Client-Id",
     );
     expect(response.headers.get("Access-Control-Expose-Headers")).toBe(
-      "ETag,X-Stash-Version,Idempotent-Replayed,Retry-After",
+      "ETag,X-Stash-Version,Idempotent-Replayed,Retry-After,Accept-Ranges,Content-Length,Content-Range,Content-Disposition,X-Content-Type-Options",
     );
   });
 
