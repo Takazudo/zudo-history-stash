@@ -159,3 +159,147 @@ export function insertEntryStatement(db: Preparer, row: ChangeSetEntryRow): D1Pr
       row.stash_name,
     );
 }
+
+export interface ChangeSetDecisionSqlInput {
+  stash: string;
+  id: string;
+  attempt: string;
+  commitId: string;
+  now: number;
+  decidedBy: string;
+}
+
+/**
+ * Claims an approval only while every persisted entry still agrees with durable state. The
+ * COALESCE around the CASE is intentional: corrupt or incomplete nullable rows are refusals.
+ */
+export function claimChangeSetStatement(
+  db: Preparer,
+  input: ChangeSetDecisionSqlInput,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE change_sets
+       SET status = 'applied', decision_attempt = ?, decided_at = ?, decided_by = ?,
+         decision_reason = NULL, commit_id = ?
+       WHERE stash_name = ? AND id = ? AND status = 'open' AND expires_at > ?
+         AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
+         AND (expected_last_change_id IS NULL OR expected_last_change_id = COALESCE(
+           (SELECT MAX(id) FROM versions WHERE stash_name = change_sets.stash_name), 0
+         ))
+         AND NOT EXISTS (
+           SELECT 1
+           FROM change_set_entries AS e
+           LEFT JOIN files AS f
+             ON f.stash_name = e.stash_name AND f.path = e.path
+           WHERE e.change_set_id = change_sets.id
+             AND (e.stash_name <> change_sets.stash_name OR COALESCE(CASE e.op
+               WHEN 'put' THEN
+                 (e.base_version IS NULL AND f.path IS NOT NULL)
+                 OR (e.base_version IS NOT NULL AND (
+                   f.path IS NULL OR f.head_version IS NULL OR f.head_version <> e.base_version
+                 ))
+                 OR e.blob_hash IS NULL OR e.size_bytes IS NULL
+                 OR e.content_storage IS NULL OR e.representation IS NULL OR e.content_type IS NULL
+                 OR CASE e.content_storage
+                   WHEN 'legacy' THEN NOT EXISTS (
+                     SELECT 1 FROM blobs AS stored
+                     WHERE stored.stash_name = e.stash_name AND stored.hash = e.blob_hash
+                       AND stored.size_bytes = e.size_bytes
+                       AND ((stored.body IS NOT NULL AND stored.r2_key IS NULL)
+                         OR (stored.body IS NULL AND stored.r2_key IS NOT NULL))
+                   )
+                   WHEN 'bytes' THEN NOT EXISTS (
+                     SELECT 1 FROM byte_blobs AS stored
+                     WHERE stored.stash_name = e.stash_name AND stored.hash = e.blob_hash
+                       AND stored.size_bytes = e.size_bytes
+                       AND ((stored.body_bytes IS NOT NULL AND stored.r2_key IS NULL)
+                         OR (stored.body_bytes IS NULL AND stored.r2_key IS NOT NULL))
+                   )
+                   ELSE 1
+                 END
+               WHEN 'copy' THEN
+                 (e.base_version IS NULL AND f.path IS NOT NULL)
+                 OR (e.base_version IS NOT NULL AND (
+                   f.path IS NULL OR f.head_version IS NULL OR f.head_version <> e.base_version
+                 ))
+                 OR NOT EXISTS (
+                   SELECT 1 FROM versions AS source
+                   WHERE source.stash_name = e.stash_name
+                     AND source.path = e.copied_from_path
+                     AND source.version = e.copied_from_version
+                     AND source.blob_hash IS NOT NULL
+                     AND CASE source.content_storage
+                       WHEN 'legacy' THEN EXISTS (
+                         SELECT 1 FROM blobs AS stored
+                         WHERE stored.stash_name = source.stash_name AND stored.hash = source.blob_hash
+                           AND stored.size_bytes = source.size_bytes
+                           AND ((stored.body IS NOT NULL AND stored.r2_key IS NULL)
+                             OR (stored.body IS NULL AND stored.r2_key IS NOT NULL))
+                       )
+                       WHEN 'bytes' THEN EXISTS (
+                         SELECT 1 FROM byte_blobs AS stored
+                         WHERE stored.stash_name = source.stash_name AND stored.hash = source.blob_hash
+                           AND stored.size_bytes = source.size_bytes
+                           AND ((stored.body_bytes IS NOT NULL AND stored.r2_key IS NULL)
+                             OR (stored.body_bytes IS NULL AND stored.r2_key IS NOT NULL))
+                       )
+                       ELSE 0
+                     END
+                 )
+               WHEN 'delete' THEN
+                 f.path IS NULL OR f.head_version IS NULL OR f.head_version <> e.base_version
+                   OR COALESCE(f.deleted, 1) = 1
+               WHEN 'rollback' THEN
+                 f.path IS NULL OR f.head_version IS NULL OR f.head_version <> e.base_version
+                 OR NOT EXISTS (
+                   SELECT 1 FROM versions AS target
+                   WHERE target.stash_name = e.stash_name AND target.path = e.path
+                     AND target.version = e.rollback_to AND target.blob_hash IS NOT NULL
+                     AND CASE target.content_storage
+                       WHEN 'legacy' THEN EXISTS (
+                         SELECT 1 FROM blobs AS stored
+                         WHERE stored.stash_name = target.stash_name AND stored.hash = target.blob_hash
+                           AND stored.size_bytes = target.size_bytes
+                           AND ((stored.body IS NOT NULL AND stored.r2_key IS NULL)
+                             OR (stored.body IS NULL AND stored.r2_key IS NOT NULL))
+                       )
+                       WHEN 'bytes' THEN EXISTS (
+                         SELECT 1 FROM byte_blobs AS stored
+                         WHERE stored.stash_name = target.stash_name AND stored.hash = target.blob_hash
+                           AND stored.size_bytes = target.size_bytes
+                           AND ((stored.body_bytes IS NOT NULL AND stored.r2_key IS NULL)
+                             OR (stored.body_bytes IS NULL AND stored.r2_key IS NOT NULL))
+                       )
+                       ELSE 0
+                     END
+                 )
+               ELSE 1
+             END, 1) = 1)
+         )`,
+    )
+    .bind(
+      input.attempt,
+      input.now,
+      input.decidedBy,
+      input.commitId,
+      input.stash,
+      input.id,
+      input.now,
+      input.stash,
+    );
+}
+
+export function rejectChangeSetStatement(
+  db: Preparer,
+  input: { stash: string; id: string; now: number; decidedBy: string; reason: string | null },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE change_sets SET status = 'rejected', decision_attempt = NULL, decided_at = ?,
+         decided_by = ?, decision_reason = ?, commit_id = NULL
+       WHERE stash_name = ? AND id = ? AND status = 'open'
+         AND EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)`,
+    )
+    .bind(input.now, input.decidedBy, input.reason, input.stash, input.id, input.stash);
+}

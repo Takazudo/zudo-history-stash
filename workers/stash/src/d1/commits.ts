@@ -301,10 +301,10 @@ async function existingCommit(
     .first<CommitRow>();
 }
 
-async function resultFromCommit(
+export async function resultFromCommit(
   db: D1DatabaseSession,
   commit: CommitRow,
-  requestedEntries: CommitEntryInput[],
+  requestedEntries: Array<Pick<CommitEntryInput, "path" | "op">>,
 ): Promise<CommitResult | null> {
   const rows = await db
     .prepare(

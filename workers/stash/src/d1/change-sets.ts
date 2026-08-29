@@ -1,4 +1,5 @@
 import {
+  ApproveChangeSetBody,
   COMMIT_DIFF_INLINE_ENTRIES,
   CreateChangeSetBody,
   IDEMPOTENCY_KEY_MAX_CHARS,
@@ -6,6 +7,7 @@ import {
   LIST_LIMIT_MAX,
   MAX_COMMIT_INLINE_BYTES,
   MAX_META_BYTES,
+  RejectChangeSetBody,
   StashError,
   canonicalJson,
   computeDiff,
@@ -19,9 +21,14 @@ import {
   type ChangeSetListResponse,
   type ChangeSetRecord,
   type ChangeSetStatus,
+  type ApproveChangeSetBody as ApproveChangeSetInput,
+  type ApproveChangeSetResult,
+  type CommitConflict,
+  type CommitResult,
   type CreateChangeSetBody as CreateChangeSetInput,
   type Current,
   type JsonValue,
+  type RejectChangeSetBody as RejectChangeSetInput,
 } from "@takazudo/zudo-history-stash-core";
 import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
@@ -29,13 +36,18 @@ import { prepareBlob, readBlob, type PreparedBlob } from "./blobs.js";
 import { prepareByteWrite, type PreparedByteWrite } from "./byte-writes.js";
 import { createByteStorageReader } from "./byte-reader.js";
 import type { ChangeSetEntryRow, ChangeSetRow } from "./schema.js";
+import type { CommitRow } from "./schema.js";
+import { resultFromCommit } from "./commits.js";
+import { changeSetCommitBatch, mintCommitId } from "./sql/commits.js";
 import {
   SELECT_CHANGE_SET,
   SELECT_CHANGE_SET_BY_KEY,
   SELECT_CHANGE_SET_ENTRIES,
+  claimChangeSetStatement,
   countChangeSets,
   insertChangeSetStatement,
   insertEntryStatement,
+  rejectChangeSetStatement,
   selectChangeSets,
 } from "./sql/change-sets.js";
 import type { StoreDependencies } from "./store.js";
@@ -94,6 +106,11 @@ export interface ListChangeSetOptions {
 export interface ChangeSetDiffOptions {
   context?: number;
   path?: string;
+}
+
+export interface ChangeSetDecisionOptions {
+  decidedBy?: string;
+  onApplied?: (result: CommitResult) => void | Promise<void>;
 }
 
 function validation(message: string): never {
@@ -308,6 +325,105 @@ async function stageEntry(
 
 async function entriesFor(db: D1DatabaseSession, id: string): Promise<ChangeSetEntryRow[]> {
   return (await db.prepare(SELECT_CHANGE_SET_ENTRIES).bind(id).all<ChangeSetEntryRow>()).results;
+}
+
+async function appliedResult(
+  db: D1DatabaseSession,
+  row: ChangeSetRow,
+): Promise<ApproveChangeSetResult | null> {
+  if (row.status !== "applied" || row.commit_id === null) return null;
+  const commit = await db
+    .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
+    .bind(row.stash_name, row.commit_id)
+    .first<CommitRow>();
+  if (commit === null) return null;
+  const entries = await entriesFor(db, row.id);
+  const result = await resultFromCommit(db, commit, entries);
+  return result === null ? null : { status: "applied", commit: result };
+}
+
+async function approvalConflicts(
+  db: D1DatabaseSession,
+  row: ChangeSetRow,
+  entries: ChangeSetEntryRow[],
+): Promise<CommitConflict[]> {
+  async function materialExists(
+    material: VersionMaterialRow | ChangeSetEntryRow,
+  ): Promise<boolean> {
+    if (
+      material.blob_hash === null ||
+      material.size_bytes === null ||
+      material.content_storage === null
+    ) {
+      return false;
+    }
+    if (
+      "change_set_id" in material &&
+      (material.representation === null || material.content_type === null)
+    ) {
+      return false;
+    }
+    const stored = await db
+      .prepare(
+        material.content_storage === "bytes"
+          ? `SELECT 1 FROM byte_blobs WHERE stash_name = ? AND hash = ? AND size_bytes = ?
+               AND ((body_bytes IS NOT NULL AND r2_key IS NULL)
+                 OR (body_bytes IS NULL AND r2_key IS NOT NULL))`
+          : `SELECT 1 FROM blobs WHERE stash_name = ? AND hash = ? AND size_bytes = ?
+               AND ((body IS NOT NULL AND r2_key IS NULL)
+                 OR (body IS NULL AND r2_key IS NOT NULL))`,
+      )
+      .bind(material.stash_name, material.blob_hash, material.size_bytes)
+      .first();
+    return stored !== null;
+  }
+  const conflicts: CommitConflict[] = [];
+  for (const entry of entries) {
+    const head = await selectHead(db, row.stash_name, entry.path);
+    const present = current(head);
+    let refused =
+      entry.base_version === null
+        ? head !== null
+        : head === null || head.head_version !== entry.base_version;
+    if (entry.op === "delete" && head?.deleted === 1) refused = true;
+    if (entry.op === "rollback") {
+      const target =
+        entry.rollback_to === null
+          ? null
+          : await selectVersion(db, row.stash_name, entry.path, entry.rollback_to);
+      if (target === null || !(await materialExists(target))) refused = true;
+    }
+    if (entry.op === "copy") {
+      const source =
+        entry.copied_from_path === null || entry.copied_from_version === null
+          ? null
+          : await selectVersion(
+              db,
+              row.stash_name,
+              entry.copied_from_path,
+              entry.copied_from_version,
+            );
+      if (source === null || !(await materialExists(source))) refused = true;
+    }
+    if (entry.op === "put" && !(await materialExists(entry))) refused = true;
+    if (refused) {
+      conflicts.push({ path: entry.path, expectedVersion: entry.base_version, current: present });
+    }
+  }
+  return conflicts;
+}
+
+function throwConflicts(conflicts: CommitConflict[], entries: ChangeSetEntryRow[]): never {
+  const first = conflicts[0];
+  const missingDelete =
+    conflicts.length === 1 &&
+    first?.current === null &&
+    entries.find(({ path }) => path === first.path)?.op === "delete";
+  const error = missingDelete
+    ? new StashError("not-found", `File not found: ${first.path}`)
+    : new StashError("commit-conflict", "One or more change-set entries conflict.");
+  Object.assign(error, { conflicts });
+  throw error;
 }
 
 async function mapRecord(
@@ -650,6 +766,156 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
         }
       }
       return internal("Change-set create failed its persistence fence.");
+    },
+
+    async approveChangeSet(
+      stash: string,
+      id: string,
+      input: ApproveChangeSetInput,
+      options: ChangeSetDecisionOptions = {},
+    ): Promise<ApproveChangeSetResult> {
+      if (!CHANGE_SET_ID.test(id)) validation("Invalid change-set id.");
+      const parsed = ApproveChangeSetBody.safeParse(input);
+      if (!parsed.success) validation("Invalid change-set approval input.");
+      const now = deps.now();
+      const db = env.DB.withSession("first-primary");
+      await ensureLive(db, stash);
+      const row = await db.prepare(SELECT_CHANGE_SET).bind(stash, id).first<ChangeSetRow>();
+      if (row === null) throw new StashError("not-found", "Change set not found.");
+      if (row.status === "applied") {
+        const replay = await appliedResult(db, row);
+        if (replay === null) return internal("Applied change-set commit is unavailable.");
+        return replay;
+      }
+      if (row.status !== "open") {
+        throw new StashError("change-set-closed", "Change set is already closed.");
+      }
+      if (row.expires_at <= now) {
+        throw new StashError("change-set-expired", "Change set has expired.");
+      }
+      const entries = await entriesFor(db, id);
+      const initialConflicts = await approvalConflicts(db, row, entries);
+      if (initialConflicts.length > 0) throwConflicts(initialConflicts, entries);
+      const latest = await db
+        .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
+        .bind(stash)
+        .first<{ id: number }>();
+      if (
+        row.expected_last_change_id !== null &&
+        (latest?.id ?? 0) !== row.expected_last_change_id
+      ) {
+        throw new StashError(
+          "commit-conflict",
+          `Expected last change ${row.expected_last_change_id}, newest change is ${latest?.id ?? 0}.`,
+        );
+      }
+
+      await deps.onBeforeCommit?.();
+      const attempt = deps.createId();
+      const commitId = mintCommitId(now, deps.createId);
+      const metaJson = canonicalJson({ ...parseMeta(row.meta_json), commitId });
+      if (utf8ByteLength(metaJson) > MAX_META_BYTES) {
+        validation("Stamped commit meta is too large.");
+      }
+      const commitRow = {
+        id: commitId,
+        stash_name: stash,
+        source: "change-set" as const,
+        source_id: id,
+        author: parsed.data.author ?? row.author,
+        message: parsed.data.message ?? row.message,
+        meta_json: metaJson,
+        entry_count: entries.length,
+        reverts_commit_id: null,
+        idempotency_key: null,
+        request_hash: null,
+        created_by: options.decidedBy ?? "system",
+        created_at: now,
+      };
+      const claim = claimChangeSetStatement(db, {
+        stash,
+        id,
+        attempt,
+        commitId,
+        now,
+        decidedBy: options.decidedBy ?? "system",
+      });
+      let results: D1Result<unknown>[] | null = null;
+      try {
+        results = await db.batch(
+          changeSetCommitBatch(db, { row: commitRow, changeSetId: id, attempt, entries }, claim),
+        );
+      } catch {
+        // CHECK/FK/claim races are classified from durable state below.
+      }
+      if (results?.at(-1)?.meta.changes === 1) {
+        const persistedSet = await db
+          .prepare(SELECT_CHANGE_SET)
+          .bind(stash, id)
+          .first<ChangeSetRow>();
+        if (persistedSet === null) return internal();
+        const applied = await appliedResult(db, persistedSet);
+        if (applied === null) return internal("Applied change-set commit is unavailable.");
+        await options.onApplied?.(applied.commit);
+        return applied;
+      }
+
+      const finalRow = await db.prepare(SELECT_CHANGE_SET).bind(stash, id).first<ChangeSetRow>();
+      if (finalRow === null) throw new StashError("not-found", "Change set not found.");
+      if (finalRow.status === "applied") {
+        const replay = await appliedResult(db, finalRow);
+        if (replay === null) return internal("Applied change-set commit is unavailable.");
+        return replay;
+      }
+      if (finalRow.status !== "open") {
+        throw new StashError("change-set-closed", "Change set is already closed.");
+      }
+      const finalEntries = await entriesFor(db, id);
+      const conflicts = await approvalConflicts(db, finalRow, finalEntries);
+      if (conflicts.length > 0) throwConflicts(conflicts, finalEntries);
+      const newest = await db
+        .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
+        .bind(stash)
+        .first<{ id: number }>();
+      if (
+        finalRow.expected_last_change_id !== null &&
+        (newest?.id ?? 0) !== finalRow.expected_last_change_id
+      ) {
+        throw new StashError(
+          "commit-conflict",
+          `Expected last change ${finalRow.expected_last_change_id}, newest change is ${newest?.id ?? 0}.`,
+        );
+      }
+      return internal("Change-set approval was refused without a competing decision.");
+    },
+
+    async rejectChangeSet(
+      stash: string,
+      id: string,
+      input: RejectChangeSetInput,
+      options: ChangeSetDecisionOptions = {},
+    ): Promise<ChangeSetRecord> {
+      if (!CHANGE_SET_ID.test(id)) validation("Invalid change-set id.");
+      const parsed = RejectChangeSetBody.safeParse(input);
+      if (!parsed.success) validation("Invalid change-set rejection input.");
+      const now = deps.now();
+      const db = env.DB.withSession("first-primary");
+      await ensureLive(db, stash);
+      const result = await db.batch([
+        rejectChangeSetStatement(db, {
+          stash,
+          id,
+          now,
+          decidedBy: options.decidedBy ?? "system",
+          reason: parsed.data.reason ?? null,
+        }),
+      ]);
+      const row = await db.prepare(SELECT_CHANGE_SET).bind(stash, id).first<ChangeSetRow>();
+      if (row === null) throw new StashError("not-found", "Change set not found.");
+      if (result[0]?.meta.changes !== 1) {
+        throw new StashError("change-set-closed", "Change set is already closed.");
+      }
+      return mapRecord(db, row, now);
     },
 
     async getChangeSet(stash: string, id: string): Promise<ChangeSetRecord | null> {

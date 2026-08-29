@@ -1,4 +1,4 @@
-import type { CommitRow } from "../schema.js";
+import type { ChangeSetEntryRow, CommitRow } from "../schema.js";
 import type { PreparedBlob } from "../blobs.js";
 import type { PreparedByteWrite } from "../byte-writes.js";
 import type { SqlFragment } from "./writes.js";
@@ -496,3 +496,259 @@ export const SELECT_COMMIT_VERSIONS = `
   WHERE stash_name = ? AND commit_id = ?
   ORDER BY id
 `;
+
+export interface ChangeSetCommitBatchInput {
+  row: CommitInsertRow;
+  changeSetId: string;
+  attempt: string;
+  entries: ChangeSetEntryRow[];
+}
+
+function changeSetFence(input: ChangeSetCommitBatchInput): SqlFragment {
+  return {
+    sql: `EXISTS (SELECT 1 FROM change_sets
+      WHERE stash_name = ? AND id = ? AND status = 'applied' AND decision_attempt = ?)`,
+    params: [input.row.stash_name, input.changeSetId, input.attempt],
+  };
+}
+
+function changeSetVersionStatement(
+  db: Preparer,
+  input: ChangeSetCommitBatchInput,
+  entry: ChangeSetEntryRow,
+): D1PreparedStatement {
+  const fence = changeSetFence(input);
+  const commonColumns = `(stash_name, path, version, kind, blob_hash, size_bytes, content_type,
+    rollback_of, author, message, meta_json, created_at, representation, application_etag,
+    content_storage, commit_id, copied_from_path, copied_from_version)`;
+  if (entry.op === "put") {
+    return db
+      .prepare(
+        `INSERT INTO versions ${commonColumns}
+         SELECT e.stash_name, e.path, COALESCE(e.base_version, 0) + 1, 'put', e.blob_hash,
+           e.size_bytes, e.content_type, NULL, ?, ?, ?, ?, e.representation,
+           e.application_etag, e.content_storage, ?, NULL, NULL
+         FROM change_set_entries AS e
+         WHERE e.change_set_id = ? AND e.stash_name = ? AND e.path = ? AND e.op = ?
+           AND ${fence.sql}
+           AND e.blob_hash IS NOT NULL AND e.size_bytes IS NOT NULL
+           AND e.content_type IS NOT NULL AND e.representation IS NOT NULL
+           AND e.content_storage IS NOT NULL`,
+      )
+      .bind(
+        input.row.author,
+        input.row.message,
+        input.row.meta_json,
+        input.row.created_at,
+        input.row.id,
+        input.changeSetId,
+        input.row.stash_name,
+        entry.path,
+        entry.op,
+        ...fence.params,
+      );
+  }
+  if (entry.op === "delete") {
+    return db
+      .prepare(
+        `INSERT INTO versions ${commonColumns}
+         SELECT e.stash_name, e.path, e.base_version + 1, 'delete', NULL, 0,
+           current.content_type, NULL, ?, ?, ?, ?, current.representation, NULL,
+           current.content_storage, ?, NULL, NULL
+         FROM change_set_entries AS e
+         JOIN versions AS current ON current.stash_name = e.stash_name
+           AND current.path = e.path AND current.version = e.base_version
+         WHERE e.change_set_id = ? AND e.stash_name = ? AND e.path = ? AND e.op = ?
+           AND ${fence.sql}`,
+      )
+      .bind(
+        input.row.author,
+        input.row.message,
+        input.row.meta_json,
+        input.row.created_at,
+        input.row.id,
+        input.changeSetId,
+        input.row.stash_name,
+        entry.path,
+        entry.op,
+        ...fence.params,
+      );
+  }
+  const sourcePath = entry.op === "copy" ? "e.copied_from_path" : "e.path";
+  const sourceVersion = entry.op === "copy" ? "e.copied_from_version" : "e.rollback_to";
+  const kind = entry.op === "rollback" ? "rollback" : "put";
+  const rollbackOf = entry.op === "rollback" ? "source.version" : "NULL";
+  const copiedPath = entry.op === "copy" ? "source.path" : "NULL";
+  const copiedVersion = entry.op === "copy" ? "source.version" : "NULL";
+  return db
+    .prepare(
+      `INSERT INTO versions ${commonColumns}
+       SELECT e.stash_name, e.path, COALESCE(e.base_version, 0) + 1, '${kind}',
+         source.blob_hash, source.size_bytes, source.content_type, ${rollbackOf}, ?, ?, ?, ?,
+         source.representation, source.application_etag, source.content_storage, ?,
+         ${copiedPath}, ${copiedVersion}
+       FROM change_set_entries AS e
+       JOIN versions AS source ON source.stash_name = e.stash_name
+         AND source.path = ${sourcePath} AND source.version = ${sourceVersion}
+       WHERE e.change_set_id = ? AND e.stash_name = ? AND e.path = ? AND e.op = ?
+         AND source.blob_hash IS NOT NULL
+         AND ${fence.sql}`,
+    )
+    .bind(
+      input.row.author,
+      input.row.message,
+      input.row.meta_json,
+      input.row.created_at,
+      input.row.id,
+      input.changeSetId,
+      input.row.stash_name,
+      entry.path,
+      entry.op,
+      ...fence.params,
+    );
+}
+
+function changeSetHeadStatement(
+  db: Preparer,
+  input: ChangeSetCommitBatchInput,
+  entry: ChangeSetEntryRow,
+): D1PreparedStatement {
+  const fence = changeSetFence(input);
+  if (entry.base_version === null) {
+    return db
+      .prepare(
+        `INSERT INTO files (stash_name, path, head_version, head_hash, deleted, created_at, updated_at)
+         SELECT e.stash_name, e.path, 1, committed.blob_hash,
+           CASE WHEN e.op = 'delete' THEN 1 ELSE 0 END, ?, ?
+         FROM change_set_entries AS e
+         JOIN versions AS committed ON committed.stash_name = e.stash_name
+           AND committed.path = e.path AND committed.version = 1 AND committed.commit_id = ?
+         WHERE e.change_set_id = ? AND e.path = ? AND ${fence.sql}
+           AND NOT EXISTS (SELECT 1 FROM files AS existing
+             WHERE existing.stash_name = e.stash_name AND existing.path = e.path)`,
+      )
+      .bind(
+        input.row.created_at,
+        input.row.created_at,
+        input.row.id,
+        input.changeSetId,
+        entry.path,
+        ...fence.params,
+      );
+  }
+  return db
+    .prepare(
+      `UPDATE files SET
+         head_version = (SELECT e.base_version + 1 FROM change_set_entries AS e
+           WHERE e.change_set_id = ? AND e.path = ?),
+         head_hash = (SELECT committed.blob_hash FROM versions AS committed
+           WHERE committed.stash_name = ? AND committed.path = ?
+             AND committed.version = ? AND committed.commit_id = ?),
+         deleted = (SELECT CASE WHEN e.op = 'delete' THEN 1 ELSE 0 END
+           FROM change_set_entries AS e WHERE e.change_set_id = ? AND e.path = ?),
+         updated_at = ?
+       WHERE stash_name = ? AND path = ? AND head_version = ? AND ${fence.sql}
+         AND EXISTS (SELECT 1 FROM versions AS committed
+           WHERE committed.stash_name = ? AND committed.path = ?
+             AND committed.version = ? AND committed.commit_id = ?)`,
+    )
+    .bind(
+      input.changeSetId,
+      entry.path,
+      input.row.stash_name,
+      entry.path,
+      entry.base_version + 1,
+      input.row.id,
+      input.changeSetId,
+      entry.path,
+      input.row.created_at,
+      input.row.stash_name,
+      entry.path,
+      entry.base_version,
+      ...fence.params,
+      input.row.stash_name,
+      entry.path,
+      entry.base_version + 1,
+      input.row.id,
+    );
+}
+
+function changeSetSealStatement(
+  db: Preparer,
+  input: ChangeSetCommitBatchInput,
+): D1PreparedStatement {
+  const fence = changeSetFence(input);
+  return db
+    .prepare(
+      `UPDATE commits
+       SET change_count = CASE WHEN
+             entry_count = (SELECT COUNT(*) FROM versions WHERE commit_id = commits.id)
+             AND entry_count = (SELECT COUNT(*) FROM change_set_entries WHERE change_set_id = ?)
+             AND NOT EXISTS (
+               SELECT 1 FROM change_set_entries AS e
+               LEFT JOIN versions AS committed ON committed.stash_name = e.stash_name
+                 AND committed.path = e.path AND committed.version = COALESCE(e.base_version, 0) + 1
+                 AND committed.commit_id = commits.id
+               LEFT JOIN files AS f ON f.stash_name = e.stash_name AND f.path = e.path
+               WHERE e.change_set_id = ? AND (
+                 e.stash_name <> commits.stash_name OR committed.id IS NULL OR f.path IS NULL
+                 OR f.head_version <> committed.version
+                 OR f.deleted <> CASE WHEN e.op = 'delete' THEN 1 ELSE 0 END
+                 OR f.head_hash IS NOT committed.blob_hash
+               )
+             )
+           THEN (SELECT COUNT(*) FROM versions WHERE commit_id = commits.id)
+           ELSE -1 END,
+           first_change_id = (SELECT MIN(id) FROM versions WHERE commit_id = commits.id),
+           last_change_id = (SELECT MAX(id) FROM versions WHERE commit_id = commits.id),
+           sealed = 1
+       WHERE stash_name = ? AND id = ? AND sealed = 0 AND ${fence.sql}`,
+    )
+    .bind(
+      input.changeSetId,
+      input.changeSetId,
+      input.row.stash_name,
+      input.row.id,
+      ...fence.params,
+    );
+}
+
+/** The claim is first and the seal is last; any failed derived write trips the seal CHECK. */
+export function changeSetCommitBatch(
+  db: Preparer,
+  input: ChangeSetCommitBatchInput,
+  claim: D1PreparedStatement,
+): D1PreparedStatement[] {
+  if (input.entries.length === 0) throw new Error("Change-set commit requires entries");
+  const fence = changeSetFence(input);
+  const statements: D1PreparedStatement[] = [
+    claim,
+    db
+      .prepare(
+        `INSERT INTO commits
+          (id, stash_name, source, source_id, author, message, meta_json, entry_count,
+           reverts_commit_id, idempotency_key, request_hash, created_by, created_at)
+         SELECT ?, ?, 'change-set', ?, ?, ?, ?,
+           (SELECT COUNT(*) FROM change_set_entries WHERE change_set_id = ?),
+           NULL, NULL, NULL, ?, ? WHERE ${fence.sql}`,
+      )
+      .bind(
+        input.row.id,
+        input.row.stash_name,
+        input.changeSetId,
+        input.row.author,
+        input.row.message,
+        input.row.meta_json,
+        input.changeSetId,
+        input.row.created_by,
+        input.row.created_at,
+        ...fence.params,
+      ),
+  ];
+  for (const entry of input.entries) {
+    statements.push(changeSetVersionStatement(db, input, entry));
+    statements.push(changeSetHeadStatement(db, input, entry));
+  }
+  statements.push(changeSetSealStatement(db, input));
+  return statements;
+}

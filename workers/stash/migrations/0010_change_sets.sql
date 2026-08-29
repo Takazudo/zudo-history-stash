@@ -15,7 +15,7 @@ CREATE TABLE change_sets (
   decided_at              INTEGER,
   decided_by              TEXT,
   decision_reason         TEXT,
-  commit_id               TEXT REFERENCES commits(id)
+  commit_id               TEXT REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE INDEX change_sets_stash_status_created

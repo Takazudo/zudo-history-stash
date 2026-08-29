@@ -110,9 +110,43 @@ describe("change-set routes", () => {
       stale: false,
       entries: [{ path: "route.txt", diff: { state: "ready" } }],
     });
+
+    const approved = await request(
+      worker,
+      `http://localhost/v1/stashes/${STASH}/change-sets/${created.id}/approve`,
+      json({ message: "approved" }, { "X-Stash-Client-Id": "route-tab" }),
+      bindings,
+    );
+    expect(approved.status).toBe(200);
+    const approval = await approved.json<{ commit: { id: string } }>();
+    expect(events.slice(1)).toEqual([
+      expect.objectContaining({ type: "change", path: "route.txt", origin: "route-tab" }),
+      expect.objectContaining({
+        type: "commit",
+        commitId: approval.commit.id,
+        origin: "route-tab",
+      }),
+      {
+        type: "change-set",
+        changeSetId: created.id,
+        stash: STASH,
+        status: "applied",
+        paths: ["route.txt"],
+        origin: "route-tab",
+      },
+    ]);
+    const eventCount = events.length;
+    const replayedApproval = await request(
+      worker,
+      `http://localhost/v1/stashes/${STASH}/change-sets/${created.id}/approve`,
+      json({}),
+      bindings,
+    );
+    expect(replayedApproval.status).toBe(200);
+    expect(events).toHaveLength(eventCount);
   });
 
-  it("returns validation and idempotency reuse errors and leaves decisions unimplemented", async () => {
+  it("returns validation and idempotency reuse errors and rejects an open set", async () => {
     await seedStash(STASH);
     const worker = app();
     const collection = `http://localhost/v1/stashes/${STASH}/change-sets`;
@@ -148,14 +182,21 @@ describe("change-set routes", () => {
     );
     expect(reused.status).toBe(422);
 
-    for (const decision of ["approve", "reject"]) {
-      const response = await request(
-        worker,
-        `${collection}/${created.id}/${decision}`,
-        json({}),
-        env,
-      );
-      expect(response.status).toBe(501);
-    }
+    const rejected = await request(
+      worker,
+      `${collection}/${created.id}/reject`,
+      json({ reason: "not wanted" }),
+      env,
+    );
+    expect(rejected.status).toBe(200);
+    await expect(rejected.json()).resolves.toMatchObject({
+      id: created.id,
+      status: "rejected",
+      decisionReason: "not wanted",
+      decidedBy: "admin",
+    });
+    const closed = await request(worker, `${collection}/${created.id}/approve`, json({}), env);
+    expect(closed.status).toBe(409);
+    await expect(closed.json()).resolves.toMatchObject({ error: { code: "change-set-closed" } });
   });
 });
