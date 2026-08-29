@@ -23,13 +23,22 @@ failure is `409 commit-conflict`. A failed `expectedLastChangeId` fence is `409 
 per-entry conflicts. The server never applies the non-conflicting subset. Refresh all affected heads
 and deliberately construct a new commit; there is no automatic merge or rebase.
 
+`expectedLastChangePrefix` narrows `expectedLastChangeId` to paths under one prefix. It requires
+`expectedLastChangeId`; sending it alone is `400 validation`. The prefix fence applies to commit
+creation and change-set creation. A change set stores the fence when created and evaluates it again
+at approval. The whole-stash fence is an equality check, so a cursor above the newest change is stale
+too. The prefix fence asks only that no newer change exists under the prefix, so a future cursor
+passes. Prefix matching is a descendant path range: `site` and `site/` are equivalent, while
+`site2/index.html` is not under `site`.
+
 ### `POST /v1/stashes/{stash}/commits`
 
 **Contract:** operation `createCommit`; principal `write`; transport `any`.
 
-Creates one atomic commit. `entries` is required; `author`, `message`, JSON `meta`, and
-`expectedLastChangeId` are optional. The aggregate decoded entry content is limited to 5,000,000
-bytes, independently of the JSON request-size limit.
+Creates one atomic commit. `entries` is required; `author`, `message`, JSON `meta`,
+`expectedLastChangeId`, and `expectedLastChangePrefix` are optional. The prefix field may be supplied
+only with `expectedLastChangeId`. The aggregate decoded entry content is limited to 5,000,000 bytes,
+independently of the JSON request-size limit.
 
 ```json
 {
@@ -81,10 +90,16 @@ unchanged. The response returns `commits`, `nextAfter`, and the full filtered `t
 **Contract:** operation `getCommitDiff`; principal `read`; transport `any`.
 
 Returns bounded before-to-after diffs for the commit. `context` controls non-negative context lines,
-and `path` selects one exact entry. Without `path`, at most `COMMIT_DIFF_INLINE_ENTRIES` entries are
-expanded and response-level `truncated` reports omitted entries. Each result identifies `from` and
-`to` versions/hashes. Text is `ready`, `same`, or `oversized`; binary and otherwise ineligible
-content report explicit metadata states rather than fabricated text.
+and `path` selects one exact entry. Optional `from=commit:{id}` turns this into a range diff with that
+commit as the exclusive lower bound. The result has one entry per changed path: `to` is the newest
+version in the range, while `from` is the version before the range or `null` for a path created within
+it. Optional `prefix` filtering composes with `path`.
+
+A `from` commit newer than the target is `400 validation`, and an unknown `from` commit is
+`404 not-found`. A `from` commit equal to the target produces no entries. The response remains
+`CommitDiffResult`; `truncated` is the only overflow signal, with no pagination. Without `path`, at
+most `COMMIT_DIFF_INLINE_ENTRIES` entries are expanded. Text is `ready`, `same`, or `oversized`;
+binary and otherwise ineligible content report explicit metadata states rather than fabricated text.
 
 ### `POST /v1/stashes/{stash}/commits/{id}/revert`
 
@@ -105,7 +120,10 @@ commit creation.
 
 **Contract:** operation `getSnapshot`; principal `read`; transport `any`.
 
-Lists file state at a commit boundary. The required selector is `at=commit:{id}`. Optional `prefix`,
-`delimiter`, `includeDeleted`, `limit`, and opaque `after` behave as described in
+Lists file state at a commit boundary. The required `at` selector accepts `commit:{id}` or
+`change:{n}`. A `change:` cursor resolves down to the newest sealed commit whose `last_change_id` is
+at or below that cursor, and the response's `at` reports the resolved boundary. If no boundary exists
+at or below the cursor, the result is `404 not-found`. Optional `prefix`, `delimiter`,
+`includeDeleted`, `limit`, and opaque `after` behave as described in
 [Files, history, and diffs](./files-history-and-diffs.mdx#prefix-listing-and-commit-snapshots).
 Snapshots are derived immutable-history reads, not stored trees, branches, or movable references.
