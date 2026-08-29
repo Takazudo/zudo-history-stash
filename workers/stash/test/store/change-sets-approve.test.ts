@@ -22,6 +22,8 @@ async function seedFile(stash: string, path: string, body: string) {
     expectedVersion: null,
   });
   if (!result.ok) throw new Error("seed failed");
+  if (!("changeId" in result.value)) throw new Error("seed did not create a version");
+  return result.value.changeId;
 }
 
 async function counts(stash: string) {
@@ -249,6 +251,83 @@ describe("change-set decisions", () => {
     await expect(base.changeSets.getChangeSet(stash, created.value.id)).resolves.toMatchObject({
       status: "open",
     });
+  });
+
+  it("approves a prefix-scoped set after an unrelated path changes", async () => {
+    const stash = "approve-prefix-unrelated";
+    await seedStash(stash);
+    const changes = store(31_000);
+    const siteChangeId = await seedFile(stash, "site/existing.txt", "site");
+    const created = await changes.changeSets.createChangeSet(stash, {
+      entries: [{ op: "put", path: "site/candidate.txt", baseVersion: null, body: "candidate" }],
+      expectedLastChangeId: siteChangeId,
+      expectedLastChangePrefix: "site/",
+    });
+
+    await seedFile(stash, "docs/unrelated.txt", "docs");
+
+    await expect(
+      changes.changeSets.approveChangeSet(stash, created.value.id, {}),
+    ).resolves.toMatchObject({ status: "applied" });
+  });
+
+  it("atomically refuses a prefix-scoped set when its prefix changes before the claim", async () => {
+    const stash = "approve-prefix-race";
+    await seedStash(stash);
+    const base = store(31_000);
+    const siteChangeId = await seedFile(stash, "site/existing.txt", "site");
+    const created = await base.changeSets.createChangeSet(stash, {
+      entries: [{ op: "put", path: "site/candidate.txt", baseVersion: null, body: "candidate" }],
+      expectedLastChangeId: siteChangeId,
+      expectedLastChangePrefix: "site/",
+    });
+    const changes = createChangeSets(workerEnv, {
+      ...dependencies(32_000),
+      onBeforeCommit: async () => {
+        const winner = await base.writes.put(stash, "site/competitor.txt", {
+          body: "competitor",
+          expectedVersion: null,
+        });
+        if (!winner.ok) throw new Error("prefix race winner failed");
+      },
+    });
+
+    await expect(changes.approveChangeSet(stash, created.value.id, {})).rejects.toMatchObject({
+      code: "commit-conflict",
+    });
+    await expect(base.changeSets.getChangeSet(stash, created.value.id)).resolves.toMatchObject({
+      status: "open",
+    });
+    await expect(counts(stash)).resolves.toEqual({ commits: 2, versions: 2, files: 2 });
+  });
+
+  it("keeps whole-stash future cursors strict while prefix future cursors pass at approval", async () => {
+    const wholeStash = "approve-future-whole";
+    await seedStash(wholeStash);
+    const wholeStore = store(31_000);
+    const whole = await wholeStore.changeSets.createChangeSet(wholeStash, {
+      entries: [{ op: "put", path: "candidate.txt", baseVersion: null, body: "candidate" }],
+    });
+    await env.DB.prepare(
+      "UPDATE change_sets SET expected_last_change_id = 100 WHERE stash_name = ? AND id = ?",
+    )
+      .bind(wholeStash, whole.value.id)
+      .run();
+    await expect(
+      wholeStore.changeSets.approveChangeSet(wholeStash, whole.value.id, {}),
+    ).rejects.toMatchObject({ code: "commit-conflict" });
+
+    const prefixStash = "approve-future-prefix";
+    await seedStash(prefixStash);
+    const prefixStore = store(31_000);
+    const prefix = await prefixStore.changeSets.createChangeSet(prefixStash, {
+      entries: [{ op: "put", path: "site/candidate.txt", baseVersion: null, body: "candidate" }],
+      expectedLastChangeId: 100,
+      expectedLastChangePrefix: "site/",
+    });
+    await expect(
+      prefixStore.changeSets.approveChangeSet(prefixStash, prefix.value.id, {}),
+    ).resolves.toMatchObject({ status: "applied" });
   });
 
   it("fences two approvers so the loser returns the winner's stored result", async () => {
