@@ -27,6 +27,7 @@ import {
   SELECT_FILES,
   SELECT_HISTORY_HEAD,
   SELECT_HISTORY_VERSIONS,
+  SELECT_SNAPSHOT_COMMIT_AT_CHANGE,
   SELECT_SNAPSHOT_COMMON_PREFIXES,
   SELECT_SNAPSHOT_COMMIT,
   SELECT_SNAPSHOT_FILES,
@@ -182,6 +183,7 @@ export interface StashReads {
     commitId: string,
     options?: ListFilesOptions,
   ): Promise<ReadSnapshot | null>;
+  resolveCommitAtChange(stash: string, changeId: number): Promise<string | null>;
   listHistory(
     stash: string,
     path: string,
@@ -608,6 +610,16 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
         commonPrefixes: page.commonPrefixes,
         nextAfter: page.nextAfter,
       };
+    },
+
+    async resolveCommitAtChange(stash, changeId) {
+      const stashName = validateString(stash, "stash");
+      const session = env.DB.withSession("first-primary");
+      const commit = await session
+        .prepare(SELECT_SNAPSHOT_COMMIT_AT_CHANGE)
+        .bind(stashName, changeId)
+        .first<{ commit_id: string }>();
+      return commit?.commit_id ?? null;
     },
 
     async getSnapshot(stash, commitId, options = {}) {
