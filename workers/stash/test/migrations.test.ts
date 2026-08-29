@@ -24,12 +24,21 @@ const appendOnlyMutationPatterns = [
   ["DELETE FROM versions", /\bDELETE\s+FROM\s+versions\b/i],
   ["DELETE FROM files", /\bDELETE\s+FROM\s+files\b/i],
   ["DELETE FROM blobs", /\bDELETE\s+FROM\s+blobs\b/i],
+  ["DELETE FROM byte_blobs", /\bDELETE\s+FROM\s+byte_blobs\b/i],
 ] as const;
 
-function assertAppendOnlyHygiene(sources: readonly string[]): void {
-  const source = sources.join("\n");
+const CONTENT_SWEEP_MODULE = "../src/d1/sql/gc.ts";
+const CONTENT_SWEEP_EXEMPT = new Set(["DELETE FROM blobs", "DELETE FROM byte_blobs"]);
+
+function assertAppendOnlyHygiene(sources: readonly (readonly [string, string])[]): void {
   const violations = appendOnlyMutationPatterns
-    .filter(([, pattern]) => pattern.test(source))
+    .filter(([name, pattern]) =>
+      sources.some(
+        ([path, source]) =>
+          pattern.test(source) &&
+          !(path.endsWith(CONTENT_SWEEP_MODULE) && CONTENT_SWEEP_EXEMPT.has(name)),
+      ),
+    )
     .map(([name]) => name);
   if (violations.length > 0) {
     throw new Error(`Append-only mutation guard failed: ${violations.join(", ")}`);
@@ -85,6 +94,7 @@ describe("D1 migrations", () => {
       name: string;
     }>();
     expect(versionIndexes.results.map(({ name }) => name)).toContain("versions_stash_commit");
+    expect(versionIndexes.results.map(({ name }) => name)).toContain("versions_stash_blob");
     const versionColumns = await env.DB.prepare("PRAGMA table_info(versions)").all<{
       name: string;
       notnull: number;
@@ -105,6 +115,7 @@ describe("D1 migrations", () => {
       name: string;
     }>();
     expect(entryIndexes.results.map(({ name }) => name)).toContain("change_set_entries_stash_path");
+    expect(entryIndexes.results.map(({ name }) => name)).toContain("change_set_entries_stash_blob");
 
     await expect(env.DB.prepare("SELECT 1 FROM proposals").first()).rejects.toThrow();
 
@@ -112,6 +123,14 @@ describe("D1 migrations", () => {
       "SELECT kind, next_cursor, lease_owner, lease_generation, lease_until, updated_at FROM gc_jobs ORDER BY kind",
     ).all();
     expect(jobs.results).toEqual([
+      {
+        kind: "content",
+        next_cursor: null,
+        lease_owner: null,
+        lease_generation: 0,
+        lease_until: null,
+        updated_at: 0,
+      },
       {
         kind: "ledger",
         next_cursor: null,
@@ -195,18 +214,50 @@ describe("D1 migrations", () => {
   });
 
   it("keeps append-only versions out of update and delete statements", () => {
-    assertAppendOnlyHygiene([...Object.values(migrationSources), ...Object.values(sourceModules)]);
+    assertAppendOnlyHygiene([
+      ...Object.entries(migrationSources),
+      ...Object.entries(sourceModules),
+    ]);
   });
 
   it("rejects forbidden append-only mutations while allowing cleanup tables", () => {
-    expect(() => assertAppendOnlyHygiene(["UPDATE versions SET message = 'rewritten'"])).toThrow(
-      "UPDATE versions",
-    );
-    expect(() => assertAppendOnlyHygiene(["DELETE FROM versions"])).toThrow("DELETE FROM versions");
-    expect(() => assertAppendOnlyHygiene(["DELETE FROM files"])).toThrow("DELETE FROM files");
-    expect(() => assertAppendOnlyHygiene(["DELETE FROM blobs"])).toThrow("DELETE FROM blobs");
     expect(() =>
-      assertAppendOnlyHygiene(["DELETE FROM idempotency", "DELETE FROM gc_runs"]),
+      assertAppendOnlyHygiene([["../src/x.ts", "UPDATE versions SET message = 'rewritten'"]]),
+    ).toThrow("UPDATE versions");
+    expect(() => assertAppendOnlyHygiene([["../src/x.ts", "DELETE FROM versions"]])).toThrow(
+      "DELETE FROM versions",
+    );
+    expect(() => assertAppendOnlyHygiene([["../src/x.ts", "DELETE FROM files"]])).toThrow(
+      "DELETE FROM files",
+    );
+    expect(() => assertAppendOnlyHygiene([["../src/x.ts", "DELETE FROM blobs"]])).toThrow(
+      "DELETE FROM blobs",
+    );
+    expect(() => assertAppendOnlyHygiene([["../src/x.ts", "DELETE FROM byte_blobs"]])).toThrow(
+      "DELETE FROM byte_blobs",
+    );
+    expect(() =>
+      assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM blobs"]]),
+    ).not.toThrow();
+    expect(() =>
+      assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM byte_blobs"]]),
+    ).not.toThrow();
+    expect(() => assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM versions"]])).toThrow(
+      "DELETE FROM versions",
+    );
+    expect(() => assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM files"]])).toThrow(
+      "DELETE FROM files",
+    );
+    expect(() =>
+      assertAppendOnlyHygiene([
+        [CONTENT_SWEEP_MODULE, "UPDATE versions SET message = 'rewritten'"],
+      ]),
+    ).toThrow("UPDATE versions");
+    expect(() =>
+      assertAppendOnlyHygiene([
+        ["../src/x.ts", "DELETE FROM idempotency"],
+        ["../src/x.ts", "DELETE FROM gc_runs"],
+      ]),
     ).not.toThrow();
   });
 
@@ -372,7 +423,7 @@ describe("D1 migrations", () => {
     });
   });
 
-  it("resets GC runs while retaining both seeded job rows", async () => {
+  it("resets GC runs while retaining all three seeded job rows", async () => {
     await env.DB.prepare(
       `UPDATE gc_jobs
          SET next_cursor = 'cursor', lease_owner = 'owner', lease_generation = 7,
@@ -391,6 +442,14 @@ describe("D1 migrations", () => {
       "SELECT kind, next_cursor, lease_owner, lease_generation, lease_until, updated_at FROM gc_jobs ORDER BY kind",
     ).all();
     expect(jobs.results).toEqual([
+      {
+        kind: "content",
+        next_cursor: null,
+        lease_owner: null,
+        lease_generation: 0,
+        lease_until: null,
+        updated_at: 0,
+      },
       {
         kind: "ledger",
         next_cursor: null,
