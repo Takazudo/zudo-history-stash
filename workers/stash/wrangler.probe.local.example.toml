@@ -1,0 +1,10 @@
+# Copy this file to wrangler.probe.local.toml (gitignored) and paste a DISPOSABLE D1 id.
+# Never point it at production.
+name = "zudo-history-stash-commit-batch-probe"
+main = "src/index.ts"
+compatibility_date = "2026-08-25"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "zudo-history-stash-commit-batch-probe"
+database_id = "REPLACE_ME"
