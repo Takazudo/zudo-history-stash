@@ -46,6 +46,8 @@ import {
   ifNoneMatchMatches,
   isStashClientId,
   isWellFormedString,
+  parseSnapshotSelector,
+  pathPrefixRange,
   requestHashInput,
   sha256Hex,
   statusForCode,
@@ -3249,17 +3251,17 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const parsed = CommitDiffQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid commit diff query.");
     const commit = requireCommit(stash, id);
-    const sourceEntries =
-      parsed.data.path === undefined
-        ? commit.entries
-        : commit.entries.filter((entry) => entry.path === parsed.data.path);
-    const truncated =
-      parsed.data.path === undefined && sourceEntries.length > COMMIT_DIFF_INLINE_ENTRIES;
-    const entries = sourceEntries.slice(0, COMMIT_DIFF_INLINE_ENTRIES).map((entry) => {
-      const to = getVersion(stash, entry.path, entry.version);
-      if (to === undefined) return fail("internal", "Stored commit content is unavailable.");
-      const previous =
-        entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
+    const prefixResult = pathPrefixRange(parsed.data.prefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const matchesPrefix = (path: string): boolean =>
+      prefixRange === null || (path >= prefixRange.lo && path < prefixRange.hi);
+    const diffEntry = (
+      path: string,
+      op: CommitEntryRecord["op"],
+      to: FakeVersionRow,
+      previous: FakeVersionRow | undefined,
+    ): CommitDiffResult["entries"][number] => {
       const from =
         previous === undefined ? null : { version: previous.version, hash: previous.hash };
       let diff: CommitDiffResult["entries"][number]["diff"];
@@ -3277,21 +3279,79 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         diff = computeDiff({
           fromText: previous === undefined || previous.kind === "delete" ? "" : bodyFor(previous),
           toText: to.kind === "delete" ? "" : bodyFor(to),
-          fromLabel: `a/${entry.path}@v${String(previous?.version ?? 0)}`,
-          toLabel: `b/${entry.path}@v${String(to.version)}`,
+          fromLabel: `a/${path}@v${String(previous?.version ?? 0)}`,
+          toLabel: `b/${path}@v${String(to.version)}`,
           context: parsed.data.context,
           maxBytes: capabilities.limits.diffMaxBytesPerSide,
         });
         if (diff.state === "binary") return fail("internal", "Unexpected binary commit diff.");
       }
       return {
-        path: entry.path,
-        op: entry.op,
+        path,
+        op,
         from,
         to: { version: to.version, hash: to.hash },
         diff,
       };
-    });
+    };
+
+    if (parsed.data.from === undefined) {
+      const sourceEntries = commit.entries
+        .filter((entry) => parsed.data.path === undefined || entry.path === parsed.data.path)
+        .filter((entry) => matchesPrefix(entry.path));
+      const truncated =
+        parsed.data.path === undefined && sourceEntries.length > COMMIT_DIFF_INLINE_ENTRIES;
+      const entries = sourceEntries.slice(0, COMMIT_DIFF_INLINE_ENTRIES).map((entry) => {
+        const to = getVersion(stash, entry.path, entry.version);
+        if (to === undefined) return fail("internal", "Stored commit content is unavailable.");
+        const previous =
+          entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
+        return diffEntry(entry.path, entry.op, to, previous);
+      });
+      return json({ entries, truncated });
+    }
+
+    const fromCommit = requireCommit(stash, parsed.data.from.slice("commit:".length));
+    const fromChangeId = fromCommit.lastChangeId;
+    const toChangeId = commit.lastChangeId;
+    if (fromChangeId > toChangeId) {
+      return fail("validation", "from must not be newer than the target commit.");
+    }
+    if (fromChangeId === toChangeId) return json({ entries: [], truncated: false });
+
+    const toByPath = new Map<string, FakeVersionRow>();
+    for (const version of state.versions) {
+      if (
+        version.stash !== stash ||
+        version.changeId <= fromChangeId ||
+        version.changeId > toChangeId ||
+        !matchesPrefix(version.path) ||
+        (parsed.data.path !== undefined && version.path !== parsed.data.path)
+      ) {
+        continue;
+      }
+      const current = toByPath.get(version.path);
+      if (current === undefined || current.changeId < version.changeId) {
+        toByPath.set(version.path, version);
+      }
+    }
+
+    const fromByPath = new Map<string, FakeVersionRow>();
+    for (const version of state.versions) {
+      if (version.stash !== stash || version.changeId > fromChangeId) continue;
+      const current = fromByPath.get(version.path);
+      if (current === undefined || current.changeId < version.changeId) {
+        fromByPath.set(version.path, version);
+      }
+    }
+    const sourceVersions = [...toByPath.values()].sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    );
+    const truncated =
+      parsed.data.path === undefined && sourceVersions.length > COMMIT_DIFF_INLINE_ENTRIES;
+    const entries = sourceVersions
+      .slice(0, COMMIT_DIFF_INLINE_ENTRIES)
+      .map((to) => diffEntry(to.path, operationFor(to), to, fromByPath.get(to.path)));
     return json({ entries, truncated });
   };
 
@@ -3972,18 +4032,22 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const handleSnapshot = (stash: string, url: URL): Response => {
     const parsed = SnapshotQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid snapshot query.");
-    const commitId = parsed.data.at.slice("commit:".length);
-    const commit = requireCommit(stash, commitId);
-    const normalizedPrefix =
-      parsed.data.prefix === undefined
-        ? undefined
-        : parsed.data.prefix.endsWith("/")
-          ? parsed.data.prefix.slice(0, -1)
-          : parsed.data.prefix;
-    if (normalizedPrefix !== undefined) {
-      const validation = validatePath(normalizedPrefix);
-      if (!validation.ok) return fail(validation.error, validation.message);
-    }
+    const selector = parseSnapshotSelector(parsed.data.at);
+    if (selector === null) return fail("validation", "Invalid snapshot query.");
+    const commit =
+      selector.kind === "commit"
+        ? requireCommit(stash, selector.commitId)
+        : ([...state.commits.values()]
+            .filter(
+              (candidate) =>
+                candidate.stash === stash && candidate.lastChangeId <= selector.changeId,
+            )
+            .sort((left, right) => right.lastChangeId - left.lastChangeId)[0] ??
+          requireCommit(stash, ""));
+    const prefixResult = pathPrefixRange(parsed.data.prefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const normalizedPrefix = prefixRange === null ? undefined : prefixRange.lo.slice(0, -1);
     if (parsed.data.delimiter !== undefined && parsed.data.delimiter !== "/")
       return fail("validation", "delimiter must be '/'.");
     const candidatePaths = [
@@ -4003,8 +4067,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       .filter((version) => parsed.data.includeDeleted || version.kind !== "delete")
       .filter(
         (version) =>
-          normalizedPrefix === undefined ||
-          (version.path >= `${normalizedPrefix}/` && version.path < `${normalizedPrefix}0`),
+          prefixRange === null || (version.path >= prefixRange.lo && version.path < prefixRange.hi),
       );
     const values = candidatePaths.map((version) => {
       const relative =

@@ -182,6 +182,122 @@ describe("fake universal commit attribution", () => {
   });
 });
 
+describe("fake snapshot cursors and commit diff ranges", () => {
+  it("floors change snapshots to the resolved commit and keeps commit selectors working", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+
+    const first = await request(fake, "/v1/stashes/demo/files/docs/first.txt", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "first", expectedVersion: null }),
+    });
+    expect(first.status).toBe(201);
+    const firstBody = (await first.json()) as { commitId: string; changeId: number };
+    const batch = await request(fake, "/v1/stashes/demo/commits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entries: [
+          { op: "put", path: "docs/second.txt", expectedVersion: null, body: "second" },
+          { op: "put", path: "docs/third.txt", expectedVersion: null, body: "third" },
+        ],
+      }),
+    });
+    expect(batch.status).toBe(201);
+    const batchBody = (await batch.json()) as { id: string };
+    const firstCommit = fake.state.commits.get(firstBody.commitId);
+    const batchCommit = fake.state.commits.get(batchBody.id);
+    if (firstCommit === undefined || batchCommit === undefined) {
+      throw new Error("missing snapshot commit fixture");
+    }
+    expect(batchCommit.firstChangeId).toBeGreaterThan(firstCommit.lastChangeId);
+
+    const floored = await request(
+      fake,
+      `/v1/stashes/demo/snapshot?at=change:${batchCommit.firstChangeId}`,
+    );
+    expect(floored.status).toBe(200);
+    await expect(floored.json()).resolves.toMatchObject({
+      at: { commitId: firstCommit.id, changeId: firstCommit.lastChangeId },
+      files: [{ path: "docs/first.txt" }],
+    });
+
+    const noCommit = await request(fake, "/v1/stashes/demo/snapshot?at=change:0");
+    expect(noCommit.status).toBe(404);
+    expect(await errorCode(noCommit)).toBe("not-found");
+
+    const byCommit = await request(fake, `/v1/stashes/demo/snapshot?at=commit:${firstCommit.id}`);
+    expect(byCommit.status).toBe(200);
+    await expect(byCommit.json()).resolves.toMatchObject({
+      at: { commitId: firstCommit.id, changeId: firstCommit.lastChangeId },
+    });
+  });
+
+  it("collapses range versions, applies prefix filters, and validates range cursors", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+
+    const put = async (path: string, body: string, expectedVersion: number | null) => {
+      const response = await request(fake, `/v1/stashes/demo/files/${path}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body, expectedVersion }),
+      });
+      expect(response.status).toBe(201);
+      return (await response.json()) as { commitId: string; version: number };
+    };
+
+    const base = await put("docs/readme.txt", "before", null);
+    await put("docs/readme.txt", "middle", 1);
+    await put("other.txt", "unrelated", null);
+    const target = await put("docs/readme.txt", "after", 2);
+
+    const range = await request(
+      fake,
+      `/v1/stashes/demo/commits/${target.commitId}/diff?from=commit:${base.commitId}&prefix=docs`,
+    );
+    expect(range.status).toBe(200);
+    await expect(range.json()).resolves.toMatchObject({
+      truncated: false,
+      entries: [
+        {
+          path: "docs/readme.txt",
+          op: "put",
+          from: { version: 1 },
+          to: { version: 3 },
+        },
+      ],
+    });
+
+    const equal = await request(
+      fake,
+      `/v1/stashes/demo/commits/${target.commitId}/diff?from=commit:${target.commitId}`,
+    );
+    expect(equal.status).toBe(200);
+    await expect(equal.json()).resolves.toEqual({ entries: [], truncated: false });
+
+    const missing = await request(
+      fake,
+      `/v1/stashes/demo/commits/${target.commitId}/diff?from=commit:missing`,
+    );
+    expect(missing.status).toBe(404);
+    expect(await errorCode(missing)).toBe("not-found");
+
+    const newer = await request(
+      fake,
+      `/v1/stashes/demo/commits/${base.commitId}/diff?from=commit:${target.commitId}`,
+    );
+    expect(newer.status).toBe(400);
+    await expect(newer.json()).resolves.toEqual({
+      error: {
+        code: "validation",
+        message: "from must not be newer than the target commit.",
+      },
+    });
+  });
+});
+
 describe("fake live events", () => {
   it("authenticates the route and emits replay followed by its authoritative ready checkpoint", async () => {
     const now = Date.parse("2026-08-28T01:02:03.000Z");
