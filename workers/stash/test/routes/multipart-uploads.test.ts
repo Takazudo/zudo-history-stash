@@ -247,6 +247,46 @@ describe("multipart raw upload lifecycle", () => {
     expect(multipartStats.aborts).toBe(1);
   });
 
+  it("reclaims an expired part-write lease before aborting the session", async () => {
+    let now = 1_900_000_000_000;
+    const application = createApp({
+      now: () => now,
+      uploadLeaseMs: 10,
+      binarySettingOverrides: policy,
+    });
+    const session = await createMultipart(new Uint8Array([1, 2, 3]), {}, application);
+    await env.DB.prepare(
+      `INSERT INTO upload_part_writes
+         (session_id, generation, part_number, owner, started_at)
+       VALUES (?, 0, 1, 'lost-writer', ?)`,
+    )
+      .bind(session.id, now)
+      .run();
+    const abort = () =>
+      request(
+        application,
+        `${BASE}/${session.id}`,
+        {
+          method: "DELETE",
+          headers: headers("abort-stale-part-writer"),
+          body: JSON.stringify({ generation: 0 }),
+        },
+        bindings(),
+      );
+
+    expect((await abort()).status).toBe(409);
+    now += 11;
+    expect((await abort()).status).toBe(200);
+    await expect(
+      env.DB.prepare("SELECT state FROM upload_sessions WHERE id = ?").bind(session.id).first(),
+    ).resolves.toEqual({ state: "aborted" });
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM upload_part_writes WHERE session_id = ?")
+        .bind(session.id)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
   it("keeps failed abort cleanup durable so an idempotent retry can finish it", async () => {
     multipartStats.abortFailuresRemaining = 1;
     const application = createApp({ binarySettingOverrides: policy });

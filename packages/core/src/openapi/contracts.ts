@@ -890,13 +890,11 @@ export const ROUTE_CONTRACTS = {
       "Streams one raw part and records only the server-returned R2 ETag for the current generation.",
     principalNote: "write; the session-bound administrator or matching stash principal.",
     query: UploadPartQuery,
-    requestHeaders: ["Content-Length", "Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    requestHeaders: ["Content-Length", STASH_CLIENT_ID_HEADER],
     rawBody: true,
     requestMediaType: "application/octet-stream",
     responses: {
-      202: response("Updated upload status.", "GetUploadSessionResult", "GetUploadSessionResult", [
-        "Idempotent-Replayed",
-      ]),
+      202: response("Updated upload status.", "GetUploadSessionResult", "GetUploadSessionResult"),
     },
     errors: [
       error("validation"),
@@ -907,7 +905,6 @@ export const ROUTE_CONTRACTS = {
       error("upload-session-expired"),
       error("upload-size-mismatch"),
       error("payload-too-large"),
-      error("idempotency-key-reused"),
       rateLimited(),
       error("internal"),
     ],

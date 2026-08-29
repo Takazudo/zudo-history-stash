@@ -16,7 +16,7 @@ treating all keys alike.
 | Kind | Binding or class | Purpose |
 | --- | --- | --- |
 | D1 | `DB` | Authoritative stashes, files, versions, tokens, changes, and proposals. |
-| private R2 | `BLOBS` | Spilled file bodies; object keys and generations are not public URLs. |
+| private R2 | `BLOBS` | Spilled immutable text or binary bytes; object keys and generations are not public URLs. |
 | Durable Object | `STASH_EVENTS` → `StashEvents` | Per-stash synchronous live-event fanout. |
 | rate limiter | `RL_READ` | Read-route classification. |
 | rate limiter | `RL_WRITE` | Mutation-route classification. |
@@ -36,15 +36,35 @@ The checked variables and their committed defaults are:
 | `GC_LEASE_TTL_MS` | `300000` milliseconds. |
 | `PROPOSAL_TTL_DAYS` | `14` days. |
 | `STASH_EVENTS_MAX_STREAM_MS` | `300000` milliseconds. |
+| `JSON_INLINE_MAX_BYTES` | `5000000` bytes; default text inline-access boundary, while the JSON/proposal/import schema remains `MAX_BODY_BYTES=5000000`. |
+| `D1_INLINE_MAX_BYTES` | `524288` bytes. |
+| `HTTP_REQUEST_MAX_BYTES` | `100000000` exact content bytes; an operator-declared raw-upload ceiling. |
+| `SINGLE_UPLOAD_MAX_BYTES` | `33554432` bytes (32 MiB). |
+| `MAX_FILE_BYTES` | `100000000` bytes; configurable up to `1073741824` (1 GiB). |
+| `DIFF_MAX_BYTES` | `524288` bytes per side. |
+| `MULTIPART_PART_BYTES` | `8388608` bytes (8 MiB). |
+| `MAX_OPEN_UPLOAD_SESSIONS` | `8` per stash. |
+| `MAX_RESERVED_UPLOAD_BYTES` | `500000000` per stash. |
+| `UPLOAD_SESSION_TTL_SECONDS` | `86400` seconds (one day). |
 
 Use the exact names and units accepted by `workers/stash/src/env.ts`; a renamed or unit-converted
 variable is not equivalent.
 
+Representation (`text`/`binary`), content access (`inline`/`raw`/`deleted`), transfer
+(`json`/`single`/`multipart`), storage (`d1`/`r2`), and diff eligibility are independent. Above
+5,000,000 bytes does not imply binary; valid UTF-8 remains text at any supported size. The D1
+inline setting is capped at 1,500,000, the file setting at 1 GiB, reserved capacity must be at
+least the file setting, and the rounded-up multipart count must be at most 10,000. 1 GiB is a
+correctness ceiling, not a performance certification; tests inject small values and never allocate
+that body size. See [storage tiers and limits](./storage-tiers-and-limits.mdx) for the full
+independent-axis contract.
+
 ## Apply two distinct migration tracks
 
 D1 schema migrations live under `workers/stash/migrations` and currently run in order from
-`0001_init.sql` through `0004_proposals.sql`. Apply them to the selected remote `DB` before the
-application deploy.
+`0001_init.sql` through `0007_multipart_runtime.sql`. Apply the complete sequence to the selected
+remote `DB` before the application deploy; an upgrade must apply the pending binary/upload runtime
+migrations rather than recreating or rewriting existing rows.
 
 The Wrangler `[[migrations]]` entry tagged `v1` is different: it registers the SQLite-backed
 `StashEvents` Durable Object class. Keep that migration and its matching binding in every deployed

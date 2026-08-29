@@ -168,6 +168,14 @@ describe("route contract coverage", () => {
       });
       expect("body" in ROUTE_CONTRACTS[routeId]).toBe(false);
     }
+    expect(ROUTE_CONTRACTS.uploadPart.requestHeaders).toEqual([
+      "Content-Length",
+      STASH_CLIENT_ID_HEADER,
+    ]);
+    expect(ROUTE_CONTRACTS.uploadPart.responses[202]?.headers).toBeUndefined();
+    expect(ROUTE_CONTRACTS.uploadPart.errors.map(({ code }) => code)).not.toContain(
+      "idempotency-key-reused",
+    );
   });
 
   it("declares proposal-create replay metadata and stale approval current metadata", () => {

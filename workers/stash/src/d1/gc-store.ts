@@ -241,7 +241,8 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
       ledgerCutoff: number,
       stagingCutoff: number,
       now: number,
-    ): Promise<number> {
+      cleanupLimit: number,
+    ): Promise<{ deleted: number; cleanup: MultipartCleanupRow[] }> {
       budget.charge();
       const session = env.DB.withSession("first-primary");
       const ledgerStatements =
@@ -280,31 +281,28 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
            )`,
           )
           .bind(stagingCutoff),
+        session
+          .prepare(
+            `SELECT id, attempt_generation, staged_r2_key, r2_upload_id, r2_completed_at
+             FROM upload_sessions
+             WHERE upload_mode = 'multipart' AND staged_r2_key IS NOT NULL
+               AND r2_upload_id IS NOT NULL
+               AND state IN ('aborted','expired','stale','failed')
+               AND NOT EXISTS (SELECT 1 FROM upload_part_writes
+                 WHERE session_id = upload_sessions.id
+                   AND generation = upload_sessions.attempt_generation)
+             ORDER BY updated_at, id LIMIT ?`,
+          )
+          .bind(Math.max(0, cleanupLimit)),
       ]);
-      return [...results.slice(0, ledgerStatements.length), ...results.slice(-2)].reduce(
-        (total, result) => total + changed(result),
-        0,
-      );
-    },
-
-    async multipartCleanupCandidates(limit: number): Promise<MultipartCleanupRow[]> {
-      if (limit < 1) return [];
-      budget.charge();
-      const rows = await env.DB.withSession("first-primary")
-        .prepare(
-          `SELECT id, attempt_generation, staged_r2_key, r2_upload_id, r2_completed_at
-           FROM upload_sessions
-           WHERE upload_mode = 'multipart' AND staged_r2_key IS NOT NULL
-             AND r2_upload_id IS NOT NULL
-             AND state IN ('aborted','expired','stale','failed')
-             AND NOT EXISTS (SELECT 1 FROM upload_part_writes
-               WHERE session_id = upload_sessions.id
-                 AND generation = upload_sessions.attempt_generation)
-           ORDER BY updated_at, id LIMIT ?`,
-        )
-        .bind(limit)
-        .all<MultipartCleanupRow>();
-      return rows.results;
+      const candidateResult = results.at(-1);
+      const cleanup = (candidateResult?.results ?? []) as MultipartCleanupRow[];
+      return {
+        deleted: results
+          .slice(0, ledgerStatements.length)
+          .reduce((total, result) => total + changed(result), 0),
+        cleanup,
+      };
     },
 
     async removeMultipartCleanupRows(rows: readonly MultipartCleanupRow[]): Promise<void> {

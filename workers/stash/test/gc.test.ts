@@ -354,6 +354,29 @@ async function ledgerKeys(): Promise<string[]> {
 }
 
 describe("ledger collection", () => {
+  it("does not count an expired-session state transition as a deleted row", async () => {
+    await env.DB.prepare(
+      `INSERT INTO upload_sessions
+        (id, stash_name, path, principal_kind, declared_size, representation, content_type,
+         upload_mode, storage_tier, state, expires_at, create_fingerprint, created_at, updated_at)
+       VALUES ('upl-expired', ?, 'expired.bin', 'admin', 1, 'binary', 'application/octet-stream',
+         'single', 'd1', 'open', 1, 'expired-create', 1, 1)`,
+    )
+      .bind(STASH)
+      .run();
+
+    const result = await createGcEngine(env, { now: () => 2 }).run(
+      input({ kind: "ledger", maxObjects: 10 }),
+    );
+
+    expect(result).toMatchObject({ scanned: 0, eligible: 0, deleted: 0, error: null });
+    await expect(
+      env.DB.prepare(
+        "SELECT state, reservation_released_at FROM upload_sessions WHERE id = 'upl-expired'",
+      ).first(),
+    ).resolves.toEqual({ state: "expired", reservation_released_at: 2 });
+  });
+
   it("protects active upload staging and reclaims terminal R2 and D1 staging after the safety age", async () => {
     const activeKey = "uploads/upl_active/0/object-a";
     const abortedKey = "uploads/upl_aborted/0/object-b";
@@ -400,7 +423,8 @@ describe("ledger collection", () => {
     await engine.run(input({ kind: "r2-orphans", maxObjects: 10 }));
     await expect(env.BLOBS.head(activeKey)).resolves.not.toBeNull();
     await expect(env.BLOBS.head(abortedKey)).resolves.toBeNull();
-    await engine.run(input({ kind: "ledger", maxObjects: 10 }));
+    const ledgerResult = await engine.run(input({ kind: "ledger", maxObjects: 10 }));
+    expect(ledgerResult).toMatchObject({ scanned: 0, eligible: 0, deleted: 0, error: null });
     await expect(
       env.DB.prepare("SELECT COUNT(*) AS count FROM upload_staged_bytes").first(),
     ).resolves.toEqual({ count: 0 });
@@ -434,9 +458,9 @@ describe("ledger collection", () => {
         error: null,
       });
       expect(await ledgerKeys()).toEqual([]);
-      expect(calls.d1BatchSizes).toEqual([deleteStatements + 3, 4]);
+      expect(calls.d1BatchSizes).toEqual([deleteStatements + 4, 4]);
       expect(calls.d1).toBe(budget.used);
-      expect(budget.used).toBe(7);
+      expect(budget.used).toBe(6);
     },
   );
 
@@ -545,8 +569,8 @@ describe("ledger collection", () => {
     expect(orphanRun).toMatchObject({ scanned: 24, eligible: 24, deleted: 24 });
     expect(ledgerRun).toMatchObject({ scanned: 500, eligible: 500, deleted: 500 });
     expect(calls).toEqual({
-      d1: 12,
-      d1BatchSizes: [4, 9, 4],
+      d1: 11,
+      d1BatchSizes: [4, 10, 4],
       list: 1,
       head: 24,
       delete: 1,

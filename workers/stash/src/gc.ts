@@ -258,22 +258,22 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
         ? encodeLedgerCursor(boundary.created_at, boundary.rowid)
         : null;
     await store.heartbeat(run, dependencies.now());
-    const deleted = run.dryRun
+    const cleanupLimit = run.dryRun
       ? 0
+      : Math.min(input.maxObjects, Math.floor(Math.max(0, dependencies.budget.remaining - 3) / 2));
+    const ledgerCleanup = run.dryRun
+      ? { deleted: 0, cleanup: [] }
       : await store.deleteLedgerAndCleanupUploadStaging(
           page,
           cutoff,
           dependencies.now() - orphanMinAgeMs,
           dependencies.now(),
+          cleanupLimit,
         );
+    const deleted = ledgerCleanup.deleted;
     if (!run.dryRun) {
-      const cleanupLimit = Math.min(
-        input.maxObjects,
-        Math.floor(Math.max(0, dependencies.budget.remaining - 3) / 2),
-      );
-      const cleanup = await store.multipartCleanupCandidates(cleanupLimit);
       const cleaned = [];
-      for (const row of cleanup) {
+      for (const row of ledgerCleanup.cleanup) {
         dependencies.budget.charge();
         const completed = await env.BLOBS.head(row.staged_r2_key);
         dependencies.budget.charge();

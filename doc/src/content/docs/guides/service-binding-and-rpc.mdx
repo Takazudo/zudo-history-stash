@@ -42,11 +42,20 @@ For the typed alternative, configure a service binding whose entrypoint is `Stas
 `StashHttpError` with `status === 0`; direct calls on the binding also need an outer rejection
 boundary.
 
-RPC raises neither the platform nor API limits. Cloudflare's outer serialized RPC call is capped at
-32 MiB, including envelope overhead, so an application payload of exactly 33,554,432 bytes is not
-guaranteed to reach dispatch. Independently, Stash caps the complete encoded `Request` body with
-`BODY_LIMIT_BYTES` at 33,554,432 bytes (32 MiB), while each stored text body is capped with
-`MAX_BODY_BYTES` at 5,000,000 UTF-8 bytes.
+RPC raises neither the platform nor API limits. Cloudflare's outer serialized RPC value payload is
+capped at 32 MiB, including envelope overhead, so an application value of exactly 33,554,432 bytes
+is not guaranteed to reach dispatch. A `Request` or `Response` sent through the flow-controlled
+`requestStream()` bridge is RPC-aware: its body stream is not serialized into that value payload.
+The SDK selects this bridge for raw, capabilities, and upload routes when the binding exposes it.
+That transport boundary is independent from Stash's content policy:
+the compatibility JSON/proposal/import path is text-only with a 5,000,000 UTF-8-byte body rule,
+while raw uploads preserve either text or binary and use the capability settings
+(`HTTP_REQUEST_MAX_BYTES=100000000`, `SINGLE_UPLOAD_MAX_BYTES=33554432`, and multipart above the
+single limit). Above 5,000,000 bytes does not imply binary; valid UTF-8 remains text. Representation,
+content access, transfer, storage tier, and diff eligibility are independent. Use the stream bridge
+or an HTTP service binding when a structured RPC value cannot fit the envelope; multipart selection
+still follows server capabilities rather than serving as an RPC-size workaround. Do not claim
+runtime Cloudflare-plan discovery.
 
 {/* zhs-example: consumer-rpc-binding */}
 

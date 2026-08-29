@@ -13,5 +13,13 @@ binding = "STASH_RPC"
 service = "zudo-history-stash"
 entrypoint = "StashRpc"
 
-[vars]
-STASH_TOKEN = ""
+[env.preview]
+
+[[env.preview.services]]
+binding = "STASH"
+service = "zudo-history-stash-preview"
+
+[[env.preview.services]]
+binding = "STASH_RPC"
+service = "zudo-history-stash-preview"
+entrypoint = "StashRpc"

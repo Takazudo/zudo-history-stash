@@ -5,19 +5,37 @@ sidebar_position: 70
 category: guides
 ---
 
-The public model is versioned, well-formed UTF-8 text. It is not direct R2 access, binary storage,
-or a general filesystem. One body may contain at most 5,000,000 UTF-8 bytes, inclusive; the complete
-encoded HTTP request may contain at most 32 MiB (33,554,432 bytes). Metadata is limited to 4,096
-UTF-8 bytes after JSON encoding, authors to 200 bytes, and messages to 2,000 bytes.
+The public model supports versioned, well-formed UTF-8 text and exact binary bytes. It is not direct
+R2 access or a general filesystem. The compatibility JSON API is text-only with a fixed
+`MAX_BODY_BYTES=5000000` UTF-8-byte schema limit; its default `JSON_INLINE_MAX_BYTES` setting has
+the same value and controls inline text access. Raw uploads can carry either representation, and a
+valid UTF-8 body above 5,000,000 bytes remains `text`; size does not infer representation.
 
-Bodies of 524,288 bytes or less stay inline in D1. Larger file and proposal bodies use private,
-content-addressed R2 objects, while D1 remains authoritative for heads, history, hashes, sizes, and
-object pointers. Reads verify an R2 object's raw byte length and SHA-256 hash before decoding it.
-Private object keys and generations do not appear in API responses or logs.
+The following decisions are independent:
 
-Stored diffs are available only when each side is at most 524,288 bytes. A larger side returns an
-`oversized` diff result instead of unified text. Link consumer interfaces to this public outcome,
-not to either storage tier.
+| Dimension | Values | Meaning |
+| --- | --- | --- |
+| Representation | `text`, `binary` | Whether bytes are decoded/validated as UTF-8 or preserved exactly. |
+| Content access | `inline`, `raw`, `deleted` | Whether a body is present in a response, streamed raw, or tombstoned. |
+| Transfer | `json`, `single`, `multipart` | How a write reaches the Worker. |
+| Storage | `d1`, `r2` | Physical placement; at most `D1_INLINE_MAX_BYTES=524288` may be D1-inline by default. |
+| Diff eligibility | eligible or `oversized` | Each side must be at most `DIFF_MAX_BYTES=524288`; this is separate from storage. |
+
+Larger bodies use private, content-addressed R2 objects while D1 remains authoritative for heads,
+history, hashes, sizes, and object pointers. Binary bytes can be D1-inline, and large valid UTF-8
+text can be R2-backed while remaining `text`. Reads verify an R2 object's raw byte length and
+SHA-256 hash before decoding it. Private object keys and generations do not appear in API responses
+or logs.
+
+Raw defaults are `HTTP_REQUEST_MAX_BYTES=100000000`, `SINGLE_UPLOAD_MAX_BYTES=33554432`,
+`MAX_FILE_BYTES=100000000`, `MULTIPART_PART_BYTES=8388608`, 8 open sessions, 500,000,000
+reserved bytes per stash, and a 86400-second session TTL. `MAX_FILE_BYTES` may be configured up to
+1,073,741,824 bytes (1 GiB) only with matching reservation capacity and no more than 10,000 parts;
+that is a correctness ceiling, not a performance certification. Production multipart parts are at
+least 5 MiB. See [exact limits](../reference/limits.mdx) for all invariants.
+
+Stored diffs return an `oversized` result instead of unified text when either side is above the
+diff bound. Link consumer interfaces to this public outcome, not to either storage tier.
 
 ## Names, paths, and pages
 

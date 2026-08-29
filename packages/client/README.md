@@ -91,6 +91,22 @@ or below `singleUploadMaxBytes` uses one raw request, and larger or explicitly r
 multipart. An explicit `mode` is checked against current capabilities. Binary is never base64
 encoded. Large valid UTF-8 stays `text` but uses raw content access.
 
+The published Worker defaults are `jsonInlineMaxBytes=5000000`, `d1InlineMaxBytes=524288`,
+`httpRequestMaxBytes=100000000`, `singleUploadMaxBytes=33554432`, `maxFileBytes=100000000`,
+`diffMaxBytesPerSide=524288`, `multipartPartBytes=8388608`,
+`maxOpenUploadSessionsPerStash=8`, `maxReservedUploadBytesPerStash=500000000`, and
+`uploadSessionTtlSeconds=86400`; `maxMultipartParts` is always 10,000. The server may override
+these values, so clients must use `capabilities()` and exact content-byte accounting. D1 inline is
+capped at 1,500,000 bytes and `maxFileBytes` at 1,073,741,824 bytes (1 GiB), with reservation
+capacity at least as large as the file ceiling and no more than 10,000 multipart parts. One GiB is
+a correctness ceiling, not a performance certification; tests inject small thresholds and do not
+allocate a 1 GiB source.
+
+These limits do not collapse the independent axes: representation (`text | binary`), content
+access (`inline | raw | deleted`), transfer (`json | single | multipart`), storage (`d1 | r2`),
+and diff eligibility are separate. A valid UTF-8 text source remains text above 5 MB, while a small
+binary source may be D1-inline.
+
 A `ReadableStream` is caller-owned and one-shot. Supply its exact `size`; cancellation is forwarded
 to Fetch/RPC where supported, and the client never automatically replays a consumed stream.
 Blob/buffer sources are replayable and may use `retries`; keep mutable ArrayBuffers/views unchanged

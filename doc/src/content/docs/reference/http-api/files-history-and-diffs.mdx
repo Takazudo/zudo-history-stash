@@ -29,6 +29,101 @@ The usual success is `201` with version/hash/change metadata. `skipIfUnchanged` 
 without history. An idempotent replay preserves the original status; a lost fence is `409 stale` or
 create-only `409 exists`.
 
+### `POST /v1/stashes/{stash}/uploads/{path}`
+
+**Contract:** operation `createUploadSession`; principal `write`; transport `fetch-only`.
+
+Creates a fenced raw upload session after validating the declared representation, size, hash, and
+expected head. The response selects `single` or resumable `multipart` transfer from the deployment
+capabilities and reserves the declared bytes in D1 before private R2 staging.
+
+### `GET /v1/stashes/{stash}/uploads/{sessionId}`
+
+**Contract:** operation `getUploadSession`; principal `write`; transport `fetch-only`.
+
+Returns the upload session state, lease information, declared content metadata, and accepted part
+records. It is the recovery/status route for a session and does not expose private R2 object keys.
+
+### `DELETE /v1/stashes/{stash}/uploads/{sessionId}`
+
+**Contract:** operation `abortUploadSession`; principal `write`; transport `fetch-only`.
+
+Aborts an open upload session, releases its D1 reservation, and schedules staged R2 parts for
+cleanup. The operation is generation- and lease-fenced and remains safe to replay with its
+idempotency key.
+
+### `PUT /v1/stashes/{stash}/uploads/{sessionId}/content`
+
+**Contract:** operation `uploadSingleContent`; principal `write`; transport `fetch-only`.
+
+Stores the exact bytes for a `single` session. The Worker validates the declared byte count and
+SHA-256 before the session can complete; text and binary are preserved as independent representation
+values, and a valid UTF-8 body above 5,000,000 bytes is still text.
+
+### `PUT /v1/stashes/{stash}/uploads/{sessionId}/parts/{partNumber}`
+
+**Contract:** operation `uploadPart`; principal `write`; transport `fetch-only`.
+
+Uploads one bounded multipart part to private R2. Its part number and actual byte length are checked
+against the session, and only the server-returned R2 ETag is recorded for the current generation. A
+retry or replacement of the same part reuploads its bytes and replaces that durable record; the
+server does not accept a client-supplied part hash or ETag manifest.
+
+### `POST /v1/stashes/{stash}/uploads/{sessionId}/complete`
+
+**Contract:** operation `completeUploadSession`; principal `write`; transport `fetch-only`.
+
+Completes a single or multipart session after rechecking all bytes and the full SHA-256. Under the
+generation/lease fence it appends one immutable version, records its storage placement, and releases
+the reservation. A completion replay with the same canonical request is idempotent.
+
+### `POST /v1/stashes/{stash}/uploads/{sessionId}/resume`
+
+**Contract:** operation `resumeUploadSession`; principal `write`; transport `fetch-only`.
+
+Renews an eligible session lease for recovery after a lost client or Worker invocation. It does not
+change the declared content, expected head, or already accepted parts, and expired or terminal
+sessions remain closed.
+
+Raw uploads preserve exact `text` or `binary` bytes and select `single` or resumable `multipart`
+transfer from `/v1/capabilities`. They use D1 reservation and private R2 staging, then complete
+under a generation/lease fence before appending the version. Above 5,000,000 bytes does not imply
+binary; valid UTF-8 remains text. Completion is replayable by idempotency key, while a part retry
+reuploads/replaces that part number. Abort, expiry, lease recovery, and GC are part of the session
+lifecycle. See the [storage limits guide](../../guides/storage-tiers-and-limits.mdx)
+for the independent representation, access, transfer, storage, and diff contracts.
+
+### `GET /v1/stashes/{stash}/raw/{path}`
+
+**Contract:** operation `getRawFile`; principal `read`; transport `fetch-only`.
+
+Streams the current bytes with `ETag`, `Content-Length`, `Content-Type`, `Accept-Ranges`, and
+attachment-safe `Content-Disposition`. One satisfiable byte range, `If-Range`, and `If-None-Match`
+are supported without exposing private R2 keys. A deleted current head is a metadata outcome rather
+than an empty byte stream.
+
+### `HEAD /v1/stashes/{stash}/raw/{path}`
+
+**Contract:** operation `headRawFile`; principal `read`; transport `fetch-only`.
+
+Returns the same raw representation headers as the current-file `GET` without a response body,
+including length, media type, ETag, version, and range capability. It never reveals a private R2 key.
+
+### `GET /v1/stashes/{stash}/versions/{version}/raw/{path}`
+
+**Contract:** operation `getRawVersion`; principal `read`; transport `fetch-only`.
+
+Streams exact bytes for a selected live historical version with the same range, conditional, and
+attachment-safe headers as the current raw route. A deleted historical version remains a metadata
+outcome rather than an empty byte stream.
+
+### `HEAD /v1/stashes/{stash}/versions/{version}/raw/{path}`
+
+**Contract:** operation `headRawVersion`; principal `read`; transport `fetch-only`.
+
+Returns headers for a selected historical raw version without transferring its body, allowing a
+client to inspect size, ETag, media type, and range support before downloading.
+
 ### `POST /v1/stashes/{stash}/delete/{path}`
 
 **Contract:** operation `deleteFile`; principal `write`; transport `any`.

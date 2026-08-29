@@ -269,6 +269,16 @@ describe("committed Wrangler config drift", () => {
       GC_LEASE_TTL_MS: "300000",
       PROPOSAL_TTL_DAYS: "14",
       STASH_EVENTS_MAX_STREAM_MS: "300000",
+      JSON_INLINE_MAX_BYTES: "5000000",
+      D1_INLINE_MAX_BYTES: "524288",
+      HTTP_REQUEST_MAX_BYTES: "100000000",
+      SINGLE_UPLOAD_MAX_BYTES: "33554432",
+      MAX_FILE_BYTES: "100000000",
+      DIFF_MAX_BYTES: "524288",
+      MULTIPART_PART_BYTES: "8388608",
+      MAX_OPEN_UPLOAD_SESSIONS: "8",
+      MAX_RESERVED_UPLOAD_BYTES: "500000000",
+      UPLOAD_SESSION_TTL_SECONDS: "86400",
     });
     assert.deepEqual(stash.secrets, { required: ["STASH_ADMIN_TOKEN"] });
     assert.deepEqual(stash.durable_objects, {

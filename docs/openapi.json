@@ -9775,16 +9775,6 @@
             }
           },
           {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "maxLength": 200,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          {
             "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
             "in": "header",
             "name": "X-Stash-Client-Id",
@@ -9843,15 +9833,7 @@
                 }
               }
             },
-            "description": "Updated upload status.",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "Whether the server replayed an idempotent response.",
-                "schema": {
-                  "type": "boolean"
-                }
-              }
-            }
+            "description": "Updated upload status."
           },
           "400": {
             "content": {
@@ -9931,7 +9913,7 @@
                 }
               }
             },
-            "description": "Errors: `upload-size-mismatch`, `idempotency-key-reused`."
+            "description": "Errors: `upload-size-mismatch`."
           },
           "429": {
             "content": {

@@ -12,7 +12,7 @@ category: reference
 
 | Constant | Exact decimal | Display | Meaning |
 | --- | ---: | ---: | --- |
-| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | 保存する UTF-8 テキスト本文の最大値。 |
+| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | 互換性 JSON/proposal/import の UTF-8 テキスト本文上限。 |
 | `MAX_PATH_BYTES` | `512` | 512 bytes | 正規化された UTF-8 ファイルパスの最大値。 |
 | `MAX_META_BYTES` | `4096` | 4 KiB | encode 済み metadata payload の最大値。 |
 | `MAX_AUTHOR_BYTES` | `200` | 200 bytes | UTF-8 author 値の最大値。 |
@@ -20,16 +20,57 @@ category: reference
 | `LIST_LIMIT_DEFAULT` | `50` | 50 items | limit が指定されていない場合のデフォルト page size。 |
 | `LIST_LIMIT_MAX` | `200` | 200 items | 一般的な list page size の最大値。 |
 | `DIFF_MAX_BYTES` | `524288` | 512 KiB per side | diff の各 side に対する入力サイズの最大値。 |
-| `R2_SPILL_BYTES` | `524288` | 512 KiB | この境界以下の本文は inline に留まり、それより大きい本文は R2 へ退避します。 |
+| `R2_SPILL_BYTES` | `524288` | 512 KiB | 過去の Core spill marker。Worker の配置は D1 inline 設定で決まります。 |
 | `DIFF_TIMEOUT_MS` | `2000` | 2 seconds | diff 計算の時間予算。 |
 | `DIFF_MAX_EDIT_LENGTH` | `50000` | 50,000 units | diff engine が考慮する edit span の最大値。 |
 | `DIFF_MAX_INTRALINE_LENGTH` | `800` | 800 units | intraline 処理における一行の長さの最大値。 |
 | `DIFF_MAX_INTRALINE_CHARS` | `200000` | 200,000 characters | intraline 処理全体の上限。 |
 | `IDEMPOTENCY_KEY_MAX_CHARS` | `200` | 200 characters | 冪等性キーの長さの最大値。 |
 | `IDEMPOTENCY_TTL_DAYS` | `7` | 7 days | 冪等性台帳の保持期間。 |
-| `BODY_LIMIT_BYTES` | `33554432` | 32 MiB | 保存テキストとは別の、encode 済み HTTP request body の上限。 |
+| `BODY_LIMIT_BYTES` | `33554432` | 32 MiB | 旧 JSON parser の request-body 上限。raw upload は下記 Worker 設定を使います。 |
+| `D1_INLINE_MAX_BYTES` | `524288` | 512 KiB | D1 に content を inline 配置する Worker のデフォルト閾値。 |
+| `D1_INLINE_MAX_BYTES_CEILING` | `1500000` | 1,500,000 bytes | D1 inline に設定できる安全な最大閾値。 |
+| `HTTP_REQUEST_MAX_BYTES` | `100000000` | 100,000,000 bytes | raw request/content の運用上限。 |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | 5,000,000 bytes | JSON text access の Worker inline 閾値。proposal/import の parser は変更しません。 |
+| `MAX_FILE_BYTES` | `100000000` | 100,000,000 bytes | raw upload の宣言ファイルサイズのデフォルト最大値。 |
+| `MAX_FILE_BYTES_CEILING` | `1073741824` | 1 GiB | 設定可能なファイルサイズの正しさの上限。性能認証ではありません。 |
+| `MAX_MULTIPART_PARTS` | `10000` | 10,000 parts | multipart part 数の最大値。 |
 | `MAX_IMPORT_VERSIONS` | `20` | 20 versions | 一つの import request に含められる entry の最大数。 |
+| `MAX_OPEN_UPLOAD_SESSIONS` | `8` | 8 sessions | stash ごとの open upload session のデフォルト数。 |
+| `MAX_RESERVED_UPLOAD_BYTES` | `500000000` | 500,000,000 bytes | stash ごとの予約 upload byte 合計のデフォルト値。 |
+| `MULTIPART_PART_BYTES` | `8388608` | 8 MiB | multipart part size のデフォルト値。 |
+| `MULTIPART_PRODUCTION_MIN_PART_BYTES` | `5242880` | 5 MiB | production 設定での multipart part size の最小値。 |
+| `SINGLE_UPLOAD_MAX_BYTES` | `33554432` | 32 MiB | raw single upload content のデフォルト上限。 |
+| `UPLOAD_SESSION_TTL_SECONDS` | `86400` | 86,400 seconds | upload session のデフォルト有効期間。 |
 
 ストレージの閾値と diff 入力上限は現在同じ数値ですが、別々の契約です。同様に、byte 上限は encode 済み
 byte 数を測る一方、冪等性キーの上限は character 数を数えます。呼び出し側は偶然一致する数値ではなく、
 名前で示された境界を適用する必要があります。
+
+## Worker binary settings
+
+デプロイされた Worker は `GET /v1/capabilities` で次の設定を公開します。以下は production と preview の
+デフォルトです。異なる正の safe integer を注入する場合も、すべての不変条件を満たす必要があります。
+数値は JSON や protocol framing ではなく、正確な content byte 数を数えます。
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | JSON 互換 read で text content を inline 返却できる上限。proposal/import の schema は text 専用です。 |
+| `D1_INLINE_MAX_BYTES` | `524288` | D1-inline 配置のデフォルト上限。 |
+| `HTTP_REQUEST_MAX_BYTES` | `100000000` | raw request/content の運用上限。Cloudflare plan の runtime discovery ではありません。 |
+| `SINGLE_UPLOAD_MAX_BYTES` | `33554432` | raw single upload の content 上限（32 MiB）。 |
+| `MAX_FILE_BYTES` | `100000000` | single または multipart upload の宣言ファイルサイズ上限。 |
+| `DIFF_MAX_BYTES` | `524288` | text diff の各 side の最大 byte 数。 |
+| `MULTIPART_PART_BYTES` | `8388608` | multipart part のサイズ（8 MiB）。 |
+| `MAX_OPEN_UPLOAD_SESSIONS` | `8` | stash ごとの open session 数。 |
+| `MAX_RESERVED_UPLOAD_BYTES` | `500000000` | stash ごとの予約 upload byte 合計。 |
+| `UPLOAD_SESSION_TTL_SECONDS` | `86400` | upload session の有効期間（1 日）。 |
+
+これらは互いに独立しています。representation（`text`/`binary`）、content access
+（`inline`/`raw`/`deleted`）、transfer（`json`/`single`/`multipart`）、storage（`d1`/`r2`）、diff
+eligibility は別々の契約です。5,000,000 byte を超えても `binary` とは限らず、正しい UTF-8 は対応サイズ内で
+`text` のままです。D1 inline は `1,500,000`、`MAX_FILE_BYTES` は `1,073,741,824`（1 GiB）が上限であり、
+`MAX_FILE_BYTES / MULTIPART_PART_BYTES` の切り上げは 10,000 part 以下でなければなりません。
+`MAX_RESERVED_UPLOAD_BYTES` は `MAX_FILE_BYTES` 以上、本番 multipart part は 5 MiB 以上、
+`UPLOAD_SESSION_TTL_SECONDS` は 31,536,000 以下です。1 GiB は設定可能な正しさの上限であり、性能認証では
+ありません。テストは小さな閾値を注入し、1 GiB の本文を確保しません。

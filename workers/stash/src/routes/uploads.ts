@@ -1009,11 +1009,17 @@ uploads.delete("/v1/stashes/:stash/uploads/:sessionId", async (c) => {
     await cleanupMultipart(c, row);
     return replayed;
   }
+  const abortNow = c.get("deps").now();
+  await store.releaseStalePartClaims(
+    row.id,
+    parsed.data.generation,
+    abortNow - c.get("deps").uploadLeaseMs,
+  );
   const won = await store.abort({
     sessionId: row.id,
     generation: parsed.data.generation,
     fingerprint: abortFingerprint,
-    now: c.get("deps").now(),
+    now: abortNow,
   });
   if (!won) {
     row = requireOwned(await store.get(row.id), c);

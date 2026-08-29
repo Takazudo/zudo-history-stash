@@ -1,6 +1,6 @@
 # zudo-history-stash
 
-`zudo-history-stash` is a small, git-shaped versioned text store on Cloudflare Workers with rollback, diff, idempotent writes, and a standalone viewer. Its first consumer is a Slack-bot project that keeps an AI-updated, skill-like text layer: this service replaces the GitHub PR diff/approval/revert loop with an HTTP history and rollback API while leaving approval in the consumer.
+`zudo-history-stash` is a small, git-shaped versioned text and binary store on Cloudflare Workers with rollback, diff, idempotent writes, and a standalone viewer. Its first consumer is a Slack-bot project that keeps an AI-updated, skill-like text layer: this service replaces the GitHub PR diff/approval/revert loop with an HTTP history and rollback API while leaving approval in the consumer.
 
 ## Architecture
 
@@ -9,8 +9,8 @@ consumers (Node.js, browser, Worker service binding)
                          │
                          ▼
                  stash Worker (/v1)
-                   ├──► D1 (metadata, heads, history, and inline text)
-                   └──► private R2 (large text bodies)
+                   ├──► D1 (metadata, heads, history, and inline bytes)
+                   └──► private R2 (larger immutable bytes)
 
 viewer Worker ── service binding ──► stash Worker
 ```
@@ -22,6 +22,19 @@ viewer Worker ── service binding ──► stash Worker
 | `@takazudo/zudo-history-stash-ui` (`packages/ui`)     | Router-independent React workflows, hooks, and components                    |
 | `zudo-history-stash` (`workers/stash`)                | Hono `/v1` API with D1 metadata/history and private R2 spill storage         |
 | `zudo-history-stash-viewer` (`workers/viewer`)        | React/Tailwind standalone viewer and service-binding proxy                   |
+
+Representation, access, transfer, and placement are independent decisions. A valid UTF-8 body
+remains `text` at every supported size; being above 5,000,000 bytes does not make it `binary`.
+Conversely, binary bytes can be small enough for D1. `contentAccess` (`inline`, `raw`, or
+`deleted`) describes how a version can be read, while `transferMode` (`json`, `single`, or
+`multipart`) describes how an upload moves, and `storageTier` (`d1` or `r2`) describes placement.
+Diff eligibility is a separate 524,288-byte-per-side contract. See the [binary API contract](docs/api.md#limits-and-storage-tiers)
+and [exact limits](docs/api.md#routes) before choosing a mode. Published defaults are
+`JSON_INLINE_MAX_BYTES=5000000`, `D1_INLINE_MAX_BYTES=524288`, `HTTP_REQUEST_MAX_BYTES=100000000`,
+`SINGLE_UPLOAD_MAX_BYTES=33554432`, `MAX_FILE_BYTES=100000000`, `DIFF_MAX_BYTES=524288`,
+`MULTIPART_PART_BYTES=8388608`, eight open sessions, 500000000 reserved bytes per stash, and a
+86400-second session TTL. `MAX_FILE_BYTES` may be raised to 1 GiB only with matching reservation
+capacity and at most 10,000 parts; 1 GiB is a correctness ceiling, not a performance certification.
 
 ## Consumer guide
 
@@ -51,6 +64,27 @@ const rollback = await files.rollback("docs/guide.md", {
   expectedVersion: put.value.version,
 });
 if (!rollback.ok) throw new Error(rollback.error.message);
+```
+
+Raw uploads keep bytes unchanged and choose a transport from the server capabilities. This example
+is binary even though it is smaller than the D1 threshold; a large UTF-8 `Blob` can instead be
+uploaded with `representation: "text"`:
+
+```ts
+const png = await client.files("demo").upload("assets/logo.png", pngBlob, {
+  expectedVersion: null,
+  representation: "binary",
+  contentType: "image/png",
+  mode: "auto",
+});
+if (!png.ok) throw new Error(png.error.message);
+
+const firstBytes = await client.files("demo").raw.get("assets/logo.png", {
+  range: "bytes=0-1023",
+});
+if (firstBytes.ok && "value" in firstBytes) {
+  console.log(await firstBytes.value.bytes(1024));
+}
 ```
 
 For a same-account Worker, prefer the named `StashRpc` entrypoint and the same client API:

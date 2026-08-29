@@ -72,13 +72,18 @@ export interface UploadSessionCreateOptions extends CreateUploadSessionInput {
   signal?: AbortSignal;
 }
 
-export interface UploadPartOptions {
+interface UploadChunkOptions {
   generation: number;
   size: number;
-  idempotencyKey?: string;
   signal?: AbortSignal;
   onProgress?: (progress: UploadProgress) => void;
 }
+
+export interface UploadSingleOptions extends UploadChunkOptions {
+  idempotencyKey?: string;
+}
+
+export type UploadPartOptions = UploadChunkOptions;
 
 export interface StashUploadSessionsClient {
   create(
@@ -89,7 +94,7 @@ export interface StashUploadSessionsClient {
   uploadSingle(
     sessionId: string,
     source: ByteSource,
-    options: UploadPartOptions,
+    options: UploadSingleOptions,
   ): Promise<ClientResult<UploadSessionRecord>>;
   uploadPart(
     sessionId: string,
@@ -412,13 +417,14 @@ export function createUploadSessionsClient(
     routeId: RouteId,
     path: string,
     source: ByteSource,
-    options: UploadPartOptions,
+    options: UploadChunkOptions & { idempotencyKey?: string },
     query?: Record<string, string>,
+    idempotent = false,
   ): Promise<ClientResult<T>> => {
     const normalized = normalizeSource(source, options.size);
     if (normalized.size !== options.size)
       throw new TypeError("Upload part size does not match its declaration");
-    const key = await context.mintKey(options.idempotencyKey);
+    const key = idempotent ? await context.mintKey(options.idempotencyKey) : undefined;
     try {
       const response = await context.send(
         "PUT",
@@ -427,7 +433,7 @@ export function createUploadSessionsClient(
         headers(context, {
           "Content-Type": "application/octet-stream",
           "Content-Length": String(options.size),
-          "Idempotency-Key": key,
+          ...(key === undefined ? {} : { "Idempotency-Key": key }),
         }),
         observedStream(normalized.stream(), options.size, options.onProgress),
         options.signal,
@@ -471,6 +477,8 @@ export function createUploadSessionsClient(
         `${sessionPath(stash, sessionId)}/content`,
         source,
         options,
+        undefined,
+        true,
       );
     },
     uploadPart(sessionId, partNumber, source, options) {
@@ -681,7 +689,6 @@ export async function upload(
             const value = await sessions.uploadPart(session.id, partNumber, partSource, {
               generation,
               size: end - start,
-              idempotencyKey: subkey(key, `p${generation}-${partNumber}`),
               signal: options.signal,
               onProgress:
                 options.onProgress === undefined
