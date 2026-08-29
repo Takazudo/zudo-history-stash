@@ -48,6 +48,26 @@ Viewer URLs are navigation state, not proof of access.
 | `/s/:stash/new` | Create a file. |
 | `/s/:stash/tokens` | Admin-only token management. |
 
+## Binary uploads and raw downloads
+
+The new-file route includes a capability-driven raw upload form as well as the text editor. It
+keeps representation (`text` or `binary`), content access (`inline`, `raw`, or `deleted`), transfer
+(`json`, `single`, or `multipart`), storage (`d1` or `r2`), and diff eligibility independent. A body
+above 5,000,000 bytes is not automatically binary: valid UTF-8 remains `text` when uploaded through
+the raw API. The form uses one request through the server's single-upload limit and resumable
+multipart above it; stale compare-and-set heads are reported as conflicts.
+
+The file page previews bounded UTF-8 text and only allowlisted PNG/JPEG/WebP/GIF raster images.
+Other binary content and oversized text are download-only, and active content is never embedded.
+Historical raw links preserve the selected version; deleted versions expose metadata without being
+silently rendered as empty files.
+
+For large authenticated downloads, browsers with File System Access stream the response directly to
+the operator-selected file. Unsupported browsers deliberately refuse raw downloads above **32 MiB
+(33,554,432 bytes)** instead of buffering them into a Blob. If a download is cancelled or fails,
+retry from the file page or use a bounded range/trusted external client; never put a bearer token in
+the URL. Verify the displayed version, size, hash, and ETag when recovering or comparing a download.
+
 ## Edit with the loaded head as a fence
 
 A save uses the head loaded with the draft as its compare-and-set fence. If another writer moves

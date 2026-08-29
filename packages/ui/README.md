@@ -46,6 +46,15 @@ The package consumes these public token groups:
 `--palette-*` values are private implementation inputs; package component CSS never consumes them
 directly. The linked contract is the authoritative exact list.
 
+`BinaryUploadForm` reads server capabilities and selects JSON, single-request, or resumable
+multipart transfer without guessing from a filename or a 5 MB threshold. Representation and
+placement remain independent: valid UTF-8 larger than 5,000,000 bytes can stay `text`, and a small
+binary file can be D1-inline. `FileContent` previews only bounded text and allowlisted PNG/JPEG/
+WebP/GIF raster content; active content is never embedded. For a large authenticated raw download,
+the File System Access path streams directly to the selected file. Browsers without that API
+deliberately refuse downloads above 32 MiB instead of buffering them in a Blob. Hosts should offer
+the file page's retry/range flow or a trusted external client for recovery.
+
 ## Provider contract
 
 Mount one `StashUiProvider` above package hooks and components:

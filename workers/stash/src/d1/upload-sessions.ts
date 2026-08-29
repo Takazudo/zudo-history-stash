@@ -223,6 +223,21 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
       .run();
   }
 
+  async releaseStalePartClaims(
+    sessionId: string,
+    generation: number,
+    staleBefore: number,
+  ): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `DELETE FROM upload_part_writes WHERE session_id = ? AND generation = ?
+           AND started_at <= ?`,
+      )
+      .bind(sessionId, generation, staleBefore)
+      .run();
+    return result.meta.changes;
+  }
+
   async recordClaimedPart(input: {
     sessionId: string;
     generation: number;

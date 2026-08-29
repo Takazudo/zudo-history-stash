@@ -29,6 +29,92 @@ head または正の履歴 `version` を読み取ります。読み取りに成�
 履歴を追加せずに `200` を返すことがあります。冪等な replay は元の status を保持します。フェンスで負けると
 `409 stale`、作成専用の場合は `409 exists` です。
 
+### `POST /v1/stashes/{stash}/uploads/{path}`
+
+**Contract:** operation `createUploadSession`; principal `write`; transport `fetch-only`.
+
+宣言した representation、size、hash、expected head を検証した後、fence 付き raw upload session を作成します。
+response はデプロイの capabilities から `single` または再開可能な `multipart` transfer を選び、D1 で bytes を予約してから
+非公開 R2 に staging します。
+
+### `GET /v1/stashes/{stash}/uploads/{sessionId}`
+
+**Contract:** operation `getUploadSession`; principal `write`; transport `fetch-only`.
+
+upload session の state、lease、宣言された content metadata、受理済み part の記録を返します。session の
+recovery/status route であり、非公開 R2 object key は公開しません。
+
+### `DELETE /v1/stashes/{stash}/uploads/{sessionId}`
+
+**Contract:** operation `abortUploadSession`; principal `write`; transport `fetch-only`.
+
+open な upload session を abort し、D1 の予約を解放し、staging 済みの R2 part を cleanup 対象にします。操作は
+generation/lease で fence され、冪等性キーで安全に replay できます。
+
+### `PUT /v1/stashes/{stash}/uploads/{sessionId}/content`
+
+**Contract:** operation `uploadSingleContent`; principal `write`; transport `fetch-only`.
+
+`single` session の正確な bytes を保存します。Worker は session の complete 前に宣言された byte 数と SHA-256 を
+検証します。text と binary は別の representation として保持され、正しい UTF-8 は 5,000,000 byte を超えても text のままです。
+
+### `PUT /v1/stashes/{stash}/uploads/{sessionId}/parts/{partNumber}`
+
+**Contract:** operation `uploadPart`; principal `write`; transport `fetch-only`.
+
+非公開 R2 に bounded multipart part を一つ upload します。part number と実際の byte length を session と照合し、
+current generation には server が返した R2 ETag だけを記録します。同じ part の retry または replacement は bytes を
+再 upload して durable record を置き換えます。client が指定する part hash や ETag manifest は受け付けません。
+
+### `POST /v1/stashes/{stash}/uploads/{sessionId}/complete`
+
+**Contract:** operation `completeUploadSession`; principal `write`; transport `fetch-only`.
+
+single または multipart session を complete する前に全 bytes と SHA-256 を再検証します。generation/lease fence の下で
+一つの immutable version を追加し、storage placement を記録して予約を解放します。同じ canonical request の complete replay は冪等です。
+
+### `POST /v1/stashes/{stash}/uploads/{sessionId}/resume`
+
+**Contract:** operation `resumeUploadSession`; principal `write`; transport `fetch-only`.
+
+client または Worker の invocation 断後の recovery のため、利用可能な session の lease を更新します。宣言 content、
+expected head、受理済み part は変更せず、expired または terminal session は閉じたままです。
+
+raw upload は `text` または `binary` の bytes を変更せずに保持し、`single` または再開可能な `multipart`
+transfer を選びます。選択肢は `/v1/capabilities` で確認できます。D1 で予約して非公開 R2 に staging し、generation/lease の
+fence の下で complete してから version を追加します。5,000,000 byte を超えても binary とは限らず、正しい
+UTF-8 は text のままです。complete は冪等性キーで replay でき、part の retry はその part number を再 upload/replacement
+します。abort、expiry、lease recovery、GC も session lifecycle に含まれます。representation、access、transfer、storage、diff の独立した契約は
+[ストレージ上限ガイド](../../guides/storage-tiers-and-limits.mdx)を参照してください。
+
+### `GET /v1/stashes/{stash}/raw/{path}`
+
+**Contract:** operation `getRawFile`; principal `read`; transport `fetch-only`.
+
+現在の正確な bytes を `ETag`、`Content-Length`、`Content-Type`、`Accept-Ranges`、attachment-safe な
+`Content-Disposition` とともに stream します。一つの satisfiable byte range、`If-Range`、`If-None-Match` に対応し、
+非公開 R2 key は公開しません。削除済みの current head は空の byte stream ではなく metadata の結果として扱います。
+
+### `HEAD /v1/stashes/{stash}/raw/{path}`
+
+**Contract:** operation `headRawFile`; principal `read`; transport `fetch-only`.
+
+current-file の `GET` と同じ raw representation headers を body なしで返します。length、media type、ETag、version、
+range capability を確認でき、非公開 R2 key は公開しません。
+
+### `GET /v1/stashes/{stash}/versions/{version}/raw/{path}`
+
+**Contract:** operation `getRawVersion`; principal `read`; transport `fetch-only`.
+
+指定した live historical version の正確な bytes を、current raw route と同じ range、conditional、attachment-safe headers と
+ともに stream します。削除済みの履歴 version は空の byte stream ではなく metadata の結果として扱います。
+
+### `HEAD /v1/stashes/{stash}/versions/{version}/raw/{path}`
+
+**Contract:** operation `headRawVersion`; principal `read`; transport `fetch-only`.
+
+指定した historical raw version の headers を body なしで返します。download 前に size、ETag、media type、range support を確認できます。
+
 ### `POST /v1/stashes/{stash}/delete/{path}`
 
 **Contract:** operation `deleteFile`; principal `write`; transport `any`.

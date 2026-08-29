@@ -7,7 +7,7 @@ category: reference
 
 Consumers call Stash through HTTP/fetch or a Cloudflare RPC binding, normally through the
 [Client package](./client-package.mdx). The Viewer uses the same API through its proxy or binding.
-D1 owns metadata and mutable heads; large immutable text can spill into a private R2 bucket.
+D1 owns metadata and mutable heads; large immutable bytes can spill into a private R2 bucket.
 
 ## Data relationships
 
@@ -15,12 +15,17 @@ D1 owns metadata and mutable heads; large immutable text can spill into a privat
 | --- | --- |
 | `stashes` | Lifecycle and descriptive metadata for one namespace. |
 | `tokens` | Credential hashes, scope, expiry, revocation, and rotation metadata; never recoverable secrets. |
-| `blobs` | Content-addressed text metadata and the inline-or-R2 storage reference. |
+| `blobs` | Content-addressed text/binary metadata and the inline-or-R2 storage reference. |
 | `files` | The mutable head for each stash/path pair. |
 | `versions` | Append-only history; its database-global ID is also the change cursor. |
 | `idempotency` | Request-identity ledger for safe write replay. |
 | `gc_jobs`, `gc_runs` | Generation-fenced garbage-collection leases, progress, and results. |
 | `proposals` | Immutable candidates with fenced decision state. |
+
+Representation (`text`/`binary`), content access (`inline`/`raw`/`deleted`), transfer
+(`json`/`single`/`multipart`), storage (`d1`/`r2`), and diff eligibility are separate contracts.
+Above 5,000,000 bytes does not imply binary; valid UTF-8 remains text at any supported size. D1
+inline, raw streaming, and the 524,288-byte-per-side diff bound are independent choices.
 
 ## Write protocol
 

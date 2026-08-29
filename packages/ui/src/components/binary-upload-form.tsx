@@ -497,10 +497,6 @@ export function BinaryUploadForm({
       const uploaded = await uploads.uploadPart(record.id, partNumber, file.slice(start, end), {
         generation: record.attemptGeneration,
         size: end - start,
-        idempotencyKey: operationKey(
-          idempotencyKey,
-          `part-${record.attemptGeneration}-${partNumber}`,
-        ),
         signal,
         onProgress: (partProgress) =>
           progressFor({

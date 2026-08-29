@@ -71,9 +71,9 @@ async function expectDiagnostic(options, pattern) {
 
 test("production English reference matches fresh Core and OpenAPI contracts", async () => {
   assert.deepEqual(await checkContract({ repositoryRoot: REPOSITORY_ROOT }), {
-    routes: 31,
-    errors: 21,
-    limits: 17,
+    routes: 43,
+    errors: 27,
+    limits: 30,
     locales: ["en"],
   });
 });
@@ -115,21 +115,21 @@ test("bilingual guide facts reject search, idempotency, and RPC boundary drift",
       await checkContract(value.options);
       await mutate(value.guide("service-binding-and-rpc.mdx"), (source) => {
         if (locale === "en") {
-          const bodyLimit = /`BODY_LIMIT_BYTES` at\s+33,554,432 bytes/u;
-          const maxBody = /`MAX_BODY_BYTES` at\s+5,000,000 UTF-8 bytes/u;
+          const bodyLimit = /application value of exactly\s+33,554,432 bytes/u;
+          const maxBody = /5,000,000 UTF-8-byte body rule/u;
           assert.match(source, bodyLimit);
           assert.match(source, maxBody);
           return source
-            .replace(bodyLimit, "`BODY_LIMIT_BYTES` at 5,000,000 bytes")
-            .replace(maxBody, "`MAX_BODY_BYTES` at 33,554,432 UTF-8 bytes");
+            .replace(bodyLimit, "application payload of exactly 5,000,000 bytes")
+            .replace(maxBody, "33,554,432 UTF-8-byte body rule");
         }
-        const bodyLimit = /`BODY_LIMIT_BYTES` により\s+33,554,432 バイト/u;
-        const maxBody = /`MAX_BODY_BYTES` により\s+5,000,000 UTF-8 バイト/u;
+        const bodyLimit = /ちょうど\s+33,554,432 バイト/u;
+        const maxBody = /5,000,000 UTF-8 byte の本文ルール/u;
         assert.match(source, bodyLimit);
         assert.match(source, maxBody);
         return source
-          .replace(bodyLimit, "`BODY_LIMIT_BYTES` により 5,000,000 バイト")
-          .replace(maxBody, "`MAX_BODY_BYTES` により 33,554,432 UTF-8 バイト");
+          .replace(bodyLimit, "ちょうど 5,000,000 バイト")
+          .replace(maxBody, "33,554,432 UTF-8 byte の本文ルール");
       });
       await expectDiagnostic(
         value.options,
@@ -539,9 +539,9 @@ test("non-finite public numeric exports fail closed", async (t) => {
 test("the locale-neutral parser accepts a synthetic Japanese reference root", async (t) => {
   const value = await fixture(t, "ja");
   assert.deepEqual(await checkContract(value.options), {
-    routes: 31,
-    errors: 21,
-    limits: 17,
+    routes: 43,
+    errors: 27,
+    limits: 30,
     locales: ["ja"],
   });
 });

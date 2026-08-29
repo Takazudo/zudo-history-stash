@@ -84,7 +84,9 @@ export async function importOrderedHistory(input: {
 }
 ```
 
-各テキスト本文には、それぞれ 5,000,000 UTF-8 バイトの上限があります。エンコード済み HTTP
-リクエスト全体も 32 MiB に収まる必要があるため、大きな本文を含む名目上 20 エントリのバッチでも
-上限を超える可能性があります。stale フェンスは競合として扱い、新しく検証した head からのみ
-処理を再開してください。
+Import は互換性のための JSON/text 専用経路です。各テキスト本文には、それぞれ 5,000,000 UTF-8 byte
+の上限があり、エンコード済み HTTP request 全体も 32 MiB に収める必要があります。そのため大きな
+本文を含む名目上 20 entry の batch でも上限を超える可能性があります。この上限は raw upload の
+representation を決めるものではありません。正しい UTF-8 は 5,000,000 byte を超えても raw single または
+multipart API で送れば `text` のままですが、binary は import で意図的に拒否されます。stale フェンスは
+競合として扱い、新しく検証した head からのみ処理を再開してください。

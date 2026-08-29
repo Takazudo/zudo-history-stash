@@ -227,6 +227,76 @@ These two databases belong only to the committed default and `env.preview` envir
 Pull-request workflows create and discover their own exact `zudo-history-stash-pr-N` database; do
 not precreate it or reuse the static-preview database for a PR.
 
+## Binary and large-object policy
+
+The stash Worker keeps the following application settings in both the root `[vars]` table and
+`[env.preview.vars]` in `workers/stash/wrangler.toml`. They are exact content-byte policies; they do
+not claim to discover or override the Cloudflare plan at runtime.
+
+| Variable | Default | Contract |
+| --- | ---: | --- |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | Maximum text size returned inline by JSON-compatible reads; the current proposal/import body schema is the fixed `MAX_BODY_BYTES=5000000` contract. |
+| `D1_INLINE_MAX_BYTES` | `524288` | Bodies at or below this size may be stored inline in D1. |
+| `HTTP_REQUEST_MAX_BYTES` | `100000000` | Operator-declared request/content ceiling for raw upload handling. |
+| `SINGLE_UPLOAD_MAX_BYTES` | `33554432` | Maximum exact content bytes in one raw upload request (32 MiB). |
+| `MAX_FILE_BYTES` | `100000000` | Maximum declared file size for single or multipart upload. |
+| `DIFF_MAX_BYTES` | `524288` | Maximum bytes per side for a text diff. |
+| `MULTIPART_PART_BYTES` | `8388608` | Exact part size for multipart uploads (8 MiB default). |
+| `MAX_OPEN_UPLOAD_SESSIONS` | `8` | Maximum open upload sessions per stash. |
+| `MAX_RESERVED_UPLOAD_BYTES` | `500000000` | Maximum aggregate reserved bytes per stash. |
+| `UPLOAD_SESSION_TTL_SECONDS` | `86400` | Upload-session lifetime (one day) before expiry/cleanup. |
+
+The dimensions are deliberately independent: representation (`text` or `binary`), content access
+(`inline`, `raw`, or `deleted`), transfer (`json`, `single`, or `multipart`), physical storage
+(`d1` or `r2`), and diff eligibility are separate decisions. Above 5,000,000 bytes does not imply
+`binary`; valid UTF-8 remains `text` at any supported size. A binary object can be D1-inline, and a
+large UTF-8 text object can be R2-backed. Use `GET /v1/capabilities` instead of duplicating
+deployment values in a client.
+
+Deployments must satisfy all of these invariants:
+
+- `D1_INLINE_MAX_BYTES <= 1500000` and `MAX_FILE_BYTES <= 1073741824` (1 GiB).
+- `JSON_INLINE_MAX_BYTES <= MAX_FILE_BYTES` and `<= HTTP_REQUEST_MAX_BYTES`.
+- `D1_INLINE_MAX_BYTES <= MAX_FILE_BYTES`.
+- `SINGLE_UPLOAD_MAX_BYTES <= HTTP_REQUEST_MAX_BYTES` and `<= MAX_FILE_BYTES`.
+- `MULTIPART_PART_BYTES <= HTTP_REQUEST_MAX_BYTES`; production values are at least 5 MiB.
+- `MAX_OPEN_UPLOAD_SESSIONS <= 10000` and `MAX_RESERVED_UPLOAD_BYTES >= MAX_FILE_BYTES`.
+- `ceil(MAX_FILE_BYTES / MULTIPART_PART_BYTES) <= 10000` and
+  `UPLOAD_SESSION_TTL_SECONDS <= 31536000` (365 days).
+
+The 1 GiB value is a configurable correctness ceiling for validation and accounting, not a
+performance certification. Normal tests inject small limits and never allocate a 1 GiB buffer.
+The application request ceiling also does not promise that every structured service-binding/RPC
+value can cross Cloudflare's outer serialized-call limit. The flow-controlled `requestStream()`
+bridge keeps `Request`/`Response` body bytes out of that structured value payload, but callers must
+still account for the selected route, application settings, and Cloudflare transport boundaries.
+
+Cloudflare D1 currently limits a string, `BLOB`, or table row value to 2,000,000 bytes. The
+application's 1,500,000-byte D1-inline ceiling leaves room for row metadata and is not a promise to
+use the whole platform limit. D1 reads and writes go through the `DB` Worker binding; the Worker
+uses streaming bodies and a Workers-native incremental SHA-256 implementation where possible
+rather than buffering an entire large object. See the current [D1 limits](https://developers.cloudflare.com/d1/platform/limits/),
+[D1 Worker Binding API](https://developers.cloudflare.com/d1/worker-api/),
+[Workers Streams](https://developers.cloudflare.com/workers/runtime-apis/streams/), and
+[Workers Web Crypto/DigestStream](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/).
+
+These rules follow the repository's local [R2 storage guidance](https://github.com/Takazudo/zudo-cloudflare-wisdom/blob/main/src/content/docs/storage/r2.mdx)
+(private immutable objects, blob-first/row-last ordering, and orphan grace) and
+[idempotency-ledger guidance](https://github.com/Takazudo/zudo-cloudflare-wisdom/blob/main/src/content/docs/recipes/idempotency-ledger.mdx)
+(claim, canonical fingerprint, fencing, and replay). The local checkout contains the same articles
+under `src/content/docs/storage/r2.mdx` and `src/content/docs/recipes/idempotency-ledger.mdx`; keep
+those portable paths available when reviewing deployment changes. The authoritative platform
+boundaries remain
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
+[Workers streams](https://developers.cloudflare.com/workers/runtime-apis/streams/),
+[Workers Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/),
+[Workers RPC](https://developers.cloudflare.com/workers/runtime-apis/rpc/), and
+[D1 limits](https://developers.cloudflare.com/d1/platform/limits/),
+[D1 Worker API](https://developers.cloudflare.com/d1/worker-api/),
+[R2 limits](https://developers.cloudflare.com/r2/platform/limits/),
+[R2 multipart upload API](https://developers.cloudflare.com/r2/objects/upload-objects/), and the
+[Workers R2 API reference](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/).
+
 ## Live-event Durable Object
 
 `StashEvents` is a SQLite-backed Durable Object class. Keep both of these entries in the default
@@ -336,6 +406,27 @@ Worker accesses objects only through its R2 binding.
 Pull-request workflows create a separate private `zudo-history-stash-blobs-pr-N` bucket and empty
 it before teardown. Do not precreate a PR bucket or point it at
 `zudo-history-stash-blobs-preview`.
+
+### Multipart lifecycle, recovery, and cost
+
+An upload session reserves its declared exact size in D1 before staging bytes. Single uploads write
+one private generation-scoped R2 object; multipart uploads create a private R2 multipart upload,
+record each accepted part and its ETag in D1, then complete the R2 upload and commit the version
+under a generation/lease fence. A retry with the same canonical fingerprint replays the recorded
+result. Abort, expiry, failed completion, and GC remove staging rows and abort or delete the
+corresponding R2 upload/object only when no active part writer owns that generation.
+
+The application TTL is one day and scheduled/admin GC is the primary cleanup path. Cloudflare R2
+also provides a seven-day incomplete-multipart-upload fallback; it is a safety net for abandoned
+R2 multipart state, not the application's correctness or accounting mechanism. Keep explicit abort
+and generation-aware GC enabled even when that platform fallback is available. Consult the current
+[R2 upload API](https://developers.cloudflare.com/r2/objects/upload-objects/),
+[Workers R2 API reference](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
+and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) for mutable platform limits,
+Class A/B operation charges, storage, and incomplete-upload billing. This repository does not make
+a fixed cost, free-plan, or instant-cleanup promise. The opt-in command in
+[TESTING.md](../TESTING.md#opt-in-real-r2-and-named-rpc-multipart-smoke) is the reproducible proof for an already
+configured deployment; it is not part of ordinary `pnpm b4push` and does not discover credentials.
 
 Spilled blob rows created before the R2 generation rollout continue to read their exact legacy
 keys (`<stash>/sha256-<64 lowercase hex>`). New uploads write only generation-scoped keys

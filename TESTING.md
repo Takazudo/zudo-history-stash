@@ -210,6 +210,74 @@ connection errors may skip until `SMOKE_REQUIRE_LIVE=1`; HTTP, TLS-expiry, and c
 failures remain failures. Once either request receives an HTTP response, later connection errors
 in that run cannot be reclassified as provisioning skips.
 
+### Opt-in real-R2 and named-RPC multipart smoke
+
+`pnpm --filter zudo-history-stash smoke:multipart` is an explicit L5 check against an already
+configured stash Worker plus the bearer-gated example RPC consumer. First copy
+`workers/example-rpc-consumer/.dev.vars.example` to the ignored `.dev.vars.preview`, fill its three
+values, and start the consumer in remote development while the deployed preview stash Worker and
+disposable stash already exist:
+
+```bash
+pnpm build:libs
+pnpm --filter zudo-history-stash-example-rpc-consumer exec wrangler dev --remote --env preview --port 8791
+```
+
+In a second shell, run the combined check with all five values already present in that shell's
+environment:
+
+```bash
+MULTIPART_SMOKE_BASE_URL=https://stash.example.com \
+MULTIPART_SMOKE_TOKEN="$STASH_WRITE_TOKEN" \
+MULTIPART_SMOKE_STASH=smoke-stash \
+MULTIPART_SMOKE_RPC_URL=http://127.0.0.1:8791 \
+MULTIPART_SMOKE_RPC_TOKEN="$RPC_SMOKE_TRIGGER_TOKEN" \
+pnpm --filter zudo-history-stash smoke:multipart
+```
+
+`MULTIPART_SMOKE_BASE_URL` must point to a deployed or locally running stash Worker with its real
+D1 and private R2 `BLOBS` binding and the migrations already applied. The token must be an
+administrator or matching write credential, and the named stash must already exist. The RPC
+consumer's preview binding targets `zudo-history-stash-preview` and its internal `STASH_TOKEN` must
+have write access to the same disposable stash. `RPC_SMOKE_TRIGGER_TOKEN` protects the local
+remote-dev trigger; it is never forwarded to Stash. The probe instruments `StashRpc.requestStream()`
+and fails if a capabilities/raw/upload route falls back to a serialized RPC value. Cloudflare
+documents that [remote development connects bindings to remote resources](https://developers.cloudflare.com/workers/local-development/bindings-per-env/)
+and that [environment bindings are non-inheritable](https://developers.cloudflare.com/workers/wrangler/environments/),
+which is why the preview service binding is repeated in the example config. Never put either token
+literal in command history or print a command with its value.
+
+The HTTP half reads `/v1/capabilities` and refuses a multipart part size outside a safe 1–16 MiB
+test range, then creates a unique binary multipart session and proves: exact R2 part upload and
+SHA-256 completion; completion replay with the same idempotency key and one version; raw metadata,
+exact bytes, `HEAD`, a byte range, and `If-None-Match`; a text successor followed by binary rollback
+and history; delete and resurrection through CAS; and an explicit second abandoned multipart
+session that is aborted and observed in terminal `aborted` state. It uses a bounded fixture derived
+from the advertised part size and never allocates a 1 GiB body.
+
+The second half repeats the practical lifecycle through the named RPC entrypoint and its
+flow-controlled `Request`/`Response` stream bridge. It requires a real-R2 part size from 5–16 MiB,
+selects `multipart` plus `r2`, verifies exact streamed hash/size, completion replay, full and range
+reads, a text successor followed by binary rollback/history, an uploaded abandoned part followed by
+abort, and final logical deletion. Every executable route in the remote-dev consumer is disabled
+when `RPC_SMOKE_TRIGGER_TOKEN` is absent and bearer-gated when it is present; the smoke response
+returns only boolean/check names.
+
+Mutating operations use unique paths and keys. The success path leaves each committed fixture as a
+tombstone after its final delete, because immutable history is intentionally retained and there is
+no public hard-delete operation; it does not leave a live path. Aborted sessions are cleaned by R2
+abort/delete and D1 staging cleanup. Failure cleanup independently retries abort for every unfinished
+session, waits up to 35.75 seconds after abort conflicts (past the normal 30-second upload lease),
+confirms every tracked session is terminal, and only then logically deletes a committed path. If
+terminal confirmation still fails, it skips the potentially racy path deletion and reports cleanup
+as incomplete. Generation-aware GC can reclaim only unreferenced staging/orphan objects later. The
+command prints only a boolean/check-name summary—no token, R2 key, upload ID, path, or generation.
+
+This session did not run the remote smoke: no pre-configured HTTP target/token/stash and no safe
+remote-dev RPC trigger/token/binding were available in the verification environment. Run the
+command above only after confirming those values are safe, deterministic, and disposable; remove
+any resulting fixture through the documented cleanup behavior and do not commit credentials.
+
 ## Playwright conventions
 
 Use Chromium and title tags: `@smoke`, `@live`, `@local-only`, and `@flaky` (a flaky tag requires a linked issue). Keep a console-error fixture enabled, use reduced motion, and do not use `waitForTimeout` or `networkidle`. Mock API calls with `page.route('**/api/**')` in the mock lane.

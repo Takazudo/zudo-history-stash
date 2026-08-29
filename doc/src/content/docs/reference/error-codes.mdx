@@ -31,6 +31,12 @@ below. Route pages and the OpenAPI document define which errors apply to a parti
 | `payload-too-large` | `413` | The encoded request or stored content exceeds a limit. | Reduce the request using the documented limit and unit. |
 | `idempotency-key-reused` | `422` | One key was reused for a different canonical request. | Generate a new key; never mutate a retried request under the old key. |
 | `rollback-target-tombstone` | `422` | Rollback selected a deleted historical version. | Choose a live version or perform an explicit delete/create workflow. |
+| `unsupported-representation` | `422` | The selected transfer or content access mode cannot represent the requested bytes. | Use a raw text/binary upload and a transfer mode advertised by capabilities. |
+| `upload-size-mismatch` | `422` | Received bytes do not match the session's declared size. | Send the declared byte count exactly, or create a new session. |
+| `upload-hash-mismatch` | `422` | Received bytes do not match the session's declared SHA-256. | Recompute the hash over exact bytes and retry the unchanged request. |
+| `range-not-satisfiable` | `416` | The requested byte range does not overlap the stored content. | Refresh the representation length and request a satisfiable range. |
+| `upload-session-not-open` | `409` | An upload operation targeted a terminal session. | Read the session state and create a new upload when it is closed. |
+| `upload-session-expired` | `410` | The upload session lease and recovery window have expired. | Start a new session; do not retry writes to the expired one. |
 | `rate-limited` | `429` | The principal exceeded its request class budget. | Honor `Retry-After` and back off. |
 | `internal` | `500` | The server could not safely complete the operation. | Record request context and retry only when the operation protocol permits. |
 

@@ -84,6 +84,9 @@ export async function importOrderedHistory(input: {
 }
 ```
 
-Each text body is independently limited to 5,000,000 UTF-8 bytes. The entire encoded HTTP request
-must also fit within 32 MiB, so a nominal 20-entry batch of large bodies may still be too large.
-Treat a stale fence as a conflict and resume only from a freshly verified head.
+Import is the compatibility JSON/text-only path: each text body is independently limited to
+5,000,000 UTF-8 bytes, and the entire encoded HTTP request must fit within 32 MiB. A nominal
+20-entry batch of large bodies may therefore still be too large. This limit does not classify raw
+uploads: valid UTF-8 larger than 5,000,000 bytes remains `text` when sent through the raw single or
+multipart API, while binary is intentionally rejected by import. Treat a stale fence as a conflict
+and resume only from a freshly verified head.

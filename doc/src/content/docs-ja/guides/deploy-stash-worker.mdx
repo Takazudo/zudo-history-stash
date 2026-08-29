@@ -16,7 +16,7 @@ category: guides
 | 種別 | バインディングまたはクラス | 用途 |
 | --- | --- | --- |
 | D1 | `DB` | stash、ファイル、バージョン、トークン、変更、提案の正本。 |
-| 非公開 R2 | `BLOBS` | 退避されたファイル本文。オブジェクトキーと世代は公開 URL ではありません。 |
+| 非公開 R2 | `BLOBS` | 退避された不変の text または binary bytes。オブジェクトキーと世代は公開 URL ではありません。 |
 | Durable Object | `STASH_EVENTS` → `StashEvents` | stash ごとの同期的なライブイベントのファンアウト。 |
 | レートリミッター | `RL_READ` | 読み取りルートの分類。 |
 | レートリミッター | `RL_WRITE` | 変更ルートの分類。 |
@@ -36,15 +36,34 @@ category: guides
 | `GC_LEASE_TTL_MS` | `300000` ミリ秒。 |
 | `PROPOSAL_TTL_DAYS` | `14` 日。 |
 | `STASH_EVENTS_MAX_STREAM_MS` | `300000` ミリ秒。 |
+| `JSON_INLINE_MAX_BYTES` | `5000000` byte。デフォルトの text inline-access 境界。JSON/proposal/import schema は `MAX_BODY_BYTES=5000000` のままです。 |
+| `D1_INLINE_MAX_BYTES` | `524288` byte。 |
+| `HTTP_REQUEST_MAX_BYTES` | `100000000` の正確な content byte。raw upload の運用上限です。 |
+| `SINGLE_UPLOAD_MAX_BYTES` | `33554432` byte（32 MiB）。 |
+| `MAX_FILE_BYTES` | `100000000` byte。`1073741824`（1 GiB）まで設定できます。 |
+| `DIFF_MAX_BYTES` | 各 side `524288` byte。 |
+| `MULTIPART_PART_BYTES` | `8388608` byte（8 MiB）。 |
+| `MAX_OPEN_UPLOAD_SESSIONS` | stash あたり `8`。 |
+| `MAX_RESERVED_UPLOAD_BYTES` | stash あたり `500000000`。 |
+| `UPLOAD_SESSION_TTL_SECONDS` | `86400` 秒（一日）。 |
 
 `workers/stash/src/env.ts` が受け付ける正確な名前と単位を使ってください。名前を変更した変数や単位を
 換算した変数は同等ではありません。
 
+representation（`text`/`binary`）、content access（`inline`/`raw`/`deleted`）、transfer
+（`json`/`single`/`multipart`）、storage（`d1`/`r2`）、diff eligibility は独立しています。
+5,000,000 byte を超えても binary とは限らず、正しい UTF-8 は対応サイズ内で text のままです。D1 inline
+設定は 1,500,000、file 設定は 1 GiB が上限であり、予約容量は file 設定以上、切り上げた multipart 数は
+10,000 以下でなければなりません。1 GiB は正しさの上限であり性能認証ではありません。テストは小さな値を
+注入し、その本文サイズを確保しません。詳細な独立軸の契約は[ストレージ階層と上限](./storage-tiers-and-limits.mdx)
+を参照してください。
+
 ## 二つの異なるマイグレーション系列を適用する
 
 D1 スキーマのマイグレーションは `workers/stash/migrations` にあり、現在は `0001_init.sql` から
-`0004_proposals.sql` まで順番に実行します。アプリケーションをデプロイする前に、選択したリモートの
-`DB` へ適用してください。
+`0007_multipart_runtime.sql` まで順番に実行します。アプリケーションをデプロイする前に完全な系列を選択した
+リモートの `DB` へ適用してください。upgrade では binary/upload runtime の保留中 migration を適用し、既存の
+row を作り直したり書き換えたりしないでください。
 
 Wrangler の `[[migrations]]` にある `v1` タグの項目は別物であり、SQLite ベースの `StashEvents`
 Durable Object クラスを登録します。そのマイグレーションと対応するバインディングを、デプロイするすべての

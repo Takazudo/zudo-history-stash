@@ -74,9 +74,11 @@ An expected failure is JSON. Conflicts can also include the current head at the 
 | `401` | `unauthorized`                                                                                                             |
 | `403` | `scope`                                                                                                                    |
 | `404` | `not-found`, `file-deleted`, `version-not-found`                                                                           |
-| `409` | `stale`, `exists`, `already-deleted`, `gc-busy`, `already-rotated`, `token-expired`, `proposal-expired`, `proposal-closed` |
+| `409` | `stale`, `exists`, `already-deleted`, `gc-busy`, `already-rotated`, `token-expired`, `proposal-expired`, `proposal-closed`, `upload-session-not-open` |
+| `410` | `upload-session-expired`                                                                                                   |
 | `413` | `payload-too-large`                                                                                                        |
-| `422` | `idempotency-key-reused`, `rollback-target-tombstone`                                                                      |
+| `416` | `range-not-satisfiable`                                                                                                    |
+| `422` | `idempotency-key-reused`, `rollback-target-tombstone`, `unsupported-representation`, `upload-size-mismatch`, `upload-hash-mismatch` |
 | `429` | `rate-limited`                                                                                                             |
 | `500` | `internal`                                                                                                                 |
 
@@ -87,26 +89,36 @@ An `already-rotated` error carries the winning successor token ID as
 
 ## Limits and storage tiers
 
-A text body is limited to **5 MB (5,000,000 UTF-8 bytes)**. The boundary is inclusive and applies
-to a file PUT, each `put` version in an import, and a diff candidate. The whole encoded HTTP
-request is limited to **32 MiB (33,554,432 bytes)**, including JSON structure and escaping. A
-request strictly above that aggregate limit receives `413 payload-too-large` before
-authentication or any D1 or R2 access. Imports still contain at most 20 versions, but the encoded
-request limit can require fewer versions per call.
+The compatibility JSON API is text-only. Its core `MAX_BODY_BYTES` schema limit is **5,000,000
+UTF-8 bytes**, inclusive, for a JSON file PUT and for each `put` entry in a proposal or history
+import. The default `JSON_INLINE_MAX_BYTES` setting has the same value and controls when text content
+can be returned inline; changing that setting does not change the fixed proposal/import schema.
+Proposal candidates and imports remain JSON/text-only even when raw uploads support binary, so their
+5 MB rule is not a universal file-size or representation rule. A valid UTF-8 body larger than
+5,000,000 bytes is still `text` when sent through the raw upload API.
 
-Text bodies of at most **524,288 bytes** are stored inline in D1. Larger file and proposal
-candidate bodies are stored in private R2 under content-addressed keys; D1 retains the
-authoritative metadata, hash, size, file head or proposal reference, history, and pointer. Reads
-verify the R2 object's raw byte size and SHA-256 hash before a fatal, BOM-preserving UTF-8 decode.
-Responses never expose the private object key. Diffing remains limited to 524,288 bytes per side,
-so equal-hash and oversized results use metadata without loading R2 bodies. A proposal candidate
-is referenced through its blob row as soon as it is created, so a successfully stored proposal is
-not an R2 orphan.
+Raw uploads preserve exact bytes and choose `single` or `multipart` transfer from capabilities.
+The default `HTTP_REQUEST_MAX_BYTES` and `MAX_FILE_BYTES` are each 100,000,000 content bytes; a
+single raw request is limited to 32 MiB (33,554,432 bytes), and larger files use multipart. The
+HTTP setting is an operator-declared application ceiling, not runtime discovery of a Cloudflare
+plan limit. A raw upload whose declared content exceeds the configured ceiling receives
+`413 payload-too-large` before any R2 staging bytes are written; the compatibility JSON parser
+rejects oversized encoded requests before its route mutation. Service-binding/RPC callers must also account for Cloudflare's outer
+serialized RPC limit and envelope overhead; it does not enlarge any Stash setting.
+
+Bodies at or below the default `D1_INLINE_MAX_BYTES` of **524,288 bytes** are stored inline in D1;
+larger bodies use a private R2 object. This placement is independent of representation and
+transfer: binary bytes can be inline, and large valid UTF-8 text can be R2-backed while remaining
+`text`. D1 retains authoritative metadata, hashes, sizes, heads, history, and object pointers;
+reads verify raw R2 length and SHA-256 before decoding text. Private object keys never appear in
+responses or logs. Diffing is separately eligible only when each side is at most 524,288 bytes;
+binary or oversized sides return metadata outcomes instead of text hunks.
 
 Compare-and-set eligibility is checked before upload. An eligible large write uploads to R2 before
-the fenced D1 commit; a race or other refusal after upload can therefore leave an unreferenced
-private content-addressed orphan for future garbage collection (future GC). The orphan is not
-reachable through the API.
+the fenced D1 commit; a race or other refusal after upload can therefore leave a content-addressed
+orphan for future GC. Such an orphan is never reachable through the API. See [R2 lifecycle and
+cleanup](cloudflare-setup.md#binary-and-large-object-policy) for
+the ordering and recovery contract.
 
 ## Rate limits
 
@@ -259,10 +271,14 @@ events use the fetch transport, including an HTTP service binding. The generic
 `STASH_RPC.request()` bridge remains total for low-level HTTP-shaped dispatch, but it does not make
 the route part of the typed named-method surface.
 
-Cloudflare RPC serialisation is capped at 32 MiB. Independently, this API limits text bodies to
-5,000,000 UTF-8 bytes and encoded HTTP requests to 32 MiB, so the API limits still apply before an
-RPC method reaches storage. The existing `env.STASH.fetch()` service binding remains supported for
-HTTP-compatible consumers.
+Cloudflare RPC serialisation for the outer structured value payload is capped at 32 MiB including
+the envelope. The flow-controlled `StashRpc.requestStream()` bridge instead passes RPC-aware
+`Request`/`Response` body streams without serialising their bytes into that value payload, and the
+client selects it for raw and upload routes when available. Independently, the raw API's default
+`HTTP_REQUEST_MAX_BYTES` is 100,000,000 and its single-upload default is 32 MiB; the compatibility
+JSON/proposal/import limit remains 5,000,000 UTF-8 bytes. The existing `env.STASH.fetch()` service
+binding remains supported for HTTP-compatible consumers. These are independent transport and
+content contracts, not a claim that a deployment can discover its Cloudflare plan at runtime.
 
 ## Routes
 
@@ -273,13 +289,16 @@ may coexist in the legacy and byte tables without ambiguous reads. Binary bytes 
 JSON. Proposal candidates and history import remain JSON/text-only and reject raw/binary usage with
 `422 unsupported-representation`.
 
-Published defaults are 5,000,000 JSON-inline bytes, 524,288 D1-inline bytes, a 100,000,000-byte
-operator-declared HTTP/file ceiling, 32 MiB single uploads, 524,288 diff bytes per side, 8 MiB
-multipart parts, eight open sessions, 500,000,000 reserved bytes per stash, and a one-day session
-TTL. Production parts are at least 5 MiB and total parts never exceed 10,000. `MAX_FILE_BYTES` may
-be configured through 1 GiB only when reservation capacity is raised too; this is a correctness
-boundary, not a performance/load-test claim. All thresholds count exact content bytes, excluding
-JSON and protocol framing.
+Published defaults are `JSON_INLINE_MAX_BYTES=5000000`, `D1_INLINE_MAX_BYTES=524288`,
+`HTTP_REQUEST_MAX_BYTES=100000000`, `SINGLE_UPLOAD_MAX_BYTES=33554432`, `MAX_FILE_BYTES=100000000`,
+`DIFF_MAX_BYTES=524288`, `MULTIPART_PART_BYTES=8388608`, `MAX_OPEN_UPLOAD_SESSIONS=8`,
+`MAX_RESERVED_UPLOAD_BYTES=500000000`, and `UPLOAD_SESSION_TTL_SECONDS=86400`. Multipart parts
+are at least 5 MiB in production and total parts never exceed 10,000. D1 inline is capped at
+1,500,000 bytes; `MAX_FILE_BYTES` is capped at 1 GiB and requires reservation capacity at least as
+large as that setting. One GiB is a configurable correctness ceiling, not a performance
+certification or load-test claim. Every threshold counts exact content bytes, excluding JSON and
+protocol framing. The settings must also satisfy the relationships described in
+[Cloudflare setup](cloudflare-setup.md#binary-and-large-object-policy).
 
 ### `GET /v1/health`
 
@@ -757,12 +776,12 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
 ### `PUT /v1/stashes/:stash/uploads/:sessionId/parts/:partNumber`
 
 - **Principal/capability:** `write`; the session-bound administrator or matching stash principal.
-- **Request:** One raw part, current generation query, and part-specific idempotency fingerprint.
-- **Response:** `202` updated status with `Idempotent-Replayed`.
+- **Request:** One raw part plus the current generation query. The server verifies its exact expected
+  size and records the current R2 ETag; retry/replacement reuploads that part number.
+- **Response:** `202` updated durable status and current-generation part records.
 - **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`,
   `409 upload-session-not-open`, `410 upload-session-expired`, `413 payload-too-large`,
-  `422 upload-size-mismatch`, `422 idempotency-key-reused`, `429 rate-limited` with
-  `Retry-After: 60`, `500 internal`.
+  `422 upload-size-mismatch`, `429 rate-limited` with `Retry-After: 60`, `500 internal`.
 
 ### `POST /v1/stashes/:stash/uploads/:sessionId/complete`
 
