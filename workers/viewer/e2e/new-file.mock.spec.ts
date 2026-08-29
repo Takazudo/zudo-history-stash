@@ -1,4 +1,5 @@
 import type { Page, Request } from "@playwright/test";
+import type { CapabilitiesResponse } from "@takazudo/zudo-history-stash";
 import { expect, test } from "./fixtures/console-errors.js";
 import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
@@ -8,6 +9,25 @@ const BODY = "# Launch note\n\nReady for review.\n";
 const FILE_ROUTE = `/api/v1/stashes/${STASH}/files/${PATH}`;
 const HISTORY_ROUTE = `/api/v1/stashes/${STASH}/history/${PATH}`;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const CAPABILITIES: CapabilitiesResponse = {
+  representations: ["text", "binary"],
+  contentAccess: ["inline", "raw", "deleted"],
+  transferModes: ["json", "single", "multipart"],
+  storageTiers: ["d1", "r2"],
+  limits: {
+    jsonInlineMaxBytes: 5_000_000,
+    d1InlineMaxBytes: 524_288,
+    httpRequestMaxBytes: 100_000_000,
+    singleUploadMaxBytes: 33_554_432,
+    maxFileBytes: 100_000_000,
+    diffMaxBytesPerSide: 524_288,
+    multipartPartBytes: 8_388_608,
+    maxMultipartParts: 10_000,
+    maxOpenUploadSessionsPerStash: 8,
+    maxReservedUploadBytesPerStash: 500_000_000,
+    uploadSessionTtlSeconds: 86_400,
+  },
+};
 
 const tokenScript = () => sessionStorage.setItem("zhs.token", "zhs_test");
 
@@ -42,6 +62,15 @@ async function installFixture(page: Page) {
 
     if (request.method() === "GET" && url.pathname === "/api/v1/me" && url.search === "") {
       await route.fulfill({ status: 200, json: { principal: "admin" } });
+      return;
+    }
+
+    if (
+      request.method() === "GET" &&
+      url.pathname === "/api/v1/capabilities" &&
+      url.search === ""
+    ) {
+      await route.fulfill({ status: 200, json: CAPABILITIES });
       return;
     }
 
@@ -139,7 +168,7 @@ test("@smoke new file sends an explicit create fence and renders the destination
 
   await page.goto(`/s/${STASH}/new`);
   await expect(page.getByRole("heading", { name: "Create file" })).toBeVisible();
-  await page.getByRole("textbox", { name: "Path" }).fill(PATH);
+  await page.getByRole("textbox", { name: "Path", exact: true }).fill(PATH);
   await page.getByRole("textbox", { name: "File body" }).fill(BODY);
   await page.getByRole("button", { name: "Create file" }).click();
 
