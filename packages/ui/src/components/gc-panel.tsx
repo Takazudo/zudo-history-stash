@@ -273,6 +273,7 @@ export function GcPanel({ className }: GcPanelProps) {
           >
             <option value="r2-orphans">R2 orphans</option>
             <option value="ledger">Expired ledger rows</option>
+            <option value="content">Unreferenced content rows</option>
           </Select>
         </div>
 

@@ -236,6 +236,28 @@ describe("GcPanel", () => {
     expect(screen.getByText("Loading recent runs…")).toBeTruthy();
   });
 
+  it("offers content collection and sends the selected kind", async () => {
+    const { client, fetch } = adminFixture();
+    renderPanel(client);
+    const user = userEvent.setup();
+    const kind = await screen.findByRole("combobox", { name: "Kind" });
+
+    expect(
+      within(kind)
+        .getAllByRole("option")
+        .map((option) => option.getAttribute("value")),
+    ).toEqual(["r2-orphans", "ledger", "content"]);
+    await user.selectOptions(kind, "content");
+    await user.click(await screen.findByRole("button", { name: "Run" }));
+    await screen.findByRole("region", { name: "Current run" });
+
+    const runRequest = fetch.mock.calls
+      .map(requestFor)
+      .find((request) => request.method === "POST" && request.url.endsWith("/v1/admin/gc"));
+    expect(runRequest).toBeDefined();
+    expect(await runRequest!.json()).toMatchObject({ kind: "content" });
+  });
+
   it("renders nothing and makes no GC calls for a non-admin principal", async () => {
     const fake = createFakeStash({ adminToken: ADMIN });
     fake.createStash("notes");
