@@ -9,9 +9,11 @@ category: reference
 
 **Contract:** operation `runGc`; principal `admin`; transport `any`.
 
-Runs one bounded `r2-orphans` or `ledger` page with optional `dryRun`, `maxObjects`, and an opaque,
-kind-bound cursor. It returns a synchronously completed run result. A `null` cursor completes the
-pass; a later cursor-less call starts a fresh pass.
+Runs one bounded `r2-orphans`, `ledger`, or `content` page with optional `dryRun`, `maxObjects`, and an
+opaque, kind-bound cursor. The `content` kind sweeps D1 content rows in `blobs` / `byte_blobs` that are
+past the content grace and are unreferenced by versions, live change-set entries, and in-flight upload
+sessions; it never deletes an R2 object. It returns a synchronously completed run result. A `null`
+cursor completes the pass; a later cursor-less call starts a fresh pass.
 
 Dry runs acquire the same five-minute generation-fenced lease and record counters but never delete
 or persist progress. A non-dry runner can heartbeat/finalize only while it owns the current lease;

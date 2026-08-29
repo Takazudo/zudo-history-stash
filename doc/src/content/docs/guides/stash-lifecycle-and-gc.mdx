@@ -18,9 +18,11 @@ deadline are intentionally indistinguishable to the restore operation.
 ## Run garbage collection
 
 Garbage collection is administrator-only, paged, and protected by a fenced lease for each kind.
-`r2-orphans` removes old, unreferenced private objects; `ledger` removes expired idempotency rows.
-Run the function separately for each kind. It completes an entire dry pass, lets the caller inspect
-every page's counters, and only then begins live deletion.
+`r2-orphans` removes old, unreferenced private objects; `ledger` removes expired idempotency rows;
+and `content` removes D1 content rows in `blobs` / `byte_blobs` that are older than the content grace
+and are referenced by no version, no entry of a live change set, and no in-flight upload session. Run
+the function separately for each kind. It completes an entire dry pass, lets the caller inspect every
+page's counters, and only then begins live deletion.
 
 {/* zhs-example: consumer-gc */}
 
@@ -81,6 +83,11 @@ export async function collectGarbageSafely(input: {
   return { phase: "live" as const, outcome: live };
 }
 ```
+
+The `content` job deletes only the D1 row and never touches R2; the object becomes an orphan reclaimed
+by a later `r2-orphans` page. Bytes therefore stay billed for the content grace plus one `r2-orphans`
+pass, and the daily cron now splits one shared operation budget across three kinds instead of two. Run
+`content` (dry, then live) before `r2-orphans`.
 
 Treat every returned cursor as opaque and bound to its GC kind; pass it back byte-for-byte. A null
 cursor completes that pass. An R2 page is capped at 24 objects even if `maxObjects` is larger, while
