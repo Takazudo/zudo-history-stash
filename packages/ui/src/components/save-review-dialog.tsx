@@ -1,4 +1,4 @@
-import type { FileRecord, FileRecordWithEtag } from "@takazudo/zudo-history-stash";
+import type { ChangeSetRecord, FileRecord, FileRecordWithEtag } from "@takazudo/zudo-history-stash";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useCandidateDiff } from "../hooks/use-candidate-diff.js";
@@ -10,6 +10,7 @@ import {
   type SaveMachineState,
 } from "../hooks/use-save-machine.js";
 import { Button } from "../primitives/button.js";
+import { useStashClient } from "../provider/hooks.js";
 import { Dialog } from "../primitives/dialog.js";
 import { Input } from "../primitives/input.js";
 import { Notice } from "../primitives/notice.js";
@@ -37,6 +38,8 @@ export interface SaveReviewDialogProps {
   onClose: () => void;
   onDiscard: () => void;
   onSaved: (completion: SaveReviewCompletion) => void;
+  /** When supplied with stash, offers a one-entry review proposal instead of writing head. */
+  onProposed?: (changeSet: ChangeSetRecord) => void;
 }
 
 interface SameAsHeadSnapshot {
@@ -44,6 +47,64 @@ interface SameAsHeadSnapshot {
   lineEnding: LineEnding;
   headHash: string | null;
   same: boolean;
+}
+
+function ProposeChangeSetButton({
+  stash,
+  path,
+  baseVersion,
+  body,
+  contentType,
+  author,
+  message,
+  disabled,
+  onProposed,
+}: {
+  stash: string;
+  path: string;
+  baseVersion: number;
+  body: string;
+  contentType?: string;
+  author: string;
+  message: string;
+  disabled: boolean;
+  onProposed: (changeSet: ChangeSetRecord) => void;
+}) {
+  const client = useStashClient();
+  const [proposing, setProposing] = useState(false);
+  const [failed, setFailed] = useState(false);
+  async function propose() {
+    if (disabled || proposing) return;
+    setProposing(true);
+    setFailed(false);
+    try {
+      const result = await client.changeSets(stash).create(
+        {
+          entries: [
+            { op: "put", path, baseVersion, body, ...(contentType ? { contentType } : {}) },
+          ],
+          author,
+          message,
+          meta: {},
+        },
+        { idempotencyKey: crypto.randomUUID() },
+      );
+      if (!result.ok) setFailed(true);
+      else onProposed(result.value);
+    } catch {
+      setFailed(true);
+    } finally {
+      setProposing(false);
+    }
+  }
+  return (
+    <>
+      {failed ? <span role="alert">Could not propose this change set.</span> : null}
+      <Button disabled={disabled || proposing} onClick={() => void propose()}>
+        {proposing ? "Proposing…" : "Propose as change set"}
+      </Button>
+    </>
+  );
 }
 
 function readRememberedAuthor(): string {
@@ -103,12 +164,14 @@ function keyForTargetIdentity(identity: object): number {
 
 function SaveReviewDialogOpen({
   head,
+  stash,
   draft,
   lineEnding,
   machine,
   onClose,
   onDiscard,
   onSaved,
+  onProposed,
 }: Omit<SaveReviewDialogProps, "open">) {
   const titleId = useId();
   const descriptionId = useId();
@@ -511,6 +574,19 @@ function SaveReviewDialogOpen({
                     ? "Re-checking head…"
                     : primaryLabel}
               </Button>
+              {stash && onProposed ? (
+                <ProposeChangeSetButton
+                  author={author}
+                  baseVersion={displayHead.version}
+                  body={exactDraft}
+                  contentType={displayHead.contentType}
+                  disabled={busy || sameAsHead !== false}
+                  message={message}
+                  path={displayHead.path}
+                  stash={stash}
+                  onProposed={onProposed}
+                />
+              ) : null}
             </>
           )}
         </footer>

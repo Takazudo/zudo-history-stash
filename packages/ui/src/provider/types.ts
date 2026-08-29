@@ -15,7 +15,11 @@ export type StashUiRoute =
     }
   | { kind: "edit"; stash: string; path: string; from?: number }
   | { kind: "new-file"; stash: string }
-  | { kind: "tokens"; stash: string };
+  | { kind: "tokens"; stash: string }
+  | { kind: "commits"; stash: string }
+  | { kind: "commit"; stash: string; id: string }
+  | { kind: "change-sets"; stash: string }
+  | { kind: "change-set"; stash: string; id: string };
 
 export type StashHrefFor = (route: StashUiRoute) => string;
 

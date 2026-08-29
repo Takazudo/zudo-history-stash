@@ -4,6 +4,13 @@ Router-independent React components and state hooks for History Stash hosts. The
 the history, diff, editing, file-creation, deletion, rollback, restore, and token-management UI used
 by the standalone Viewer without taking ownership of routing or authentication.
 
+Commit and review surfaces are router-independent too. `CommitList` and `CommitDetail` render
+atomic history, `RevertCommitDialog` previews every current head, and `ChangeSetList` /
+`ChangeSetReview` provide filtering and immutable approve/reject decisions. `ChangesList` folds
+adjacent feed entries from the same commit, while `useOpenChangeSetCount` supplies an open-review
+badge count. The default detail routes are `/s/:stash/commits/:id` and
+`/s/:stash/change-sets/:id`.
+
 ## Install
 
 ```bash

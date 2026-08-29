@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   createStashClient,
+  type ChangeSetRecord,
   type FileRecord,
   type FileRecordWithEtag,
   type StashClient,
@@ -13,6 +14,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { StashUiProvider } from "../provider/stash-ui-provider.js";
 import {
   useSaveMachine,
   type LineEnding,
@@ -53,6 +55,8 @@ interface FakeBackedHostProps {
   onClose?: () => void;
   onDiscard?: () => void;
   onSaved?: (completion: SaveReviewCompletion) => void;
+  stash?: string;
+  onProposed?: (changeSet: ChangeSetRecord) => void;
 }
 
 async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
@@ -141,6 +145,8 @@ function FakeBackedHost({
   onClose = vi.fn(),
   onDiscard = vi.fn(),
   onSaved = vi.fn(),
+  stash,
+  onProposed,
 }: FakeBackedHostProps) {
   const machine = useSaveMachine({
     client: fixture.client,
@@ -160,6 +166,8 @@ function FakeBackedHost({
       onClose={onClose}
       onDiscard={onDiscard}
       onSaved={onSaved}
+      stash={stash}
+      onProposed={onProposed}
     />
   );
 }
@@ -291,6 +299,29 @@ beforeEach(() => {
 });
 
 describe("SaveReviewDialog", () => {
+  it("proposes the exact draft as a one-entry change set without saving head", async () => {
+    const fixture = await makeFixture("base\n");
+    const onProposed = vi.fn();
+    render(
+      <StashUiProvider client={fixture.client}>
+        <FakeBackedHost
+          draft={"candidate\n"}
+          fixture={fixture}
+          stash={STASH}
+          onProposed={onProposed}
+        />
+      </StashUiProvider>,
+    );
+    const propose = screen.getByRole("button", { name: "Propose as change set" });
+    await waitFor(() => expect(propose.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(propose);
+    await waitFor(() => expect(onProposed).toHaveBeenCalledTimes(1));
+    const proposed = onProposed.mock.calls[0]?.[0] as ChangeSetRecord;
+    expect(proposed.entries).toEqual([
+      expect.objectContaining({ path: PATH, op: "put", baseVersion: fixture.head.version }),
+    ]);
+    expect(fixture.puts).toHaveLength(0);
+  });
   it("reviews and saves exact CRLF bytes through the fake backend with exact-once completion", async () => {
     const fixture = await makeFixture("base\r\n");
     const releasePut = fixture.deferNextPut();
