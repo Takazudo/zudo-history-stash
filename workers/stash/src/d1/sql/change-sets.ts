@@ -1,3 +1,4 @@
+import { pathPrefixRange } from "@takazudo/zudo-history-stash-core";
 import type { ChangeSetEntryRow, ChangeSetRow } from "../schema.js";
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
@@ -91,19 +92,32 @@ export function countChangeSets(
 }
 
 export function insertChangeSetStatement(db: Preparer, row: ChangeSetRow): D1PreparedStatement {
-  const expectedFence =
-    row.expected_last_change_id === null
-      ? "1 = 1"
-      : "COALESCE((SELECT MAX(id) FROM versions WHERE stash_name = ?), 0) = ?";
-  const expectedParams =
-    row.expected_last_change_id === null ? [] : [row.stash_name, row.expected_last_change_id];
+  const prefixResult = pathPrefixRange(row.expected_last_change_prefix ?? undefined);
+  if (!prefixResult.ok) throw new Error(prefixResult.message);
+  const prefixRange = prefixResult.range;
+  const expectedFence = `(? IS NULL
+    OR (? IS NULL AND COALESCE((SELECT MAX(id) FROM versions WHERE stash_name = ?), 0) = ?)
+    OR (? IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM versions WHERE stash_name = ? AND id > ? AND path >= ? AND path < ?
+    )))`;
+  const expectedParams = [
+    row.expected_last_change_id,
+    row.expected_last_change_prefix,
+    row.stash_name,
+    row.expected_last_change_id,
+    row.expected_last_change_prefix,
+    row.stash_name,
+    row.expected_last_change_id,
+    prefixRange?.lo ?? null,
+    prefixRange?.hi ?? null,
+  ];
   return db
     .prepare(
       `INSERT INTO change_sets
        (id, stash_name, status, author, message, meta_json, expires_at, created_by, created_at,
         idempotency_key, request_hash, expected_last_change_id, decision_attempt, decided_at,
-        decided_by, decision_reason, commit_id)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        decided_by, decision_reason, commit_id, expected_last_change_prefix)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
          AND ${expectedFence}`,
     )
@@ -125,6 +139,7 @@ export function insertChangeSetStatement(db: Preparer, row: ChangeSetRow): D1Pre
       row.decided_by,
       row.decision_reason,
       row.commit_id,
+      row.expected_last_change_prefix,
       row.stash_name,
       ...expectedParams,
     );
