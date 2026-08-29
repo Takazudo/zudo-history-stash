@@ -326,12 +326,13 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     id: string,
     input: ApproveChangeSetBody,
   ): Promise<Response> {
-    return this.jsonSkeleton(
-      "POST",
-      `/v1/stashes/${stash}/change-sets/${id}/approve`,
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/change-sets/${id}/approve`,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
       token,
-      input,
-    );
+    });
   }
   async rejectChangeSet(
     token: string,
@@ -339,23 +340,10 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     id: string,
     input: RejectChangeSetBody,
   ): Promise<Response> {
-    return this.jsonSkeleton("POST", `/v1/stashes/${stash}/change-sets/${id}/reject`, token, input);
-  }
-
-  private jsonSkeleton(
-    method: "POST",
-    path: string,
-    token: string,
-    input: unknown,
-    idempotencyKey?: string,
-  ): Promise<Response> {
     return this.request({
-      method,
-      path,
-      headers: {
-        "Content-Type": "application/json",
-        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
-      },
+      method: "POST",
+      path: `/v1/stashes/${stash}/change-sets/${id}/reject`,
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
       token,
     });

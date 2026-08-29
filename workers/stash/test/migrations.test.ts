@@ -138,6 +138,55 @@ describe("D1 migrations", () => {
     }
   });
 
+  it("defers the change-set commit reference through a batch and rolls back unresolved claims", async () => {
+    await resetDatabase();
+    await env.DB.prepare(
+      "INSERT INTO stashes (name, description, meta_json, created_at) VALUES (?, '', '{}', 1)",
+    )
+      .bind("deferred-change-set")
+      .run();
+    for (const id of ["chs_0000000000001aaaaaaaa", "chs_0000000000002bbbbbbbb"]) {
+      await env.DB.prepare(
+        `INSERT INTO change_sets
+          (id, stash_name, status, author, message, meta_json, expires_at, created_by, created_at)
+         VALUES (?, 'deferred-change-set', 'open', '', '', '{}', 100, 'test', 1)`,
+      )
+        .bind(id)
+        .run();
+    }
+    const commitId = "cmt_0000000000001aaaaaaaa";
+    await expect(
+      env.DB.batch([
+        env.DB.prepare(
+          "UPDATE change_sets SET status = 'applied', commit_id = ? WHERE id = ?",
+        ).bind(commitId, "chs_0000000000001aaaaaaaa"),
+        env.DB.prepare(
+          `INSERT INTO commits
+            (id, stash_name, source, source_id, entry_count, created_by, created_at)
+           VALUES (?, 'deferred-change-set', 'change-set', ?, 1, 'test', 1)`,
+        ).bind(commitId, "chs_0000000000001aaaaaaaa"),
+      ]),
+    ).resolves.toHaveLength(2);
+    await expect(
+      env.DB.prepare("SELECT status, commit_id FROM change_sets WHERE id = ?")
+        .bind("chs_0000000000001aaaaaaaa")
+        .first(),
+    ).resolves.toEqual({ status: "applied", commit_id: commitId });
+
+    await expect(
+      env.DB.batch([
+        env.DB.prepare(
+          "UPDATE change_sets SET status = 'applied', commit_id = ? WHERE id = ?",
+        ).bind("cmt_missing", "chs_0000000000002bbbbbbbb"),
+      ]),
+    ).rejects.toThrow(/FOREIGN KEY constraint failed/);
+    await expect(
+      env.DB.prepare("SELECT status, commit_id FROM change_sets WHERE id = ?")
+        .bind("chs_0000000000002bbbbbbbb")
+        .first(),
+    ).resolves.toEqual({ status: "open", commit_id: null });
+  });
+
   it("uses block comments and unique migration numbers", () => {
     for (const source of Object.values(migrationSources)) expect(source).not.toMatch(/--/);
     const numbers = env.TEST_MIGRATIONS.map(({ name }) => name.match(/^\d+/)?.[0]);
