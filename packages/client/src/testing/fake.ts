@@ -1004,7 +1004,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const storeBlob = (stash: string, hash: string, body: string, createdAt: number): FakeBlobRow => {
     const rows = nested(state.blobs, stash);
     const existing = rows.get(hash);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      // The Worker keeps text and byte blobs in separate tables. The compact fake shares hashes,
+      // so preserve the text materialization when equal binary bytes arrived first.
+      if (existing.body === null) existing.body = body;
+      return existing;
+    }
     const size = utf8ByteLength(body);
     let r2Key: string | null = null;
     if (size > R2_SPILL_BYTES) {
@@ -1936,7 +1941,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     );
   };
 
-  const handlePut = async (request: Request, stash: string, path: string): Promise<Response> => {
+  const handlePut = async (
+    request: Request,
+    stash: string,
+    path: string,
+    principal: Principal,
+  ): Promise<Response> => {
     requireStash(stash);
     const key = idempotencyKey(request);
     const candidate = await requestJson(request);
@@ -2008,7 +2018,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       { origin: requestOrigin(request) },
     );
     storeBlob(stash, bodyHash, parsed.data.body, version.createdAt);
-    finalizeCommit(version.commitId, {});
+    finalizeCommit(version.commitId, { createdBy: principalName(principal) });
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
@@ -2023,7 +2033,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     );
   };
 
-  const handleDelete = async (request: Request, stash: string, path: string): Promise<Response> => {
+  const handleDelete = async (
+    request: Request,
+    stash: string,
+    path: string,
+    principal: Principal,
+  ): Promise<Response> => {
     requireStash(stash);
     const key = idempotencyKey(request);
     const parsed = DeleteFileBody.safeParse(await requestJson(request));
@@ -2065,7 +2080,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       },
       { origin: requestOrigin(request) },
     );
-    finalizeCommit(version.commitId, {});
+    finalizeCommit(version.commitId, { createdBy: principalName(principal) });
     ledger(stash, key, requestHash, version, 200);
     return json(
       {
@@ -2082,6 +2097,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     request: Request,
     stash: string,
     path: string,
+    principal: Principal,
   ): Promise<Response> => {
     requireStash(stash);
     const key = idempotencyKey(request);
@@ -2132,7 +2148,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       },
       { origin: requestOrigin(request) },
     );
-    finalizeCommit(version.commitId, {});
+    finalizeCommit(version.commitId, { createdBy: principalName(principal) });
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
@@ -2513,7 +2529,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         createdAt: version.createdAt,
       };
       nested(state.blobs, row.stash).set(hash, blob);
-      finalizeCommit(version.commitId, {});
+      finalizeCommit(version.commitId, { createdBy: principalName(row.principal) });
       row.result = {
         commitId: version.commitId,
         version: version.version,
@@ -2734,8 +2750,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     );
   };
 
-  const principalName = (principal: Principal): string =>
-    principal.kind === "admin" ? "admin" : principal.tokenId;
+  const principalName = (
+    principal: { kind: "admin" } | { kind: "stash"; tokenId: string },
+  ): string => (principal.kind === "admin" ? "admin" : principal.tokenId);
 
   const currentForPath = (stash: string, path: string): Current | null => {
     const file = getFile(stash, path);
@@ -4185,11 +4202,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         case "getFile":
           return handleGetFile(request, stash ?? "", path ?? "", url);
         case "putFile":
-          return await handlePut(request, stash ?? "", path ?? "");
+          return await handlePut(request, stash ?? "", path ?? "", principal);
         case "deleteFile":
-          return await handleDelete(request, stash ?? "", path ?? "");
+          return await handleDelete(request, stash ?? "", path ?? "", principal);
         case "rollbackFile":
-          return await handleRollback(request, stash ?? "", path ?? "");
+          return await handleRollback(request, stash ?? "", path ?? "", principal);
         case "getHistory":
           return handleHistory(stash ?? "", path ?? "", url);
         case "getDiff":

@@ -594,7 +594,7 @@ staged when a change set is created; binary review diffs report base/candidate h
 - **Request:** Optional `since=<change-id>`, a non-negative integer replay checkpoint. No body.
 - **Response:** `200 text/event-stream` with `Cache-Control: no-store` and
   `X-Accel-Buffering: no`. The stream uses `event:`, `id:`, and `data:` fields for `ready`,
-  `change`, `change set`, and `reconnect` events; heartbeat comments are not events. See
+  `change`, `commit`, `change-set`, and `reconnect` events; heartbeat comments are not events. See
   [Live change events](#live-change-events).
 - **Errors:** Before any stream bytes: `401 unauthorized`, `403 scope`, `404 not-found` for an
   unknown, deleted, or foreign stash, and `429 rate-limited` with `Retry-After: 60`.

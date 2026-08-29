@@ -1151,6 +1151,11 @@ export async function runCommitDir({
     chunkInputs = mutationInputsForChunks(chunkPlansForJob, options);
   }
   const chunks = chunkInputs.map(({ entries }) => entries);
+  if (options.changeSet && options.expectedLastChangeId !== undefined && chunks.length > 1) {
+    throw new Error(
+      "--change-set cannot combine a whole-stash CAS fence with multiple chunks; the first approval would make every later chunk stale.",
+    );
+  }
   const mode = options.changeSet ? "change set" : "commit";
   log(
     `Prepared ${String(plan.entries.length)} change${plan.entries.length === 1 ? "" : "s"} for ${options.stash}/${plan.prefix} (${mode}, job ${options.jobId}).`,
@@ -1176,9 +1181,7 @@ export async function runCommitDir({
 
   if (options.expectedLastChangeId !== undefined && chunks.length > 1) {
     log(
-      options.changeSet
-        ? "Whole-stash CAS is checked against the original head for each change-set chunk; chunks remain separately atomic."
-        : "Whole-stash CAS advances by the number of entries in earlier commit chunks; chunks remain separately atomic, and competing writes still fail the next fence.",
+      "Whole-stash CAS advances by the number of entries in earlier commit chunks; chunks remain separately atomic, and competing writes still fail the next fence.",
     );
   }
   for (const [index, chunk] of chunks.entries()) ensureChunkBytes(chunk, index);

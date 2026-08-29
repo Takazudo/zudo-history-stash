@@ -431,52 +431,45 @@ describe("commit-dir mutations", () => {
     assert.equal("expectedVersion" in review.calls.changeSets[0].input.entries[0], false);
   });
 
-  it("keeps the original whole-stash fence for every change-set chunk", async () => {
+  it("rejects a whole-stash fence for multi-chunk change sets before persisting or writing", async () => {
     const directory = await fixtureDirectory(
       Object.fromEntries(
         Array.from({ length: 21 }, (_, index) => [`${String(index)}.txt`, `${index}\n`]),
       ),
     );
     const fixture = mutatingClient({ changeSet: true });
-    await runCommitDir({
-      argv: [
-        directory,
-        "site",
-        "demo",
-        "--change-set",
-        "--expected-last-change-id",
-        "9",
-        "--job-id",
-        "change-set-fence",
-      ],
-      client: fixture,
-      env: { STASH_WRITE_TOKEN: ADMIN_TOKEN },
-      log: () => {},
-      stateDir: await fixtureStateDirectory(),
-    });
-    assert.deepEqual(
-      fixture.calls.changeSets.map(({ input }) => input.expectedLastChangeId),
-      [9, 9],
+    const stateDir = await fixtureStateDirectory();
+    await assert.rejects(
+      runCommitDir({
+        argv: [
+          directory,
+          "site",
+          "demo",
+          "--change-set",
+          "--expected-last-change-id",
+          "9",
+          "--job-id",
+          "change-set-fence",
+        ],
+        client: fixture,
+        env: { STASH_WRITE_TOKEN: ADMIN_TOKEN },
+        log: () => {},
+        stateDir,
+      }),
+      /first approval would make every later chunk stale/u,
     );
+    assert.equal(fixture.calls.changeSets.length, 0);
+    assert.deepEqual(await readdir(stateDir), []);
   });
 
-  it("uses byte-driven change-set chunks without advancing the live fence", async () => {
+  it("uses byte-driven change-set chunks without a whole-stash fence", async () => {
     const directory = await fixtureDirectory({
       "a.html": "a".repeat(3_000_000),
       "b.html": "b".repeat(3_000_000),
     });
     const fixture = mutatingClient({ changeSet: true });
     await runCommitDir({
-      argv: [
-        directory,
-        "site",
-        "demo",
-        "--change-set",
-        "--expected-last-change-id",
-        "9",
-        "--job-id",
-        "byte-change-set",
-      ],
+      argv: [directory, "site", "demo", "--change-set", "--job-id", "byte-change-set"],
       client: fixture,
       env: { STASH_WRITE_TOKEN: ADMIN_TOKEN },
       log: () => {},
@@ -493,13 +486,13 @@ describe("commit-dir mutations", () => {
         {
           baseVersion: null,
           bytes: 3_000_000,
-          expectedLastChangeId: 9,
+          expectedLastChangeId: undefined,
           options: { idempotencyKey: "byte-change-set:0" },
         },
         {
           baseVersion: null,
           bytes: 3_000_000,
-          expectedLastChangeId: 9,
+          expectedLastChangeId: undefined,
           options: { idempotencyKey: "byte-change-set:1" },
         },
       ],

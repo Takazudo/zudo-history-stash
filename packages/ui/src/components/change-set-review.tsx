@@ -4,7 +4,12 @@ import {
   type ChangeSetRecord,
   type CommitConflict,
 } from "@takazudo/zudo-history-stash";
-import { buildDiffModel } from "@takazudo/zudo-history-stash-core";
+import {
+  buildDiffModel,
+  MAX_AUTHOR_BYTES,
+  MAX_MESSAGE_BYTES,
+  utf8ByteLength,
+} from "@takazudo/zudo-history-stash-core";
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useDiffViewPreferences } from "../hooks/use-diff-view-preferences.js";
 import {
@@ -33,6 +38,16 @@ type DiffState =
   | { state: "loading" }
   | { state: "error"; error: unknown }
   | { state: "ready"; value: ChangeSetDiffResult };
+
+function fitUtf8Bytes(value: string, maximum: number): string {
+  if (utf8ByteLength(value) <= maximum) return value;
+  let fitted = "";
+  for (const character of value) {
+    if (utf8ByteLength(fitted + character) > maximum) break;
+    fitted += character;
+  }
+  return fitted;
+}
 
 function ChangeSetDiffEntry({
   entry,
@@ -157,6 +172,9 @@ function DecisionDialog({
 }) {
   const client = useStashClient();
   const titleId = useId();
+  const authorCountId = useId();
+  const messageCountId = useId();
+  const reasonCountId = useId();
   const [author, setAuthor] = useState("");
   const [message, setMessage] = useState(changeSet.message);
   const [reason, setReason] = useState("");
@@ -227,33 +245,51 @@ function DecisionDialog({
             <label className="zhs-decision-dialog__field">
               Author
               <Input
+                aria-label="Author"
+                aria-describedby={authorCountId}
                 disabled={busy}
                 value={author}
-                maxLength={200}
-                onChange={(event) => setAuthor(event.currentTarget.value)}
+                onChange={(event) =>
+                  setAuthor(fitUtf8Bytes(event.currentTarget.value, MAX_AUTHOR_BYTES))
+                }
               />
+              <span id={authorCountId}>
+                {utf8ByteLength(author)} / {MAX_AUTHOR_BYTES} UTF-8 bytes
+              </span>
             </label>
             <label className="zhs-decision-dialog__field">
               Commit message
               <Textarea
+                aria-label="Commit message"
+                aria-describedby={messageCountId}
                 disabled={busy}
                 value={message}
-                maxLength={2000}
                 rows={3}
-                onChange={(event) => setMessage(event.currentTarget.value)}
+                onChange={(event) =>
+                  setMessage(fitUtf8Bytes(event.currentTarget.value, MAX_MESSAGE_BYTES))
+                }
               />
+              <span id={messageCountId}>
+                {utf8ByteLength(message)} / {MAX_MESSAGE_BYTES} UTF-8 bytes
+              </span>
             </label>
           </>
         ) : (
           <label className="zhs-decision-dialog__field">
             Reason (optional)
             <Textarea
+              aria-label="Reason (optional)"
+              aria-describedby={reasonCountId}
               disabled={busy}
               value={reason}
-              maxLength={2000}
               rows={3}
-              onChange={(event) => setReason(event.currentTarget.value)}
+              onChange={(event) =>
+                setReason(fitUtf8Bytes(event.currentTarget.value, MAX_MESSAGE_BYTES))
+              }
             />
+            <span id={reasonCountId}>
+              {utf8ByteLength(reason)} / {MAX_MESSAGE_BYTES} UTF-8 bytes
+            </span>
           </label>
         )}
         <div className="zhs-decision-actions">

@@ -8,6 +8,7 @@ import {
   type RouteId,
 } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
+import { createStashClient } from "../../src/client.js";
 import { parseStashEventStream } from "../../src/sse.js";
 import {
   CONFORMANCE_SUPPORTED_ROUTE_IDS,
@@ -73,6 +74,111 @@ describe("fake route boundary", () => {
     const response = await request(fake, "/v1/not-a-real-route");
     expect(response.status).toBe(501);
     expect(await errorCode(response)).toBe("not-implemented");
+  });
+});
+
+describe("fake universal commit attribution", () => {
+  it("matches Worker principal attribution for legacy writes and upload completion", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const writeToken = await fake.mintToken("demo", "write", { label: "writer" });
+    const makeClient = (token: string) =>
+      createStashClient({
+        baseUrl: "https://fake.invalid",
+        token,
+        fetch: fake.fetch,
+        idempotencyKey: () => crypto.randomUUID(),
+      });
+    const admin = makeClient(ADMIN);
+    const writer = makeClient(writeToken);
+    const me = await writer.me();
+    expect(me).toMatchObject({ ok: true, value: { principal: "stash" } });
+    if (!me.ok || me.value.principal !== "stash") throw new Error("Expected stash principal");
+
+    const adminPut = await admin.files("demo").put("admin.txt", {
+      body: "one",
+      expectedVersion: null,
+    });
+    if (!adminPut.ok || "unchanged" in adminPut.value) throw new Error("Admin put failed");
+    await expect(admin.commits("demo").get(adminPut.value.commitId)).resolves.toMatchObject({
+      ok: true,
+      value: { createdBy: "admin" },
+    });
+
+    const secondPut = await admin.files("demo").put("admin.txt", {
+      body: "two",
+      expectedVersion: 1,
+    });
+    if (!secondPut.ok) throw new Error("Second admin put failed");
+    const rollback = await admin
+      .files("demo")
+      .rollback("admin.txt", { expectedVersion: 2, toVersion: 1 });
+    if (!rollback.ok) throw new Error("Admin rollback failed");
+    await expect(admin.commits("demo").get(rollback.value.commitId)).resolves.toMatchObject({
+      ok: true,
+      value: { createdBy: "admin" },
+    });
+
+    const tokenPut = await writer.files("demo").put("token.txt", {
+      body: "token",
+      expectedVersion: null,
+    });
+    if (!tokenPut.ok) throw new Error("Token put failed");
+    const deleted = await writer.files("demo").delete("token.txt", { expectedVersion: 1 });
+    if (!deleted.ok) throw new Error("Token delete failed");
+    await expect(admin.commits("demo").get(deleted.value.commitId)).resolves.toMatchObject({
+      ok: true,
+      value: { createdBy: me.value.tokenId },
+    });
+
+    const uploaded = await writer.files("demo").upload("token.bin", new Uint8Array([0, 1, 2]), {
+      expectedVersion: null,
+      representation: "binary",
+      contentType: "application/octet-stream",
+    });
+    if (!uploaded.ok || "unchanged" in uploaded.value) throw new Error("Token upload failed");
+    await expect(admin.commits("demo").get(uploaded.value.commitId)).resolves.toMatchObject({
+      ok: true,
+      value: { createdBy: me.value.tokenId },
+    });
+  });
+
+  it("materializes text when identical binary bytes were stored first", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: ADMIN,
+      fetch: fake.fetch,
+      idempotencyKey: () => crypto.randomUUID(),
+    });
+    const bytesBase64 = btoa("same bytes");
+    await expect(
+      client.commits("demo").create({
+        entries: [
+          {
+            op: "put",
+            path: "binary.bin",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64,
+          },
+          {
+            op: "put",
+            path: "text.txt",
+            expectedVersion: null,
+            body: "same bytes",
+            contentType: "text/plain",
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(client.files("demo").get("text.txt")).resolves.toMatchObject({
+      ok: true,
+      value: { representation: "text", body: "same bytes" },
+    });
+    await expect(client.files("demo").raw.get("binary.bin")).resolves.toMatchObject({ ok: true });
   });
 });
 

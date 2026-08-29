@@ -109,11 +109,18 @@ commits.get(
 commits.post("/v1/stashes/:stash/commits/:id/revert", async (c) => {
   const parsed = RevertCommitBody.safeParse(await jsonBody(c));
   if (!parsed.success) throw new StashError("validation", "Invalid revert input.");
+  const stash = c.get("routeStash").name;
+  const origin = eventOrigin(c.req.raw);
   const result = await createStashStore(c.env, c.get("deps")).commits.revertCommit(
-    c.get("routeStash").name,
+    stash,
     c.req.param("id"),
     parsed.data,
-    { principal: c.get("principal"), idempotencyKey: idempotencyKey(c) },
+    {
+      principal: c.get("principal"),
+      idempotencyKey: idempotencyKey(c),
+      onCommitted: (committed) =>
+        publishEvents(c.env, c.executionCtx, stash, commitEvents(committed, origin)),
+    },
   );
   return commitResponse(c, result);
 });

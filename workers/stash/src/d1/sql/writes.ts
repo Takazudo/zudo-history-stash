@@ -325,8 +325,10 @@ function commitStatement(
       meta_json: "metaJson" in input ? input.metaJson : "{}",
       entry_count: 1,
       reverts_commit_id: null,
-      idempotency_key: input.ledger?.key ?? null,
-      request_hash: input.ledger?.requestHash ?? null,
+      // Single-path mutations retain idempotency only in the expiring ledger. Persisting these
+      // values on commits would make the key permanently unique after ledger GC.
+      idempotency_key: null,
+      request_hash: null,
       created_by: input.createdBy,
       created_at: input.createdAt,
     },

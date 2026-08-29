@@ -943,6 +943,13 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       .first<CommitRow>();
     if (target === null) return failure("not-found", 404, "Commit not found");
     const targetRows = await commitVersions(db, stash, id);
+    const rowsByPath = new Map<string, CommitVersionRow[]>();
+    for (const row of targetRows) {
+      const rows = rowsByPath.get(row.path);
+      if (rows === undefined) rowsByPath.set(row.path, [row]);
+      else rows.push(row);
+    }
+    const paths = [...rowsByPath.keys()];
 
     const prior = await existingCommit(db, stash, options.idempotencyKey);
     if (prior !== null) {
@@ -956,9 +963,9 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       const record = commitRecord(prior, await commitVersions(db, stash, prior.id));
       if (record === null) return failure("internal", 500, "Idempotency result is missing");
       const revertedPaths = new Set(record.entries.map((entry) => entry.path));
-      const skipped = targetRows
-        .filter((row) => !revertedPaths.has(row.path))
-        .map((row) => ({ path: row.path, reason: "already-deleted" }));
+      const skipped = paths
+        .filter((path) => !revertedPaths.has(path))
+        .map((path) => ({ path, reason: "already-deleted" }));
       return {
         ok: true,
         value: { ...record, ...(skipped.length > 0 ? { skipped } : {}) },
@@ -967,7 +974,6 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       };
     }
 
-    const paths = [...new Set(targetRows.map((row) => row.path))];
     const heads =
       paths.length === 0
         ? []
@@ -984,19 +990,22 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     const headByPath = new Map(heads.map((head) => [head.path, head]));
     const entries: CommitEntryInput[] = [];
     const skipped: { path: string; reason: string }[] = [];
-    for (const row of targetRows) {
-      const head = headByPath.get(row.path);
-      const shouldDelete = row.version === 1 || row.previous_hash === null;
-      if (shouldDelete && head?.head_version === row.version && head.deleted === 1) {
-        skipped.push({ path: row.path, reason: "already-deleted" });
+    for (const [path, rows] of rowsByPath) {
+      const first = rows[0];
+      const last = rows.at(-1);
+      if (first === undefined || last === undefined) continue;
+      const head = headByPath.get(path);
+      const shouldDelete = first.version === 1 || first.previous_hash === null;
+      if (shouldDelete && head?.head_version === last.version && head.deleted === 1) {
+        skipped.push({ path, reason: "already-deleted" });
       } else if (shouldDelete) {
-        entries.push({ op: "delete", path: row.path, expectedVersion: row.version });
+        entries.push({ op: "delete", path, expectedVersion: last.version });
       } else {
         entries.push({
           op: "rollback",
-          path: row.path,
-          expectedVersion: row.version,
-          toVersion: row.version - 1,
+          path,
+          expectedVersion: last.version,
+          toVersion: first.version - 1,
         });
       }
     }

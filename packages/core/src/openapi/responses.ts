@@ -84,6 +84,7 @@ const TokenScopeSchema = z.enum(["read", "write"]);
 const MetaSchema = z.record(z.string(), z.json());
 const IntegerSchema = z.number().int();
 const NonNegativeIntegerSchema = IntegerSchema.nonnegative();
+const PositiveIntegerSchema = IntegerSchema.positive();
 const NullableHashSchema = HashSchema.nullable();
 const RepresentationSchema = z.enum(["text", "binary"]);
 const ContentAccessSchema = z.enum(["inline", "raw", "deleted"]);
@@ -507,15 +508,15 @@ const CommitOperationSchema = z.enum(["put", "copy", "delete", "rollback"]);
 export const CommitEntryRecordSchema: z.ZodType<CommitEntryRecord> = z.strictObject({
   path: z.string(),
   op: CommitOperationSchema,
-  version: IntegerSchema,
+  version: PositiveIntegerSchema,
   kind: VersionKindSchema,
-  changeId: IntegerSchema,
+  changeId: PositiveIntegerSchema,
   hash: NullableHashSchema,
   size: NonNegativeIntegerSchema,
   contentType: z.string(),
   representation: RepresentationSchema,
-  rollbackOf: IntegerSchema.nullable(),
-  copiedFrom: z.strictObject({ path: z.string(), version: IntegerSchema }).optional(),
+  rollbackOf: PositiveIntegerSchema.nullable(),
+  copiedFrom: z.strictObject({ path: z.string(), version: PositiveIntegerSchema }).optional(),
   identicalToHead: z.boolean().optional(),
 });
 const CommitRecordFields = {
@@ -526,9 +527,9 @@ const CommitRecordFields = {
   author: z.string(),
   message: z.string(),
   meta: MetaSchema,
-  entryCount: NonNegativeIntegerSchema,
-  firstChangeId: IntegerSchema,
-  lastChangeId: IntegerSchema,
+  entryCount: PositiveIntegerSchema,
+  firstChangeId: PositiveIntegerSchema,
+  lastChangeId: PositiveIntegerSchema,
   revertsCommitId: z.string().nullable(),
   createdBy: z.string(),
   createdAt: TimestampSchema,
@@ -555,15 +556,15 @@ export const CommitDiffResultSchema = z.strictObject({
     z.strictObject({
       path: z.string(),
       op: CommitOperationSchema,
-      from: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }).nullable(),
-      to: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }),
+      from: z.strictObject({ version: PositiveIntegerSchema, hash: NullableHashSchema }).nullable(),
+      to: z.strictObject({ version: PositiveIntegerSchema, hash: NullableHashSchema }),
       diff: DiffEnvelopeSchema,
     }),
   ),
   truncated: z.boolean(),
 });
 export const SnapshotResponseSchema = z.strictObject({
-  at: z.strictObject({ commitId: z.string(), changeId: IntegerSchema }),
+  at: z.strictObject({ commitId: z.string(), changeId: PositiveIntegerSchema }),
   files: z.array(FileSummarySchema),
   commonPrefixes: z.array(z.string()).optional(),
   nextAfter: z.string().nullable(),
@@ -571,7 +572,7 @@ export const SnapshotResponseSchema = z.strictObject({
 export const ChangeSetEntryRecordSchema = z.strictObject({
   path: z.string(),
   op: CommitOperationSchema,
-  baseVersion: IntegerSchema.nullable(),
+  baseVersion: PositiveIntegerSchema.nullable(),
   current: CurrentSchema.nullable(),
   stale: z.boolean(),
 });

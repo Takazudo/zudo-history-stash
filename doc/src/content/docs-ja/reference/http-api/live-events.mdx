@@ -10,7 +10,7 @@ category: reference
 **Contract:** operation `stashEvents`; principal `read`; transport `fetch-only`.
 
 `text/event-stream` を開き、必要に応じて負でない `since` より後を replay します。response は cache と
-proxy buffering を無効にします。`ready`、`change`、`change set`、`reconnect` event を、SSE の `event`、
+proxy buffering を無効にします。`ready`、`change`、`commit`、`change-set`、`reconnect` event を、SSE の `event`、
 `id`、`data` field を使用して発行します。heartbeat comment は転送の生存確認であり、event では
 ありません。
 

@@ -4,9 +4,9 @@ import type {
   CommitRecord,
   StashCommitsClient,
 } from "@takazudo/zudo-history-stash";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createFakeViewerClient } from "../test/fake-viewer-client.js";
 import { renderViewerPage } from "./page-test-utils.js";
 import CommitPage, { commitCreatedLocationState } from "./commit.js";
@@ -139,6 +139,45 @@ describe("CommitPage", () => {
     ).toContain("Revert complete. Created commit cmt_reverted.");
     expect(screen.getByRole("heading", { level: 2, name: "Revert: Atomic edit" })).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "Revert commit" })).toBeNull();
+  });
+
+  it("keeps an in-progress revert dialog mounted during a live refresh", async () => {
+    const value = commit();
+    let releaseRefresh!: (result: ClientResult<CommitRecord>) => void;
+    const pendingRefresh = new Promise<ClientResult<CommitRecord>>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let blockRefresh = false;
+    const get = vi.fn(async () => (blockRefresh ? pendingRefresh : { ok: true as const, value }));
+    renderViewerPage(
+      "/s/notes/commits/cmt_1",
+      "/s/:stash/commits/:id",
+      <CommitPage />,
+      clientWithCommits(admin, { get, diff: async () => emptyDiff() }),
+      { liveAccess: "write" },
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Revert commit" }));
+    const dialog = await screen.findByRole("dialog", { name: "Revert commit" });
+    const author = within(dialog).getByRole("textbox", { name: "Author" });
+    const message = within(dialog).getByRole("textbox", { name: "Message" });
+    await userEvent.type(author, "Grace");
+    await userEvent.clear(message);
+    await userEvent.type(message, "Keep this exact revert message");
+
+    const callsBeforeRefresh = get.mock.calls.length;
+    blockRefresh = true;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
+
+    expect(screen.getByRole("dialog", { name: "Revert commit" })).toBe(dialog);
+    expect((author as HTMLInputElement).value).toBe("Grace");
+    expect((message as HTMLTextAreaElement).value).toBe("Keep this exact revert message");
+
+    await act(async () => releaseRefresh({ ok: true, value }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Revert commit" })).toBe(dialog));
+    expect((author as HTMLInputElement).value).toBe("Grace");
+    expect((message as HTMLTextAreaElement).value).toBe("Keep this exact revert message");
   });
 
   it("consumes approval flash while preserving unrelated location state", async () => {

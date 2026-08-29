@@ -619,8 +619,8 @@
                 "baseVersion": {
                   "oneOf": [
                     {
+                      "exclusiveMinimum": 0,
                       "maximum": 9007199254740991,
-                      "minimum": -9007199254740991,
                       "type": "integer"
                     },
                     {
@@ -802,8 +802,8 @@
                           ]
                         },
                         "version": {
+                          "exclusiveMinimum": 0,
                           "maximum": 9007199254740991,
-                          "minimum": -9007199254740991,
                           "type": "integer"
                         }
                       },
@@ -837,8 +837,8 @@
                       ]
                     },
                     "version": {
+                      "exclusiveMinimum": 0,
                       "maximum": 9007199254740991,
-                      "minimum": -9007199254740991,
                       "type": "integer"
                     }
                   },
@@ -862,8 +862,8 @@
         "additionalProperties": false,
         "properties": {
           "changeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "contentType": {
@@ -876,8 +876,8 @@
                 "type": "string"
               },
               "version": {
+                "exclusiveMinimum": 0,
                 "maximum": 9007199254740991,
-                "minimum": -9007199254740991,
                 "type": "integer"
               }
             },
@@ -916,8 +916,8 @@
           "rollbackOf": {
             "oneOf": [
               {
+                "exclusiveMinimum": 0,
                 "maximum": 9007199254740991,
-                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -931,8 +931,8 @@
             "type": "integer"
           },
           "version": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           }
         },
@@ -999,21 +999,21 @@
             "type": "array"
           },
           "entryCount": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": 0,
             "type": "integer"
           },
           "firstChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "id": {
             "type": "string"
           },
           "lastChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "message": {
@@ -1094,21 +1094,21 @@
             "type": "array"
           },
           "entryCount": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": 0,
             "type": "integer"
           },
           "firstChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "id": {
             "type": "string"
           },
           "lastChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "message": {
@@ -1199,21 +1199,21 @@
             "type": "string"
           },
           "entryCount": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": 0,
             "type": "integer"
           },
           "firstChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "id": {
             "type": "string"
           },
           "lastChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "message": {
@@ -3619,8 +3619,8 @@
             "additionalProperties": false,
             "properties": {
               "changeId": {
+                "exclusiveMinimum": 0,
                 "maximum": 9007199254740991,
-                "minimum": -9007199254740991,
                 "type": "integer"
               },
               "commitId": {
@@ -3761,18 +3761,18 @@
             "type": "string"
           },
           "entryCount": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "firstChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "lastChangeId": {
+            "exclusiveMinimum": 0,
             "maximum": 9007199254740991,
-            "minimum": -9007199254740991,
             "type": "integer"
           },
           "origin": {
@@ -5383,8 +5383,8 @@
                             "baseVersion": {
                               "oneOf": [
                                 {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 },
                                 {
@@ -5415,8 +5415,8 @@
                             "baseVersion": {
                               "oneOf": [
                                 {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 },
                                 {
@@ -5458,8 +5458,8 @@
                             "baseVersion": {
                               "oneOf": [
                                 {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 },
                                 {
@@ -5474,8 +5474,8 @@
                                   "type": "string"
                                 },
                                 "version": {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 }
                               },
@@ -5497,8 +5497,8 @@
                           "additionalProperties": false,
                           "properties": {
                             "baseVersion": {
+                              "exclusiveMinimum": 0,
                               "maximum": 9007199254740991,
-                              "minimum": -9007199254740991,
                               "type": "integer"
                             },
                             "op": {
@@ -5516,8 +5516,8 @@
                           "additionalProperties": false,
                           "properties": {
                             "baseVersion": {
+                              "exclusiveMinimum": 0,
                               "maximum": 9007199254740991,
-                              "minimum": -9007199254740991,
                               "type": "integer"
                             },
                             "op": {
@@ -5528,8 +5528,8 @@
                               "type": "string"
                             },
                             "toVersion": {
+                              "exclusiveMinimum": 0,
                               "maximum": 9007199254740991,
-                              "minimum": -9007199254740991,
                               "type": "integer"
                             }
                           },
@@ -5544,7 +5544,7 @@
                   },
                   "expectedLastChangeId": {
                     "maximum": 9007199254740991,
-                    "minimum": -9007199254740991,
+                    "minimum": 0,
                     "type": "integer"
                   },
                   "expiresAt": {
@@ -6723,8 +6723,8 @@
                             "expectedVersion": {
                               "oneOf": [
                                 {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 },
                                 {
@@ -6755,8 +6755,8 @@
                             "expectedVersion": {
                               "oneOf": [
                                 {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 },
                                 {
@@ -6792,8 +6792,8 @@
                             "expectedVersion": {
                               "oneOf": [
                                 {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 },
                                 {
@@ -6808,8 +6808,8 @@
                                   "type": "string"
                                 },
                                 "version": {
+                                  "exclusiveMinimum": 0,
                                   "maximum": 9007199254740991,
-                                  "minimum": -9007199254740991,
                                   "type": "integer"
                                 }
                               },
@@ -6831,8 +6831,8 @@
                           "additionalProperties": false,
                           "properties": {
                             "expectedVersion": {
+                              "exclusiveMinimum": 0,
                               "maximum": 9007199254740991,
-                              "minimum": -9007199254740991,
                               "type": "integer"
                             },
                             "op": {
@@ -6850,8 +6850,8 @@
                           "additionalProperties": false,
                           "properties": {
                             "expectedVersion": {
+                              "exclusiveMinimum": 0,
                               "maximum": 9007199254740991,
-                              "minimum": -9007199254740991,
                               "type": "integer"
                             },
                             "op": {
@@ -6862,8 +6862,8 @@
                               "type": "string"
                             },
                             "toVersion": {
+                              "exclusiveMinimum": 0,
                               "maximum": 9007199254740991,
-                              "minimum": -9007199254740991,
                               "type": "integer"
                             }
                           },
@@ -6878,7 +6878,7 @@
                   },
                   "expectedLastChangeId": {
                     "maximum": 9007199254740991,
-                    "minimum": -9007199254740991,
+                    "minimum": 0,
                     "type": "integer"
                   },
                   "message": {

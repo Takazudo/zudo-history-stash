@@ -9,7 +9,7 @@ category: guides
 hints, not authoritative file or change set state. Reconcile the file list, file history, changes
 feed, and change set resources through ordinary reads.
 
-Refresh authoritative state when `ready` arrives and after each `change` or `change set` hint. The
+Refresh authoritative state when `ready` arrives and after each `change`, `commit`, or `change-set` hint. The
 client keeps its replay checkpoint separate from possibly out-of-order live change IDs, deduplicates
 the replay/live overlap, and limits its pending event queue to one hint. These rules deliberately
 favor a fresh read over treating a buffered event path or payload as truth.

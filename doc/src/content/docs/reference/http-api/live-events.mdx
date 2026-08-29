@@ -10,7 +10,7 @@ category: reference
 **Contract:** operation `stashEvents`; principal `read`; transport `fetch-only`.
 
 Opens `text/event-stream`, optionally replaying after non-negative `since`. The response disables
-caching and proxy buffering. It emits `ready`, `change`, `change set`, and `reconnect` events using
+caching and proxy buffering. It emits `ready`, `change`, `commit`, `change-set`, and `reconnect` events using
 SSE `event`, `id`, and `data` fields; heartbeat comments are transport liveness, not events.
 
 The server subscribes before it reads replay so a concurrent mutation is not lost. Events are

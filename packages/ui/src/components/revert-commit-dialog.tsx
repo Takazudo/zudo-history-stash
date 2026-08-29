@@ -5,6 +5,11 @@ import {
   type CommitResult,
   type Current,
 } from "@takazudo/zudo-history-stash";
+import {
+  MAX_AUTHOR_BYTES,
+  MAX_MESSAGE_BYTES,
+  utf8ByteLength,
+} from "@takazudo/zudo-history-stash-core";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useStashClient, useStashClientForSignal } from "../provider/hooks.js";
 import { Button } from "../primitives/button.js";
@@ -32,14 +37,28 @@ interface RevertAttempt {
   options: { idempotencyKey: string };
 }
 
+function fitUtf8Bytes(value: string, maximum: number): string {
+  if (utf8ByteLength(value) <= maximum) return value;
+  let fitted = "";
+  for (const character of value) {
+    if (utf8ByteLength(fitted + character) > maximum) break;
+    fitted += character;
+  }
+  return fitted;
+}
+
 export function RevertCommitDialog({ stash, commit, onClose, onSuccess }: RevertCommitDialogProps) {
   const client = useStashClient();
   const clientForSignal = useStashClientForSignal();
   const titleId = useId();
+  const authorCountId = useId();
+  const messageCountId = useId();
   const [preview, setPreview] = useState<PreviewState>({ state: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [author, setAuthor] = useState("");
-  const [message, setMessage] = useState(`Revert: ${commit.message}`);
+  const [message, setMessage] = useState(() =>
+    fitUtf8Bytes(`Revert: ${commit.message}`, MAX_MESSAGE_BYTES),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<unknown | null>(null);
   const [conflicts, setConflicts] = useState<CommitConflict[]>([]);
@@ -164,21 +183,33 @@ export function RevertCommitDialog({ stash, commit, onClose, onSuccess }: Revert
         <label className="zhs-decision-dialog__field">
           Author
           <Input
+            aria-label="Author"
+            aria-describedby={authorCountId}
             value={author}
-            maxLength={200}
             disabled={submitting || (failure !== null && revertAttemptRef.current !== null)}
-            onChange={(event) => setAuthor(event.currentTarget.value)}
+            onChange={(event) =>
+              setAuthor(fitUtf8Bytes(event.currentTarget.value, MAX_AUTHOR_BYTES))
+            }
           />
+          <span id={authorCountId}>
+            {utf8ByteLength(author)} / {MAX_AUTHOR_BYTES} UTF-8 bytes
+          </span>
         </label>
         <label className="zhs-decision-dialog__field">
           Message
           <Textarea
+            aria-label="Message"
+            aria-describedby={messageCountId}
             value={message}
-            maxLength={2000}
             rows={3}
             disabled={submitting || (failure !== null && revertAttemptRef.current !== null)}
-            onChange={(event) => setMessage(event.currentTarget.value)}
+            onChange={(event) =>
+              setMessage(fitUtf8Bytes(event.currentTarget.value, MAX_MESSAGE_BYTES))
+            }
           />
+          <span id={messageCountId}>
+            {utf8ByteLength(message)} / {MAX_MESSAGE_BYTES} UTF-8 bytes
+          </span>
         </label>
         <div className="zhs-decision-actions">
           <Button

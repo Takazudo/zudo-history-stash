@@ -236,8 +236,9 @@ export const ListGcRunsQuery = z.strictObject({
   limit,
 });
 const entryPath = z.string().refine((value) => validatePath(value).ok, "Invalid file path");
-const strictInteger = z.number().int();
-const commitExpectedVersion = strictInteger.nullable();
+const positiveInteger = z.number().int().positive();
+const nonNegativeInteger = z.number().int().nonnegative();
+const commitExpectedVersion = positiveInteger.nullable();
 const entryCommon = { path: entryPath, expectedVersion: commitExpectedVersion };
 const canonicalBase64 = z.string().refine(isCanonicalBase64, "Invalid canonical base64");
 export const CommitEntryInput = z.union([
@@ -257,14 +258,14 @@ export const CommitEntryInput = z.union([
   z.strictObject({
     op: z.literal("copy"),
     ...entryCommon,
-    from: z.strictObject({ path: entryPath, version: strictInteger }),
+    from: z.strictObject({ path: entryPath, version: positiveInteger }),
   }),
-  z.strictObject({ op: z.literal("delete"), path: entryPath, expectedVersion: strictInteger }),
+  z.strictObject({ op: z.literal("delete"), path: entryPath, expectedVersion: positiveInteger }),
   z.strictObject({
     op: z.literal("rollback"),
     path: entryPath,
-    expectedVersion: strictInteger,
-    toVersion: strictInteger,
+    expectedVersion: positiveInteger,
+    toVersion: positiveInteger,
   }),
 ]);
 
@@ -304,7 +305,7 @@ export const CreateCommitBody = z
     author,
     message,
     meta: commitMeta,
-    expectedLastChangeId: strictInteger.optional(),
+    expectedLastChangeId: nonNegativeInteger.optional(),
   })
   .superRefine(entryListRefinement);
 export const RevertCommitBody = z.strictObject({ author, message, meta: commitMeta });
@@ -347,14 +348,14 @@ export const ChangeSetEntryInput = z.union([
   z.strictObject({
     op: z.literal("copy"),
     ...changeSetCommon,
-    from: z.strictObject({ path: entryPath, version: strictInteger }),
+    from: z.strictObject({ path: entryPath, version: positiveInteger }),
   }),
-  z.strictObject({ op: z.literal("delete"), path: entryPath, baseVersion: strictInteger }),
+  z.strictObject({ op: z.literal("delete"), path: entryPath, baseVersion: positiveInteger }),
   z.strictObject({
     op: z.literal("rollback"),
     path: entryPath,
-    baseVersion: strictInteger,
-    toVersion: strictInteger,
+    baseVersion: positiveInteger,
+    toVersion: positiveInteger,
   }),
 ]);
 export const CreateChangeSetBody = z
@@ -364,7 +365,7 @@ export const CreateChangeSetBody = z
     message,
     meta: commitMeta,
     expiresAt: z.iso.datetime().optional(),
-    expectedLastChangeId: strictInteger.optional(),
+    expectedLastChangeId: nonNegativeInteger.optional(),
   })
   .superRefine(entryListRefinement);
 export const ApproveChangeSetBody = z.strictObject({ author, message });
@@ -430,9 +431,9 @@ export const StashCommitEventSchema = z.strictObject({
   type: z.literal("commit"),
   commitId: z.string(),
   stash: z.string(),
-  entryCount: strictInteger,
-  firstChangeId: strictInteger,
-  lastChangeId: strictInteger,
+  entryCount: positiveInteger,
+  firstChangeId: positiveInteger,
+  lastChangeId: positiveInteger,
   origin: StashClientIdSchema.nullable(),
 });
 export const StashChangeSetEventSchema = z.strictObject({

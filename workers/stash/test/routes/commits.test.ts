@@ -158,6 +158,77 @@ describe("commit routes", () => {
     expect(batches).toHaveLength(1);
   });
 
+  it("publishes an ordered live batch only for a newly persisted revert", async () => {
+    const stash = "commit-revert-events";
+    await seedStash(stash);
+    const { bindings, batches } = recordingEventsEnv();
+    const created = await api(
+      stash,
+      "",
+      {
+        method: "POST",
+        body: {
+          entries: [
+            { op: "put", path: "one.txt", expectedVersion: null, body: "one" },
+            { op: "put", path: "two.txt", expectedVersion: null, body: "two" },
+          ],
+        },
+      },
+      bindings,
+    );
+    const commit = await created.json<{ id: string }>();
+    const beforeRevert = batches.length;
+
+    const reverted = await api(
+      stash,
+      `/${commit.id}/revert`,
+      { method: "POST", body: {}, key: "revert-events" },
+      bindings,
+    );
+    expect(reverted.status).toBe(201);
+    const result = await reverted.json<{
+      id: string;
+      firstChangeId: number;
+      lastChangeId: number;
+      entries: Array<{ changeId: number }>;
+    }>();
+    expect(batches).toHaveLength(beforeRevert + 1);
+    expect(batches.at(-1)).toEqual([
+      expect.objectContaining({
+        type: "change",
+        commitId: result.id,
+        changeId: result.entries[0]?.changeId,
+        path: "one.txt",
+        origin: "commit-tests",
+      }),
+      expect.objectContaining({
+        type: "change",
+        commitId: result.id,
+        changeId: result.entries[1]?.changeId,
+        path: "two.txt",
+        origin: "commit-tests",
+      }),
+      {
+        type: "commit",
+        commitId: result.id,
+        stash,
+        entryCount: 2,
+        firstChangeId: result.firstChangeId,
+        lastChangeId: result.lastChangeId,
+        origin: "commit-tests",
+      },
+    ]);
+
+    const replay = await api(
+      stash,
+      `/${commit.id}/revert`,
+      { method: "POST", body: {}, key: "revert-events" },
+      bindings,
+    );
+    expect(replay.headers.get("Idempotent-Replayed")).toBe("true");
+    expect(batches).toHaveLength(beforeRevert + 1);
+  });
+
   it("creates and replays a commit while classifying validation, conflict, and size errors", async () => {
     const stash = "commit-errors";
     await seedStash(stash);
@@ -570,6 +641,107 @@ describe("commit routes", () => {
     await expect(response.json()).resolves.toEqual({
       error: { code: "validation", message: "nothing to revert" },
     });
+  });
+
+  it("collapses an imported path to one inverse entry and restores its pre-import absence", async () => {
+    const stash = "commit-revert-import";
+    await seedStash(stash);
+    const imported = await request(app, `http://stash.test/v1/stashes/${stash}/import`, {
+      method: "POST",
+      headers: { ...bearer("test-admin"), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "history.txt",
+        expectedVersion: null,
+        versions: [
+          { kind: "put", body: "import one", createdAt: 1 },
+          { kind: "delete", body: null, createdAt: 2 },
+          { kind: "put", body: "import three", createdAt: 3 },
+        ],
+      }),
+    });
+    expect(imported.status).toBe(201);
+    const commit = await imported.json<{ commitId: string }>();
+
+    const reverted = await api(stash, `/${commit.commitId}/revert`, {
+      method: "POST",
+      body: {},
+    });
+    expect(reverted.status).toBe(201);
+    await expect(reverted.json()).resolves.toMatchObject({
+      source: "revert",
+      revertsCommitId: commit.commitId,
+      entries: [{ path: "history.txt", op: "delete", version: 4, rollbackOf: null }],
+    });
+    await expect(
+      createTestEnv()
+        .env.DB.prepare(
+          `SELECT f.head_version, f.deleted, v.blob_hash
+         FROM files AS f JOIN versions AS v
+           ON v.stash_name = f.stash_name AND v.path = f.path AND v.version = f.head_version
+         WHERE f.stash_name = ? AND f.path = ?`,
+        )
+        .bind(stash, "history.txt")
+        .first(),
+    ).resolves.toEqual({ head_version: 4, deleted: 1, blob_hash: null });
+  });
+
+  it("restores the version preceding a multi-version import", async () => {
+    const stash = "commit-revert-import-existing";
+    await seedStash(stash);
+    const bindings = createTestEnv().env;
+    const seeded = await createStashStore(bindings, {
+      now: () => 1_000,
+      createId: () => "import-revert-base",
+    }).writes.put(stash, "history.txt", {
+      body: "before import",
+      expectedVersion: null,
+    });
+    expect(seeded).toMatchObject({ ok: true, value: { version: 1 } });
+    const imported = await request(
+      app,
+      `http://stash.test/v1/stashes/${stash}/import`,
+      {
+        method: "POST",
+        headers: { ...bearer("test-admin"), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "history.txt",
+          expectedVersion: 1,
+          versions: [
+            { kind: "put", body: "import two", createdAt: 1_001 },
+            { kind: "delete", body: null, createdAt: 1_002 },
+            { kind: "put", body: "import four", createdAt: 1_003 },
+          ],
+        }),
+      },
+      bindings,
+    );
+    expect(imported.status).toBe(201);
+    const commit = await imported.json<{ commitId: string }>();
+
+    const reverted = await api(
+      stash,
+      `/${commit.commitId}/revert`,
+      { method: "POST", body: {} },
+      bindings,
+    );
+    expect(reverted.status).toBe(201);
+    await expect(reverted.json()).resolves.toMatchObject({
+      source: "revert",
+      revertsCommitId: commit.commitId,
+      entries: [{ path: "history.txt", op: "rollback", version: 5, rollbackOf: 1 }],
+    });
+    await expect(
+      bindings.DB.prepare(
+        `SELECT f.head_version, f.deleted, b.body
+         FROM files AS f
+         JOIN versions AS v ON v.stash_name = f.stash_name AND v.path = f.path
+           AND v.version = f.head_version
+         LEFT JOIN blobs AS b ON b.stash_name = v.stash_name AND b.hash = v.blob_hash
+         WHERE f.stash_name = ? AND f.path = ?`,
+      )
+        .bind(stash, "history.txt")
+        .first(),
+    ).resolves.toEqual({ head_version: 5, deleted: 0, body: "before import" });
   });
 
   it("exposes exact HTTP behavior through all five named RPC methods", async () => {

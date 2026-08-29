@@ -136,7 +136,23 @@ export default function CommitPage() {
     });
   }
 
-  const detail = commit.state === "ready" ? commit.value : null;
+  const target = stash && id ? `${stash}:${id}` : null;
+  const [retainedCommit, setRetainedCommit] = useState<{
+    target: string;
+    value: CommitRecord;
+  } | null>(null);
+  const readyCommit = commit.state === "ready" ? commit.value : null;
+  useEffect(() => {
+    if (readyCommit !== null && target !== null) {
+      setRetainedCommit({ target, value: readyCommit });
+    }
+  }, [readyCommit, target]);
+  const detail =
+    commit.state === "ready"
+      ? commit.value
+      : retainedCommit?.target === target
+        ? retainedCommit.value
+        : null;
   return (
     <Page
       title="Commit"
@@ -157,11 +173,11 @@ export default function CommitPage() {
       ) : null}
       {!stash || !id ? (
         <ErrorBanner error={new Error("The stash name or commit id is missing from this URL.")} />
-      ) : commit.state === "loading" ? (
+      ) : commit.state === "loading" && detail === null ? (
         <p className="loading-copy" role="status">
           Loading commit…
         </p>
-      ) : commit.state === "error" ? (
+      ) : commit.state === "error" && detail === null ? (
         <ErrorBanner
           error={commit.error}
           onRetry={() => void commit.reload().catch(() => undefined)}
@@ -174,6 +190,13 @@ export default function CommitPage() {
         />
       ) : (
         <>
+          {commit.state === "error" ? (
+            <ErrorBanner
+              error={commit.error}
+              onRetry={() => void commit.reload().catch(() => undefined)}
+              title="Could not refresh commit"
+            />
+          ) : null}
           <CommitDetail
             key={`${stash}:${detail.id}`}
             stash={stash}

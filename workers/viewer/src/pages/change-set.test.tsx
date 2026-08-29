@@ -326,6 +326,43 @@ describe("ChangeSetPage", () => {
     expect(screen.getByText("This change set contains stale entries.")).toBeTruthy();
   });
 
+  it("keeps an in-progress decision dialog mounted when a background refresh fails", async () => {
+    const value = changeSet();
+    let releaseRefresh!: (result: ClientResult<ChangeSetRecord>) => void;
+    const pendingRefresh = new Promise<ClientResult<ChangeSetRecord>>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let blockRefresh = false;
+    const get = vi.fn(async () => (blockRefresh ? pendingRefresh : { ok: true as const, value }));
+    renderViewerPage(
+      "/s/notes/change-sets/chs_1",
+      "/s/:stash/change-sets/:id",
+      <ChangeSetPage />,
+      clientWithReview(admin, { get, diff: async () => emptyDiff() }),
+      { liveAccess: "write" },
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    const dialog = await screen.findByRole("dialog", { name: "Approve change set" });
+    const author = within(dialog).getByRole("textbox", { name: "Author" });
+    await userEvent.type(author, "Grace");
+
+    const callsBeforeRefresh = get.mock.calls.length;
+    blockRefresh = true;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
+    await act(async () =>
+      releaseRefresh({
+        ok: false,
+        error: { status: 503, code: "internal", message: "Refresh unavailable" },
+      }),
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Refresh unavailable");
+    expect(screen.getByRole("dialog", { name: "Approve change set" })).toBe(dialog);
+    expect((author as HTMLInputElement).value).toBe("Grace");
+  });
+
   it("shows loading and request errors, plus missing parameters", async () => {
     const pending = new Promise<ClientResult<ChangeSetRecord>>(() => {
       // Intentionally pending.

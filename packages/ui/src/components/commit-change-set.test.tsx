@@ -4,8 +4,13 @@ import {
   type ChangeSetRecord,
   type CommitRecord,
 } from "@takazudo/zudo-history-stash";
+import {
+  MAX_AUTHOR_BYTES,
+  MAX_MESSAGE_BYTES,
+  utf8ByteLength,
+} from "@takazudo/zudo-history-stash-core";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { StashUiProvider } from "../provider/stash-ui-provider.js";
@@ -196,6 +201,45 @@ describe("commit and change-set surfaces", () => {
     );
   });
 
+  it("fits change-set decision metadata to the API UTF-8 byte limits", async () => {
+    const fake = createFakeStash({ adminToken: "admin" });
+    fake.createStash("notes");
+    const sdk = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: "admin",
+      fetch: fake.fetch,
+    });
+    const created = await sdk.changeSets("notes").create({
+      entries: [{ op: "put", path: "review.txt", baseVersion: null, body: "candidate\n" }],
+      author: "Ada",
+      message: "review",
+      meta: {},
+    });
+    if (!created.ok) throw created;
+    render(
+      <StashUiProvider client={sdk}>
+        <ChangeSetReview stash="notes" changeSet={created.value} />
+      </StashUiProvider>,
+    );
+    await screen.findByRole("table", { name: "Unified diff" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    let dialog = screen.getByRole("dialog", { name: "Approve change set" });
+    const author = within(dialog).getByRole("textbox", { name: "Author" });
+    const message = within(dialog).getByRole("textbox", { name: "Commit message" });
+    fireEvent.change(author, { target: { value: "界".repeat(MAX_AUTHOR_BYTES) } });
+    fireEvent.change(message, { target: { value: "界".repeat(MAX_MESSAGE_BYTES) } });
+    expect(utf8ByteLength((author as HTMLInputElement).value)).toBe(198);
+    expect(utf8ByteLength((message as HTMLTextAreaElement).value)).toBe(1_998);
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    dialog = screen.getByRole("dialog", { name: "Reject change set" });
+    const reason = within(dialog).getByRole("textbox", { name: "Reason (optional)" });
+    fireEvent.change(reason, { target: { value: "界".repeat(MAX_MESSAGE_BYTES) } });
+    expect(utf8ByteLength((reason as HTMLTextAreaElement).value)).toBe(1_998);
+  });
+
   it("previews every current head before reverting an atomic commit", async () => {
     const fake = createFakeStash({ adminToken: "admin" });
     fake.createStash("notes");
@@ -232,6 +276,27 @@ describe("commit and change-set surfaces", () => {
     expect(onSuccess).toHaveBeenCalledWith(
       expect.objectContaining({ revertsCommitId: created.value.id, entryCount: 2 }),
     );
+  });
+
+  it("fits revert metadata and its generated message to the API UTF-8 byte limits", async () => {
+    render(
+      <StashUiProvider client={client()}>
+        <RevertCommitDialog
+          stash="notes"
+          commit={record({ message: "界".repeat(MAX_MESSAGE_BYTES) })}
+          onClose={vi.fn()}
+          onSuccess={vi.fn()}
+        />
+      </StashUiProvider>,
+    );
+    const dialog = screen.getByRole("dialog", { name: "Revert commit" });
+    const author = within(dialog).getByRole("textbox", { name: "Author" });
+    const message = within(dialog).getByRole("textbox", { name: "Message" });
+    expect(utf8ByteLength((message as HTMLTextAreaElement).value)).toBe(MAX_MESSAGE_BYTES);
+    fireEvent.change(author, { target: { value: "界".repeat(MAX_AUTHOR_BYTES) } });
+    fireEvent.change(message, { target: { value: "界".repeat(MAX_MESSAGE_BYTES) } });
+    expect(utf8ByteLength((author as HTMLInputElement).value)).toBe(198);
+    expect(utf8ByteLength((message as HTMLTextAreaElement).value)).toBe(1_998);
   });
 
   it("renders every typed revert conflict even when the failure code is not commit-conflict", async () => {

@@ -272,6 +272,109 @@ describe("commit and change-set request schemas", () => {
       CreateCommitBody.safeParse({ entries: [{ ...put, expectedVersion: 1.5 }] }).success,
     ).toBe(false);
   });
+  it("requires positive file versions and a non-negative whole-stash fence", () => {
+    const commitEntries = [
+      { ...put, expectedVersion: 1 },
+      { op: "copy", path: "copy/a", expectedVersion: null, from: { path: "source/a", version: 1 } },
+      { op: "delete", path: "delete/a", expectedVersion: 1 },
+      { op: "rollback", path: "rollback/a", expectedVersion: 2, toVersion: 1 },
+    ] as const;
+    const changeSetEntries = [
+      { op: "put", path: "docs/a.md", baseVersion: 1, body: "a" },
+      { op: "copy", path: "copy/a", baseVersion: null, from: { path: "source/a", version: 1 } },
+      { op: "delete", path: "delete/a", baseVersion: 1 },
+      { op: "rollback", path: "rollback/a", baseVersion: 2, toVersion: 1 },
+    ] as const;
+
+    for (const invalidVersion of [0, -1]) {
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[0], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [
+            { ...commitEntries[1], from: { ...commitEntries[1].from, version: invalidVersion } },
+          ],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[1], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[2], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[3], toVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[3], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[0], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [
+            {
+              ...changeSetEntries[1],
+              from: { ...changeSetEntries[1].from, version: invalidVersion },
+            },
+          ],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[1], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[2], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[3], toVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[3], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+    }
+
+    expect(CreateCommitBody.safeParse({ entries: [put], expectedLastChangeId: 0 }).success).toBe(
+      true,
+    );
+    expect(CreateCommitBody.safeParse({ entries: [put], expectedLastChangeId: -1 }).success).toBe(
+      false,
+    );
+    expect(
+      CreateChangeSetBody.safeParse({
+        entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
+        expectedLastChangeId: 0,
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateChangeSetBody.safeParse({
+        entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
+        expectedLastChangeId: -1,
+      }).success,
+    ).toBe(false);
+  });
   it.each(["AB==", "AA=", "AA==\n", "_A=="])(
     "rejects non-canonical binary input %j",
     (bytesBase64) => {
@@ -375,6 +478,22 @@ describe("stash event schemas", () => {
         origin: null,
       }).success,
     ).toBe(true);
+    for (const field of ["entryCount", "firstChangeId", "lastChangeId"] as const) {
+      for (const invalid of [0, -1]) {
+        expect(
+          StashEventSchema.safeParse({
+            type: "commit",
+            commitId: "cmt_1",
+            stash: "demo",
+            entryCount: 1,
+            firstChangeId: 1,
+            lastChangeId: 1,
+            origin: null,
+            [field]: invalid,
+          }).success,
+        ).toBe(false);
+      }
+    }
     expect(
       StashEventSchema.safeParse({
         type: "change-set",

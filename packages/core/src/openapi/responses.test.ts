@@ -251,6 +251,39 @@ describe("response schema samples", () => {
       }).success,
     ).toBe(true);
   });
+
+  it("requires positive persisted commit and change-set version identifiers", () => {
+    expect(
+      RESPONSE_SCHEMAS.CommitRecord.safeParse({
+        ...SAMPLES.CommitRecord,
+        firstChangeId: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.CommitRecord.safeParse({
+        ...SAMPLES.CommitRecord,
+        entries: [{ ...SAMPLES.CommitRecord.entries[0], version: 0 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.CommitDiffResult.safeParse({
+        ...SAMPLES.CommitDiffResult,
+        entries: [{ ...SAMPLES.CommitDiffResult.entries[0], to: { version: 0, hash: null } }],
+      }).success,
+    ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.SnapshotResponse.safeParse({
+        ...SAMPLES.SnapshotResponse,
+        at: { ...SAMPLES.SnapshotResponse.at, changeId: 0 },
+      }).success,
+    ).toBe(false);
+    expect(
+      RESPONSE_SCHEMAS.ChangeSetRecord.safeParse({
+        ...SAMPLES.ChangeSetRecord,
+        entries: [{ ...SAMPLES.ChangeSetRecord.entries[0], baseVersion: 0 }],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("ERROR_CODES type lock", () => {

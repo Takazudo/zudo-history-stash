@@ -360,7 +360,7 @@ export default function ChangeSetPage() {
         <p className="loading-copy" role="status">
           Loading change set…
         </p>
-      ) : changeSet.state === "error" ? (
+      ) : changeSet.state === "error" && record === null ? (
         <ErrorBanner
           error={changeSet.error}
           onRetry={() => void changeSet.reload().catch(() => undefined)}
@@ -375,19 +375,30 @@ export default function ChangeSetPage() {
         <p className="loading-copy" role="status">
           Checking change-set access…
         </p>
-      ) : capability.canWrite ? (
-        <ChangeSetReview
-          key={writableReviewKey(stash, record)}
-          stash={stash}
-          changeSet={record}
-          onDecision={handleDecision}
-        />
       ) : (
-        <ReadOnlyChangeSetReview
-          key={`${stash}:${record.id}:${record.status}:${record.decidedAt ?? ""}`}
-          stash={stash}
-          changeSet={record}
-        />
+        <>
+          {changeSet.state === "error" ? (
+            <ErrorBanner
+              error={changeSet.error}
+              onRetry={() => void changeSet.reload().catch(() => undefined)}
+              title="Could not refresh change set"
+            />
+          ) : null}
+          {capability.canWrite ? (
+            <ChangeSetReview
+              key={writableReviewKey(stash, record)}
+              stash={stash}
+              changeSet={record}
+              onDecision={handleDecision}
+            />
+          ) : (
+            <ReadOnlyChangeSetReview
+              key={`${stash}:${record.id}:${record.status}:${record.decidedAt ?? ""}`}
+              stash={stash}
+              changeSet={record}
+            />
+          )}
+        </>
       )}
     </Page>
   );
