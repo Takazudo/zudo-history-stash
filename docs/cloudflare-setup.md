@@ -373,10 +373,13 @@ does not authorize hard-purging them.
 | ------------------------- | ---------------------------- | -------------------------------------------------------------------- |
 | `STASH_DELETE_GRACE_DAYS` | `"30"`                       | Restore window for deleted stashes                                   |
 | `GC_ORPHAN_MIN_AGE_MS`    | `"900000"`                   | Minimum age for an orphaned R2 object to become eligible for cleanup |
+| `GC_CONTENT_MIN_AGE_MS`   | `"86400000"`                 | Minimum age before an unreferenced D1 content row becomes eligible for the content sweep |
 | `GC_LEASE_TTL_MS`         | `"300000"`                   | Lease duration for a fenced GC run                                   |
 
 Keep the same values in the root `[vars]` and `[env.preview.vars]` sections of
-`workers/stash/wrangler.toml`.
+`workers/stash/wrangler.toml` for every row in this table; vars are not inherited into
+`[env.preview]`. The 24-hour value is an unmeasured, deliberately generous starting point, and —
+like every other row in this table — the same value must appear in both sections.
 
 GC is an administrator-only, resumable operation. For a safe inspection, run one dry page first:
 
@@ -390,18 +393,27 @@ curl --fail-with-body -X POST \
 
 The R2 orphan engine scans at most 24 objects per page, even when a larger `maxObjects` value is
 requested. Ledger pages accept at most 500 rows. The scheduled invocation requests 80 objects,
-alternates `r2-orphans` and `ledger` for a fair first attempt, shares one 45-operation storage
-budget across both kinds, and stops before an unsafe page. It runs no more than ten pages per kind
-per invocation. A returned cursor is opaque and must be passed unchanged; `cursor: null` means the
-current pass is complete. A live lease returns `409 gc-busy`. If a deployment or operator stops a
-page, resume by invoking the same kind without a cursor (the stored cursor is used), or pass the
-last returned cursor explicitly when recovering a known page. Never copy R2 keys or generations
-from logs or storage into an operator-facing record.
+round-robins `r2-orphans`, `ledger`, and `content` for a fair first attempt, shares one
+45-operation storage budget across all three kinds, and stops before an unsafe page. It runs no
+more than ten pages per kind per invocation. A returned cursor is opaque and must be passed
+unchanged; `cursor: null` means the current pass is complete. A live lease returns `409 gc-busy`.
+If a deployment or operator stops a page, resume by invoking the same kind without a cursor (the
+stored cursor is used), or pass the last returned cursor explicitly when recovering a known page.
+Never copy R2 keys or generations from logs or storage into an operator-facing record.
 
 Every page creates a run record with a per-page UUID, stable kind/job ID, counters, timestamps,
 opaque cursor, and nullable error. `GET /v1/admin/gc/runs` lists recent records newest first;
 history retains the newest 500 records per kind. Dry runs acquire a lease and create a run record
 but do not delete R2 objects, delete ledger rows, or persist a cursor.
+
+A `content` page deletes ONLY the D1 row and never calls R2; the object that row pointed at becomes
+an orphan, which the existing `r2-orphans` job reclaims on a later page (that job derives its
+reference set from the surviving `blobs`/`byte_blobs` rows). The stored bytes stay billed for the
+content grace PLUS however long the `r2-orphans` cursor takes to reach that key on its next pass;
+because the daily cron now splits one 45-operation budget across three kinds instead of two while
+an R2 page is still capped at 24 objects, that can be several cron days for a large bucket. To
+reclaim bytes promptly after a large content sweep, run additional manual `r2-orphans` pages rather
+than waiting for the cron.
 
 Production application GC runs at `17 3 * * *` (UTC). The committed static-preview environment and
 generated PR Workers explicitly have no application GC cron. PR close teardown and the weekly
