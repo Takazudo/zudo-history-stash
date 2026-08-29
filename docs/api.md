@@ -516,8 +516,16 @@ Commits apply up to 20 entries atomically: the gate checks every expected versio
 records one verdict, so either every entry lands or none does. Conflicts return root-level
 `conflicts[]`. For commit creation and revert, exactly one failed entry whose `current` is `null`
 returns `404 not-found`; every other entry-fence failure returns `409 commit-conflict`. For commit
-creation, a failed whole-stash fence returns `409 stale` without per-entry conflicts. Reverts create
-a new commit, never erase history. Change feeds group every written version by required `commitId`;
+creation, a failed whole-stash fence returns `409 stale` without per-entry conflicts. The
+`expectedLastChangePrefix` narrows `expectedLastChangeId` to the paths under that prefix and is valid
+only together with `expectedLastChangeId` (otherwise `400 validation`). It applies to both `POST
+/v1/stashes/:stash/commits` and `POST /v1/stashes/:stash/change-sets`; for a change set, the prefix
+is stored at creation and re-evaluated at approval. This is deliberately asymmetric: the whole-stash
+fence is an equality, so a cursor above the newest change is also stale, while the prefix-scoped fence
+asks only that nothing newer exists under the prefix, so such a cursor passes. The prefix is matched as
+a path range over descendants (`site` and `site/` are equivalent; `site2/...` is not under `site`). A
+failed fence returns `409 stale` on the commit route and `409 commit-conflict` on the change-set route.
+Reverts create a new commit, never erase history. Change feeds group every written version by required `commitId`;
 change sets hold expiring candidates and approval never rebases. Approval returns `404 not-found`
 only for one missing `delete` target; its other entry conflicts return `409 commit-conflict`, and
 both branches include `conflicts[]`.
@@ -544,6 +552,12 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 ### `GET /v1/stashes/:stash/commits/:id/diff`
 
+- **Request:** `from=commit:<id>` is an EXCLUSIVE lower bound making the response a range diff between
+  that commit and `:id`; one entry per changed path, with `to` the newest version in the range and
+  `from` the pre-range version (`null` when created inside the range). `prefix=<p>` filters and
+  composes with the exact-match `path`; `from` newer than the target is `400 validation`, unknown
+  `from` is `404 not-found`, and `from` equal to the target returns no entries. The response is the
+  unchanged `CommitDiffResult`, with `truncated` the only overflow signal (no pagination).
 - **Response:** `200 CommitDiffResult`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`, `500 internal`.
 
@@ -554,6 +568,10 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 ### `GET /v1/stashes/:stash/snapshot`
 
+- **Request:** `at` accepts `commit:<id>` or `change:<n>`. A `change:` cursor is floored to the newest
+  sealed commit whose `last_change_id` is at or below it, and the response's `at` reports that resolved
+  boundary, not the requested cursor; no sealed commit at or below is `404 not-found`. Flooring is safe
+  because a commit's change IDs are contiguous.
 - **Response:** `200 SnapshotResponse`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`.
 
