@@ -1,6 +1,7 @@
 import {
   STASH_CLIENT_ID_HEADER,
   isStashClientId,
+  type CommitResult,
   type StashEvent,
 } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
@@ -18,24 +19,49 @@ export function eventOrigin(request: Request): string | null {
   return isStashClientId(value) ? value : null;
 }
 
+/** Builds the ordered live-only frames for a newly persisted multi-entry commit. */
+export function commitEvents(result: CommitResult, origin: string | null): StashEvent[] {
+  return [
+    ...result.entries.map((entry): StashEvent => ({
+      type: "change",
+      changeId: entry.changeId,
+      commitId: result.id,
+      stash: result.stash,
+      path: entry.path,
+      version: entry.version,
+      kind: entry.kind,
+      origin,
+      createdAt: result.createdAt,
+    })),
+    {
+      type: "commit",
+      commitId: result.id,
+      stash: result.stash,
+      entryCount: result.entryCount,
+      firstChangeId: result.firstChangeId,
+      lastChangeId: result.lastChangeId,
+      origin,
+    },
+  ];
+}
+
 export async function deliverEvents(
   env: Env,
   stash: string,
   events: readonly StashEvent[],
 ): Promise<void> {
   const stub = env.STASH_EVENTS.getByName(stash);
-  for (const event of events) {
-    const response = await stub.fetch(
-      new Request(`${INTERNAL_EVENTS_ORIGIN}${STASH_EVENTS_PUBLISH_PATH}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(event),
-      }),
-    );
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`StashEvents publish returned ${response.status}`);
-    }
+  if (events.length === 0) return;
+  const response = await stub.fetch(
+    new Request(`${INTERNAL_EVENTS_ORIGIN}${STASH_EVENTS_PUBLISH_PATH}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(events),
+    }),
+  );
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`StashEvents publish returned ${response.status}`);
   }
 }
 

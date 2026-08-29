@@ -376,8 +376,43 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
     else statements.push(derivedEntryStatement(db, input, entry));
     statements.push(headStatement(db, input, entry));
   }
-  statements.push(sealStatement(db, { stash: input.row.stash_name, id: input.row.id }));
+  statements.push(commitSealStatement(db, input));
   return statements;
+}
+
+/**
+ * Sealing is the final aggregate invariant. Once the gate inserted the commit, every generated
+ * version and file-head write must be visible or the existing commits CHECK is intentionally
+ * violated so D1 rolls the whole batch back.
+ */
+function commitSealStatement(db: Preparer, input: CommitBatchInput): D1PreparedStatement {
+  const expectedHeads = input.entries.map((entry) => ({
+    path: entry.path,
+    version: entry.version,
+    deleted: entry.op === "delete" ? 1 : 0,
+  }));
+  return db
+    .prepare(
+      `UPDATE commits
+       SET change_count = CASE WHEN
+             entry_count = (SELECT COUNT(*) FROM versions WHERE commit_id = commits.id)
+             AND NOT EXISTS (
+               SELECT 1 FROM json_each(?) AS expected
+               LEFT JOIN files AS f
+                 ON f.stash_name = commits.stash_name
+                   AND f.path = json_extract(expected.value, '$.path')
+               WHERE f.path IS NULL
+                 OR f.head_version <> json_extract(expected.value, '$.version')
+                 OR f.deleted <> json_extract(expected.value, '$.deleted')
+             )
+           THEN (SELECT COUNT(*) FROM versions WHERE commit_id = commits.id)
+           ELSE -1 END,
+           first_change_id = (SELECT MIN(id) FROM versions WHERE commit_id = commits.id),
+           last_change_id = (SELECT MAX(id) FROM versions WHERE commit_id = commits.id),
+           sealed = 1
+       WHERE stash_name = ? AND id = ? AND sealed = 0`,
+    )
+    .bind(JSON.stringify(expectedHeads), input.row.stash_name, input.row.id);
 }
 
 export function sealStatement(

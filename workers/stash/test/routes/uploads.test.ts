@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { sha256Hex, type StashEvent } from "@takazudo/zudo-history-stash-core";
+import { sha256Hex, StashEventSchema, type StashEvent } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { GC_ORPHAN_MIN_AGE_MS, createGcEngine } from "../../src/gc.js";
@@ -539,7 +539,7 @@ describe("single raw upload lifecycle", () => {
               eventFault = false;
               throw new Error("event delivery");
             }
-            events.push((await input.json()) as StashEvent);
+            events.push(...StashEventSchema.array().parse(await input.json()));
             return new Response(null, { status: 204 });
           },
         });

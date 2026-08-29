@@ -6,7 +6,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../../src/app.js";
 import type { Env } from "../../src/env.js";
-import { eventOrigin } from "../../src/events/publish.js";
+import { commitEvents, deliverEvents, eventOrigin } from "../../src/events/publish.js";
 import { bearer, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
 
@@ -22,10 +22,12 @@ function recordingEnv(
   bindings: Env;
   events: StashEvent[];
   names: string[];
+  batches: StashEvent[][];
 } {
   const base = createTestEnv().env;
   const events: StashEvent[] = [];
   const names: string[] = [];
+  const batches: StashEvent[][] = [];
   const namespace = new Proxy(base.STASH_EVENTS, {
     get(target, property, receiver) {
       if (property === "getByName") {
@@ -40,7 +42,9 @@ function recordingEnv(
                   if (options.failure === "throw") throw error;
                   if (options.failure === "reject") return Promise.reject(error);
                   return input.json().then((value) => {
-                    events.push(StashEventSchema.parse(value));
+                    const batch = StashEventSchema.array().parse(value);
+                    batches.push(batch);
+                    events.push(...batch);
                     return new Response(null, { status: 204 });
                   });
                 };
@@ -88,7 +92,7 @@ function recordingEnv(
             };
           },
         });
-  return { bindings: { ...base, DB: database, STASH_EVENTS: namespace }, events, names };
+  return { bindings: { ...base, DB: database, STASH_EVENTS: namespace }, events, names, batches };
 }
 
 async function mutation(
@@ -114,6 +118,63 @@ beforeEach(async () => {
 });
 
 describe("event publication", () => {
+  it("delivers a 20-entry commit as one ordered Durable Object POST", async () => {
+    const { bindings, events, batches, names } = recordingEnv();
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+      path: `file-${index}.txt`,
+      op: "put" as const,
+      version: 1,
+      kind: "put" as const,
+      changeId: index + 1,
+      hash: `sha256-${index}`,
+      size: 1,
+      contentType: "text/plain",
+      representation: "text" as const,
+      rollbackOf: null,
+    }));
+    const batch = commitEvents(
+      {
+        id: "cmt_twenty",
+        stash: STASH,
+        source: "commit",
+        sourceId: null,
+        author: "",
+        message: "",
+        meta: {},
+        entryCount: 20,
+        firstChangeId: 1,
+        lastChangeId: 20,
+        revertsCommitId: null,
+        createdBy: "test",
+        createdAt: "2026-08-29T00:00:00.000Z",
+        entries,
+      },
+      "tab-twenty",
+    );
+
+    await deliverEvents(bindings, STASH, batch);
+
+    expect(names).toEqual([STASH]);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(21);
+    expect(events.slice(0, 20)).toSatisfy((value: StashEvent[]) =>
+      value.every(
+        (event, index) =>
+          event.type === "change" &&
+          event.commitId === "cmt_twenty" &&
+          event.changeId === index + 1,
+      ),
+    );
+    expect(events.at(-1)).toEqual({
+      type: "commit",
+      commitId: "cmt_twenty",
+      stash: STASH,
+      entryCount: 20,
+      firstChangeId: 1,
+      lastChangeId: 20,
+      origin: "tab-twenty",
+    });
+  });
   it("accepts only canonical client origins after the actual Request boundary", () => {
     expect(
       eventOrigin(new Request("https://x", { headers: { [STASH_CLIENT_ID_HEADER]: "tab A!~" } })),

@@ -71,6 +71,7 @@ export type StoreCommitResult =
 export interface CommitOptions {
   principal: string | Principal;
   idempotencyKey?: string;
+  onCommitted?: (result: CommitResult) => void | Promise<void>;
 }
 
 export interface StashCommits {
@@ -84,6 +85,7 @@ export interface StashCommits {
 export interface CommitDependencies extends StoreDependencies {
   onBeforeCommit?: () => void | Promise<void>;
   createBlobGeneration?: BlobGenerationFactory;
+  alterCommitStatementsForTest?: (statements: D1PreparedStatement[]) => D1PreparedStatement[];
 }
 
 function failure(
@@ -486,24 +488,24 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     };
 
     try {
-      const results = await db.batch(
-        commitBatch(db, {
-          row,
-          entries: prepared,
-          ...(value.expectedLastChangeId === undefined
-            ? {}
-            : { expectedLastChangeId: value.expectedLastChangeId }),
-        }),
-      );
+      let statements = commitBatch(db, {
+        row,
+        entries: prepared,
+        ...(value.expectedLastChangeId === undefined
+          ? {}
+          : { expectedLastChangeId: value.expectedLastChangeId }),
+      });
+      statements = deps.alterCommitStatementsForTest?.(statements) ?? statements;
+      const results = await db.batch(statements);
       if (results.at(-1)?.meta.changes === 1) {
         const persisted = await db
           .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
           .bind(stash, commitId)
           .first<CommitRow>();
         const result = persisted ? await resultFromCommit(db, persisted, value.entries) : null;
-        return result
-          ? { ok: true, value: result, statusCode: 201 }
-          : failure("internal", 500, "Missing committed changes");
+        if (!result) return failure("internal", 500, "Missing committed changes");
+        await options.onCommitted?.(result);
+        return { ok: true, value: result, statusCode: 201 };
       }
     } catch {
       // UNIQUE idempotency races and CHECK rollbacks are classified by the same durable re-read.
