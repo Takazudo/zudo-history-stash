@@ -1,4 +1,9 @@
-import type { ChangeSetRecord, FileRecord, FileRecordWithEtag } from "@takazudo/zudo-history-stash";
+import type {
+  ChangeSetRecord,
+  FileRecord,
+  FileRecordWithEtag,
+  StashChangeSetsClient,
+} from "@takazudo/zudo-history-stash";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useCandidateDiff } from "../hooks/use-candidate-diff.js";
@@ -10,7 +15,7 @@ import {
   type SaveMachineState,
 } from "../hooks/use-save-machine.js";
 import { Button } from "../primitives/button.js";
-import { useStashClient } from "../provider/hooks.js";
+import { Anchor, useStashClient, useStashHref } from "../provider/hooks.js";
 import { Dialog } from "../primitives/dialog.js";
 import { Input } from "../primitives/input.js";
 import { Notice } from "../primitives/notice.js";
@@ -49,6 +54,39 @@ interface SameAsHeadSnapshot {
   same: boolean;
 }
 
+interface ProposalAttempt {
+  readonly input: Parameters<StashChangeSetsClient["create"]>[0];
+  readonly options: Readonly<{ idempotencyKey: string }>;
+}
+
+function freezeProposalAttempt({
+  path,
+  baseVersion,
+  body,
+  contentType,
+  author,
+  message,
+}: {
+  path: string;
+  baseVersion: number;
+  body: string;
+  contentType?: string;
+  author: string;
+  message: string;
+}): ProposalAttempt {
+  const input: Parameters<StashChangeSetsClient["create"]>[0] = {
+    entries: [{ op: "put", path, baseVersion, body, ...(contentType ? { contentType } : {}) }],
+    author,
+    message,
+    meta: {},
+  };
+  Object.freeze(input.entries[0]);
+  Object.freeze(input.entries);
+  Object.freeze(input.meta);
+  Object.freeze(input);
+  return Object.freeze({ input, options: Object.freeze({ idempotencyKey: crypto.randomUUID() }) });
+}
+
 function ProposeChangeSetButton({
   stash,
   path,
@@ -68,40 +106,67 @@ function ProposeChangeSetButton({
   author: string;
   message: string;
   disabled: boolean;
-  onProposed: (changeSet: ChangeSetRecord) => void;
+  onProposed?: (changeSet: ChangeSetRecord) => void;
 }) {
   const client = useStashClient();
+  const hrefFor = useStashHref();
   const [proposing, setProposing] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [created, setCreated] = useState<ChangeSetRecord | null>(null);
+  const proposingRef = useRef(false);
+  const attemptRef = useRef<ProposalAttempt | null>(null);
   async function propose() {
-    if (disabled || proposing) return;
+    if (disabled || proposingRef.current) return;
+    proposingRef.current = true;
     setProposing(true);
     setFailed(false);
+    setCreated(null);
+    const attempt =
+      attemptRef.current ??
+      freezeProposalAttempt({ path, baseVersion, body, contentType, author, message });
+    attemptRef.current = attempt;
     try {
-      const result = await client.changeSets(stash).create(
-        {
-          entries: [
-            { op: "put", path, baseVersion, body, ...(contentType ? { contentType } : {}) },
-          ],
-          author,
-          message,
-          meta: {},
-        },
-        { idempotencyKey: crypto.randomUUID() },
-      );
-      if (!result.ok) setFailed(true);
-      else onProposed(result.value);
+      const result = await client.changeSets(stash).create(attempt.input, attempt.options);
+      if (!result.ok) {
+        attemptRef.current = null;
+        setFailed(true);
+      } else {
+        attemptRef.current = null;
+        setCreated(result.value);
+        onProposed?.(result.value);
+      }
     } catch {
+      // An ambiguous transport failure retains the exact frozen request for safe replay.
       setFailed(true);
     } finally {
+      proposingRef.current = false;
       setProposing(false);
     }
   }
   return (
     <>
-      {failed ? <span role="alert">Could not propose this change set.</span> : null}
-      <Button disabled={disabled || proposing} onClick={() => void propose()}>
-        {proposing ? "Proposing…" : "Propose as change set"}
+      {failed ? (
+        <span role="alert">
+          Could not propose this change set. Retry replays the exact previous request when delivery
+          is unknown.
+        </span>
+      ) : null}
+      {created ? (
+        <span role="status">
+          Proposed for review:{" "}
+          <Anchor href={hrefFor({ kind: "change-set", stash, id: created.id })}>
+            Open change set
+          </Anchor>
+        </span>
+      ) : null}
+      <Button disabled={disabled || proposing || created !== null} onClick={() => void propose()}>
+        {proposing
+          ? "Proposing…"
+          : created
+            ? "Proposed"
+            : failed
+              ? "Retry proposal"
+              : "Propose as change set"}
       </Button>
     </>
   );
@@ -574,7 +639,7 @@ function SaveReviewDialogOpen({
                     ? "Re-checking head…"
                     : primaryLabel}
               </Button>
-              {stash && onProposed ? (
+              {stash ? (
                 <ProposeChangeSetButton
                   author={author}
                   baseVersion={displayHead.version}

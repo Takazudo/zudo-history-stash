@@ -98,8 +98,9 @@ export function RevertCommitDialog({ stash, commit, onClose, onSuccess }: Revert
       const result = await client.commits(stash).revert(commit.id, attempt.input, attempt.options);
       if (!result.ok) {
         revertAttemptRef.current = null;
-        if (isCommitConflict(result)) setConflicts(result.conflicts);
-        else setFailure(result);
+        if (isCommitConflict(result) || (result.conflicts?.length ?? 0) > 0) {
+          setConflicts(result.conflicts ?? []);
+        } else setFailure(result);
       } else onSuccess(result.value);
     } catch (error) {
       setFailure(error);

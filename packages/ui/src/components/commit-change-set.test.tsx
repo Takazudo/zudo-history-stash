@@ -234,6 +234,75 @@ describe("commit and change-set surfaces", () => {
     );
   });
 
+  it("renders every typed revert conflict even when the failure code is not commit-conflict", async () => {
+    const fake = createFakeStash({ adminToken: "admin" });
+    fake.createStash("notes");
+    const base = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: "admin",
+      fetch: fake.fetch,
+    });
+    const created = await base.commits("notes").create({
+      entries: [{ op: "put", path: "a.txt", expectedVersion: null, body: "a\n" }],
+      author: "Ada",
+      message: "one",
+      meta: {},
+    });
+    if (!created.ok) throw created;
+    const clientWithConflict = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: "admin",
+      fetch: async (input, init) => {
+        if (
+          init?.method === "POST" &&
+          String(input).endsWith(`/commits/${created.value.id}/revert`)
+        ) {
+          return new Response(
+            JSON.stringify({
+              error: { code: "stale", message: "head moved" },
+              conflicts: [
+                {
+                  path: "a.txt",
+                  expectedVersion: 1,
+                  current: {
+                    version: 2,
+                    hash: `sha256-${"a".repeat(64)}`,
+                    deleted: false,
+                    kind: "put",
+                    author: "Grace",
+                    createdAt: now,
+                  },
+                },
+              ],
+            }),
+            { status: 409, headers: { "content-type": "application/json" } },
+          );
+        }
+        return fake.fetch(input, init);
+      },
+    });
+    const onSuccess = vi.fn();
+    render(
+      <StashUiProvider client={clientWithConflict}>
+        <RevertCommitDialog
+          stash="notes"
+          commit={created.value}
+          onClose={vi.fn()}
+          onSuccess={onSuccess}
+        />
+      </StashUiProvider>,
+    );
+    await screen.findByRole("list", { name: "Current head preview" });
+    await userEvent.click(screen.getByRole("button", { name: "Revert commit" }));
+    const banner = await screen.findByText(
+      "The commit could not be reverted because heads changed.",
+    );
+    expect(
+      within(banner.closest("[role=alert]") as HTMLElement).getByText(/expected v1, now v2/),
+    ).toBeTruthy();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
   it("reads the authoritative open change-set total with a one-row query", async () => {
     const fake = createFakeStash({ adminToken: "admin" });
     fake.createStash("notes");
