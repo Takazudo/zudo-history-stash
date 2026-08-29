@@ -23,4 +23,5 @@ _temp-resource/
 .env
 .env.*
 !.env.example
+wrangler.*.local.toml
 .DS_Store
