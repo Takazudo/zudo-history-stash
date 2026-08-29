@@ -100,12 +100,7 @@ async function seedFile(
         .run();
     }
 
-    const commitId = await seedCommit(
-      STASH,
-      `cmt_spilled_${path}_${version}`,
-      createdAt,
-      kind,
-    );
+    const commitId = await seedCommit(STASH, `cmt_spilled_${path}_${version}`, createdAt, kind);
     await bindings.DB.prepare(
       `INSERT INTO versions (
         stash_name, path, version, kind, blob_hash, size_bytes, content_type,
