@@ -1,9 +1,14 @@
 import {
   CreateCommitBody,
+  COMMIT_DIFF_INLINE_ENTRIES,
   IDEMPOTENCY_KEY_MAX_CHARS,
+  ListCommitsQuery,
   MAX_COMMIT_INLINE_BYTES,
   MAX_META_BYTES,
+  RevertCommitBody,
+  StashError,
   canonicalJson,
+  computeDiff,
   isWellFormedString,
   sha256Hex,
   utf8ByteLength,
@@ -12,14 +17,21 @@ import {
   type CommitConflict,
   type CommitEntryInput,
   type CommitEntryRecord,
+  type CommitDiffResult,
+  type CommitListResponse,
+  type CommitRecord,
   type CommitResult,
   type CreateCommitBody as CreateCommitBodyType,
   type Current,
+  type ListCommitsQuery as ListCommitsQueryType,
+  type RevertCommitBody as RevertCommitBodyType,
   type Result,
 } from "@takazudo/zudo-history-stash-core";
 import type { Principal } from "../context.js";
 import type { Env } from "../env.js";
+import { parseBinarySettings } from "../binary-config.js";
 import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./blobs.js";
+import { createReads } from "./reads.js";
 import type { CommitRow } from "./schema.js";
 import { commitBatch, mintCommitId, type PreparedCommitEntry } from "./sql/commits.js";
 import type { StoreDependencies } from "./store.js";
@@ -61,6 +73,11 @@ interface CommittedVersionRow {
   previous_representation: "text" | "binary" | null;
 }
 
+interface CommitVersionRow extends CommittedVersionRow {
+  previous_version: number | null;
+  previous_size: number | null;
+}
+
 type CommitFailure = Extract<Result<CommitResult>, { ok: false }> & {
   conflicts?: CommitConflict[];
 };
@@ -71,12 +88,28 @@ export type StoreCommitResult =
 export interface CommitOptions {
   principal: string | Principal;
   idempotencyKey?: string;
+  source?: "commit" | "revert";
+  revertsCommitId?: string;
+  requestHash?: string;
 }
 
 export interface StashCommits {
   createCommit(
     stash: string,
     input: CreateCommitBodyType,
+    options: CommitOptions,
+  ): Promise<StoreCommitResult>;
+  getCommit(stash: string, id: string): Promise<CommitRecord | null>;
+  listCommits(stash: string, query?: Partial<ListCommitsQueryType>): Promise<CommitListResponse>;
+  getCommitDiff(
+    stash: string,
+    id: string,
+    query?: { context?: number; path?: string },
+  ): Promise<CommitDiffResult | null>;
+  revertCommit(
+    stash: string,
+    id: string,
+    input: RevertCommitBodyType,
     options: CommitOptions,
   ): Promise<StoreCommitResult>;
 }
@@ -309,6 +342,122 @@ async function resultFromCommit(
   };
 }
 
+function operationFromVersion(row: Pick<CommittedVersionRow, "kind">): CommitEntryRecord["op"] {
+  return row.kind === "rollback" ? "rollback" : row.kind === "delete" ? "delete" : "put";
+}
+
+async function commitVersions(
+  db: D1DatabaseSession,
+  stash: string,
+  id: string,
+): Promise<CommitVersionRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT current.id, current.path, current.version, current.kind, current.blob_hash,
+         current.size_bytes, current.content_type, current.representation, current.rollback_of,
+         previous.version AS previous_version, previous.blob_hash AS previous_hash,
+         previous.size_bytes AS previous_size,
+         previous.content_type AS previous_content_type,
+         previous.representation AS previous_representation
+       FROM versions AS current
+       LEFT JOIN versions AS previous
+         ON previous.stash_name = current.stash_name AND previous.path = current.path
+           AND previous.version = current.version - 1
+       WHERE current.stash_name = ? AND current.commit_id = ?
+       ORDER BY current.id`,
+    )
+    .bind(stash, id)
+    .all<CommitVersionRow>();
+  return rows.results;
+}
+
+function commitRecord(commit: CommitRow, rows: CommittedVersionRow[]): CommitRecord | null {
+  if (
+    commit.sealed !== 1 ||
+    rows.length !== commit.entry_count ||
+    commit.first_change_id === null ||
+    commit.last_change_id === null
+  ) {
+    return null;
+  }
+  return {
+    id: commit.id,
+    stash: commit.stash_name,
+    source: commit.source,
+    sourceId: commit.source_id,
+    author: commit.author,
+    message: commit.message,
+    meta: JSON.parse(commit.meta_json) as CommitRecord["meta"],
+    entryCount: commit.entry_count,
+    firstChangeId: commit.first_change_id,
+    lastChangeId: commit.last_change_id,
+    revertsCommitId: commit.reverts_commit_id,
+    createdBy: commit.created_by,
+    createdAt: new Date(commit.created_at).toISOString(),
+    entries: rows.map((row) => ({
+      path: row.path,
+      op: operationFromVersion(row),
+      version: row.version,
+      kind: row.kind,
+      changeId: row.id,
+      hash: row.blob_hash,
+      size: row.size_bytes,
+      contentType: row.content_type,
+      representation: row.representation,
+      rollbackOf: row.rollback_of,
+      ...(row.kind === "rollback"
+        ? {
+            identicalToHead:
+              row.blob_hash === row.previous_hash &&
+              row.content_type === row.previous_content_type &&
+              row.representation === row.previous_representation,
+          }
+        : {}),
+    })),
+  };
+}
+
+function commitSummary(commit: CommitRow): CommitListResponse["commits"][number] | null {
+  if (commit.sealed !== 1 || commit.first_change_id === null || commit.last_change_id === null) {
+    return null;
+  }
+  return {
+    id: commit.id,
+    stash: commit.stash_name,
+    source: commit.source,
+    sourceId: commit.source_id,
+    author: commit.author,
+    message: commit.message,
+    meta: JSON.parse(commit.meta_json) as CommitRecord["meta"],
+    entryCount: commit.entry_count,
+    firstChangeId: commit.first_change_id,
+    lastChangeId: commit.last_change_id,
+    revertsCommitId: commit.reverts_commit_id,
+    createdBy: commit.created_by,
+    createdAt: new Date(commit.created_at).toISOString(),
+  };
+}
+
+function encodeCommitCursor(createdAt: number, id: string): string {
+  return btoa(`${String(createdAt)}:${id}`);
+}
+
+function decodeCommitCursor(value: string): { createdAt: number; id: string } {
+  let decoded: string;
+  try {
+    decoded = atob(value);
+  } catch {
+    throw new StashError("validation", "Invalid commit cursor.");
+  }
+  const separator = decoded.indexOf(":");
+  const createdAt = Number(decoded.slice(0, separator));
+  const id = decoded.slice(separator + 1);
+  if (separator < 1 || !Number.isSafeInteger(createdAt) || createdAt < 0 || id.length === 0) {
+    throw new StashError("validation", "Invalid commit cursor.");
+  }
+  return { createdAt, id };
+}
+
 async function replay(
   db: D1DatabaseSession,
   commit: CommitRow,
@@ -389,20 +538,22 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     if (totalBytes > MAX_COMMIT_INLINE_BYTES)
       return failure("payload-too-large", 413, "Commit bodies are too large");
 
-    const requestHash = await sha256Hex(
-      canonicalJson({
-        entries: value.entries.map((entry, index) => {
-          const fact = putFacts.get(index);
-          if (!fact || !("body" in entry)) return entry;
-          const { body: _body, ...rest } = entry;
-          return { ...rest, bodyHash: fact.hash };
+    const requestHash =
+      options.requestHash ??
+      (await sha256Hex(
+        canonicalJson({
+          entries: value.entries.map((entry, index) => {
+            const fact = putFacts.get(index);
+            if (!fact || !("body" in entry)) return entry;
+            const { body: _body, ...rest } = entry;
+            return { ...rest, bodyHash: fact.hash };
+          }),
+          author: value.author ?? "",
+          message: value.message ?? "",
+          meta: value.meta ?? {},
+          expectedLastChangeId: value.expectedLastChangeId ?? null,
         }),
-        author: value.author ?? "",
-        message: value.message ?? "",
-        meta: value.meta ?? {},
-        expectedLastChangeId: value.expectedLastChangeId ?? null,
-      }),
-    );
+      ));
     const db = env.DB.withSession("first-primary");
     if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const prior = await existingCommit(db, stash, options.idempotencyKey);
@@ -472,13 +623,13 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     const row = {
       id: commitId,
       stash_name: stash,
-      source: "commit" as const,
+      source: options.source ?? ("commit" as const),
       source_id: null,
       author: value.author ?? "",
       message: value.message ?? "",
       meta_json: metaJson,
       entry_count: prepared.length,
-      reverts_commit_id: null,
+      reverts_commit_id: options.revertsCommitId ?? null,
       idempotency_key: options.idempotencyKey ?? null,
       request_hash: requestHash,
       created_by: createdBy(options.principal),
@@ -529,5 +680,252 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       : failure("internal", 500, "Commit batch refused without a competing write");
   }
 
-  return { createCommit };
+  async function getCommit(stash: string, id: string): Promise<CommitRecord | null> {
+    const db = env.DB.withSession("first-primary");
+    const row = await db
+      .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
+      .bind(stash, id)
+      .first<CommitRow>();
+    if (row === null) return null;
+    return commitRecord(row, await commitVersions(db, stash, id));
+  }
+
+  async function listCommits(
+    stash: string,
+    query: Partial<ListCommitsQueryType> = {},
+  ): Promise<CommitListResponse> {
+    const parsed = ListCommitsQuery.safeParse(query);
+    if (!parsed.success) throw new StashError("validation", "Invalid commit list query.");
+    const value = parsed.data;
+    const cursor = value.after === undefined ? undefined : decodeCommitCursor(value.after);
+    const pathFilter =
+      value.path === undefined
+        ? ""
+        : ` AND EXISTS (
+          SELECT 1 FROM versions INDEXED BY versions_stash_commit
+          WHERE versions.stash_name = commits.stash_name
+            AND versions.commit_id = commits.id AND versions.path = ?
+        )`;
+    const cursorFilter =
+      cursor === undefined ? "" : " AND (created_at < ? OR (created_at = ? AND id < ?))";
+    const db = env.DB.withSession("first-primary");
+    const totalStatement = db.prepare(
+      `SELECT COUNT(*) AS total FROM commits
+       WHERE stash_name = ? AND sealed = 1${pathFilter}`,
+    );
+    const total = await (
+      value.path === undefined ? totalStatement.bind(stash) : totalStatement.bind(stash, value.path)
+    ).first<{ total: number }>();
+    const statement = db.prepare(
+      `SELECT * FROM commits
+       WHERE stash_name = ? AND sealed = 1${pathFilter}${cursorFilter}
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+    );
+    const bindings: unknown[] = [stash];
+    if (value.path !== undefined) bindings.push(value.path);
+    if (cursor !== undefined) bindings.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    bindings.push(value.limit + 1);
+    const rows = await statement.bind(...bindings).all<CommitRow>();
+    const hasMore = rows.results.length > value.limit;
+    const pageRows = rows.results.slice(0, value.limit);
+    const commits = pageRows.map(commitSummary);
+    if (commits.some((entry) => entry === null)) {
+      throw new StashError("internal", "Stored commit is incomplete.");
+    }
+    const last = pageRows.at(-1);
+    return {
+      commits: commits as CommitListResponse["commits"],
+      nextAfter: hasMore && last ? encodeCommitCursor(last.created_at, last.id) : null,
+      total: total?.total ?? 0,
+    };
+  }
+
+  async function getCommitDiff(
+    stash: string,
+    id: string,
+    query: { context?: number; path?: string } = {},
+  ): Promise<CommitDiffResult | null> {
+    if (
+      query.context !== undefined &&
+      (!Number.isSafeInteger(query.context) || query.context < 0)
+    ) {
+      throw new StashError("validation", "Invalid commit diff query.");
+    }
+    const db = env.DB.withSession("first-primary");
+    const commit = await db
+      .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
+      .bind(stash, id)
+      .first<CommitRow>();
+    if (commit === null) return null;
+    const allRows = await commitVersions(db, stash, id);
+    const filtered =
+      query.path === undefined ? allRows : allRows.filter((row) => row.path === query.path);
+    const truncated = filtered.length > COMMIT_DIFF_INLINE_ENTRIES;
+    const rows = filtered.slice(0, COMMIT_DIFF_INLINE_ENTRIES);
+    const reads = createReads(env, deps);
+    const diffMaxBytes = parseBinarySettings(env).diffMaxBytes;
+    const entries: CommitDiffResult["entries"] = [];
+    for (const row of rows) {
+      const from =
+        row.previous_version === null
+          ? null
+          : { version: row.previous_version, hash: row.previous_hash };
+      const to = { version: row.version, hash: row.blob_hash };
+      let diff: CommitDiffResult["entries"][number]["diff"];
+      if (
+        (row.previous_hash !== null && row.previous_representation === "binary") ||
+        (row.blob_hash !== null && row.representation === "binary")
+      ) {
+        diff = { state: "binary" };
+      } else if ((row.previous_size ?? 0) > diffMaxBytes || row.size_bytes > diffMaxBytes) {
+        diff = { state: "oversized" };
+      } else {
+        const fromSource =
+          row.previous_version === null || row.previous_hash === null
+            ? null
+            : await reads.getFileSource(stash, row.path, { version: row.previous_version });
+        const toSource =
+          row.blob_hash === null
+            ? null
+            : await reads.getFileSource(stash, row.path, { version: row.version });
+        if (
+          (row.previous_hash !== null && fromSource === null) ||
+          (row.blob_hash !== null && toSource === null)
+        ) {
+          throw new StashError("internal", "Stored commit content is unavailable.");
+        }
+        const [fromText, toText] = await Promise.all([
+          fromSource === null ? "" : reads.materializeText(fromSource),
+          toSource === null ? "" : reads.materializeText(toSource),
+        ]);
+        diff = computeDiff({
+          fromText,
+          toText,
+          fromLabel: `a/${row.path}@v${String(row.previous_version ?? 0)}`,
+          toLabel: `b/${row.path}@v${String(row.version)}`,
+          context: query.context,
+          maxBytes: diffMaxBytes,
+        });
+      }
+      entries.push({
+        path: row.path,
+        op: operationFromVersion(row),
+        from,
+        to,
+        diff,
+      });
+    }
+    return { entries, truncated };
+  }
+
+  async function revertCommit(
+    stash: string,
+    id: string,
+    input: RevertCommitBodyType,
+    options: CommitOptions,
+  ): Promise<StoreCommitResult> {
+    const parsed = RevertCommitBody.safeParse(input);
+    if (!parsed.success) return failure("validation", 400, "Invalid revert input");
+    if (
+      options.idempotencyKey !== undefined &&
+      (options.idempotencyKey.length < 1 ||
+        options.idempotencyKey.length > IDEMPOTENCY_KEY_MAX_CHARS)
+    ) {
+      return failure("validation", 400, "Invalid idempotency key");
+    }
+    const value = parsed.data;
+    const requestHash = await sha256Hex(
+      canonicalJson({
+        commitId: id,
+        author: value.author ?? "",
+        message: value.message ?? `Revert ${id}`,
+        meta: value.meta ?? {},
+      }),
+    );
+    const db = env.DB.withSession("first-primary");
+    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
+    const target = await db
+      .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
+      .bind(stash, id)
+      .first<CommitRow>();
+    if (target === null) return failure("not-found", 404, "Commit not found");
+    const targetRows = await commitVersions(db, stash, id);
+
+    const prior = await existingCommit(db, stash, options.idempotencyKey);
+    if (prior !== null) {
+      if (prior.request_hash !== requestHash) {
+        return failure(
+          "idempotency-key-reused",
+          422,
+          "Idempotency key was used for another request",
+        );
+      }
+      const record = commitRecord(prior, await commitVersions(db, stash, prior.id));
+      if (record === null) return failure("internal", 500, "Idempotency result is missing");
+      const revertedPaths = new Set(record.entries.map((entry) => entry.path));
+      const skipped = targetRows
+        .filter((row) => !revertedPaths.has(row.path))
+        .map((row) => ({ path: row.path, reason: "already-deleted" }));
+      return {
+        ok: true,
+        value: { ...record, ...(skipped.length > 0 ? { skipped } : {}) },
+        statusCode: 201,
+        replayed: true,
+      };
+    }
+
+    const paths = [...new Set(targetRows.map((row) => row.path))];
+    const heads =
+      paths.length === 0
+        ? []
+        : (
+            await db
+              .prepare(
+                `SELECT f.path, f.head_version, f.deleted
+               FROM files AS f JOIN json_each(?) AS requested ON requested.value = f.path
+               WHERE f.stash_name = ?`,
+              )
+              .bind(JSON.stringify(paths), stash)
+              .all<{ path: string; head_version: number; deleted: 0 | 1 }>()
+          ).results;
+    const headByPath = new Map(heads.map((head) => [head.path, head]));
+    const entries: CommitEntryInput[] = [];
+    const skipped: { path: string; reason: string }[] = [];
+    for (const row of targetRows) {
+      const head = headByPath.get(row.path);
+      const shouldDelete = row.version === 1 || row.previous_hash === null;
+      if (shouldDelete && head?.head_version === row.version && head.deleted === 1) {
+        skipped.push({ path: row.path, reason: "already-deleted" });
+      } else if (shouldDelete) {
+        entries.push({ op: "delete", path: row.path, expectedVersion: row.version });
+      } else {
+        entries.push({
+          op: "rollback",
+          path: row.path,
+          expectedVersion: row.version,
+          toVersion: row.version - 1,
+        });
+      }
+    }
+    if (entries.length === 0) return failure("validation", 400, "nothing to revert");
+    const result = await createCommit(
+      stash,
+      {
+        entries,
+        author: value.author,
+        message: value.message ?? `Revert ${id}`,
+        meta: value.meta,
+      },
+      {
+        ...options,
+        source: "revert",
+        revertsCommitId: id,
+        requestHash,
+      },
+    );
+    if (!result.ok || skipped.length === 0) return result;
+    return { ...result, value: { ...result.value, skipped } };
+  }
+
+  return { createCommit, getCommit, listCommits, getCommitDiff, revertCommit };
 }

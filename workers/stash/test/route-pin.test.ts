@@ -11,11 +11,6 @@ import { createTestEnv } from "./helpers/env.js";
 type RouteTuple = readonly [string, string];
 
 const skeletonRouteProbes = [
-  { id: "createCommit", method: "POST", path: "/v1/stashes/route-pin/commits" },
-  { id: "getCommit", method: "GET", path: "/v1/stashes/route-pin/commits/cmt_1" },
-  { id: "listCommits", method: "GET", path: "/v1/stashes/route-pin/commits" },
-  { id: "getCommitDiff", method: "GET", path: "/v1/stashes/route-pin/commits/cmt_1/diff" },
-  { id: "revertCommit", method: "POST", path: "/v1/stashes/route-pin/commits/cmt_1/revert" },
   { id: "getSnapshot", method: "GET", path: "/v1/stashes/route-pin/snapshot?at=commit%3Acmt_1" },
   { id: "createChangeSet", method: "POST", path: "/v1/stashes/route-pin/change-sets" },
   { id: "listChangeSets", method: "GET", path: "/v1/stashes/route-pin/change-sets" },
@@ -136,7 +131,7 @@ describe("route contract pin", () => {
     expect(response.status).toBe(501);
   });
 
-  it("keeps all twelve raw skeleton RPC methods on generic request transport", async () => {
+  it("uses real commit RPC routes while remaining skeleton RPC routes stay generic", async () => {
     await seedStash("route-pin");
     const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
     const entry = { op: "put" as const, path: "docs/a.md", expectedVersion: null, body: "a" };
@@ -164,7 +159,14 @@ describe("route contract pin", () => {
       rpc.approveChangeSet("test-admin", "route-pin", "chs_1", {}),
       rpc.rejectChangeSet("test-admin", "route-pin", "chs_1", {}),
     ]);
-    expect(responses.map(({ status }) => status)).toEqual(Array(12).fill(501));
+    expect(responses.map(({ status }) => status)).toEqual([
+      201,
+      404,
+      200,
+      404,
+      404,
+      ...Array(7).fill(501),
+    ]);
   });
 
   it("exports one parser and transport-error identity from the client package root", async () => {
