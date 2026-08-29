@@ -1746,6 +1746,300 @@ const TRACE: readonly TraceStep[] = [
       }
     },
   },
+  {
+    name: "prefix fence creates an atomic multi-entry commit",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-fence-site-c1" },
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "fence-site/alpha.txt",
+            expectedVersion: null,
+            body: "alpha-v1\n",
+          },
+          {
+            op: "put",
+            path: "fence-site/beta.txt",
+            expectedVersion: null,
+            body: "beta-v1\n",
+          },
+        ],
+        author: "conformance",
+        message: "fence site seed",
+        meta: { suite: "fence" },
+      },
+    }),
+    verify(response, body, context) {
+      const step = "prefix fence creates an atomic multi-entry commit";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, {
+        source: "commit",
+        entryCount: 2,
+        entries: [{ path: "fence-site/alpha.txt" }, { path: "fence-site/beta.txt" }],
+      });
+      if (typeof value.id !== "string") traceFailure(step, "missing commit id");
+      const firstChangeId = value.firstChangeId;
+      const lastChangeId = value.lastChangeId;
+      if (
+        typeof firstChangeId !== "number" ||
+        !Number.isSafeInteger(firstChangeId) ||
+        firstChangeId < 1
+      ) {
+        traceFailure(step, "firstChangeId must be a positive safe integer");
+      }
+      if (
+        typeof lastChangeId !== "number" ||
+        !Number.isSafeInteger(lastChangeId) ||
+        lastChangeId <= firstChangeId
+      ) {
+        traceFailure(step, "lastChangeId must be a safe integer after firstChangeId");
+      }
+      const entries = array(value.entries, step).map((entry) => record(entry, step));
+      assertEqual(step, entries.length, 2, "entries.length");
+      assertEqual(step, entries[0]?.path, "fence-site/alpha.txt", "entries[0].path");
+      assertEqual(step, entries[1]?.path, "fence-site/beta.txt", "entries[1].path");
+      assertEqual(step, entries[0]?.changeId, firstChangeId, "entries[0].changeId");
+      assertEqual(step, entries[1]?.changeId, lastChangeId, "entries[1].changeId");
+      remember(context, "fenceSiteFirstCommitId", value.id);
+      remember(context, "fenceSiteFirstChangeId", firstChangeId);
+      remember(context, "fenceSiteFirstLastChangeId", lastChangeId);
+    },
+  },
+  {
+    name: "unrelated prefix advances the stash cursor",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-fence-docs-c2" },
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "fence-docs/unrelated.txt",
+            expectedVersion: null,
+            body: "unrelated\n",
+          },
+        ],
+        author: "conformance",
+        message: "fence docs write",
+        meta: { suite: "fence" },
+      },
+    }),
+    verify(response, body, context) {
+      const step = "unrelated prefix advances the stash cursor";
+      assertStatus(step, response, 201);
+      assertSubset(step, body, {
+        source: "commit",
+        entryCount: 1,
+        entries: [{ path: "fence-docs/unrelated.txt" }],
+      });
+      const value = record(body, step);
+      const lastChangeId = value.lastChangeId;
+      if (typeof lastChangeId !== "number" || !Number.isSafeInteger(lastChangeId)) {
+        traceFailure(step, "lastChangeId must be a safe integer");
+      }
+      if (lastChangeId <= numberValue(context, "fenceSiteFirstLastChangeId", step)) {
+        traceFailure(step, "unrelated prefix did not advance the stash cursor");
+      }
+    },
+  },
+  {
+    name: "prefix fence accepts an unrelated newer change",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-fence-site-c3" },
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "fence-site/alpha.txt",
+            expectedVersion: 1,
+            body: "alpha-v2\n",
+          },
+          {
+            op: "put",
+            path: "fence-site/conditional.txt",
+            expectedVersion: null,
+            body: "conditional\n",
+          },
+        ],
+        author: "conformance",
+        message: "fence site conditional write",
+        meta: { suite: "fence" },
+        expectedLastChangeId: numberValue(
+          context,
+          "fenceSiteFirstLastChangeId",
+          "prefix fence accepts an unrelated newer change",
+        ),
+        expectedLastChangePrefix: "fence-site",
+      },
+    }),
+    verify(response, body, context) {
+      const step = "prefix fence accepts an unrelated newer change";
+      assertStatus(step, response, 201);
+      assertSubset(step, body, {
+        source: "commit",
+        entryCount: 2,
+        entries: [
+          { path: "fence-site/alpha.txt", version: 2 },
+          { path: "fence-site/conditional.txt", version: 1 },
+        ],
+      });
+      const value = record(body, step);
+      if (typeof value.id !== "string") traceFailure(step, "missing commit id");
+      const lastChangeId = value.lastChangeId;
+      if (typeof lastChangeId !== "number" || !Number.isSafeInteger(lastChangeId)) {
+        traceFailure(step, "lastChangeId must be a safe integer");
+      }
+      if (lastChangeId <= numberValue(context, "fenceSiteFirstLastChangeId", step)) {
+        traceFailure(step, "conditional write did not advance the site cursor");
+      }
+      remember(context, "fenceSiteNewestCommitId", value.id);
+    },
+  },
+  {
+    name: "prefix fence rejects a stale site cursor without conflicts",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-fence-site-stale" },
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "fence-site/alpha.txt",
+            expectedVersion: 1,
+            body: "alpha-v2\n",
+          },
+          {
+            op: "put",
+            path: "fence-site/conditional.txt",
+            expectedVersion: null,
+            body: "conditional\n",
+          },
+        ],
+        author: "conformance",
+        message: "fence site conditional write",
+        meta: { suite: "fence" },
+        expectedLastChangeId: numberValue(
+          context,
+          "fenceSiteFirstLastChangeId",
+          "prefix fence rejects a stale site cursor without conflicts",
+        ),
+        expectedLastChangePrefix: "fence-site",
+      },
+    }),
+    verify(response, body) {
+      const step = "prefix fence rejects a stale site cursor without conflicts";
+      assertStatus(step, response, 409);
+      errorCode(step, body, "stale");
+      const value = record(body, step);
+      if ("conflicts" in value)
+        traceFailure(step, "stale response unexpectedly includes conflicts");
+    },
+  },
+  errorStep(
+    "prefix fence requires a cursor",
+    "createCommit",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-fence-prefix-validation" },
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "fence-site/validation.txt",
+            expectedVersion: null,
+            body: "validation\n",
+          },
+        ],
+        expectedLastChangePrefix: "fence-site",
+      },
+    }),
+    400,
+    "validation",
+  ),
+  responseStep(
+    "commit diff reports a prefix-scoped range",
+    "getCommitDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "fenceSiteNewestCommitId", "prefix range diff")}/diff?from=commit%3A${encodeURIComponent(stringValue(context, "fenceSiteFirstCommitId", "prefix range diff"))}&prefix=fence-site`,
+      token: "read",
+    }),
+    200,
+    {
+      entries: [
+        {
+          path: "fence-site/alpha.txt",
+          op: "put",
+          from: { version: 1 },
+          to: { version: 2 },
+        },
+        {
+          path: "fence-site/conditional.txt",
+          op: "put",
+          from: null,
+          to: { version: 1 },
+        },
+      ],
+      truncated: false,
+    },
+  ),
+  responseStep(
+    "commit diff equal range is empty",
+    "getCommitDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "fenceSiteNewestCommitId", "equal range diff")}/diff?from=commit%3A${encodeURIComponent(stringValue(context, "fenceSiteNewestCommitId", "equal range diff"))}`,
+      token: "read",
+    }),
+    200,
+    { entries: [], truncated: false },
+  ),
+  responseStep(
+    "snapshot cursor resolves the previous commit",
+    "getSnapshot",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/snapshot?at=change%3A${numberValue(context, "fenceSiteFirstChangeId", "snapshot cursor")}&prefix=fence-site`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      at: {
+        commitId: stringValue(context, "sdkFinalCommitId", "snapshot cursor"),
+        changeId: numberValue(context, "sdkFinalChangeId", "snapshot cursor"),
+      },
+      files: [],
+    }),
+  ),
+  errorStep(
+    "snapshot rejects a cursor below the first boundary",
+    "getSnapshot",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/snapshot?at=change%3A0`,
+      token: "read",
+    }),
+    404,
+    "not-found",
+  ),
   errorStep(
     "file list rejects an excessive limit",
     "listFiles",
