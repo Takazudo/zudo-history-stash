@@ -205,7 +205,16 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     input: CreateCommitBody,
     idempotencyKey?: string,
   ): Promise<Response> {
-    return this.jsonSkeleton("POST", `/v1/stashes/${stash}/commits`, token, input, idempotencyKey);
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/commits`,
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
+      },
+      body: JSON.stringify(input),
+      token,
+    });
   }
   async getCommit(token: string, stash: string, id: string): Promise<Response> {
     return this.request({ method: "GET", path: `/v1/stashes/${stash}/commits/${id}`, token });
@@ -242,13 +251,16 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     input: RevertCommitBody,
     idempotencyKey?: string,
   ): Promise<Response> {
-    return this.jsonSkeleton(
-      "POST",
-      `/v1/stashes/${stash}/commits/${id}/revert`,
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/commits/${id}/revert`,
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
+      },
+      body: JSON.stringify(input),
       token,
-      input,
-      idempotencyKey,
-    );
+    });
   }
   async getSnapshot(token: string, stash: string, query: SnapshotQuery): Promise<Response> {
     return this.request({
