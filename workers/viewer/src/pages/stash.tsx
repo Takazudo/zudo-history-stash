@@ -2,13 +2,14 @@ import type { ChangeItem, FileSummary } from "@takazudo/zudo-history-stash";
 import {
   Bytes,
   Button,
-  ChangeRow,
+  ChangesList,
   DeleteStashDialog,
   LoadMore,
   PathCell,
   RelativeTime,
   useCanWrite,
   useIsAdmin,
+  useOpenChangeSetCount,
   useStashHref,
 } from "@takazudo/zudo-history-stash-ui";
 import { useCallback, useState, type ChangeEvent } from "react";
@@ -74,6 +75,7 @@ export default function StashPage() {
   const write = useCanWrite(stash ?? "");
   const admin = useIsAdmin();
   const hrefFor = useStashHref();
+  const openChangeSets = useOpenChangeSetCount(stash ?? "");
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const files = usePagedData<FileSummary, string>(
@@ -205,6 +207,13 @@ export default function StashPage() {
                   <h2 id="stash-changes-title">Recent changes</h2>
                   <p>Newest activity in {stash}.</p>
                 </div>
+                <nav aria-label="Stash history" className="page-actions">
+                  <Link to={hrefFor({ kind: "commits", stash })}>Commits</Link>
+                  <Link to={hrefFor({ kind: "change-sets", stash })}>
+                    Change sets
+                    {openChangeSets.state === "ready" ? ` (${openChangeSets.value} open)` : ""}
+                  </Link>
+                </nav>
               </div>
               {changes.initialLoading ? <p className="loading-copy">Loading changes…</p> : null}
               {changes.error ? (
@@ -216,13 +225,7 @@ export default function StashPage() {
               {!changes.initialLoading && !changes.error && newestChanges.length === 0 ? (
                 <p className="empty-copy">No changes have been recorded.</p>
               ) : null}
-              {newestChanges.length > 0 ? (
-                <ul className="changes-list">
-                  {newestChanges.map((change) => (
-                    <ChangeRow key={change.changeId} change={change} />
-                  ))}
-                </ul>
-              ) : null}
+              {newestChanges.length > 0 ? <ChangesList changes={newestChanges} /> : null}
               <div className="section-card__footer">
                 <LoadMore
                   hasMore={changes.hasMore}

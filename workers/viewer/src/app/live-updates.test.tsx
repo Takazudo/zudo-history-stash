@@ -358,6 +358,71 @@ describe("ViewerLiveUpdatesProvider", () => {
     expect(fake.events.subscriberCount("archive")).toBe(0);
   });
 
+  it("reconciles commit frames across the whole stash and preserves every change-set path hint", async () => {
+    const source = manualStream();
+    const rows = [
+      change({ changeId: 1, path: "docs/one.txt" }),
+      change({ changeId: 2, path: "docs/two.txt" }),
+    ];
+    const changes = vi.fn(
+      async (options?: { since?: number }): Promise<ClientResult<ListChangesResult>> => ({
+        ok: true,
+        value: {
+          changes: rows.filter((row) => row.changeId > (options?.since ?? 0)),
+          hasMore: false,
+          nextSince: null,
+        },
+      }),
+    );
+    const base = createFakeViewerClient();
+    const client = createFakeViewerClient({
+      files: (stash) => ({
+        ...base.files(stash),
+        changes,
+        events: () => source.stream,
+      }),
+    });
+    client.withSignal = () => client;
+    const onRefresh = vi.fn<ViewerLiveRefreshHandler>();
+    const rendered = renderLiveRoute(() => client, onRefresh);
+
+    source.emit({ type: "ready", head: 2, checkpoint: 1 });
+    source.setStatus("live");
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    onRefresh.mockClear();
+
+    source.emit({
+      type: "commit",
+      commitId: "cmt_2",
+      stash: "notes",
+      entryCount: 1,
+      firstChangeId: 2,
+      lastChangeId: 2,
+      origin: "peer-tab",
+    });
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    const commitBatch = onRefresh.mock.calls[0]?.[0];
+    expect(commitBatch?.reason).toBe("commit");
+    expect(commitBatch && "hintedPath" in commitBatch).toBe(false);
+    expect(commitBatch?.changes).toEqual([rows[1]]);
+
+    onRefresh.mockClear();
+    source.emit({
+      type: "change-set",
+      changeSetId: "chs_2",
+      stash: "notes",
+      paths: ["docs/one.txt", "docs/two.txt"],
+      status: "open",
+      origin: "peer-tab",
+    });
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(2));
+    expect(onRefresh.mock.calls.map(([batch]) => batch.hintedPath)).toEqual([
+      "docs/one.txt",
+      "docs/two.txt",
+    ]);
+    rendered.unmount();
+  });
+
   it("uses one exported polling timer and the same authoritative fanout path", async () => {
     vi.useFakeTimers();
     try {

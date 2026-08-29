@@ -67,6 +67,10 @@ The Viewer uses these stable, bookmarkable paths:
 - `/s/:stash/f/*path?version=N` — file content and history, optionally at a stored version
 - `/s/:stash/diff/*path?from=N&to=M|head&context=N` — stored-version comparison
 - `/s/:stash/edit/*path?from=N` — write-gated editor, optionally seeded from an older version
+- `/s/:stash/commits` — atomic commit list, optionally filtered with `path=...`
+- `/s/:stash/commits/:id` — commit metadata and per-entry diffs; reverting requires write access
+- `/s/:stash/change-sets` — change-set list with `status` and `path` filters
+- `/s/:stash/change-sets/:id` — staged review; approval and rejection require write access
 - `/s/:stash/new` — write-gated new-file form
 - `/s/:stash/tokens` — admin-only token management
 
