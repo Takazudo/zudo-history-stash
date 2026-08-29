@@ -208,11 +208,13 @@ export class StashEvents extends DurableObject<Env> {
     } catch {
       return errorResponse(400, "Invalid event.");
     }
-    const event = StashEventSchema.safeParse(value);
-    if (!event.success) return errorResponse(400, "Invalid event.");
+    const events = StashEventSchema.array().min(1).safeParse(value);
+    if (!events.success) return errorResponse(400, "Invalid event batch.");
 
-    const frame = encodeEvent(event.data);
-    for (const subscriber of this.subscribers.values()) subscriber.offer(frame);
+    for (const event of events.data) {
+      const frame = encodeEvent(event);
+      for (const subscriber of this.subscribers.values()) subscriber.offer(frame);
+    }
     return new Response(null, { status: 204 });
   }
 

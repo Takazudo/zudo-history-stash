@@ -34,7 +34,7 @@ describe("change-set routes", () => {
           if (property === "getByName") {
             return () => ({
               fetch: async (eventRequest: Request) => {
-                events.push(StashEventSchema.parse(await eventRequest.json()));
+                events.push(...StashEventSchema.array().parse(await eventRequest.json()));
                 return new Response(null, { status: 204 });
               },
             });

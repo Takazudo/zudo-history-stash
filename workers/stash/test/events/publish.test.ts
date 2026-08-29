@@ -5,8 +5,9 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../../src/app.js";
+import { createStashStore } from "../../src/d1/store.js";
 import type { Env } from "../../src/env.js";
-import { eventOrigin } from "../../src/events/publish.js";
+import { commitEvents, deliverEvents, eventOrigin } from "../../src/events/publish.js";
 import { bearer, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
 
@@ -22,10 +23,12 @@ function recordingEnv(
   bindings: Env;
   events: StashEvent[];
   names: string[];
+  batches: StashEvent[][];
 } {
   const base = createTestEnv().env;
   const events: StashEvent[] = [];
   const names: string[] = [];
+  const batches: StashEvent[][] = [];
   const namespace = new Proxy(base.STASH_EVENTS, {
     get(target, property, receiver) {
       if (property === "getByName") {
@@ -40,7 +43,9 @@ function recordingEnv(
                   if (options.failure === "throw") throw error;
                   if (options.failure === "reject") return Promise.reject(error);
                   return input.json().then((value) => {
-                    events.push(StashEventSchema.parse(value));
+                    const batch = StashEventSchema.array().parse(value);
+                    batches.push(batch);
+                    events.push(...batch);
                     return new Response(null, { status: 204 });
                   });
                 };
@@ -88,7 +93,7 @@ function recordingEnv(
             };
           },
         });
-  return { bindings: { ...base, DB: database, STASH_EVENTS: namespace }, events, names };
+  return { bindings: { ...base, DB: database, STASH_EVENTS: namespace }, events, names, batches };
 }
 
 async function mutation(
@@ -114,6 +119,51 @@ beforeEach(async () => {
 });
 
 describe("event publication", () => {
+  it("delivers a 20-entry commit as one ordered Durable Object POST", async () => {
+    const { bindings, events, batches, names } = recordingEnv();
+    const result = await createStashStore(bindings, {
+      now: () => 1_800_000_000_000,
+      createId: () => "twenty-entry-commit",
+    }).commits.createCommit(
+      STASH,
+      {
+        entries: Array.from({ length: 20 }, (_, index) => ({
+          op: "put" as const,
+          path: `file-${index}.txt`,
+          expectedVersion: null,
+          body: String(index),
+        })),
+      },
+      {
+        principal: "test",
+        onCommitted: (committed) =>
+          deliverEvents(bindings, STASH, commitEvents(committed, "tab-twenty")),
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected 20-entry commit");
+
+    expect(names).toEqual([STASH]);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(21);
+    expect(events.slice(0, 20)).toSatisfy((value: StashEvent[]) =>
+      value.every(
+        (event, index) =>
+          event.type === "change" &&
+          event.commitId === result.value.id &&
+          event.changeId === result.value.entries[index]?.changeId,
+      ),
+    );
+    expect(events.at(-1)).toEqual({
+      type: "commit",
+      commitId: result.value.id,
+      stash: STASH,
+      entryCount: 20,
+      firstChangeId: result.value.firstChangeId,
+      lastChangeId: result.value.lastChangeId,
+      origin: "tab-twenty",
+    });
+  });
   it("accepts only canonical client origins after the actual Request boundary", () => {
     expect(
       eventOrigin(new Request("https://x", { headers: { [STASH_CLIENT_ID_HEADER]: "tab A!~" } })),
