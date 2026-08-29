@@ -122,7 +122,9 @@ describe("history import store", () => {
       env.DB.prepare(
         `SELECT source, entry_count, change_count, sealed, first_change_id, last_change_id
          FROM commits WHERE id = ?`,
-      ).bind(result.value.commitId).first(),
+      )
+        .bind(result.value.commitId)
+        .first(),
     ).resolves.toEqual({
       source: "import",
       entry_count: 5,

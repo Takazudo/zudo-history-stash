@@ -301,10 +301,12 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
     try {
       const results = await db.batch(batch.statements);
       if (results.at(-1)?.meta.changes === 1) {
-        const committedRows = await db
-          .prepare(SELECT_COMMIT_VERSIONS)
-          .bind(stash, commitId)
-          .all<{ id: number; path: string; version: number; kind: "put" | "delete" | "rollback" }>();
+        const committedRows = await db.prepare(SELECT_COMMIT_VERSIONS).bind(stash, commitId).all<{
+          id: number;
+          path: string;
+          version: number;
+          kind: "put" | "delete" | "rollback";
+        }>();
         const createdVersions = logical.map((entry, index): ImportedVersionFact | null => {
           const committed = committedRows.results[index];
           if (
@@ -312,7 +314,8 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
             committed.path !== value.path ||
             committed.version !== entry.version ||
             committed.kind !== entry.kind
-          ) return null;
+          )
+            return null;
           return {
             changeId: committed.id,
             version: entry.version,

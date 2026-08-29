@@ -47,11 +47,7 @@ async function seedLiveFile(path: string, bodies: readonly string[]): Promise<st
       )
       .bind(READ_FIXTURE_STASH, hash, body, encoder.encode(body).byteLength, createdAt)
       .run();
-    const commitId = await seedCommit(
-      READ_FIXTURE_STASH,
-      `cmt_diff_${path}_${version}`,
-      createdAt,
-    );
+    const commitId = await seedCommit(READ_FIXTURE_STASH, `cmt_diff_${path}_${version}`, createdAt);
     await db
       .prepare(
         `INSERT INTO versions (
@@ -59,7 +55,15 @@ async function seedLiveFile(path: string, bodies: readonly string[]): Promise<st
           rollback_of, author, message, meta_json, created_at, commit_id
         ) VALUES (?, ?, ?, 'put', ?, ?, 'text/plain; charset=utf-8', NULL, '', '', '{}', ?, ?)`,
       )
-      .bind(READ_FIXTURE_STASH, path, version, hash, encoder.encode(body).byteLength, createdAt, commitId)
+      .bind(
+        READ_FIXTURE_STASH,
+        path,
+        version,
+        hash,
+        encoder.encode(body).byteLength,
+        createdAt,
+        commitId,
+      )
       .run();
   }
   const headVersion = bodies.length;
