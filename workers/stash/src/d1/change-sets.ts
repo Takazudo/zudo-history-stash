@@ -13,6 +13,7 @@ import {
   computeDiff,
   decodeCanonicalBase64,
   isWellFormedString,
+  pathPrefixRange,
   sha256Hex,
   utf8ByteLength,
   validatePath,
@@ -564,6 +565,9 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       }
       const parsed = CreateChangeSetBody.safeParse(input);
       if (!parsed.success) validation("Invalid change-set input.");
+      const prefixResult = pathPrefixRange(input.expectedLastChangePrefix);
+      if (!prefixResult.ok) throw new StashError(prefixResult.error, prefixResult.message);
+      const prefixRange = prefixResult.range;
       const key = validateKey(options.idempotencyKey);
       const now = deps.now();
       const requestHash = await sha256Hex(canonicalJson(input as JsonValue));
@@ -586,10 +590,17 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       }
       if (input.expectedLastChangeId !== undefined) {
         const latest = await db
-          .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
-          .bind(stash)
+          .prepare(
+            `SELECT COALESCE(MAX(id), 0) AS id FROM versions
+             WHERE stash_name = ? AND (? IS NULL OR (path >= ? AND path < ?))`,
+          )
+          .bind(stash, prefixRange?.lo ?? null, prefixRange?.lo ?? null, prefixRange?.hi ?? null)
           .first<{ id: number }>();
-        if ((latest?.id ?? 0) !== input.expectedLastChangeId) {
+        const conflicts =
+          prefixRange === null
+            ? (latest?.id ?? 0) !== input.expectedLastChangeId
+            : (latest?.id ?? 0) > input.expectedLastChangeId;
+        if (conflicts) {
           throw new StashError(
             "commit-conflict",
             `Expected last change ${input.expectedLastChangeId}, newest change is ${latest?.id ?? 0}.`,
@@ -654,6 +665,7 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
         idempotency_key: key ?? null,
         request_hash: key === undefined ? null : requestHash,
         expected_last_change_id: input.expectedLastChangeId ?? null,
+        expected_last_change_prefix: input.expectedLastChangePrefix ?? null,
         decision_attempt: null,
         decided_at: null,
         decided_by: null,
@@ -672,12 +684,22 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
         const blobKey = `${entry.content_storage}:${entry.blob_hash}`;
         if (insertedBlobs.has(blobKey)) continue;
         insertedBlobs.add(blobKey);
-        const expectedFence =
-          row.expected_last_change_id === null
-            ? "1 = 1"
-            : "COALESCE((SELECT MAX(id) FROM versions WHERE stash_name = ?), 0) = ?";
-        const expectedParams =
-          row.expected_last_change_id === null ? [] : [stash, row.expected_last_change_id];
+        const expectedFence = `(? IS NULL
+          OR (? IS NULL AND COALESCE((SELECT MAX(id) FROM versions WHERE stash_name = ?), 0) = ?)
+          OR (? IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM versions WHERE stash_name = ? AND id > ? AND path >= ? AND path < ?
+          )))`;
+        const expectedParams = [
+          row.expected_last_change_id,
+          row.expected_last_change_prefix,
+          stash,
+          row.expected_last_change_id,
+          row.expected_last_change_prefix,
+          stash,
+          row.expected_last_change_id,
+          prefixRange?.lo ?? null,
+          prefixRange?.hi ?? null,
+        ];
         if (entry.textBody !== undefined && entry.blob_hash !== null) {
           const blob = prepared.get(entry.blob_hash);
           if (blob === undefined) return internal();
@@ -793,17 +815,27 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       if (row.expires_at <= now) {
         throw new StashError("change-set-expired", "Change set has expired.");
       }
+      const prefixResult = pathPrefixRange(row.expected_last_change_prefix ?? undefined);
+      if (!prefixResult.ok) {
+        throw new StashError("commit-conflict", prefixResult.message);
+      }
+      const prefixRange = prefixResult.range;
       const entries = await entriesFor(db, id);
       const initialConflicts = await approvalConflicts(db, row, entries);
       if (initialConflicts.length > 0) throwConflicts(initialConflicts, entries);
       const latest = await db
-        .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
-        .bind(stash)
+        .prepare(
+          `SELECT COALESCE(MAX(id), 0) AS id FROM versions
+           WHERE stash_name = ? AND (? IS NULL OR (path >= ? AND path < ?))`,
+        )
+        .bind(stash, prefixRange?.lo ?? null, prefixRange?.lo ?? null, prefixRange?.hi ?? null)
         .first<{ id: number }>();
-      if (
+      const expectedLastChangeConflict =
         row.expected_last_change_id !== null &&
-        (latest?.id ?? 0) !== row.expected_last_change_id
-      ) {
+        (prefixRange === null
+          ? (latest?.id ?? 0) !== row.expected_last_change_id
+          : (latest?.id ?? 0) > row.expected_last_change_id);
+      if (expectedLastChangeConflict) {
         throw new StashError(
           "commit-conflict",
           `Expected last change ${row.expected_last_change_id}, newest change is ${latest?.id ?? 0}.`,
@@ -839,6 +871,8 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
         commitId,
         now,
         decidedBy: options.decidedBy ?? "system",
+        prefixLo: prefixRange?.lo ?? null,
+        prefixHi: prefixRange?.hi ?? null,
       });
       let results: D1Result<unknown>[] | null = null;
       try {
@@ -873,14 +907,29 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       const finalEntries = await entriesFor(db, id);
       const conflicts = await approvalConflicts(db, finalRow, finalEntries);
       if (conflicts.length > 0) throwConflicts(conflicts, finalEntries);
+      const finalPrefixResult = pathPrefixRange(finalRow.expected_last_change_prefix ?? undefined);
+      if (!finalPrefixResult.ok) {
+        throw new StashError("commit-conflict", finalPrefixResult.message);
+      }
+      const finalPrefixRange = finalPrefixResult.range;
       const newest = await db
-        .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
-        .bind(stash)
+        .prepare(
+          `SELECT COALESCE(MAX(id), 0) AS id FROM versions
+           WHERE stash_name = ? AND (? IS NULL OR (path >= ? AND path < ?))`,
+        )
+        .bind(
+          stash,
+          finalPrefixRange?.lo ?? null,
+          finalPrefixRange?.lo ?? null,
+          finalPrefixRange?.hi ?? null,
+        )
         .first<{ id: number }>();
-      if (
+      const finalExpectedLastChangeConflict =
         finalRow.expected_last_change_id !== null &&
-        (newest?.id ?? 0) !== finalRow.expected_last_change_id
-      ) {
+        (finalPrefixRange === null
+          ? (newest?.id ?? 0) !== finalRow.expected_last_change_id
+          : (newest?.id ?? 0) > finalRow.expected_last_change_id);
+      if (finalExpectedLastChangeConflict) {
         throw new StashError(
           "commit-conflict",
           `Expected last change ${finalRow.expected_last_change_id}, newest change is ${newest?.id ?? 0}.`,

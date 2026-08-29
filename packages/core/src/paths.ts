@@ -3,6 +3,15 @@ import { MAX_PATH_BYTES } from "./limits.js";
 export type ValidationResult =
   { ok: true } | { ok: false; error: "invalid-path" | "validation"; message: string };
 
+export interface PathPrefixRange {
+  lo: string;
+  hi: string;
+}
+
+export type PathPrefixRangeResult =
+  | { ok: true; range: PathPrefixRange | null }
+  | { ok: false; error: "invalid-path" | "validation"; message: string };
+
 const STASH_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const PATH_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
@@ -28,6 +37,15 @@ export function validatePath(path: string): ValidationResult {
     return { ok: false, error: "invalid-path", message: "Invalid file path" };
   }
   return { ok: true };
+}
+
+export function pathPrefixRange(prefix: string | undefined): PathPrefixRangeResult {
+  if (prefix === undefined) return { ok: true, range: null };
+  const path = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+  const result = validatePath(path);
+  if (!result.ok) return result;
+  // "0" (U+0030) follows "/" (U+002F), making it the exclusive descendant bound.
+  return { ok: true, range: { lo: `${path}/`, hi: `${path}0` } };
 }
 
 export function joinPath(...segments: string[]): string {

@@ -3,9 +3,10 @@
 Typed, isomorphic HTTP client for the zudo-history-stash API. It runs in Node.js, browsers, and
 Cloudflare Workers and returns typed business outcomes for API validation and conflict responses.
 
-```bash
-pnpm add @takazudo/zudo-history-stash
-```
+This package is not published to npm yet. Clone the repository and build the workspace packages
+from the workspace root with `pnpm install` followed by `pnpm build:libs`. Then depend on the
+workspace package at `packages/client`, or run `pnpm pack` in that directory and install the
+generated tarball.
 
 ```ts
 import { createStashClient, isCommitConflict } from "@takazudo/zudo-history-stash";

@@ -455,10 +455,13 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 ### `POST /v1/admin/gc`
 
 - **Principal/capability:** `admin`; administrator only (lifecycle/write class).
-- **Request:** Strict JSON `{ kind, dryRun?, maxObjects?, cursor? }`. `kind` is `r2-orphans` or
-  `ledger`; `dryRun` defaults to `false`; `maxObjects` defaults to `100` and accepts integers from
-  `1` through `500`; `cursor` is an opaque, kind-bound v1 base64url cursor envelope. An explicit
-  cursor overrides the stored job cursor for this page.
+- **Request:** Strict JSON `{ kind, dryRun?, maxObjects?, cursor? }`. `kind` is `r2-orphans`,
+  `ledger`, or `content`; `content` deletes D1 content rows in `blobs` and `byte_blobs` that are
+  older than the content grace (`GC_CONTENT_MIN_AGE_MS`, 24 hours) and are referenced by no
+  version, no entry of a live change set, and no in-flight upload session. `dryRun` defaults to
+  `false`; `maxObjects` defaults to `100` and accepts integers from `1` through `500`; `cursor` is
+  an opaque, kind-bound v1 base64url cursor envelope. An explicit cursor overrides the stored job
+  cursor for this page.
 - **Response:** `200` with one synchronously completed `GcRunResult` page. `jobId` is the stable
   logical job ID and always equals `kind`; `runId` is a per-page UUID. `scanned`, `eligible`, and
   `deleted` are bounded by the requested page, although an invocation safety budget may stop a
@@ -473,11 +476,18 @@ stale runners cannot heartbeat, finalize, or release a successor lease. R2 orpha
 private R2 keys as opaque implementation details: keys never appear in responses or logs. Run
 history retains the newest five hundred records per kind.
 
+A `content` page deletes ONLY the D1 row and never calls R2; the object that row pointed at becomes
+an orphan, which the existing `r2-orphans` job reclaims on a later page (that job derives its
+reference set from the surviving `blobs`/`byte_blobs` rows). The stored bytes stay billed for the
+content grace PLUS however long the `r2-orphans` cursor takes to reach that key on its next pass;
+because the daily cron now splits one 45-operation budget across three kinds instead of two while
+an R2 page is still capped at 24 objects, that can be several cron days for a large bucket.
+
 ### `GET /v1/admin/gc/runs`
 
 - **Principal/capability:** `admin`; administrator only (read class).
-- **Request:** Optional `kind=r2-orphans|ledger` and `limit` (default `50`, maximum `200`). Results
-  are newest-first and deterministic.
+- **Request:** Optional `kind=r2-orphans|ledger|content` and `limit` (default `50`, maximum `200`).
+  Results are newest-first and deterministic.
 - **Response:** `200 { runs: GcRunResult[] }`. Each run has its UUID `runId`, stable `jobId` equal to
   its `kind`, dry-run flag, counters, opaque cursor or `null`, timestamps, and nullable error.
   The engine's invocation safety budget may stop a page below the requested `maxObjects`.
@@ -497,14 +507,20 @@ curl --fail-with-body -X POST \
 ```
 
 The R2 engine caps every page at 24 objects; the ledger accepts up to 500 rows per request. The
-scheduled handler requests 80 objects, alternates R2 and ledger pages, shares one 45-operation
-budget across the whole invocation, and stops after ten pages per kind or before the next page
-would exceed that budget. Pass returned cursors unchanged when continuing an explicit page;
-omitting `cursor` uses the stored progress. `cursor: null` restarts a later pass from the beginning.
-If a lease expires or a worker is interrupted, retry the same kind after the five-minute lease
-window; a `409 gc-busy` response means another page currently owns the fenced lease. Dry runs
-never delete data or persist progress, and no response, run record, or log exposes an R2 key or
-generation.
+scheduled handler requests 80 objects, round-robins `r2-orphans`, `ledger`, and `content` pages,
+shares one 45-operation budget across the whole invocation, and stops after ten pages per kind or
+before the next page would exceed that budget. Pass returned cursors unchanged when continuing an
+explicit page; omitting `cursor` uses the stored progress. `cursor: null` restarts a later pass from
+the beginning. If a lease expires or a worker is interrupted, retry the same kind after the
+five-minute lease window; a `409 gc-busy` response means another page currently owns the fenced
+lease. Dry runs never delete data or persist progress, and no response, run record, or log exposes
+an R2 key or generation.
+
+A `content` page reports `scanned` and `eligible` as the same eligible-row count, following the
+ledger engine's convention. `deleted` can legitimately be lower because the fenced DELETE
+re-applies the full eligibility predicate and skips a candidate that gained a reference between
+the scan and the delete. The recommended order is a `content` dry run, review the counters, live
+`content`, then `r2-orphans`.
 
 The production cron invokes this bounded round-robin at `17 3 * * *` UTC. Preview has no cron and
 must be run manually. Deploy generation-aware v2 writers and the migration before the API, verify
@@ -516,8 +532,16 @@ Commits apply up to 20 entries atomically: the gate checks every expected versio
 records one verdict, so either every entry lands or none does. Conflicts return root-level
 `conflicts[]`. For commit creation and revert, exactly one failed entry whose `current` is `null`
 returns `404 not-found`; every other entry-fence failure returns `409 commit-conflict`. For commit
-creation, a failed whole-stash fence returns `409 stale` without per-entry conflicts. Reverts create
-a new commit, never erase history. Change feeds group every written version by required `commitId`;
+creation, a failed whole-stash fence returns `409 stale` without per-entry conflicts. The
+`expectedLastChangePrefix` narrows `expectedLastChangeId` to the paths under that prefix and is valid
+only together with `expectedLastChangeId` (otherwise `400 validation`). It applies to both `POST
+/v1/stashes/:stash/commits` and `POST /v1/stashes/:stash/change-sets`; for a change set, the prefix
+is stored at creation and re-evaluated at approval. This is deliberately asymmetric: the whole-stash
+fence is an equality, so a cursor above the newest change is also stale, while the prefix-scoped fence
+asks only that nothing newer exists under the prefix, so such a cursor passes. The prefix is matched as
+a path range over descendants (`site` and `site/` are equivalent; `site2/...` is not under `site`). A
+failed fence returns `409 stale` on the commit route and `409 commit-conflict` on the change-set route.
+Reverts create a new commit, never erase history. Change feeds group every written version by required `commitId`;
 change sets hold expiring candidates and approval never rebases. Approval returns `404 not-found`
 only for one missing `delete` target; its other entry conflicts return `409 commit-conflict`, and
 both branches include `conflicts[]`.
@@ -544,6 +568,12 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 ### `GET /v1/stashes/:stash/commits/:id/diff`
 
+- **Request:** `from=commit:<id>` is an EXCLUSIVE lower bound making the response a range diff between
+  that commit and `:id`; one entry per changed path, with `to` the newest version in the range and
+  `from` the pre-range version (`null` when created inside the range). `prefix=<p>` filters and
+  composes with the exact-match `path`; `from` newer than the target is `400 validation`, unknown
+  `from` is `404 not-found`, and `from` equal to the target returns no entries. The response is the
+  unchanged `CommitDiffResult`, with `truncated` the only overflow signal (no pagination).
 - **Response:** `200 CommitDiffResult`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`, `500 internal`.
 
@@ -554,6 +584,10 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 ### `GET /v1/stashes/:stash/snapshot`
 
+- **Request:** `at` accepts `commit:<id>` or `change:<n>`. A `change:` cursor is floored to the newest
+  sealed commit whose `last_change_id` is at or below it, and the response's `at` reports that resolved
+  boundary, not the requested cursor; no sealed commit at or below is `404 not-found`. Flooring is safe
+  because a commit's change IDs are contiguous.
 - **Response:** `200 SnapshotResponse`.
 - **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`.
 

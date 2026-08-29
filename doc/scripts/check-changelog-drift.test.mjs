@@ -75,7 +75,10 @@ const ENGLISH_RELEASE_BODIES = {
 - Cover administrator, token, import, file, history, change-feed, stored-diff, and candidate-diff
   routes with typed business outcomes.
 - Add representation-cache handling, automatic idempotency keys, replay metadata, and bounded
-  \`putLatest\` conflict retries.`,
+  \`putLatest\` conflict retries.
+- Add capability-selected binary/large-object uploads, streamed current/historical downloads,
+  resumable session controls, bounded materializers, observed progress, and Request/Response RPC
+  stream flow control.`,
   ui: `- Add the embeddable provider, capability hooks, link bridge, base primitives, and namespaced CSS
   surface.`,
 };
@@ -227,13 +230,18 @@ test("the real bilingual changelog inventory has the exact schema and per-field 
         assert.equal(data.category, "changelog", `${locale}:${relativePath} release category`);
         const slug = relativePath.split("/")[0];
         const marker = locale === "en" ? "Released" : "リリース日";
-        assert.match(source, new RegExp(`^${marker}: [0-9]{4}-[0-9]{2}-[0-9]{2}$`, "mu"));
+        const dateLines = source.match(/^(?:Released|リリース日): .*$/gmu) ?? [];
+        assert.ok(dateLines.length <= 1, `${locale}:${relativePath} has at most one release date`);
+        if (dateLines.length === 1) {
+          assert.match(dateLines[0], new RegExp(`^${marker}: [0-9]{4}-[0-9]{2}-[0-9]{2}$`, "u"));
+        }
         if (release[2] === "0.1.0") {
-          const date = slug === "ui" ? "2026-08-26" : "2026-08-25";
-          assert.match(source, new RegExp(`^${marker}: ${date}$`, "mu"));
           if (locale === "en") {
             assert.equal(
-              source.split(`Released: ${date}\n\n`)[1].trim(),
+              source
+                .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n+/u, "")
+                .replace(/^Released: [0-9]{4}-[0-9]{2}-[0-9]{2}\r?\n(?:\r?\n)?/u, "")
+                .trim(),
               ENGLISH_RELEASE_BODIES[slug],
             );
           }
@@ -488,12 +496,6 @@ test("malformed release inputs fail deterministically before emission or temp cr
       /category must be changelog/u,
     ],
     [
-      "missing date",
-      valid.replace("Released: 2026-08-25", "No release date"),
-      /standalone Released/u,
-    ],
-    ["malformed date", valid.replace("2026-08-25", "2026-8-25"), /standalone Released/u],
-    [
       "duplicate date",
       valid.replace("Released: 2026-08-25", "Released: 2026-08-25\nReleased: 2026-08-26"),
       /standalone Released/u,
@@ -591,6 +593,31 @@ test("malformed release inputs fail deterministically before emission or temp cr
     }
   });
 });
+
+for (const [name, contents] of [
+  ["a missing release date", releaseSource("core").replace("Released: 2026-08-25\n\n", "")],
+  ["noncanonical release-date prose", releaseSource("core").replace("2026-08-25", "2026-8-25")],
+]) {
+  test(`release inputs accept ${name}`, async () => {
+    const fixture = await createFixture();
+    try {
+      await writeFile(join(fixture.projectRoot, CHANGELOGS[0].sourceDir, "0.1.0.mdx"), contents);
+      emitChangelogs({
+        projectRoot: fixture.projectRoot,
+        changelogs: CHANGELOGS,
+        logger: { info() {} },
+      });
+      const result = await checkChangelogDrift({
+        projectRoot: fixture.projectRoot,
+        repositoryRoot: fixture.repositoryRoot,
+        tempParent: fixture.repositoryRoot,
+      });
+      assert.equal(result.checked.length, 3);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+}
 
 test("source and committed-output symlinks fail closed before emission", async (t) => {
   await t.test("release file symlink", async () => {

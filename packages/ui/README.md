@@ -13,10 +13,11 @@ badge count. The default detail routes are `/s/:stash/commits/:id` and
 
 ## Install
 
-```bash
-pnpm add @takazudo/zudo-history-stash-ui @takazudo/zudo-history-stash \
-  @takazudo/zudo-history-stash-core react react-dom
-```
+This package is not published to npm yet. Clone the repository and build the workspace packages
+from the workspace root with `pnpm install` followed by `pnpm build:libs`. Then depend on the
+workspace package at `packages/ui`. For use outside the workspace, run `pnpm pack` in
+`packages/core`, `packages/client`, and `packages/ui`, then install the generated tarballs together
+with `react` and `react-dom`.
 
 Import the component stylesheet once in the host entry point, after the host's design tokens:
 

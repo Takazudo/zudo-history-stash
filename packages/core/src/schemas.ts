@@ -226,13 +226,13 @@ export const DiffCandidateBody = z.strictObject({
   context: z.number().int().nonnegative().optional(),
 });
 export const RunGcBody = z.strictObject({
-  kind: z.enum(["r2-orphans", "ledger"]),
+  kind: z.enum(["r2-orphans", "ledger", "content"]),
   dryRun: z.boolean().default(false),
   maxObjects: z.number().int().min(1).max(500).default(100),
   cursor: z.string().optional(),
 });
 export const ListGcRunsQuery = z.strictObject({
-  kind: z.enum(["r2-orphans", "ledger"]).optional(),
+  kind: z.enum(["r2-orphans", "ledger", "content"]).optional(),
   limit,
 });
 const entryPath = z.string().refine((value) => validatePath(value).ok, "Invalid file path");
@@ -306,8 +306,18 @@ export const CreateCommitBody = z
     message,
     meta: commitMeta,
     expectedLastChangeId: nonNegativeInteger.optional(),
+    expectedLastChangePrefix: z.string().optional(),
   })
-  .superRefine(entryListRefinement);
+  .superRefine(entryListRefinement)
+  .superRefine((value, context) => {
+    if (value.expectedLastChangePrefix !== undefined && value.expectedLastChangeId === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedLastChangePrefix"],
+        message: "expectedLastChangePrefix requires expectedLastChangeId",
+      });
+    }
+  });
 export const RevertCommitBody = z.strictObject({ author, message, meta: commitMeta });
 export const ListCommitsQuery = z.strictObject({
   limit,
@@ -317,9 +327,14 @@ export const ListCommitsQuery = z.strictObject({
 export const CommitDiffQuery = z.strictObject({
   context: optionalQueryInteger(0),
   path: entryPath.optional(),
+  from: z
+    .string()
+    .regex(/^commit:.+$/)
+    .optional(),
+  prefix: z.string().optional(),
 });
 export const SnapshotQuery = z.strictObject({
-  at: z.string().regex(/^commit:.+$/),
+  at: z.string().regex(/^(commit:.+|change:(0|[1-9][0-9]*))$/),
   prefix: z.string().optional(),
   delimiter: z.string().optional(),
   includeDeleted: z.preprocess(
@@ -329,6 +344,21 @@ export const SnapshotQuery = z.strictObject({
   limit,
   after: z.string().optional(),
 });
+
+export type SnapshotSelector =
+  { kind: "commit"; commitId: string } | { kind: "change"; changeId: number };
+
+export function parseSnapshotSelector(at: string): SnapshotSelector | null {
+  const match = /^(commit:.+|change:(0|[1-9][0-9]*))$/.exec(at);
+  if (match === null) return null;
+
+  if (at.startsWith("change:")) {
+    const changeId = Number(at.slice("change:".length));
+    return Number.isSafeInteger(changeId) ? { kind: "change", changeId } : null;
+  }
+
+  return { kind: "commit", commitId: at.slice("commit:".length) };
+}
 
 const changeSetCommon = { path: entryPath, baseVersion: commitExpectedVersion };
 export const ChangeSetEntryInput = z.union([
@@ -366,8 +396,18 @@ export const CreateChangeSetBody = z
     meta: commitMeta,
     expiresAt: z.iso.datetime().optional(),
     expectedLastChangeId: nonNegativeInteger.optional(),
+    expectedLastChangePrefix: z.string().optional(),
   })
-  .superRefine(entryListRefinement);
+  .superRefine(entryListRefinement)
+  .superRefine((value, context) => {
+    if (value.expectedLastChangePrefix !== undefined && value.expectedLastChangeId === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedLastChangePrefix"],
+        message: "expectedLastChangePrefix requires expectedLastChangeId",
+      });
+    }
+  });
 export const ApproveChangeSetBody = z.strictObject({ author, message });
 export const RejectChangeSetBody = z.strictObject({
   reason: boundedString(MAX_MESSAGE_BYTES).optional(),

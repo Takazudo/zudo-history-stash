@@ -789,6 +789,8 @@ export function createStashClient(options: StashClientOptions): StashClient {
         target(route("getCommitDiff", stash, undefined, id), [
           ["context", diffOptions.context],
           ["path", diffOptions.path],
+          ["from", diffOptions.from],
+          ["prefix", diffOptions.prefix],
         ]),
       )) as ClientResult<CommitDiffResult>;
     },

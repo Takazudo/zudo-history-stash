@@ -20,11 +20,18 @@ export { GcBudgetExhaustedError } from "./d1/gc-store.js";
 export const GC_STORAGE_OPERATION_LIMIT = 45;
 export const GC_R2_LIST_LIMIT = 24;
 export const GC_ORPHAN_MIN_AGE_MS = 900_000;
+export const GC_CONTENT_MIN_AGE_MS = 86_400_000;
 const IDEMPOTENCY_TTL_MS = IDEMPOTENCY_TTL_DAYS * 24 * 60 * 60 * 1_000;
 
 type R2Cursor = { v: 1; kind: "r2-orphans"; value: string };
 type LedgerCursor = { v: 1; kind: "ledger"; createdAt: number; rowid: number };
-type GcCursor = R2Cursor | LedgerCursor;
+type ContentCursor = {
+  v: 1;
+  kind: "content";
+  table: "blobs" | "byte_blobs";
+  after: { stashName: string; hash: string } | null;
+};
+type GcCursor = R2Cursor | LedgerCursor | ContentCursor;
 
 export class GcCursorValidationError extends Error {
   constructor() {
@@ -86,6 +93,14 @@ export function encodeLedgerCursor(createdAt: number, rowid: number): string {
   return encodeJson({ v: 1, kind: "ledger", createdAt, rowid });
 }
 
+export function encodeContentCursor(
+  table: ContentCursor["table"],
+  after: ContentCursor["after"],
+): string {
+  if (after !== null && (after.stashName.length === 0 || after.hash.length === 0)) invalidCursor();
+  return encodeJson({ v: 1, kind: "content", table, after });
+}
+
 export function decodeGcCursor(kind: GcJobKind, cursor: string): GcCursor {
   const decoded = decodeJson(cursor);
   if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) invalidCursor();
@@ -101,21 +116,52 @@ export function decodeGcCursor(kind: GcJobKind, cursor: string): GcCursor {
     }
     return { v: 1, kind, value: value.value };
   }
-  if (
-    !exactKeys(value, ["v", "kind", "createdAt", "rowid"]) ||
-    !Number.isSafeInteger(value.createdAt) ||
-    (value.createdAt as number) < 0 ||
-    !Number.isSafeInteger(value.rowid) ||
-    (value.rowid as number) < 1
-  ) {
-    invalidCursor();
+  if (kind === "ledger") {
+    if (
+      !exactKeys(value, ["v", "kind", "createdAt", "rowid"]) ||
+      !Number.isSafeInteger(value.createdAt) ||
+      (value.createdAt as number) < 0 ||
+      !Number.isSafeInteger(value.rowid) ||
+      (value.rowid as number) < 1
+    ) {
+      invalidCursor();
+    }
+    return {
+      v: 1,
+      kind,
+      createdAt: value.createdAt as number,
+      rowid: value.rowid as number,
+    };
   }
-  return {
-    v: 1,
-    kind,
-    createdAt: value.createdAt as number,
-    rowid: value.rowid as number,
-  };
+  if (kind === "content") {
+    if (
+      !exactKeys(value, ["v", "kind", "table", "after"]) ||
+      (value.table !== "blobs" && value.table !== "byte_blobs")
+    ) {
+      invalidCursor();
+    }
+    const after = value.after;
+    if (after !== null) {
+      if (
+        typeof after !== "object" ||
+        Array.isArray(after) ||
+        !exactKeys(after as Record<string, unknown>, ["stashName", "hash"]) ||
+        typeof (after as Record<string, unknown>).stashName !== "string" ||
+        (after as Record<string, unknown>).stashName === "" ||
+        typeof (after as Record<string, unknown>).hash !== "string" ||
+        (after as Record<string, unknown>).hash === ""
+      ) {
+        invalidCursor();
+      }
+    }
+    return {
+      v: 1,
+      kind,
+      table: value.table,
+      after: after as ContentCursor["after"],
+    };
+  }
+  return invalidCursor();
 }
 
 export interface GcHooks {
@@ -160,6 +206,11 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     "GC_ORPHAN_MIN_AGE_MS",
     env.GC_ORPHAN_MIN_AGE_MS,
     GC_ORPHAN_MIN_AGE_MS,
+  );
+  const contentMinAgeMs = configuredExactInteger(
+    "GC_CONTENT_MIN_AGE_MS",
+    env.GC_CONTENT_MIN_AGE_MS,
+    GC_CONTENT_MIN_AGE_MS,
   );
 
   async function finishError(run: GcRunHandle): Promise<GcRunResult> {
@@ -296,6 +347,47 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     });
   }
 
+  // Content GC removes only D1 rows; r2-orphans later reclaims objects no longer referenced
+  // by surviving blobs/byte_blobs rows. This path must never access the R2 binding.
+  async function runContent(
+    run: GcRunHandle,
+    input: ParsedRunGcBody,
+    cursor: ContentCursor | null,
+  ): Promise<GcRunResult> {
+    const now = dependencies.now();
+    const cutoffs = {
+      content: now - contentMinAgeMs,
+      changeSet: now - contentMinAgeMs,
+    };
+    const table = cursor?.table ?? "blobs";
+    const after = cursor?.after ?? null;
+    const rows = await store.contentPage(table, cutoffs, after, input.maxObjects + 1);
+    const page = rows.slice(0, input.maxObjects);
+    const hasNext = rows.length > input.maxObjects;
+    const boundary = page.at(-1);
+    const nextCursor = hasNext
+      ? boundary === undefined
+        ? invalidCursor()
+        : encodeContentCursor(table, {
+            stashName: boundary.stash_name,
+            hash: boundary.hash,
+          })
+      : table === "blobs"
+        ? encodeContentCursor("byte_blobs", null)
+        : null;
+    await store.heartbeat(run, dependencies.now());
+    if (!run.dryRun && page.length > 0) await dependencies.hooks.beforeDelete?.();
+    const deleted = run.dryRun ? 0 : await store.deleteContentPage(run, table, page, cutoffs);
+    return store.finish(run, {
+      nextCursor,
+      scanned: page.length,
+      eligible: page.length,
+      deleted,
+      error: null,
+      finishedAt: dependencies.now(),
+    });
+  }
+
   return {
     budget: dependencies.budget,
     async run(input: ParsedRunGcBody): Promise<GcRunResult> {
@@ -316,9 +408,14 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
       try {
         const decoded =
           explicit ?? (inputCursor === null ? null : decodeGcCursor(input.kind, inputCursor));
-        return input.kind === "r2-orphans"
-          ? await runR2(run, input, decoded as R2Cursor | null)
-          : await runLedger(run, input, decoded as LedgerCursor | null);
+        switch (input.kind) {
+          case "r2-orphans":
+            return await runR2(run, input, decoded as R2Cursor | null);
+          case "ledger":
+            return await runLedger(run, input, decoded as LedgerCursor | null);
+          case "content":
+            return await runContent(run, input, decoded as ContentCursor | null);
+        }
       } catch (error) {
         if (error instanceof GcLeaseLostError) throw error;
         return finishError(run);

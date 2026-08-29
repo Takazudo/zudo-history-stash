@@ -2449,11 +2449,11 @@
             ]
           },
           "jobId": {
-            "enum": ["r2-orphans", "ledger"],
+            "enum": ["r2-orphans", "ledger", "content"],
             "type": "string"
           },
           "kind": {
-            "enum": ["r2-orphans", "ledger"],
+            "enum": ["r2-orphans", "ledger", "content"],
             "type": "string"
           },
           "runId": {
@@ -4331,7 +4331,7 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "kind selects the R2-orphan or ledger job. dryRun and maxObjects default to false and 100; maxObjects is an integer from 1 through 500. cursor is an opaque v1 base64url kind-bound envelope.",
+                "description": "kind selects the R2-orphan, ledger, or unreferenced-content job. dryRun and maxObjects default to false and 100; maxObjects is an integer from 1 through 500. cursor is an opaque v1 base64url kind-bound envelope.",
                 "properties": {
                   "cursor": {
                     "description": "Opaque v1 base64url kind-bound cursor; explicit input overrides stored progress.",
@@ -4344,7 +4344,7 @@
                   },
                   "kind": {
                     "description": "Selects the garbage-collection job kind.",
-                    "enum": ["r2-orphans", "ledger"],
+                    "enum": ["r2-orphans", "ledger", "content"],
                     "type": "string"
                   },
                   "maxObjects": {
@@ -4433,7 +4433,7 @@
             "required": false,
             "schema": {
               "description": "Optional garbage-collection job-kind filter.",
-              "enum": ["r2-orphans", "ledger"],
+              "enum": ["r2-orphans", "ledger", "content"],
               "type": "string"
             },
             "style": "form"
@@ -5546,6 +5546,9 @@
                     "maximum": 9007199254740991,
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "expectedLastChangePrefix": {
+                    "type": "string"
                   },
                   "expiresAt": {
                     "format": "date-time",
@@ -6881,6 +6884,9 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "expectedLastChangePrefix": {
+                    "type": "string"
+                  },
                   "message": {
                     "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
                     "type": "string"
@@ -7217,6 +7223,27 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "pattern": "^commit:.+$",
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "prefix",
             "required": false,
             "schema": {
               "type": "string"
@@ -10073,7 +10100,7 @@
             "name": "at",
             "required": true,
             "schema": {
-              "pattern": "^commit:.+$",
+              "pattern": "^(commit:.+|change:(0|[1-9][0-9]*))$",
               "type": "string"
             },
             "style": "form"

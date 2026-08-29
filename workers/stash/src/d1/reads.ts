@@ -10,7 +10,8 @@ import {
   type JsonValue,
   type Representation,
   type VersionKind,
-  validatePath,
+  pathPrefixRange,
+  type PathPrefixRange,
 } from "@takazudo/zudo-history-stash-core";
 import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
@@ -26,6 +27,7 @@ import {
   SELECT_FILES,
   SELECT_HISTORY_HEAD,
   SELECT_HISTORY_VERSIONS,
+  SELECT_SNAPSHOT_COMMIT_AT_CHANGE,
   SELECT_SNAPSHOT_COMMON_PREFIXES,
   SELECT_SNAPSHOT_COMMIT,
   SELECT_SNAPSHOT_FILES,
@@ -181,6 +183,7 @@ export interface StashReads {
     commitId: string,
     options?: ListFilesOptions,
   ): Promise<ReadSnapshot | null>;
+  resolveCommitAtChange(stash: string, changeId: number): Promise<string | null>;
   listHistory(
     stash: string,
     path: string,
@@ -227,10 +230,7 @@ function validateString(value: string, name: string): string {
   return value;
 }
 
-interface PathRange {
-  lo: string | null;
-  hi: string | null;
-}
+type PathRange = PathPrefixRange | { lo: null; hi: null };
 
 interface NormalizedListOptions {
   includeDeleted: boolean;
@@ -241,12 +241,10 @@ interface NormalizedListOptions {
 }
 
 function normalizePrefix(value: string | undefined): PathRange {
-  if (value === undefined) return { lo: null, hi: null };
-  const prefix = validateString(value, "prefix");
-  const path = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
-  const result = validatePath(path);
+  const prefix = value === undefined ? undefined : validateString(value, "prefix");
+  const result = pathPrefixRange(prefix);
   if (!result.ok) throw new StashError(result.error, result.message);
-  return { lo: `${path}/`, hi: `${path}0` };
+  return result.range ?? { lo: null, hi: null };
 }
 
 function normalizeListOptions(options: ListFilesOptions): NormalizedListOptions {
@@ -612,6 +610,16 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
         commonPrefixes: page.commonPrefixes,
         nextAfter: page.nextAfter,
       };
+    },
+
+    async resolveCommitAtChange(stash, changeId) {
+      const stashName = validateString(stash, "stash");
+      const session = env.DB.withSession("first-primary");
+      const commit = await session
+        .prepare(SELECT_SNAPSHOT_COMMIT_AT_CHANGE)
+        .bind(stashName, changeId)
+        .first<{ commit_id: string }>();
+      return commit?.commit_id ?? null;
     },
 
     async getSnapshot(stash, commitId, options = {}) {

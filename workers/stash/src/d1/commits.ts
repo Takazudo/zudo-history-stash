@@ -11,6 +11,7 @@ import {
   computeDiff,
   decodeCanonicalBase64,
   isWellFormedString,
+  pathPrefixRange,
   sha256Hex,
   utf8ByteLength,
   validateStashName,
@@ -25,6 +26,7 @@ import {
   type CreateCommitBody as CreateCommitBodyType,
   type Current,
   type ListCommitsQuery as ListCommitsQueryType,
+  type PathPrefixRange,
   type RevertCommitBody as RevertCommitBodyType,
   type Result,
   type StorageTier,
@@ -111,7 +113,7 @@ export interface StashCommits {
   getCommitDiff(
     stash: string,
     id: string,
-    query?: { context?: number; path?: string },
+    query?: { context?: number; path?: string; from?: string; prefix?: string },
   ): Promise<CommitDiffResult | null>;
   revertCommit(
     stash: string,
@@ -212,6 +214,7 @@ async function readSnapshot(
   db: D1DatabaseSession,
   stash: string,
   entries: CommitEntryInput[],
+  range: PathPrefixRange | null,
 ): Promise<CommitSnapshotRow[]> {
   const rows = await db
     .prepare(
@@ -225,7 +228,10 @@ async function readSnapshot(
          target.version AS target_version, target.blob_hash AS target_hash,
          target.size_bytes AS target_size, target.content_type AS target_content_type,
          target.representation AS target_representation,
-         COALESCE((SELECT MAX(id) FROM versions WHERE stash_name = ?), 0) AS newest_change_id
+         COALESCE((
+           SELECT MAX(id) FROM versions
+           WHERE stash_name = ? AND (? IS NULL OR (path >= ? AND path < ?))
+         ), 0) AS newest_change_id
        FROM json_each(?) AS e
        LEFT JOIN files AS f
          ON f.stash_name = ? AND f.path = json_extract(e.value, '$.path')
@@ -238,7 +244,15 @@ async function readSnapshot(
            AND target.version = json_extract(e.value, '$.targetVersion')
        ORDER BY CAST(e.key AS INTEGER)`,
     )
-    .bind(stash, snapshotPayload(entries), stash, stash)
+    .bind(
+      stash,
+      range?.lo ?? null,
+      range?.lo ?? null,
+      range?.hi ?? null,
+      snapshotPayload(entries),
+      stash,
+      stash,
+    )
     .all<CommitSnapshotRow>();
   return rows.results;
 }
@@ -415,6 +429,55 @@ async function commitVersions(
   return rows.results;
 }
 
+async function rangeVersions(
+  db: D1DatabaseSession,
+  stash: string,
+  fromChangeId: number,
+  toChangeId: number,
+  range: PathPrefixRange | null,
+): Promise<CommitVersionRow[]> {
+  const rows = await db
+    .prepare(
+      `WITH ranged AS (
+         SELECT path, MAX(id) AS change_id
+         FROM versions
+         WHERE stash_name = ? AND id > ? AND id <= ?
+           AND (? IS NULL OR (path >= ? AND path < ?))
+         GROUP BY path
+       )
+       SELECT current.id, current.path, current.version, current.kind, current.blob_hash,
+         current.size_bytes, current.content_type, current.representation, current.rollback_of,
+         current.copied_from_path, current.copied_from_version,
+         ${storageTierSql("current")} AS storage_tier,
+         previous.version AS previous_version, previous.blob_hash AS previous_hash,
+         previous.size_bytes AS previous_size,
+         previous.content_type AS previous_content_type,
+         previous.representation AS previous_representation
+       FROM ranged
+       JOIN versions AS current ON current.id = ranged.change_id
+       LEFT JOIN versions AS previous ON previous.id = (
+         SELECT v.id
+         FROM versions AS v
+         WHERE v.stash_name = ? AND v.path = current.path AND v.id <= ?
+         ORDER BY v.version DESC
+         LIMIT 1
+       )
+       ORDER BY current.path`,
+    )
+    .bind(
+      stash,
+      fromChangeId,
+      toChangeId,
+      range?.lo ?? null,
+      range?.lo ?? null,
+      range?.hi ?? null,
+      stash,
+      fromChangeId,
+    )
+    .all<CommitVersionRow>();
+  return rows.results;
+}
+
 function commitRecord(commit: CommitRow, rows: CommittedVersionRow[]): CommitRecord | null {
   if (
     commit.sealed !== 1 ||
@@ -556,6 +619,9 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     const parsed = CreateCommitBody.safeParse(input);
     if (!parsed.success) return failure("validation", 400, "Invalid commit input");
     const value = parsed.data;
+    const prefixResult = pathPrefixRange(value.expectedLastChangePrefix);
+    if (!prefixResult.ok) return failure(prefixResult.error, 400, prefixResult.message);
+    const expectedLastChangeRange = prefixResult.range;
     if (
       options.idempotencyKey !== undefined &&
       (options.idempotencyKey.length < 1 ||
@@ -632,6 +698,7 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
           message: value.message ?? "",
           meta: value.meta ?? {},
           expectedLastChangeId: value.expectedLastChangeId ?? null,
+          expectedLastChangePrefix: value.expectedLastChangePrefix ?? null,
         }),
       ));
     const db = env.DB.withSession("first-primary");
@@ -639,15 +706,21 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     const prior = await existingCommit(db, stash, options.idempotencyKey);
     if (prior) return replay(db, prior, requestHash, value.entries);
 
-    const initialSnapshot = await readSnapshot(db, stash, value.entries);
+    const initialSnapshot = await readSnapshot(db, stash, value.entries, expectedLastChangeRange);
     if (
       value.expectedLastChangeId !== undefined &&
-      latestChange(initialSnapshot) !== value.expectedLastChangeId
+      (expectedLastChangeRange === null
+        ? latestChange(initialSnapshot) !== value.expectedLastChangeId
+        : latestChange(initialSnapshot) > value.expectedLastChangeId)
     ) {
       return failure(
         "stale",
         409,
-        `Expected last change ${value.expectedLastChangeId}, newest change is ${latestChange(initialSnapshot)}`,
+        `Expected last change ${value.expectedLastChangeId}${
+          value.expectedLastChangePrefix === undefined
+            ? ""
+            : ` for prefix "${value.expectedLastChangePrefix}"`
+        }, newest change is ${latestChange(initialSnapshot)}`,
       );
     }
     const initialConflicts = entryConflicts(value.entries, initialSnapshot);
@@ -736,6 +809,12 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
         ...(value.expectedLastChangeId === undefined
           ? {}
           : { expectedLastChangeId: value.expectedLastChangeId }),
+        ...(expectedLastChangeRange === null
+          ? {}
+          : {
+              expectedLastChangePrefixLo: expectedLastChangeRange.lo,
+              expectedLastChangePrefixHi: expectedLastChangeRange.hi,
+            }),
       });
       statements = deps.alterCommitStatementsForTest?.(statements) ?? statements;
       results = await db.batch(statements);
@@ -756,15 +835,21 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const racedReplay = await existingCommit(db, stash, options.idempotencyKey);
     if (racedReplay) return replay(db, racedReplay, requestHash, value.entries);
-    const finalSnapshot = await readSnapshot(db, stash, value.entries);
+    const finalSnapshot = await readSnapshot(db, stash, value.entries, expectedLastChangeRange);
     if (
       value.expectedLastChangeId !== undefined &&
-      latestChange(finalSnapshot) !== value.expectedLastChangeId
+      (expectedLastChangeRange === null
+        ? latestChange(finalSnapshot) !== value.expectedLastChangeId
+        : latestChange(finalSnapshot) > value.expectedLastChangeId)
     ) {
       return failure(
         "stale",
         409,
-        `Expected last change ${value.expectedLastChangeId}, newest change is ${latestChange(finalSnapshot)}`,
+        `Expected last change ${value.expectedLastChangeId}${
+          value.expectedLastChangePrefix === undefined
+            ? ""
+            : ` for prefix "${value.expectedLastChangePrefix}"`
+        }, newest change is ${latestChange(finalSnapshot)}`,
       );
     }
     const conflicts = entryConflicts(value.entries, finalSnapshot);
@@ -836,7 +921,7 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
   async function getCommitDiff(
     stash: string,
     id: string,
-    query: { context?: number; path?: string } = {},
+    query: { context?: number; path?: string; from?: string; prefix?: string } = {},
   ): Promise<CommitDiffResult | null> {
     if (
       query.context !== undefined &&
@@ -850,7 +935,29 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       .bind(stash, id)
       .first<CommitRow>();
     if (commit === null) return null;
-    const allRows = await commitVersions(db, stash, id);
+    const prefixResult = pathPrefixRange(query.prefix);
+    if (!prefixResult.ok) throw new StashError(prefixResult.error, prefixResult.message);
+    const range = prefixResult.range;
+    let allRows: CommitVersionRow[];
+    if (query.from === undefined) {
+      allRows = await commitVersions(db, stash, id);
+      if (range !== null) {
+        allRows = allRows.filter((row) => row.path >= range.lo && row.path < range.hi);
+      }
+    } else {
+      const fromCommit = await db
+        .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
+        .bind(stash, query.from.slice("commit:".length))
+        .first<CommitRow>();
+      if (fromCommit === null) return null;
+      const fromChangeId = fromCommit.last_change_id!;
+      const toChangeId = commit.last_change_id!;
+      if (fromChangeId > toChangeId) {
+        throw new StashError("validation", "from must not be newer than the target commit.");
+      }
+      if (fromChangeId === toChangeId) return { entries: [], truncated: false };
+      allRows = await rangeVersions(db, stash, fromChangeId, toChangeId, range);
+    }
     const filtered =
       query.path === undefined ? allRows : allRows.filter((row) => row.path === query.path);
     const truncated = filtered.length > COMMIT_DIFF_INLINE_ENTRIES;

@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { createChangeSets } from "../../src/d1/change-sets.js";
 import { createStashStore } from "../../src/d1/store.js";
 import type { Env } from "../../src/env.js";
 import { resetDatabase, seedStash } from "../helpers/app.js";
@@ -188,5 +189,108 @@ describe("change-set store", () => {
         expectedLastChangeId: 0,
       }),
     ).rejects.toMatchObject({ code: "commit-conflict", status: 409 });
+  });
+
+  it("scopes creation fences by prefix and stores the raw prefix", async () => {
+    await seedStash(STASH);
+    const store = createStashStore(env as Env, dependencies());
+    const site = await store.writes.put(STASH, "site/index.txt", {
+      body: "site",
+      expectedVersion: null,
+    });
+    if (!site.ok || !("changeId" in site.value)) {
+      throw new Error("Expected site seed write to create a version");
+    }
+    await store.writes.put(STASH, "docs/index.txt", { body: "docs", expectedVersion: null });
+
+    const created = await store.changeSets.createChangeSet(STASH, {
+      entries: [{ op: "put", path: "site/new.txt", baseVersion: null, body: "candidate" }],
+      expectedLastChangeId: site.value.changeId,
+      expectedLastChangePrefix: "site/",
+    });
+    const stored = await env.DB.prepare(
+      "SELECT expected_last_change_prefix FROM change_sets WHERE id = ?",
+    )
+      .bind(created.value.id)
+      .first<{ expected_last_change_prefix: string | null }>();
+    expect(stored?.expected_last_change_prefix).toBe("site/");
+
+    await store.writes.put(STASH, "site/other.txt", { body: "newer", expectedVersion: null });
+    await expect(
+      store.changeSets.createChangeSet(STASH, {
+        entries: [{ op: "put", path: "site/late.txt", baseVersion: null, body: "candidate" }],
+        expectedLastChangeId: site.value.changeId,
+        expectedLastChangePrefix: "site",
+      }),
+    ).rejects.toMatchObject({ code: "commit-conflict", status: 409 });
+  });
+
+  it("keeps whole-stash future cursors strict while prefix future cursors pass", async () => {
+    await seedStash(STASH);
+    const store = createStashStore(env as Env, dependencies());
+
+    await expect(
+      store.changeSets.createChangeSet(STASH, {
+        entries: [{ op: "put", path: "whole.txt", baseVersion: null, body: "candidate" }],
+        expectedLastChangeId: 100,
+      }),
+    ).rejects.toMatchObject({ code: "commit-conflict", status: 409 });
+    await expect(
+      store.changeSets.createChangeSet(STASH, {
+        entries: [{ op: "put", path: "site/future.txt", baseVersion: null, body: "candidate" }],
+        expectedLastChangeId: 100,
+        expectedLastChangePrefix: "site/",
+      }),
+    ).resolves.toMatchObject({ value: { status: "open" } });
+  });
+
+  it("applies the prefix fence to both stored rows and staged blobs", async () => {
+    await seedStash(STASH);
+    const writes = createStashStore(env as Env, dependencies()).writes;
+    let raced = false;
+    const changeSets = createChangeSets(env as Env, {
+      ...dependencies(),
+      onBeforeCommit: async () => {
+        if (raced) return;
+        raced = true;
+        const competitor = await writes.put(STASH, "site/competitor.txt", {
+          body: "competitor",
+          expectedVersion: null,
+        });
+        if (!competitor.ok) throw new Error("Expected competitor write to succeed");
+      },
+    });
+
+    await expect(
+      changeSets.createChangeSet(STASH, {
+        entries: [{ op: "put", path: "site/candidate.txt", baseVersion: null, body: "candidate" }],
+        expectedLastChangeId: 0,
+        expectedLastChangePrefix: "site/",
+      }),
+    ).rejects.toMatchObject({ code: "commit-conflict", status: 409 });
+    const changeSetCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM change_sets WHERE stash_name = ?",
+    )
+      .bind(STASH)
+      .first<{ count: number }>();
+    const blobCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM blobs WHERE stash_name = ?",
+    )
+      .bind(STASH)
+      .first<{ count: number }>();
+    expect(changeSetCount?.count).toBe(0);
+    expect(blobCount?.count).toBe(1);
+  });
+
+  it("rejects invalid creation fence prefixes as bad requests", async () => {
+    await seedStash(STASH);
+    const store = createStashStore(env as Env, dependencies());
+    await expect(
+      store.changeSets.createChangeSet(STASH, {
+        entries: [{ op: "put", path: "new.txt", baseVersion: null, body: "candidate" }],
+        expectedLastChangeId: 0,
+        expectedLastChangePrefix: "site//bad",
+      }),
+    ).rejects.toMatchObject({ code: "invalid-path", status: 400 });
   });
 });

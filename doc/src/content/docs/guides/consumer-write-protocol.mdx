@@ -94,6 +94,13 @@ keep the same canonical request under the same key until resolved.
 and, by default, up to three stale retries; it does not make a multi-step decision atomic or remove
 conflicts. Use explicit `files.put` when durable retry identity or a custom conflict policy matters.
 
+### Publish a static site without fencing unrelated paths
+
+A static-site publisher can read a snapshot, derive the output, and publish paths under `site/` with
+the decision cursor in `expectedLastChangeId` and `expectedLastChangePrefix: "site"`. Changes outside
+that prefix then do not force a retry. After two successful publications, request the range diff from
+the earlier published commit to the later one to see each path that moved between them.
+
 History remains append-only. Delete appends a tombstone, and rollback appends another version while
 requiring the current positive head as its fence. A tombstone cannot be a rollback target. See the
 [change set HTTP contract](../reference/http-api/change-sets.mdx) for the review-candidate route surface.

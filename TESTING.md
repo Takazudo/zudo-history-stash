@@ -300,8 +300,11 @@ no credentials:
 pnpm --filter zudo-history-stash probe:commit-batch
 ```
 
-Remote mode must target a disposable D1 database. Point at a gitignored Wrangler config containing
-that database's real ID; never use the production database. Cloudflare's
+Remote mode must target a disposable D1 database. Copy
+`workers/stash/wrangler.probe.local.example.toml` to the gitignored
+`workers/stash/wrangler.probe.local.toml` and paste that database's real ID; the
+`wrangler.*.local.toml` pattern keeps the credential-bearing copy out of git. Never use the
+production database. Cloudflare's
 [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) currently document 50 D1 queries
 per invocation on Workers Free and 1,000 on Workers Paid, and apply individual query limits to each
 statement in a batch. Supplying the applicable value lets the probe explain whether the observed
@@ -311,7 +314,7 @@ statement in a batch. Supplying the applicable value lets the probe explain whet
 CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" \
 CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
 COMMIT_BATCH_PROBE_REMOTE=1 \
-COMMIT_BATCH_PROBE_WRANGLER_CONFIG=wrangler.preview.local.toml \
+COMMIT_BATCH_PROBE_WRANGLER_CONFIG=wrangler.probe.local.toml \
 COMMIT_BATCH_PROBE_QUERY_LIMIT=1000 \
 pnpm --filter zudo-history-stash probe:commit-batch
 ```
@@ -321,6 +324,16 @@ run two probes concurrently against the same database. A failed or interrupted r
 the scratch tables behind; the next run drops them before starting and again during normal cleanup.
 The documented query limit is deliberately an input rather than a repository constant: limit
 constants and their contract rows belong to the separate limits task.
+
+#### Recorded remote probe outcome
+
+Leave the row unfilled until a human runs the probe against a disposable account. `MAX_COMMIT_ENTRIES`
+remains 20 until this table is filled; copy the probe's `limitAssessment` string verbatim into the
+Limit assessment column.
+
+| Date | Plan (Free/Paid) | Query limit supplied | Statements | Result (ok/failed) | Elapsed ms | Limit assessment | Evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+|  |  |  |  |  |  |  |  |
 
 ## Playwright conventions
 

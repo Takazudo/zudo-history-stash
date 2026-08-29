@@ -46,6 +46,8 @@ import {
   ifNoneMatchMatches,
   isStashClientId,
   isWellFormedString,
+  parseSnapshotSelector,
+  pathPrefixRange,
   requestHashInput,
   sha256Hex,
   statusForCode,
@@ -710,6 +712,17 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         "ledger",
         {
           kind: "ledger",
+          nextCursor: null,
+          leaseOwner: null,
+          leaseGeneration: 0,
+          leaseUntil: null,
+          updatedAt: 0,
+        },
+      ],
+      [
+        "content",
+        {
+          kind: "content",
           nextCursor: null,
           leaseOwner: null,
           leaseGeneration: 0,
@@ -1667,6 +1680,47 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         last === undefined || start + page.length >= candidates.length
           ? null
           : nextGcCursor(kind, last.key);
+    } else if (kind === "content") {
+      const candidates = [...state.blobs.entries()]
+        .flatMap(([stash, rows]) =>
+          [...rows.entries()].map(([hash, row]) => ({ key: `${stash}\u0000${hash}`, row })),
+        )
+        .sort((left, right) => left.key.localeCompare(right.key));
+      const start = pageStart(candidates, inputCursor, kind);
+      const page = candidates.slice(start, start + maxObjects);
+      run.scanned = page.length;
+      // The fake reuses the orphan grace; its live change-set check deliberately differs from
+      // the Worker's separate GC_CONTENT_MIN_AGE_MS and expires_at > now - grace rules.
+      const eligible = page.filter(({ row: blob }) => {
+        const referencedByVersion = state.versions.some(
+          (version) => version.stash === blob.stash && version.hash === blob.hash,
+        );
+        const referencedByChangeSet = [...state.changeSets.values()].some(
+          (changeSet) =>
+            changeSet.stash === blob.stash &&
+            changeSet.status === "open" &&
+            changeSet.expiresAt > startedAt &&
+            changeSet.entries.some((entry) => entry.hash === blob.hash),
+        );
+        return (
+          !referencedByVersion &&
+          !referencedByChangeSet &&
+          startedAt - blob.createdAt > gcOrphanMinAgeMs
+        );
+      });
+      run.eligible = eligible.length;
+      if (!dryRun) {
+        for (const { row: blob } of eligible) {
+          state.blobs.get(blob.stash)?.delete(blob.hash);
+        }
+        run.deleted = eligible.length;
+      }
+      const last = page.at(-1);
+      run.cursor =
+        last === undefined || start + page.length >= candidates.length
+          ? null
+          : nextGcCursor(kind, last.key);
+      // Content rows leave R2 objects for the existing r2-orphans job to reclaim in a later phase.
     } else {
       const candidates = ledgerCandidates();
       const start = pageStart(candidates, inputCursor, kind);
@@ -1694,6 +1748,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (!parsed.success) return fail("validation", "Invalid garbage-collection run query.");
     pruneGcRuns("r2-orphans");
     pruneGcRuns("ledger");
+    pruneGcRuns("content");
     const runs = state.gcRuns
       .filter((run) => parsed.data.kind === undefined || run.kind === parsed.data.kind)
       .sort(compareGcRuns)
@@ -2979,6 +3034,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     message: string;
     meta: Record<string, JsonValue>;
     expectedLastChangeId?: number;
+    expectedLastChangePrefix?: string;
+    expectedLastChangeErrorCode?: "stale" | "commit-conflict";
     idempotencyKey?: string;
     requestHash: string;
     createdBy: string;
@@ -2990,14 +3047,38 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   };
 
   const applyCommit = async (options: ApplyCommitOptions): Promise<FakeCommitRow> => {
-    if (
-      options.expectedLastChangeId !== undefined &&
-      latestChangeId(options.stash) !== options.expectedLastChangeId
-    ) {
-      fail(
-        "stale",
-        `Expected last change ${options.expectedLastChangeId}, newest change is ${latestChangeId(options.stash)}`,
-      );
+    const prefixResult = pathPrefixRange(options.expectedLastChangePrefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const newestExpectedChangeId = (): number =>
+      prefixRange === null
+        ? latestChangeId(options.stash)
+        : state.versions.reduce(
+            (latest, version) =>
+              version.stash === options.stash &&
+              version.path >= prefixRange.lo &&
+              version.path < prefixRange.hi
+                ? Math.max(latest, version.changeId)
+                : latest,
+            0,
+          );
+    const expectedChangeIsStale = (): boolean => {
+      if (options.expectedLastChangeId === undefined) return false;
+      const newest = newestExpectedChangeId();
+      return prefixRange === null
+        ? newest !== options.expectedLastChangeId
+        : newest > options.expectedLastChangeId;
+    };
+    const expectedChangeMessage = (): string => {
+      const prefix =
+        options.expectedLastChangePrefix === undefined
+          ? ""
+          : ` for prefix "${options.expectedLastChangePrefix}"`;
+      return `Expected last change ${options.expectedLastChangeId}${prefix}, newest change is ${newestExpectedChangeId()}`;
+    };
+    const expectedChangeErrorCode = options.expectedLastChangeErrorCode ?? "stale";
+    if (expectedChangeIsStale()) {
+      fail(expectedChangeErrorCode, expectedChangeMessage());
     }
     const conflicts = commitEntryConflicts(options.stash, options.entries);
     if (conflicts.length > 0) throwCommitConflicts(conflicts);
@@ -3022,14 +3103,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         ),
       ),
     );
-    if (
-      options.expectedLastChangeId !== undefined &&
-      latestChangeId(options.stash) !== options.expectedLastChangeId
-    ) {
-      fail(
-        "stale",
-        `Expected last change ${options.expectedLastChangeId}, newest change is ${latestChangeId(options.stash)}`,
-      );
+    if (expectedChangeIsStale()) {
+      fail(expectedChangeErrorCode, expectedChangeMessage());
     }
     const finalConflicts = commitEntryConflicts(options.stash, options.entries);
     if (finalConflicts.length > 0) throwCommitConflicts(finalConflicts);
@@ -3080,6 +3155,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         message: input.message ?? "",
         meta: input.meta ?? {},
         expectedLastChangeId: input.expectedLastChangeId ?? null,
+        expectedLastChangePrefix: input.expectedLastChangePrefix ?? null,
       }),
     );
   };
@@ -3133,6 +3209,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     const parsed = CreateCommitBody.safeParse(candidate);
     if (!parsed.success) return fail("validation", "Invalid commit input.");
+    const prefixResult = pathPrefixRange(parsed.data.expectedLastChangePrefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
     const key = idempotencyKey(request);
     const requestHash = await commitRequestHash(parsed.data);
     const replayed = checkCommitReplay(findCommitByKey(stash, key), requestHash);
@@ -3144,6 +3222,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       message: parsed.data.message ?? "",
       meta: parsed.data.meta ?? {},
       expectedLastChangeId: parsed.data.expectedLastChangeId,
+      expectedLastChangePrefix: parsed.data.expectedLastChangePrefix,
       idempotencyKey: key,
       requestHash,
       createdBy: principalName(principal),
@@ -3249,17 +3328,17 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     const parsed = CommitDiffQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid commit diff query.");
     const commit = requireCommit(stash, id);
-    const sourceEntries =
-      parsed.data.path === undefined
-        ? commit.entries
-        : commit.entries.filter((entry) => entry.path === parsed.data.path);
-    const truncated =
-      parsed.data.path === undefined && sourceEntries.length > COMMIT_DIFF_INLINE_ENTRIES;
-    const entries = sourceEntries.slice(0, COMMIT_DIFF_INLINE_ENTRIES).map((entry) => {
-      const to = getVersion(stash, entry.path, entry.version);
-      if (to === undefined) return fail("internal", "Stored commit content is unavailable.");
-      const previous =
-        entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
+    const prefixResult = pathPrefixRange(parsed.data.prefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const matchesPrefix = (path: string): boolean =>
+      prefixRange === null || (path >= prefixRange.lo && path < prefixRange.hi);
+    const diffEntry = (
+      path: string,
+      op: CommitEntryRecord["op"],
+      to: FakeVersionRow,
+      previous: FakeVersionRow | undefined,
+    ): CommitDiffResult["entries"][number] => {
       const from =
         previous === undefined ? null : { version: previous.version, hash: previous.hash };
       let diff: CommitDiffResult["entries"][number]["diff"];
@@ -3277,21 +3356,79 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         diff = computeDiff({
           fromText: previous === undefined || previous.kind === "delete" ? "" : bodyFor(previous),
           toText: to.kind === "delete" ? "" : bodyFor(to),
-          fromLabel: `a/${entry.path}@v${String(previous?.version ?? 0)}`,
-          toLabel: `b/${entry.path}@v${String(to.version)}`,
+          fromLabel: `a/${path}@v${String(previous?.version ?? 0)}`,
+          toLabel: `b/${path}@v${String(to.version)}`,
           context: parsed.data.context,
           maxBytes: capabilities.limits.diffMaxBytesPerSide,
         });
         if (diff.state === "binary") return fail("internal", "Unexpected binary commit diff.");
       }
       return {
-        path: entry.path,
-        op: entry.op,
+        path,
+        op,
         from,
         to: { version: to.version, hash: to.hash },
         diff,
       };
-    });
+    };
+
+    if (parsed.data.from === undefined) {
+      const sourceEntries = commit.entries
+        .filter((entry) => parsed.data.path === undefined || entry.path === parsed.data.path)
+        .filter((entry) => matchesPrefix(entry.path));
+      const truncated =
+        parsed.data.path === undefined && sourceEntries.length > COMMIT_DIFF_INLINE_ENTRIES;
+      const entries = sourceEntries.slice(0, COMMIT_DIFF_INLINE_ENTRIES).map((entry) => {
+        const to = getVersion(stash, entry.path, entry.version);
+        if (to === undefined) return fail("internal", "Stored commit content is unavailable.");
+        const previous =
+          entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
+        return diffEntry(entry.path, entry.op, to, previous);
+      });
+      return json({ entries, truncated });
+    }
+
+    const fromCommit = requireCommit(stash, parsed.data.from.slice("commit:".length));
+    const fromChangeId = fromCommit.lastChangeId;
+    const toChangeId = commit.lastChangeId;
+    if (fromChangeId > toChangeId) {
+      return fail("validation", "from must not be newer than the target commit.");
+    }
+    if (fromChangeId === toChangeId) return json({ entries: [], truncated: false });
+
+    const toByPath = new Map<string, FakeVersionRow>();
+    for (const version of state.versions) {
+      if (
+        version.stash !== stash ||
+        version.changeId <= fromChangeId ||
+        version.changeId > toChangeId ||
+        !matchesPrefix(version.path) ||
+        (parsed.data.path !== undefined && version.path !== parsed.data.path)
+      ) {
+        continue;
+      }
+      const current = toByPath.get(version.path);
+      if (current === undefined || current.changeId < version.changeId) {
+        toByPath.set(version.path, version);
+      }
+    }
+
+    const fromByPath = new Map<string, FakeVersionRow>();
+    for (const version of state.versions) {
+      if (version.stash !== stash || version.changeId > fromChangeId) continue;
+      const current = fromByPath.get(version.path);
+      if (current === undefined || current.changeId < version.changeId) {
+        fromByPath.set(version.path, version);
+      }
+    }
+    const sourceVersions = [...toByPath.values()].sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    );
+    const truncated =
+      parsed.data.path === undefined && sourceVersions.length > COMMIT_DIFF_INLINE_ENTRIES;
+    const entries = sourceVersions
+      .slice(0, COMMIT_DIFF_INLINE_ENTRIES)
+      .map((to) => diffEntry(to.path, operationFor(to), to, fromByPath.get(to.path)));
     return json({ entries, truncated });
   };
 
@@ -3528,6 +3665,28 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     const parsed = CreateChangeSetBody.safeParse(candidate);
     if (!parsed.success) return fail("validation", "Invalid change-set input.");
+    const prefixResult = pathPrefixRange(parsed.data.expectedLastChangePrefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const newestExpectedChangeId = (): number =>
+      prefixRange === null
+        ? latestChangeId(stash)
+        : state.versions.reduce(
+            (latest, version) =>
+              version.stash === stash &&
+              version.path >= prefixRange.lo &&
+              version.path < prefixRange.hi
+                ? Math.max(latest, version.changeId)
+                : latest,
+            0,
+          );
+    const expectedChangeIsStale = (): boolean => {
+      if (parsed.data.expectedLastChangeId === undefined) return false;
+      const newest = newestExpectedChangeId();
+      return prefixRange === null
+        ? newest !== parsed.data.expectedLastChangeId
+        : newest > parsed.data.expectedLastChangeId;
+    };
     const key = idempotencyKey(request);
     const requestHash = await changeSetRequestHash(parsed.data);
     const prior =
@@ -3544,10 +3703,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         );
       return json(changeSetRecord(prior), 201, { "Idempotent-Replayed": "true" });
     }
-    if (
-      parsed.data.expectedLastChangeId !== undefined &&
-      latestChangeId(stash) !== parsed.data.expectedLastChangeId
-    ) {
+    if (expectedChangeIsStale()) {
       return fail("commit-conflict", "Expected last change is stale.");
     }
     const createdAt = now();
@@ -3579,6 +3735,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         }),
       ),
     );
+    if (expectedChangeIsStale()) {
+      return fail("commit-conflict", "Expected last change is stale.");
+    }
     for (const entry of entries) {
       const hash = entry.hash;
       if (entry.op !== "put" || hash === undefined || hash === null || hash === "") continue;
@@ -3600,6 +3759,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       decisionReason: null,
       commitId: null,
       expectedLastChangeId: parsed.data.expectedLastChangeId ?? null,
+      expectedLastChangePrefix: parsed.data.expectedLastChangePrefix ?? null,
       idempotencyKey: key ?? null,
       requestHash: key === undefined ? null : requestHash,
       entries,
@@ -3903,6 +4063,28 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     if (row.status !== "open") return fail("change-set-closed", "Change set is already closed.");
     if (row.expiresAt <= now()) return fail("change-set-expired", "Change set has expired.");
+    const prefixResult = pathPrefixRange(row.expectedLastChangePrefix ?? undefined);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const newestExpectedChangeId = (): number =>
+      prefixRange === null
+        ? latestChangeId(stash)
+        : state.versions.reduce(
+            (latest, version) =>
+              version.stash === stash &&
+              version.path >= prefixRange.lo &&
+              version.path < prefixRange.hi
+                ? Math.max(latest, version.changeId)
+                : latest,
+            0,
+          );
+    const expectedChangeIsStale = (): boolean => {
+      if (row.expectedLastChangeId === null) return false;
+      const newest = newestExpectedChangeId();
+      return prefixRange === null
+        ? newest !== row.expectedLastChangeId
+        : newest > row.expectedLastChangeId;
+    };
     const conflicts = changeSetApprovalConflicts(stash, row);
     if (conflicts.length > 0) {
       const missingDelete =
@@ -3910,7 +4092,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         row.entries.find((entry) => entry.path === conflicts[0]?.path)?.op === "delete";
       throwCommitConflicts(conflicts, missingDelete);
     }
-    if (row.expectedLastChangeId !== null && latestChangeId(stash) !== row.expectedLastChangeId) {
+    if (expectedChangeIsStale()) {
       return fail("commit-conflict", "Expected last change is stale.");
     }
     const commit = await applyCommit({
@@ -3920,6 +4102,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       message: parsed.data.message ?? row.message,
       meta: row.meta,
       expectedLastChangeId: row.expectedLastChangeId ?? undefined,
+      expectedLastChangePrefix: row.expectedLastChangePrefix ?? undefined,
+      expectedLastChangeErrorCode: "commit-conflict",
       requestHash: "",
       createdBy: principalName(principal),
       source: "change-set",
@@ -3972,18 +4156,22 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
   const handleSnapshot = (stash: string, url: URL): Response => {
     const parsed = SnapshotQuery.safeParse(queryObject(url));
     if (!parsed.success) return fail("validation", "Invalid snapshot query.");
-    const commitId = parsed.data.at.slice("commit:".length);
-    const commit = requireCommit(stash, commitId);
-    const normalizedPrefix =
-      parsed.data.prefix === undefined
-        ? undefined
-        : parsed.data.prefix.endsWith("/")
-          ? parsed.data.prefix.slice(0, -1)
-          : parsed.data.prefix;
-    if (normalizedPrefix !== undefined) {
-      const validation = validatePath(normalizedPrefix);
-      if (!validation.ok) return fail(validation.error, validation.message);
-    }
+    const selector = parseSnapshotSelector(parsed.data.at);
+    if (selector === null) return fail("validation", "Invalid snapshot query.");
+    const commit =
+      selector.kind === "commit"
+        ? requireCommit(stash, selector.commitId)
+        : ([...state.commits.values()]
+            .filter(
+              (candidate) =>
+                candidate.stash === stash && candidate.lastChangeId <= selector.changeId,
+            )
+            .sort((left, right) => right.lastChangeId - left.lastChangeId)[0] ??
+          requireCommit(stash, ""));
+    const prefixResult = pathPrefixRange(parsed.data.prefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
+    const prefixRange = prefixResult.range;
+    const normalizedPrefix = prefixRange === null ? undefined : prefixRange.lo.slice(0, -1);
     if (parsed.data.delimiter !== undefined && parsed.data.delimiter !== "/")
       return fail("validation", "delimiter must be '/'.");
     const candidatePaths = [
@@ -4003,8 +4191,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       .filter((version) => parsed.data.includeDeleted || version.kind !== "delete")
       .filter(
         (version) =>
-          normalizedPrefix === undefined ||
-          (version.path >= `${normalizedPrefix}/` && version.path < `${normalizedPrefix}0`),
+          prefixRange === null || (version.path >= prefixRange.lo && version.path < prefixRange.hi),
       );
     const values = candidatePaths.map((version) => {
       const relative =

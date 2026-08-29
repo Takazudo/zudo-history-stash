@@ -104,6 +104,7 @@ export interface ChangeSetRow {
   idempotency_key: string | null;
   request_hash: string | null;
   expected_last_change_id: number | null;
+  expected_last_change_prefix: string | null;
   decision_attempt: string | null;
   decided_at: number | null;
   decided_by: string | null;
@@ -217,7 +218,7 @@ export interface IdempotencyRow {
   created_at: number;
 }
 
-export type GcJobKind = "r2-orphans" | "ledger";
+export type GcJobKind = "r2-orphans" | "ledger" | "content";
 
 export interface GcJobRow {
   kind: GcJobKind;
@@ -335,6 +336,7 @@ export const TABLE_COLUMNS = {
     "decided_by",
     "decision_reason",
     "commit_id",
+    "expected_last_change_prefix",
   ],
   commits: [
     "id",

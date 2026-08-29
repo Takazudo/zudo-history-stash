@@ -21,6 +21,7 @@ import {
   ListQuery,
   ListStashesQuery,
   PutFileBody,
+  parseSnapshotSelector,
   RejectChangeSetBody,
   SnapshotQuery,
   RunGcBody,
@@ -55,6 +56,7 @@ describe("strict request and query schemas", () => {
       kind: "ledger",
       limit: 200,
     });
+    expect(ListGcRunsQuery.safeParse({ kind: "content" }).success).toBe(true);
     expect(ListGcRunsQuery.safeParse({ kind: "other" }).success).toBe(false);
     expect(ListGcRunsQuery.safeParse({ limit: "201" }).success).toBe(false);
   });
@@ -78,7 +80,7 @@ describe("strict request and query schemas", () => {
     for (const value of [0, 501, 1.5, -1]) {
       expect(RunGcBody.safeParse({ kind: "ledger", maxObjects: value }).success).toBe(false);
     }
-    for (const value of ["r2-orphans", "ledger"]) {
+    for (const value of ["r2-orphans", "ledger", "content"]) {
       expect(RunGcBody.safeParse({ kind: value }).success).toBe(true);
     }
     expect(RunGcBody.safeParse({ kind: "ledger", unknown: true }).success).toBe(false);
@@ -359,9 +361,28 @@ describe("commit and change-set request schemas", () => {
     expect(CreateCommitBody.safeParse({ entries: [put], expectedLastChangeId: 0 }).success).toBe(
       true,
     );
+    expect(
+      CreateCommitBody.safeParse({
+        entries: [put],
+        expectedLastChangeId: 0,
+        expectedLastChangePrefix: "docs/",
+      }).success,
+    ).toBe(true);
     expect(CreateCommitBody.safeParse({ entries: [put], expectedLastChangeId: -1 }).success).toBe(
       false,
     );
+    const commitPrefixWithoutId = CreateCommitBody.safeParse({
+      entries: [put],
+      expectedLastChangePrefix: "docs/",
+    });
+    expect(commitPrefixWithoutId.success).toBe(false);
+    if (!commitPrefixWithoutId.success) {
+      expect(commitPrefixWithoutId.error.issues).toContainEqual({
+        code: "custom",
+        path: ["expectedLastChangePrefix"],
+        message: "expectedLastChangePrefix requires expectedLastChangeId",
+      });
+    }
     expect(
       CreateChangeSetBody.safeParse({
         entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
@@ -371,9 +392,28 @@ describe("commit and change-set request schemas", () => {
     expect(
       CreateChangeSetBody.safeParse({
         entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
+        expectedLastChangeId: 0,
+        expectedLastChangePrefix: "docs/",
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateChangeSetBody.safeParse({
+        entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
         expectedLastChangeId: -1,
       }).success,
     ).toBe(false);
+    const changeSetPrefixWithoutId = CreateChangeSetBody.safeParse({
+      entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
+      expectedLastChangePrefix: "docs/",
+    });
+    expect(changeSetPrefixWithoutId.success).toBe(false);
+    if (!changeSetPrefixWithoutId.success) {
+      expect(changeSetPrefixWithoutId.error.issues).toContainEqual({
+        code: "custom",
+        path: ["expectedLastChangePrefix"],
+        message: "expectedLastChangePrefix requires expectedLastChangeId",
+      });
+    }
   });
   it.each(["AB==", "AA=", "AA==\n", "_A=="])(
     "rejects non-canonical binary input %j",
@@ -439,12 +479,30 @@ describe("commit and change-set request schemas", () => {
     expect(ListCommitsQuery.parse({})).toEqual({ limit: 50 });
     expect(ListChangeSetsQuery.parse({})).toEqual({ status: "open", limit: 50 });
     expect(CommitDiffQuery.parse({ context: "0" })).toEqual({ context: 0 });
+    expect(
+      CommitDiffQuery.parse({ from: "commit:cmt_1", prefix: "docs/", path: "docs/a.md" }),
+    ).toEqual({ from: "commit:cmt_1", prefix: "docs/", path: "docs/a.md" });
+    expect(CommitDiffQuery.safeParse({ prefix: "docs/", unknown: true }).success).toBe(false);
     expect(ChangeSetDiffQuery.safeParse({ path: "../bad" }).success).toBe(false);
-    expect(SnapshotQuery.parse({ at: "commit:cmt_1" })).toMatchObject({
-      at: "commit:cmt_1",
-      includeDeleted: false,
-      limit: 50,
+    for (const at of ["commit:cmt_1", "change:0", "change:12"]) {
+      expect(SnapshotQuery.parse({ at })).toMatchObject({
+        at,
+        includeDeleted: false,
+        limit: 50,
+      });
+    }
+    expect(parseSnapshotSelector("commit:cmt_1")).toEqual({
+      kind: "commit",
+      commitId: "cmt_1",
     });
+    expect(parseSnapshotSelector("change:0")).toEqual({ kind: "change", changeId: 0 });
+    expect(parseSnapshotSelector("change:12")).toEqual({ kind: "change", changeId: 12 });
+    for (const at of ["change:-1", "change:01", "change:1.5", "change:", "nope:1"]) {
+      expect(SnapshotQuery.safeParse({ at }).success).toBe(false);
+      expect(parseSnapshotSelector(at)).toBeNull();
+    }
+    expect(parseSnapshotSelector("change:9007199254740992")).toBeNull();
+    expect(SnapshotQuery.safeParse({ at: "commit:cmt_1", unknown: true }).success).toBe(false);
     expect(ListFilesQuery.parse({ prefix: "docs/", delimiter: "/" })).toMatchObject({
       prefix: "docs/",
       delimiter: "/",

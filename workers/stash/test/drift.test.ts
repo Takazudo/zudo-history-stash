@@ -45,6 +45,7 @@ describe("Wrangler and Env drift", () => {
       "BLOBS",
       "CHANGE_SET_TTL_DAYS",
       "DB",
+      "GC_CONTENT_MIN_AGE_MS",
       "GC_LEASE_TTL_MS",
       "GC_ORPHAN_MIN_AGE_MS",
       "RL_DIFF",
@@ -103,6 +104,7 @@ describe("Wrangler and Env drift", () => {
     const expected = {
       STASH_DELETE_GRACE_DAYS: "30",
       GC_ORPHAN_MIN_AGE_MS: "900000",
+      GC_CONTENT_MIN_AGE_MS: "86400000",
       GC_LEASE_TTL_MS: "300000",
       CHANGE_SET_TTL_DAYS: "14",
       STASH_EVENTS_MAX_STREAM_MS: "300000",

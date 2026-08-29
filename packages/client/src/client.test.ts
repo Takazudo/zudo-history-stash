@@ -867,7 +867,12 @@ describe("commit, change-set, and snapshot routes", () => {
     await c.commits("demo").create(commitBody, { idempotencyKey: "commit-key" });
     await c.commits("demo").get("cmt_1");
     await c.commits("demo").list({ limit: 2, after: "cursor", path: "docs/a.txt" });
-    await c.commits("demo").diff("cmt_1", { context: 1, path: "docs/a.txt" });
+    await c.commits("demo").diff("cmt_1", {
+      context: 1,
+      path: "docs/a.txt",
+      from: "commit:cmt_1",
+      prefix: "site",
+    });
     await c
       .commits("demo")
       .revert(
@@ -907,7 +912,7 @@ describe("commit, change-set, and snapshot routes", () => {
       "https://stash.example/v1/stashes/demo/commits?limit=2&after=cursor&path=docs%2Fa.txt",
     );
     expect(requestAt(3).url).toBe(
-      "https://stash.example/v1/stashes/demo/commits/cmt_1/diff?context=1&path=docs%2Fa.txt",
+      "https://stash.example/v1/stashes/demo/commits/cmt_1/diff?context=1&path=docs%2Fa.txt&from=commit%3Acmt_1&prefix=site",
     );
     expect(requestAt(4)).toMatchObject({
       url: "https://stash.example/v1/stashes/demo/commits/cmt_1/revert",

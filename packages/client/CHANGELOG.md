@@ -4,7 +4,7 @@ All notable changes to `@takazudo/zudo-history-stash` are documented in this fil
 
 The format is based on Keep a Changelog, and release notes are generated from the changelog MDX pages.
 
-## [0.2.0] - 2026-08-29
+## [0.2.0]
 
 - Add `commits(stash)`, `changeSets(stash)`, and `files(stash).snapshot()` APIs over fetch and named
   RPC transports.
@@ -14,7 +14,7 @@ The format is based on Keep a Changelog, and release notes are generated from th
 - Require `commitId` in version, history, change-feed, and live-event types and extend the fake and
   conformance surfaces to preserve all-or-none behavior.
 
-## [0.1.0] - 2026-08-25
+## [0.1.0]
 
 - Add the isomorphic `createStashClient` API for Node.js, browsers, and Cloudflare Worker service
   bindings.
