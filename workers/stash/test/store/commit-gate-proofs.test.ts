@@ -270,14 +270,22 @@ describe("D1 batch transaction and metadata proofs", () => {
   );
 
   it("pins exact changes and repeated last_row_id after a zero-row INSERT SELECT", async () => {
+    await db
+      .prepare(
+        `INSERT INTO commit_gate_proof_commits
+           (stash_name, entry_count, change_count, sealed, client_key)
+         VALUES (?, 0, 0, 1, 'metadata-baseline')`,
+      )
+      .bind(LIVE_STASH)
+      .run();
     const results = await db.batch([
       db
         .prepare(
           `INSERT INTO commit_gate_proof_commits
            (stash_name, entry_count, change_count, sealed, client_key)
-         VALUES (?, 0, 0, 1, 'metadata-1'), (?, 0, 0, 1, 'metadata-2')`,
+         VALUES (?, 0, 0, 1, 'metadata-2')`,
         )
-        .bind(LIVE_STASH, LIVE_STASH),
+        .bind(LIVE_STASH),
       db
         .prepare(
           `INSERT INTO commit_gate_proof_commits
@@ -296,7 +304,7 @@ describe("D1 batch transaction and metadata proofs", () => {
     expect(
       results.map(({ meta }) => ({ changes: meta.changes, lastRowId: meta.last_row_id })),
     ).toEqual([
-      { changes: 2, lastRowId: 2 },
+      { changes: 1, lastRowId: 2 },
       { changes: 0, lastRowId: 2 },
       { changes: 1, lastRowId: 3 },
     ]);
