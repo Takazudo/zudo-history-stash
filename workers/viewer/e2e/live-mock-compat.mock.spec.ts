@@ -39,6 +39,12 @@ test("@smoke shared mock live transport stays open and releases on stash navigat
       value = { files: [], nextAfter: null };
     } else if (request.method() === "GET" && url.pathname === "/api/v1/stashes/notes/changes") {
       value = { changes: [], hasMore: false, nextBefore: null };
+    } else if (
+      request.method() === "GET" &&
+      url.pathname === "/api/v1/stashes/notes/change-sets" &&
+      url.search === "?status=open&limit=1"
+    ) {
+      value = { changeSets: [], nextAfter: null, total: 0 };
     } else if (request.method() === "GET" && url.pathname === "/api/v1/stashes") {
       value = { stashes: [], nextAfter: null };
     } else if (request.method() === "GET" && url.pathname === "/api/v1/changes") {

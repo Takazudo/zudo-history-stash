@@ -4,7 +4,8 @@ const tokenScript = () => sessionStorage.setItem("zhs.token", "zhs_test");
 
 test("@smoke login returns to the protected deep link", async ({ page }) => {
   await page.route("**/api/v1/**", async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
+    const pathname = url.pathname;
     const value =
       pathname === "/api/v1/me"
         ? { principal: "stash", stash: "notes", tokenId: "tok_1", scope: "read" }
@@ -12,7 +13,10 @@ test("@smoke login returns to the protected deep link", async ({ page }) => {
           ? { files: [], nextAfter: null }
           : pathname === "/api/v1/stashes/notes/changes"
             ? { changes: [], hasMore: false, nextBefore: null }
-            : { error: { code: "not-found", message: "Not found" } };
+            : pathname === "/api/v1/stashes/notes/change-sets" &&
+                url.search === "?status=open&limit=1"
+              ? { changeSets: [], nextAfter: null, total: 0 }
+              : { error: { code: "not-found", message: "Not found" } };
     await route.fulfill({ status: "error" in value ? 404 : 200, json: value });
   });
 
@@ -108,6 +112,9 @@ test("@smoke file list appends without duplicates and re-queries deleted files",
       value = { principal: "admin" };
     } else if (url.pathname === "/api/v1/stashes/notes/changes") {
       value = { changes: [], hasMore: false, nextBefore: null };
+    } else if (url.pathname === "/api/v1/stashes/notes/change-sets") {
+      expect(url.search).toBe("?status=open&limit=1");
+      value = { changeSets: [], nextAfter: null, total: 0 };
     } else if (url.pathname === "/api/v1/stashes/notes/files") {
       fileRequests.push(url.search);
       if (url.searchParams.get("includeDeleted") === "true") {

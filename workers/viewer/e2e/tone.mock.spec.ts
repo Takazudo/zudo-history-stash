@@ -103,6 +103,9 @@ async function mockViewerApi(page: Page): Promise<void> {
       };
     } else if (pathname === "/api/v1/stashes/notes/changes") {
       value = { changes: [], hasMore: false, nextBefore: null };
+    } else if (pathname === "/api/v1/stashes/notes/change-sets") {
+      expect(url.search).toBe("?status=open&limit=1");
+      value = { changeSets: [], nextAfter: null, total: 0 };
     } else if (pathname === "/api/v1/stashes/notes/files/docs/readme.txt") {
       value =
         url.searchParams.get("version") === "1"
