@@ -5547,6 +5547,9 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "expectedLastChangePrefix": {
+                    "type": "string"
+                  },
                   "expiresAt": {
                     "format": "date-time",
                     "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
@@ -6881,6 +6884,9 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "expectedLastChangePrefix": {
+                    "type": "string"
+                  },
                   "message": {
                     "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
                     "type": "string"
@@ -7217,6 +7223,27 @@
             "explode": false,
             "in": "query",
             "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "pattern": "^commit:.+$",
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "prefix",
             "required": false,
             "schema": {
               "type": "string"
@@ -10073,7 +10100,7 @@
             "name": "at",
             "required": true,
             "schema": {
-              "pattern": "^commit:.+$",
+              "pattern": "^(commit:.+|change:(0|[1-9][0-9]*))$",
               "type": "string"
             },
             "style": "form"
