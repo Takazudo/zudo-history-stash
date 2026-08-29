@@ -2449,11 +2449,11 @@
             ]
           },
           "jobId": {
-            "enum": ["r2-orphans", "ledger"],
+            "enum": ["r2-orphans", "ledger", "content"],
             "type": "string"
           },
           "kind": {
-            "enum": ["r2-orphans", "ledger"],
+            "enum": ["r2-orphans", "ledger", "content"],
             "type": "string"
           },
           "runId": {
@@ -4331,7 +4331,7 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "kind selects the R2-orphan or ledger job. dryRun and maxObjects default to false and 100; maxObjects is an integer from 1 through 500. cursor is an opaque v1 base64url kind-bound envelope.",
+                "description": "kind selects the R2-orphan, ledger, or unreferenced-content job. dryRun and maxObjects default to false and 100; maxObjects is an integer from 1 through 500. cursor is an opaque v1 base64url kind-bound envelope.",
                 "properties": {
                   "cursor": {
                     "description": "Opaque v1 base64url kind-bound cursor; explicit input overrides stored progress.",
@@ -4344,7 +4344,7 @@
                   },
                   "kind": {
                     "description": "Selects the garbage-collection job kind.",
-                    "enum": ["r2-orphans", "ledger"],
+                    "enum": ["r2-orphans", "ledger", "content"],
                     "type": "string"
                   },
                   "maxObjects": {
@@ -4433,7 +4433,7 @@
             "required": false,
             "schema": {
               "description": "Optional garbage-collection job-kind filter.",
-              "enum": ["r2-orphans", "ledger"],
+              "enum": ["r2-orphans", "ledger", "content"],
               "type": "string"
             },
             "style": "form"
