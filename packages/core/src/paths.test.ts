@@ -45,13 +45,14 @@ describe("pathPrefixRange", () => {
     const result = pathPrefixRange("site");
     expect(result).toEqual({ ok: true, range: { lo: "site/", hi: "site0" } });
     if (!result.ok || result.range === null) throw new Error("Expected a path range");
+    const { lo, hi } = result.range;
 
     const paths = ["site/index.html", "site/x/y.md", "site2/a.md", "sit/a.md", "siteX"];
-    expect(paths.filter((path) => path >= result.range.lo && path < result.range.hi)).toEqual([
+    expect(paths.filter((path) => path >= lo && path < hi)).toEqual([
       "site/index.html",
       "site/x/y.md",
     ]);
-    expect(paths.filter((path) => path < result.range.lo || path >= result.range.hi)).toEqual([
+    expect(paths.filter((path) => path < lo || path >= hi)).toEqual([
       "site2/a.md",
       "sit/a.md",
       "siteX",
