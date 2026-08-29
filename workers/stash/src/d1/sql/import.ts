@@ -1,5 +1,6 @@
 import type { PreparedBlob } from "../blobs.js";
 import { fence, type SqlFragment } from "./writes.js";
+import { commitInsertStatement, sealStatement } from "./commits.js";
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 
@@ -37,6 +38,9 @@ export type PreparedImportVersion =
     });
 
 export interface ImportBatchInput {
+  commitId: string;
+  createdBy: string;
+  createdAt: number;
   stash: string;
   path: string;
   expectedVersion: number | null;
@@ -45,7 +49,6 @@ export interface ImportBatchInput {
 
 export interface ImportBatch {
   statements: D1PreparedStatement[];
-  versionStatementIndexes: number[];
 }
 
 function operationFence(input: ImportBatchInput): SqlFragment {
@@ -80,8 +83,8 @@ function putStatements(
       .prepare(
         `INSERT INTO versions
           (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-           rollback_of, author, message, meta_json, created_at)
-         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ? WHERE ${importFence.sql}`,
+           rollback_of, author, message, meta_json, created_at, commit_id)
+         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ?, ? WHERE ${importFence.sql}`,
       )
       .bind(
         input.stash,
@@ -94,6 +97,7 @@ function putStatements(
         entry.message,
         entry.metaJson,
         entry.createdAt,
+        input.commitId,
         ...importFence.params,
       ),
   ];
@@ -109,8 +113,8 @@ function deleteStatement(
     .prepare(
       `INSERT INTO versions
         (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-         rollback_of, author, message, meta_json, created_at)
-       SELECT ?, ?, ?, 'delete', NULL, 0, ?, NULL, ?, ?, ?, ? WHERE ${importFence.sql}`,
+         rollback_of, author, message, meta_json, created_at, commit_id)
+       SELECT ?, ?, ?, 'delete', NULL, 0, ?, NULL, ?, ?, ?, ?, ? WHERE ${importFence.sql}`,
     )
     .bind(
       input.stash,
@@ -121,6 +125,7 @@ function deleteStatement(
       entry.message,
       entry.metaJson,
       entry.createdAt,
+      input.commitId,
       ...importFence.params,
     );
 }
@@ -136,9 +141,9 @@ function rollbackStatement(
     .prepare(
       `INSERT INTO versions
         (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-         rollback_of, author, message, meta_json, created_at)
+         rollback_of, author, message, meta_json, created_at, commit_id)
        SELECT ?, ?, ?, 'rollback', target.blob_hash, target.size_bytes, target.content_type,
-         target.version, ?, ?, ?, ?
+         target.version, ?, ?, ?, ?, ?
        FROM versions target
        WHERE target.stash_name = ? AND target.path = ? AND target.version = ?
          AND target.blob_hash IS NOT NULL AND ${importFence.sql}`,
@@ -151,6 +156,7 @@ function rollbackStatement(
       entry.message,
       entry.metaJson,
       entry.createdAt,
+      input.commitId,
       input.stash,
       input.path,
       entry.rollbackOf,
@@ -161,20 +167,35 @@ function rollbackStatement(
 export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch {
   if (input.versions.length === 0) throw new Error("Import batch requires versions");
   const importFence = operationFence(input);
-  const statements: D1PreparedStatement[] = [];
-  const versionStatementIndexes: number[] = [];
+  const statements: D1PreparedStatement[] = [
+    commitInsertStatement(
+      db,
+      {
+        id: input.commitId,
+        stash_name: input.stash,
+        source: "import",
+        source_id: null,
+        author: "",
+        message: "",
+        meta_json: "{}",
+        entry_count: input.versions.length,
+        reverts_commit_id: null,
+        idempotency_key: null,
+        request_hash: null,
+        created_by: input.createdBy,
+        created_at: input.createdAt,
+      },
+      importFence,
+    ),
+  ];
 
   for (const entry of input.versions) {
-    const before = statements.length;
     if (entry.kind === "put") {
       statements.push(...putStatements(db, input, entry, importFence));
-      versionStatementIndexes.push(before + 1);
     } else if (entry.kind === "delete") {
       statements.push(deleteStatement(db, input, entry, importFence));
-      versionStatementIndexes.push(before);
     } else {
       statements.push(rollbackStatement(db, input, entry, importFence));
-      versionStatementIndexes.push(before);
     }
   }
 
@@ -234,5 +255,6 @@ export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch 
     );
   }
 
-  return { statements, versionStatementIndexes };
+  statements.push(sealStatement(db, { stash: input.stash, id: input.commitId }));
+  return { statements };
 }

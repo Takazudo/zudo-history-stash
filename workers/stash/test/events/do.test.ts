@@ -84,7 +84,7 @@ describe("StashEvents Durable Object", () => {
       const event: StashEvent = {
         type: "change",
         changeId: 41,
-        commitId: "legacy:41",
+        commitId: "cmt_test_41",
         stash: "docs",
         path: "guide.json",
         version: 3,
@@ -117,7 +117,7 @@ describe("StashEvents Durable Object", () => {
       const event: StashEvent = {
         type: "change",
         changeId: 42,
-        commitId: "legacy:42",
+        commitId: "cmt_test_42",
         stash: "docs",
         path: "x".repeat(70_000),
         version: 1,
@@ -229,7 +229,7 @@ describe("StashEvents Durable Object", () => {
       const baseEvent: StashEvent = {
         type: "change",
         changeId: 42,
-        commitId: "legacy:42",
+        commitId: "cmt_test_42",
         stash: "docs",
         path: "",
         version: 1,

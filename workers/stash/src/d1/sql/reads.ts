@@ -121,6 +121,7 @@ export const SELECT_HISTORY_HEAD = `
 export const SELECT_HISTORY_VERSIONS = `
   SELECT
     v.id AS change_id,
+    v.commit_id AS commit_id,
     v.version AS version,
     v.kind AS kind,
     v.blob_hash AS hash,
@@ -144,6 +145,7 @@ export const SELECT_HISTORY_VERSIONS = `
 export const SELECT_CHANGES_ASC = `
   SELECT
     v.id AS change_id,
+    v.commit_id AS commit_id,
     v.stash_name AS stash,
     v.path AS path,
     v.version AS version,
@@ -166,6 +168,7 @@ export const SELECT_CHANGES_ASC = `
 export const SELECT_CHANGES_BEFORE = `
   SELECT
     v.id AS change_id,
+    v.commit_id AS commit_id,
     v.stash_name AS stash,
     v.path AS path,
     v.version AS version,
@@ -188,6 +191,7 @@ export const SELECT_CHANGES_BEFORE = `
 export const SELECT_CHANGES_NEWEST = `
   SELECT
     v.id AS change_id,
+    v.commit_id AS commit_id,
     v.stash_name AS stash,
     v.path AS path,
     v.version AS version,
@@ -247,6 +251,7 @@ export interface HistoryHeadRow {
 
 export interface HistoryVersionRow {
   change_id: number;
+  commit_id: string;
   version: number;
   kind: "put" | "delete" | "rollback";
   hash: string | null;
@@ -263,6 +268,7 @@ export interface HistoryVersionRow {
 
 export interface ChangeRow {
   change_id: number;
+  commit_id: string;
   stash: string;
   path: string;
   version: number;

@@ -36,6 +36,7 @@ export async function resetDatabase(): Promise<void> {
     "gc_runs",
     "idempotency",
     "versions",
+    "commits",
     "files",
     "blobs",
     "byte_blobs",

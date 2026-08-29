@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "./helpers/app.js";
+import { seedCommit } from "./helpers/seed-rows.js";
 
 const NOW = Date.parse("2026-08-27T00:00:00.000Z");
 const DAY_MS = 86_400_000;
@@ -43,12 +44,13 @@ async function markDeleted(stash: string, deletedAt: number): Promise<void> {
 }
 
 async function seedVersion(stash: string, path: string, createdAt: number): Promise<number> {
+  const commitId = await seedCommit(stash, `cmt_conceal_${stash}_${path}`, createdAt);
   const result = await env.DB.prepare(
     `INSERT INTO versions
-       (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at)
-     VALUES (?, ?, 1, 'put', ?, 1, 'tester', '', ?)`,
+       (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at, commit_id)
+     VALUES (?, ?, 1, 'put', ?, 1, 'tester', '', ?, ?)`,
   )
-    .bind(stash, path, `hash-${stash}-${path}`, createdAt)
+    .bind(stash, path, `hash-${stash}-${path}`, createdAt, commitId)
     .run();
   return result.meta.last_row_id;
 }

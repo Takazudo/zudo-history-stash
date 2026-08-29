@@ -267,7 +267,7 @@ describe("file route writes", () => {
     const deletion = await jsonApi("POST", "/delete/cas.txt", { expectedVersion: 1 });
     expect(deletion.status).toBe(200);
     await expect(deletion.json()).resolves.toEqual({
-      commitId: "legacy:2",
+      commitId: expect.stringMatching(/^cmt_\d{13}[0-9a-f]{8}$/),
       version: 2,
       changeId: expect.any(Number),
       createdAt: expect.stringMatching(/Z$/),

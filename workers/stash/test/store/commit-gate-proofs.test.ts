@@ -92,11 +92,19 @@ async function insertVersion(
   version: number,
   kind: "put" | "delete" | "rollback" = "put",
 ): Promise<void> {
+  const commitId = `cmt_proof_${path}_${version}`;
+  await db
+    .prepare(
+      `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+       VALUES (?, ?, ?, 1, 'proof', 1)`,
+    )
+    .bind(commitId, LIVE_STASH, kind)
+    .run();
   await db
     .prepare(
       `INSERT INTO versions
-         (stash_name, path, version, kind, blob_hash, rollback_of, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1)`,
+         (stash_name, path, version, kind, blob_hash, rollback_of, created_at, commit_id)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
     )
     .bind(
       LIVE_STASH,
@@ -105,6 +113,7 @@ async function insertVersion(
       kind,
       kind === "delete" ? null : `sha256-${path}-${version}`,
       kind === "rollback" ? 1 : null,
+      commitId,
     )
     .run();
 }
@@ -129,6 +138,7 @@ async function commitIds(clientKey: string): Promise<number[]> {
 async function resetProofRows(): Promise<void> {
   await db.batch([
     db.prepare("DELETE FROM versions"),
+    db.prepare("DELETE FROM commits"),
     db.prepare("DELETE FROM files"),
     db.prepare("DELETE FROM stashes"),
     db.prepare("DELETE FROM commit_gate_proof_payloads"),
@@ -381,14 +391,19 @@ describe("D1 batch transaction and metadata proofs", () => {
 describe("change-id contiguity proof", () => {
   it("keeps one commit batch consecutive when a competing batch runs at the pre-commit hook", async () => {
     await db.prepare("DELETE FROM versions").run();
+    await db.prepare("DELETE FROM commits").run();
     await db.prepare("DELETE FROM sqlite_sequence WHERE name = 'versions'").run();
 
     const onBeforeCommit = async (): Promise<void> => {
+      await db.prepare(
+        `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+         VALUES ('cmt_proof_competing', ?, 'put', 1, 'proof', 1)`,
+      ).bind(LIVE_STASH).run();
       await db.batch([
         db
           .prepare(
-            `INSERT INTO versions (stash_name, path, version, kind, blob_hash, created_at)
-           VALUES (?, 'competing.txt', 1, 'put', 'sha256-competing', 1)`,
+            `INSERT INTO versions (stash_name, path, version, kind, blob_hash, created_at, commit_id)
+           VALUES (?, 'competing.txt', 1, 'put', 'sha256-competing', 1, 'cmt_proof_competing')`,
           )
           .bind(LIVE_STASH),
       ]);
@@ -398,12 +413,20 @@ describe("change-id contiguity proof", () => {
     await onBeforeCommit();
     await db.batch(
       ["a.txt", "b.txt", "c.txt"].map((path) =>
+        db.prepare(
+          `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+           VALUES (?, ?, 'put', 1, 'proof', 1)`,
+        ).bind(`cmt_proof_${path}`, LIVE_STASH),
+      ),
+    );
+    await db.batch(
+      ["a.txt", "b.txt", "c.txt"].map((path) =>
         db
           .prepare(
-            `INSERT INTO versions (stash_name, path, version, kind, blob_hash, created_at)
-             VALUES (?, ?, 1, 'put', ?, 1)`,
+            `INSERT INTO versions (stash_name, path, version, kind, blob_hash, created_at, commit_id)
+             VALUES (?, ?, 1, 'put', ?, 1, ?)`,
           )
-          .bind(LIVE_STASH, path, `sha256-${path}`),
+          .bind(LIVE_STASH, path, `sha256-${path}`, `cmt_proof_${path}`),
       ),
     );
 

@@ -4,6 +4,7 @@ import { app, createApp } from "../../src/app.js";
 import type { Env } from "../../src/env.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
+import { seedCommit } from "../helpers/seed-rows.js";
 
 const BASE_URL = "http://example.test";
 
@@ -113,13 +114,14 @@ async function insertChange(
   createdAt: number,
   { author = "author", message = "message", size = 10 } = {},
 ): Promise<number> {
+  const commitId = await seedCommit(stash, `cmt_admin_${path}`, createdAt);
   const result = await createTestEnv()
     .env.DB.prepare(
       `INSERT INTO versions
-         (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at)
-       VALUES (?, ?, 1, 'put', ?, ?, ?, ?, ?)`,
+         (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at, commit_id)
+       VALUES (?, ?, 1, 'put', ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(stash, path, `sha256-${path}`, size, author, message, createdAt)
+    .bind(stash, path, `sha256-${path}`, size, author, message, createdAt, commitId)
     .run();
   return result.meta.last_row_id;
 }

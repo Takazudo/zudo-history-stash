@@ -25,6 +25,8 @@ import {
   seedRpcFixture,
 } from "./helpers/rpc.js";
 
+let rpcCommitSequence = 0;
+
 const PARITY_HEADERS = [
   "etag",
   "x-stash-version",
@@ -151,7 +153,9 @@ async function putFixture(
   expectedVersion: number | null,
   idempotencyKey?: string,
 ): Promise<{ hash: string; version: number }> {
-  const result = await createStashStore(createTestEnv().env).writes.put(
+  const result = await createStashStore(createTestEnv().env, {
+    createId: () => `rpc-fixture-${++rpcCommitSequence}`,
+  }).writes.put(
     RPC_STASH,
     "docs/rpc.txt",
     { body, expectedVersion },
@@ -475,6 +479,7 @@ function fixedRandomValues<T extends ArrayBufferView | null>(value: T): T {
 }
 
 beforeEach(() => {
+  rpcCommitSequence = 0;
   vi.spyOn(Date, "now").mockReturnValue(RPC_FIXED_NOW);
   vi.spyOn(crypto, "getRandomValues").mockImplementation(fixedRandomValues);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
@@ -557,6 +562,7 @@ describe("HTTP and RPC parity", () => {
   it.each(scenarios)("matches $name byte-for-byte", async (scenario) => {
     const results: Partial<Record<"http" | "rpc", ResponseSnapshot>> = {};
     for (const transport of ["http", "rpc"] as const) {
+      rpcCommitSequence = 0;
       await resetDatabase();
       await seedRpcFixture();
       const state = (await scenario.seed?.()) ?? {};

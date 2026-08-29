@@ -70,10 +70,10 @@ function recordingEnv(
                   }
                   return async (statements: D1PreparedStatement[]) => {
                     const results = await session.batch(statements);
-                    if (statements.length !== 5 || results.at(-1)?.meta.changes !== 1)
+                    if (statements.length !== 7 || results.at(-1)?.meta.changes !== 1)
                       return results;
                     const ids = options.importVersionIds ?? [];
-                    const versionIndexes = [1, 2, 3];
+                    const versionIndexes = [2, 3, 4];
                     return results.map((result, index) => {
                       const versionOffset = versionIndexes.indexOf(index);
                       if (versionOffset < 0 || ids[versionOffset] === undefined) return result;
@@ -223,9 +223,9 @@ describe("event publication", () => {
     expect(events).toHaveLength(3);
   });
 
-  it("publishes import events in statement order with each exact inserted id", async () => {
-    const exactIds = [101, 303, 707];
-    const { bindings, events } = recordingEnv({ importVersionIds: exactIds });
+  it("publishes import events from commit-scoped rows despite poisoned last_row_id metadata", async () => {
+    const poisonedIds = [101, 303, 707];
+    const { bindings, events } = recordingEnv({ importVersionIds: poisonedIds });
     const response = await mutation(
       bindings,
       "/import",
@@ -247,9 +247,9 @@ describe("event publication", () => {
       .bind(STASH)
       .all<{ id: number; version: number; kind: string }>();
     expect(rows.results).toHaveLength(3);
-    expect(rows.results.map(({ id }) => id).every((id) => !exactIds.includes(id))).toBe(true);
+    expect(rows.results.map(({ id }) => id).every((id) => !poisonedIds.includes(id))).toBe(true);
     expect(events.map((event) => (event.type === "change" ? event.changeId : -1))).toEqual(
-      exactIds,
+      rows.results.map(({ id }) => id),
     );
     expect(events.map((event) => (event.type === "change" ? event.kind : ""))).toEqual([
       "put",
@@ -259,11 +259,14 @@ describe("event publication", () => {
     expect(events.every((event) => event.type === "change" && event.origin === "importer")).toBe(
       true,
     );
+    const firstCommit = await bindings.DB.prepare(
+      "SELECT commit_id FROM versions WHERE stash_name = ? AND id = ?",
+    ).bind(STASH, rows.results[0]?.id).first<{ commit_id: string }>();
     await expect(response.json()).resolves.toEqual({
-      commitId: `legacy:${exactIds[0]}`,
+      commitId: firstCommit?.commit_id,
       path: "history.txt",
       headVersion: 3,
-      firstChangeId: exactIds[0],
+      firstChangeId: rows.results[0]?.id,
     });
     const refused = await mutation(bindings, "/import", {
       path: "history.txt",
@@ -285,18 +288,18 @@ describe("event publication", () => {
     );
     expect(continued.status).toBe(201);
     const rollbackRow = await bindings.DB.prepare(
-      `SELECT id, size_bytes, created_at FROM versions
+      `SELECT id, commit_id, size_bytes, created_at FROM versions
        WHERE stash_name = ? AND path = ? AND version = 4`,
     )
       .bind(STASH, "history.txt")
-      .first<{ id: number; size_bytes: number; created_at: number }>();
+      .first<{ id: number; commit_id: string; size_bytes: number; created_at: number }>();
     if (rollbackRow === null) throw new Error("Expected committed continuation rollback");
     expect(rollbackRow.size_bytes).toBe(3);
     expect(events).toHaveLength(4);
     expect(events.at(-1)).toEqual({
       type: "change",
       changeId: rollbackRow.id,
-      commitId: `legacy:${rollbackRow.id}`,
+      commitId: rollbackRow.commit_id,
       stash: STASH,
       path: "history.txt",
       version: 4,
@@ -305,7 +308,7 @@ describe("event publication", () => {
       createdAt: new Date(rollbackRow.created_at).toISOString(),
     });
     await expect(continued.json()).resolves.toEqual({
-      commitId: `legacy:${rollbackRow.id}`,
+      commitId: rollbackRow.commit_id,
       path: "history.txt",
       headVersion: 4,
       firstChangeId: rollbackRow.id,

@@ -6,6 +6,59 @@ import { rollbackBatch } from "../../../src/d1/sql/writes.js";
 import { counts, expectError, setup } from "./helpers.js";
 
 describe("stash writes", () => {
+  it("creates one sealed commit per changed write and none for an unchanged put", async () => {
+    const { stash, writes } = await setup();
+    const put = await writes.put(stash, "committed.txt", { body: "one", expectedVersion: null });
+    if (!put.ok || "unchanged" in put.value) throw new Error("Expected committed put");
+    const unchanged = await writes.put(stash, "committed.txt", {
+      body: "one",
+      expectedVersion: 1,
+      skipIfUnchanged: true,
+    });
+    expect(unchanged).toMatchObject({ ok: true, value: { unchanged: true } });
+    const deleted = await writes.delete(stash, "committed.txt", { expectedVersion: 1 });
+    if (!deleted.ok) throw new Error("Expected committed delete");
+    const rollback = await writes.rollback(stash, "committed.txt", {
+      expectedVersion: 2,
+      toVersion: 1,
+    });
+    if (!rollback.ok) throw new Error("Expected committed rollback");
+
+    const commits = await env.DB.prepare(
+      `SELECT id, source, entry_count, change_count, sealed, first_change_id, last_change_id
+       FROM commits WHERE stash_name = ? ORDER BY first_change_id`,
+    ).bind(stash).all();
+    expect(commits.results).toEqual([
+      {
+        id: put.value.commitId,
+        source: "put",
+        entry_count: 1,
+        change_count: 1,
+        sealed: 1,
+        first_change_id: put.value.changeId,
+        last_change_id: put.value.changeId,
+      },
+      {
+        id: deleted.value.commitId,
+        source: "delete",
+        entry_count: 1,
+        change_count: 1,
+        sealed: 1,
+        first_change_id: deleted.value.changeId,
+        last_change_id: deleted.value.changeId,
+      },
+      {
+        id: rollback.value.commitId,
+        source: "rollback",
+        entry_count: 1,
+        change_count: 1,
+        sealed: 1,
+        first_change_id: rollback.value.changeId,
+        last_change_id: rollback.value.changeId,
+      },
+    ]);
+  });
+
   it("preserves byte-exact bodies and reports the inserted version id", async () => {
     const { stash, writes } = await setup();
     const bodies = ["日本語", "line1\r\nline2", "trailing\n", ""];
@@ -198,6 +251,11 @@ describe("stash writes", () => {
       files: before.files,
       idempotency: before.idempotency,
     });
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM commits WHERE stash_name = ?")
+        .bind(initial.stash)
+        .first(),
+    ).resolves.toEqual({ count: 2 });
     expect(
       await env.DB.prepare("SELECT 1 FROM blobs WHERE stash_name = ? AND body = ?")
         .bind(initial.stash, "loser-unique-body")
@@ -227,6 +285,11 @@ describe("stash writes", () => {
     if (result.ok) throw new Error("expected stale delete");
     expect(result.current).toMatchObject({ version: 2, deleted: true, kind: "delete" });
     expect(await counts(initial.stash)).toEqual(afterWinner);
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM commits WHERE stash_name = ?")
+        .bind(initial.stash)
+        .first(),
+    ).resolves.toEqual({ count: 2 });
   });
 
   it("allows exactly one real concurrent CAS writer", async () => {
@@ -255,6 +318,8 @@ describe("stash writes", () => {
     const before = await counts(stash);
     const results = await db.batch(
       rollbackBatch(db, {
+        commitId: "cmt_tombstone_refusal",
+        createdBy: "test",
         stash,
         path: "hole.txt",
         expectedVersion: 2,

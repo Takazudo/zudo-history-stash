@@ -66,6 +66,27 @@ export interface VersionRow {
   representation: "text" | "binary";
   application_etag: string | null;
   content_storage: "legacy" | "bytes";
+  commit_id: string;
+}
+
+export interface CommitRow {
+  id: string;
+  stash_name: string;
+  source: "put" | "delete" | "rollback" | "import" | "upload" | "change-set" | "revert" | "commit";
+  source_id: string | null;
+  author: string;
+  message: string;
+  meta_json: string;
+  entry_count: number;
+  change_count: number;
+  sealed: 0 | 1;
+  first_change_id: number | null;
+  last_change_id: number | null;
+  reverts_commit_id: string | null;
+  idempotency_key: string | null;
+  request_hash: string | null;
+  created_by: string;
+  created_at: number;
 }
 
 export type UploadSessionState =
@@ -189,6 +210,7 @@ export const TABLE_NAMES = [
   "blobs",
   "files",
   "versions",
+  "commits",
   "idempotency",
   "gc_jobs",
   "gc_runs",
@@ -234,6 +256,26 @@ export const TABLE_COLUMNS = {
     "representation",
     "application_etag",
     "content_storage",
+    "commit_id",
+  ],
+  commits: [
+    "id",
+    "stash_name",
+    "source",
+    "source_id",
+    "author",
+    "message",
+    "meta_json",
+    "entry_count",
+    "change_count",
+    "sealed",
+    "first_change_id",
+    "last_change_id",
+    "reverts_commit_id",
+    "idempotency_key",
+    "request_hash",
+    "created_by",
+    "created_at",
   ],
   idempotency: [
     "stash_name",

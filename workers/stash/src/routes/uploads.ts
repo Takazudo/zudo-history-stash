@@ -22,6 +22,7 @@ import {
 } from "../byte-writes.js";
 import type { AppEnv, Principal } from "../context.js";
 import { finalizeUnchanged, finalizeUpload } from "../d1/upload-finalize.js";
+import { mintCommitId } from "../d1/sql/commits.js";
 import { D1UploadSessionStore, type FinalizationLease } from "../d1/upload-sessions.js";
 import type { UploadSessionRow } from "../d1/schema.js";
 import { deliverEvents, eventOrigin } from "../events/publish.js";
@@ -970,6 +971,9 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     });
   }
   const committed = await finalizeUpload(c.env.DB, {
+    commitId: mintCommitId(finalizationNow, c.get("deps").createId),
+    createdBy:
+      row.principal_kind === "admin" ? "admin" : (row.principal_id ?? "unknown-principal"),
     session: row,
     lease: leaseState.current,
     createdAt: finalizationNow,
