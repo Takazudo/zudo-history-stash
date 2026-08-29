@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   createStashClient,
+  type ChangeSetRecord,
   type FileRecord,
   type FileRecordWithEtag,
   type StashClient,
@@ -13,6 +14,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { StashUiProvider } from "../provider/stash-ui-provider.js";
 import {
   useSaveMachine,
   type LineEnding,
@@ -34,12 +36,20 @@ interface RecordedPut {
   idempotencyKey: string | null;
 }
 
+interface RecordedProposal {
+  serializedBody: string;
+  idempotencyKey: string | null;
+}
+
 interface Fixture {
   client: StashClient;
   head: FileRecordWithEtag;
   puts: RecordedPut[];
+  proposals: RecordedProposal[];
   deferNextPut: () => () => void;
+  deferNextProposal: () => () => void;
   failNextPutBeforeSend: () => void;
+  failNextProposalBeforeSend: () => void;
   failNextPutResponse: () => void;
 }
 
@@ -53,6 +63,8 @@ interface FakeBackedHostProps {
   onClose?: () => void;
   onDiscard?: () => void;
   onSaved?: (completion: SaveReviewCompletion) => void;
+  stash?: string;
+  onProposed?: (changeSet: ChangeSetRecord) => void;
 }
 
 async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
@@ -60,11 +72,19 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
   const fake = createFakeStash({ adminToken });
   fake.createStash(STASH);
   const puts: RecordedPut[] = [];
+  const proposals: RecordedProposal[] = [];
   let putGate: Promise<void> | null = null;
+  let proposalGate: Promise<void> | null = null;
   let rejectedBeforeSend = 0;
+  let rejectedProposalBeforeSend = 0;
   let lostResponses = 0;
   const fetch: StashFetch = async (input, init) => {
     const isPut = init?.method === "PUT";
+    const isProposal =
+      init?.method === "POST" &&
+      new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith(
+        "/change-sets",
+      );
     if (isPut) {
       if (typeof init.body !== "string") throw new Error("Expected a JSON request body");
       puts.push({
@@ -78,6 +98,22 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
       if (putGate !== null) {
         const gate = putGate;
         putGate = null;
+        await gate;
+      }
+    }
+    if (isProposal) {
+      if (typeof init.body !== "string") throw new Error("Expected a JSON proposal body");
+      proposals.push({
+        serializedBody: init.body,
+        idempotencyKey: new Headers(init.headers).get("Idempotency-Key"),
+      });
+      if (rejectedProposalBeforeSend > 0) {
+        rejectedProposalBeforeSend -= 1;
+        throw new TypeError("proposal request not sent");
+      }
+      if (proposalGate !== null) {
+        const gate = proposalGate;
+        proposalGate = null;
         await gate;
       }
     }
@@ -115,6 +151,7 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
     client,
     head: loaded.value,
     puts,
+    proposals,
     deferNextPut() {
       let release: () => void = () => {};
       putGate = new Promise<void>((resolveGate) => {
@@ -122,8 +159,18 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
       });
       return release;
     },
+    deferNextProposal() {
+      let release: () => void = () => {};
+      proposalGate = new Promise<void>((resolveGate) => {
+        release = resolveGate;
+      });
+      return release;
+    },
     failNextPutBeforeSend() {
       rejectedBeforeSend += 1;
+    },
+    failNextProposalBeforeSend() {
+      rejectedProposalBeforeSend += 1;
     },
     failNextPutResponse() {
       lostResponses += 1;
@@ -141,6 +188,8 @@ function FakeBackedHost({
   onClose = vi.fn(),
   onDiscard = vi.fn(),
   onSaved = vi.fn(),
+  stash,
+  onProposed,
 }: FakeBackedHostProps) {
   const machine = useSaveMachine({
     client: fixture.client,
@@ -160,6 +209,8 @@ function FakeBackedHost({
       onClose={onClose}
       onDiscard={onDiscard}
       onSaved={onSaved}
+      stash={stash}
+      onProposed={onProposed}
     />
   );
 }
@@ -291,6 +342,79 @@ beforeEach(() => {
 });
 
 describe("SaveReviewDialog", () => {
+  it("proposes the exact draft as a one-entry change set without saving head", async () => {
+    const fixture = await makeFixture("base\n");
+    render(
+      <StashUiProvider client={fixture.client}>
+        <FakeBackedHost draft={"candidate\n"} fixture={fixture} stash={STASH} />
+      </StashUiProvider>,
+    );
+    const propose = screen.getByRole("button", { name: "Propose as change set" });
+    await waitFor(() => expect(propose.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(propose);
+    const reviewLink = await screen.findByRole("link", { name: "Open change set" });
+    const submitted = JSON.parse(fixture.proposals[0]?.serializedBody ?? "null") as Record<
+      string,
+      unknown
+    >;
+    expect(submitted.entries).toEqual([
+      expect.objectContaining({ path: PATH, op: "put", baseVersion: fixture.head.version }),
+    ]);
+    expect(fixture.puts).toHaveLength(0);
+    expect(reviewLink.getAttribute("href")).toMatch(new RegExp(`^/s/${STASH}/change-sets/chs_`));
+    expect(screen.getByRole("button", { name: "Proposed" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("locks proposal submission synchronously against same-tick double activation", async () => {
+    const fixture = await makeFixture("base\n");
+    const release = fixture.deferNextProposal();
+    const onProposed = vi.fn();
+    render(
+      <StashUiProvider client={fixture.client}>
+        <FakeBackedHost
+          draft={"candidate\n"}
+          fixture={fixture}
+          stash={STASH}
+          onProposed={onProposed}
+        />
+      </StashUiProvider>,
+    );
+    const propose = screen.getByRole("button", { name: "Propose as change set" });
+    await waitFor(() => expect(propose.hasAttribute("disabled")).toBe(false));
+    act(() => {
+      fireEvent.click(propose);
+      fireEvent.click(propose);
+    });
+    await waitFor(() => expect(fixture.proposals).toHaveLength(1));
+    release();
+    await waitFor(() => expect(onProposed).toHaveBeenCalledTimes(1));
+    expect(fixture.proposals).toHaveLength(1);
+  });
+
+  it("retries an ambiguous proposal failure with the exact frozen body and key", async () => {
+    const fixture = await makeFixture("base\n");
+    fixture.failNextProposalBeforeSend();
+    const onProposed = vi.fn();
+    render(
+      <StashUiProvider client={fixture.client}>
+        <FakeBackedHost
+          draft={"candidate\n"}
+          fixture={fixture}
+          stash={STASH}
+          onProposed={onProposed}
+        />
+      </StashUiProvider>,
+    );
+    const propose = screen.getByRole("button", { name: "Propose as change set" });
+    await waitFor(() => expect(propose.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(propose);
+    await screen.findByRole("alert");
+    const first = fixture.proposals[0];
+    await userEvent.click(screen.getByRole("button", { name: "Retry proposal" }));
+    await waitFor(() => expect(onProposed).toHaveBeenCalledTimes(1));
+    expect(fixture.proposals).toHaveLength(2);
+    expect(fixture.proposals[1]).toEqual(first);
+  });
   it("reviews and saves exact CRLF bytes through the fake backend with exact-once completion", async () => {
     const fixture = await makeFixture("base\r\n");
     const releasePut = fixture.deferNextPut();
