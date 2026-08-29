@@ -233,10 +233,7 @@ async function committedChangeId(
   stash: string,
   commitId: string,
 ): Promise<number | null> {
-  const rows = await db
-    .prepare(SELECT_COMMIT_VERSIONS)
-    .bind(stash, commitId)
-    .all<{ id: number }>();
+  const rows = await db.prepare(SELECT_COMMIT_VERSIONS).bind(stash, commitId).all<{ id: number }>();
   const id = rows.results.length === 1 ? rows.results[0]?.id : undefined;
   return typeof id === "number" && id > 0 ? id : null;
 }

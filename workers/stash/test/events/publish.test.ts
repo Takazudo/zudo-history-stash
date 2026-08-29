@@ -261,7 +261,9 @@ describe("event publication", () => {
     );
     const firstCommit = await bindings.DB.prepare(
       "SELECT commit_id FROM versions WHERE stash_name = ? AND id = ?",
-    ).bind(STASH, rows.results[0]?.id).first<{ commit_id: string }>();
+    )
+      .bind(STASH, rows.results[0]?.id)
+      .first<{ commit_id: string }>();
     await expect(response.json()).resolves.toEqual({
       commitId: firstCommit?.commit_id,
       path: "history.txt",

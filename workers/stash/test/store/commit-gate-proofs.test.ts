@@ -395,10 +395,13 @@ describe("change-id contiguity proof", () => {
     await db.prepare("DELETE FROM sqlite_sequence WHERE name = 'versions'").run();
 
     const onBeforeCommit = async (): Promise<void> => {
-      await db.prepare(
-        `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+      await db
+        .prepare(
+          `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
          VALUES ('cmt_proof_competing', ?, 'put', 1, 'proof', 1)`,
-      ).bind(LIVE_STASH).run();
+        )
+        .bind(LIVE_STASH)
+        .run();
       await db.batch([
         db
           .prepare(
@@ -413,10 +416,12 @@ describe("change-id contiguity proof", () => {
     await onBeforeCommit();
     await db.batch(
       ["a.txt", "b.txt", "c.txt"].map((path) =>
-        db.prepare(
-          `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+        db
+          .prepare(
+            `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
            VALUES (?, ?, 'put', 1, 'proof', 1)`,
-        ).bind(`cmt_proof_${path}`, LIVE_STASH),
+          )
+          .bind(`cmt_proof_${path}`, LIVE_STASH),
       ),
     );
     await db.batch(

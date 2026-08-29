@@ -108,7 +108,9 @@ describe("single raw upload lifecycle", () => {
         `SELECT source, source_id, entry_count, change_count, sealed,
            first_change_id, last_change_id
          FROM commits WHERE id = ?`,
-      ).bind(value.commitId).first(),
+      )
+        .bind(value.commitId)
+        .first(),
     ).resolves.toEqual({
       source: "upload",
       source_id: session.id,
