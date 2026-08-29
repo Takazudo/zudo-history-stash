@@ -228,7 +228,7 @@ describe("commit store", () => {
     );
     expect(committed).toMatchObject({
       ok: true,
-      value: { entries: [{ hash, size: bytes.length }] },
+      value: { entries: [{ hash, size: bytes.length, storageTier: "r2" }] },
     });
     await expect(
       env.DB.prepare("SELECT body_bytes, r2_key FROM byte_blobs WHERE stash_name = ? AND hash = ?")

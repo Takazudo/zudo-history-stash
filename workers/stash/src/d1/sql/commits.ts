@@ -195,6 +195,16 @@ function putEntryStatements(
   entry: Extract<PreparedCommitEntry, { op: "put" }>,
 ): D1PreparedStatement[] {
   const fence = entryFence(input);
+  const storedBlob =
+    entry.representation === "text"
+      ? `EXISTS (SELECT 1 FROM blobs
+          WHERE stash_name = ? AND hash = ? AND size_bytes = ?
+            AND ((body IS NOT NULL AND r2_key IS NULL)
+              OR (body IS NULL AND r2_key IS NOT NULL)))`
+      : `EXISTS (SELECT 1 FROM byte_blobs
+          WHERE stash_name = ? AND hash = ? AND size_bytes = ?
+            AND ((body_bytes IS NOT NULL AND r2_key IS NULL)
+              OR (body_bytes IS NULL AND r2_key IS NOT NULL)))`;
   const blobStatement =
     entry.representation === "text"
       ? db
@@ -238,7 +248,7 @@ function putEntryStatements(
            rollback_of, author, message, meta_json, created_at, representation,
            application_etag, content_storage, commit_id, copied_from_path, copied_from_version)
          SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL
-         WHERE ${fence.sql}`,
+         WHERE ${fence.sql} AND ${storedBlob}`,
       )
       .bind(
         input.row.stash_name,
@@ -256,6 +266,9 @@ function putEntryStatements(
         entry.representation === "binary" ? "bytes" : "legacy",
         input.row.id,
         ...fence.params,
+        input.row.stash_name,
+        entry.hash,
+        entry.size,
       ),
   ];
 }

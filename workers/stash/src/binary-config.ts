@@ -157,7 +157,7 @@ export function capabilitiesFor(settings: BinarySettings): CapabilitiesResponse 
     contentAccess: ["inline", "raw", "deleted"],
     transferModes: ["json", "single", "multipart"],
     storageTiers: ["d1", "r2"],
-    commitEntryKinds: ["put-text", "put-binary", "copy", "delete", "rollback"],
+    commitEntryKinds: ["put", "copy", "delete", "rollback"],
     limits: {
       jsonInlineMaxBytes: settings.jsonInlineMaxBytes,
       d1InlineMaxBytes: settings.d1InlineMaxBytes,

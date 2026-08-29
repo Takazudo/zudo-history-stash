@@ -110,7 +110,7 @@ export interface CapabilitiesResponse {
   contentAccess: readonly ContentAccess[];
   transferModes: readonly ["json", "single", "multipart"];
   storageTiers: readonly StorageTier[];
-  commitEntryKinds: readonly ["put-text", "put-binary", "copy", "delete", "rollback"];
+  commitEntryKinds: readonly ["put", "copy", "delete", "rollback"];
   limits: {
     jsonInlineMaxBytes: number;
     d1InlineMaxBytes: number;
@@ -222,6 +222,7 @@ export interface CommitEntryRecord {
   size: number;
   contentType: string;
   representation: Representation;
+  storageTier?: StorageTier;
   rollbackOf: number | null;
   copiedFrom?: { path: string; version: number };
   identicalToHead?: boolean;

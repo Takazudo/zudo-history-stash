@@ -13,7 +13,7 @@ const CAPABILITIES: CapabilitiesResponse = {
   contentAccess: ["inline", "raw", "deleted"],
   transferModes: ["json", "single", "multipart"],
   storageTiers: ["d1", "r2"],
-  commitEntryKinds: ["put-text", "put-binary", "copy", "delete", "rollback"],
+  commitEntryKinds: ["put", "copy", "delete", "rollback"],
   limits: {
     jsonInlineMaxBytes: 5_000_000,
     d1InlineMaxBytes: 524_288,

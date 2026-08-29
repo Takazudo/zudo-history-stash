@@ -111,7 +111,7 @@ describe("commit routes", () => {
     });
     expect(binary.status).toBe(201);
     await expect(binary.json()).resolves.toMatchObject({
-      entries: [{ path: "binary.dat", representation: "binary", size: 1 }],
+      entries: [{ path: "binary.dat", representation: "binary", storageTier: "d1", size: 1 }],
     });
   });
 
@@ -154,7 +154,13 @@ describe("commit routes", () => {
       entries: [
         { path: "index.html", op: "put", representation: "text" },
         { path: "style.css", op: "put", representation: "text" },
-        { path: "hero.png", op: "put", representation: "binary", contentType: "image/png" },
+        {
+          path: "hero.png",
+          op: "put",
+          representation: "binary",
+          storageTier: "d1",
+          contentType: "image/png",
+        },
         {
           path: "logo-old.png",
           op: "copy",

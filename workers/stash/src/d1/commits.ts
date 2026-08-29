@@ -27,6 +27,7 @@ import {
   type ListCommitsQuery as ListCommitsQueryType,
   type RevertCommitBody as RevertCommitBodyType,
   type Result,
+  type StorageTier,
 } from "@takazudo/zudo-history-stash-core";
 import type { Principal } from "../context.js";
 import type { Env } from "../env.js";
@@ -72,6 +73,7 @@ interface CommittedVersionRow {
   rollback_of: number | null;
   copied_from_path: string | null;
   copied_from_version: number | null;
+  storage_tier: StorageTier | null;
   previous_hash: string | null;
   previous_content_type: string | null;
   previous_representation: "text" | "binary" | null;
@@ -179,6 +181,33 @@ function snapshotPayload(entries: CommitEntryInput[]): string {
   );
 }
 
+function storageTierSql(alias: string): string {
+  return `CASE
+    WHEN ${alias}.blob_hash IS NULL THEN NULL
+    WHEN ${alias}.content_storage = 'bytes' AND EXISTS (
+      SELECT 1 FROM byte_blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.body_bytes IS NOT NULL
+    ) THEN 'd1'
+    WHEN ${alias}.content_storage = 'bytes' AND EXISTS (
+      SELECT 1 FROM byte_blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.r2_key IS NOT NULL
+    ) THEN 'r2'
+    WHEN ${alias}.content_storage = 'legacy' AND EXISTS (
+      SELECT 1 FROM blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.body IS NOT NULL
+    ) THEN 'd1'
+    WHEN ${alias}.content_storage = 'legacy' AND EXISTS (
+      SELECT 1 FROM blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.r2_key IS NOT NULL
+    ) THEN 'r2'
+    ELSE NULL
+  END`;
+}
+
 async function readSnapshot(
   db: D1DatabaseSession,
   stash: string,
@@ -281,6 +310,7 @@ async function resultFromCommit(
     .prepare(
       `SELECT id, path, version, kind, blob_hash, size_bytes, content_type,
          representation, rollback_of, copied_from_path, copied_from_version,
+         ${storageTierSql("versions")} AS storage_tier,
          (SELECT previous.blob_hash FROM versions AS previous
           WHERE previous.stash_name = versions.stash_name
             AND previous.path = versions.path AND previous.version = versions.version - 1
@@ -318,6 +348,7 @@ async function resultFromCommit(
       size: row.size_bytes,
       contentType: row.content_type,
       representation: row.representation,
+      ...(row.storage_tier === null ? {} : { storageTier: row.storage_tier }),
       rollbackOf: row.rollback_of,
       ...(row.copied_from_path !== null && row.copied_from_version !== null
         ? { copiedFrom: { path: row.copied_from_path, version: row.copied_from_version } }
@@ -367,6 +398,7 @@ async function commitVersions(
       `SELECT current.id, current.path, current.version, current.kind, current.blob_hash,
          current.size_bytes, current.content_type, current.representation, current.rollback_of,
          current.copied_from_path, current.copied_from_version,
+         ${storageTierSql("current")} AS storage_tier,
          previous.version AS previous_version, previous.blob_hash AS previous_hash,
          previous.size_bytes AS previous_size,
          previous.content_type AS previous_content_type,
@@ -416,6 +448,7 @@ function commitRecord(commit: CommitRow, rows: CommittedVersionRow[]): CommitRec
       size: row.size_bytes,
       contentType: row.content_type,
       representation: row.representation,
+      ...(row.storage_tier === null ? {} : { storageTier: row.storage_tier }),
       rollbackOf: row.rollback_of,
       ...(row.copied_from_path !== null && row.copied_from_version !== null
         ? { copiedFrom: { path: row.copied_from_path, version: row.copied_from_version } }

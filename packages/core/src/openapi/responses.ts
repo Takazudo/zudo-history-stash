@@ -107,8 +107,7 @@ export const CapabilitiesResponseSchema: z.ZodType<CapabilitiesResponse> = z.str
   transferModes: z.tuple([z.literal("json"), z.literal("single"), z.literal("multipart")]),
   storageTiers: z.tuple([z.literal("d1"), z.literal("r2")]),
   commitEntryKinds: z.tuple([
-    z.literal("put-text"),
-    z.literal("put-binary"),
+    z.literal("put"),
     z.literal("copy"),
     z.literal("delete"),
     z.literal("rollback"),
@@ -372,6 +371,7 @@ export const UploadCommitResultSchema = z.strictObject({
   hash: HashSchema,
   size: NonNegativeIntegerSchema,
   representation: RepresentationSchema,
+  storageTier: z.enum(["d1", "r2"]).optional(),
   contentType: z.string(),
   changeId: z.number().int().positive(),
   createdAt: TimestampSchema,

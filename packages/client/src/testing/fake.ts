@@ -85,7 +85,7 @@ const DEFAULT_CAPABILITIES: CapabilitiesResponse = {
   contentAccess: ["inline", "raw", "deleted"],
   transferModes: ["json", "single", "multipart"],
   storageTiers: ["d1", "r2"],
-  commitEntryKinds: ["put-text", "put-binary", "copy", "delete", "rollback"],
+  commitEntryKinds: ["put", "copy", "delete", "rollback"],
   limits: {
     jsonInlineMaxBytes: MAX_BODY_BYTES,
     d1InlineMaxBytes: 1_000_000,
