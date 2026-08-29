@@ -110,6 +110,7 @@ export interface CapabilitiesResponse {
   contentAccess: readonly ContentAccess[];
   transferModes: readonly ["json", "single", "multipart"];
   storageTiers: readonly StorageTier[];
+  commitEntryKinds: readonly ["put-text", "put-binary", "copy", "delete", "rollback"];
   limits: {
     jsonInlineMaxBytes: number;
     d1InlineMaxBytes: number;
@@ -301,7 +302,14 @@ export interface ChangeSetDiffResult {
     candidate: Current | null;
     current: Current | null;
     stale: boolean;
-    diff: DiffResult | { state: "binary" | "oversized" };
+    diff:
+      | Exclude<DiffResult, { state: "binary" }>
+      | {
+          state: "binary";
+          base: { hash: string; size: number } | null;
+          candidate: { hash: string; size: number } | null;
+        }
+      | { state: "oversized" };
   }>;
   stale: boolean;
   status: ChangeSetStatus;

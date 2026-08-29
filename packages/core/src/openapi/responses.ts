@@ -106,6 +106,13 @@ export const CapabilitiesResponseSchema: z.ZodType<CapabilitiesResponse> = z.str
   contentAccess: z.tuple([z.literal("inline"), z.literal("raw"), z.literal("deleted")]),
   transferModes: z.tuple([z.literal("json"), z.literal("single"), z.literal("multipart")]),
   storageTiers: z.tuple([z.literal("d1"), z.literal("r2")]),
+  commitEntryKinds: z.tuple([
+    z.literal("put-text"),
+    z.literal("put-binary"),
+    z.literal("copy"),
+    z.literal("delete"),
+    z.literal("rollback"),
+  ]),
   limits: z.strictObject({
     jsonInlineMaxBytes: z.number().int().positive(),
     d1InlineMaxBytes: z.number().int().positive(),
@@ -598,7 +605,27 @@ export const ChangeSetDiffResultSchema = z.strictObject({
       candidate: CurrentSchema.nullable(),
       current: CurrentSchema.nullable(),
       stale: z.boolean(),
-      diff: DiffEnvelopeSchema,
+      diff: z.union([
+        z.strictObject({ state: z.literal("same") }),
+        z.strictObject({
+          state: z.literal("oversized"),
+          reason: z.enum(["bytes", "complexity"]).optional(),
+        }),
+        z.strictObject({
+          state: z.literal("ready"),
+          unified: z.string(),
+          truncated: z.boolean(),
+          hunks: z.array(DiffHunkSchema),
+          stats: DiffStatsSchema,
+        }),
+        z.strictObject({
+          state: z.literal("binary"),
+          base: z.strictObject({ hash: HashSchema, size: NonNegativeIntegerSchema }).nullable(),
+          candidate: z
+            .strictObject({ hash: HashSchema, size: NonNegativeIntegerSchema })
+            .nullable(),
+        }),
+      ]),
     }),
   ),
   stale: z.boolean(),

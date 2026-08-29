@@ -134,7 +134,7 @@ describe("change-set store", () => {
     ).resolves.toMatchObject({ total: 1, changeSets: [{ entries: [{ path: "one.txt" }] }] });
   });
 
-  it("returns metadata outcomes for binary and copy entries", async () => {
+  it("returns exact metadata for binary review and a text diff for copy", async () => {
     await seedStash(STASH);
     const store = createStashStore(env as Env, dependencies());
     await store.writes.put(STASH, "source.txt", { body: "source", expectedVersion: null });
@@ -159,8 +159,21 @@ describe("change-set store", () => {
     const diff = await store.changeSets.getChangeSetDiff(STASH, created.value.id);
     expect(diff?.entries).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ path: "binary.bin", diff: { state: "binary" } }),
-        expect.objectContaining({ path: "copy.txt", diff: { state: "binary" } }),
+        expect.objectContaining({
+          path: "binary.bin",
+          diff: {
+            state: "binary",
+            base: null,
+            candidate: {
+              hash: "sha256-ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc",
+              size: 3,
+            },
+          },
+        }),
+        expect.objectContaining({
+          path: "copy.txt",
+          diff: expect.objectContaining({ state: "ready" }),
+        }),
       ]),
     );
   });

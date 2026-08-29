@@ -1,10 +1,11 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { CreateCommitBody } from "@takazudo/zudo-history-stash-core";
+import { sha256Hex, type CreateCommitBody } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../../src/env.js";
 import { createCommits } from "../../src/d1/commits.js";
 import { createStashStore } from "../../src/d1/store.js";
 import { resetDatabase, seedStash } from "../helpers/app.js";
+import { generation } from "../helpers/blob-generations.js";
 
 const workerEnv = env as Env;
 let sequence = 0;
@@ -38,6 +39,12 @@ beforeEach(async () => {
 });
 
 describe("commit store", () => {
+  function base64(bytes: Uint8Array): string {
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+
   it("atomically seals create, put, and delete entries under one commit", async () => {
     const stash = "commit-three";
     await seedStash(stash);
@@ -191,6 +198,91 @@ describe("commit store", () => {
     await expect(
       env.DB.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'versions'").first(),
     ).resolves.toEqual({ seq: 2 });
+  });
+
+  it("spills a 600KB binary and leaves a refused spill as an R2-only GC orphan", async () => {
+    const stash = "commit-binary-spill";
+    await seedStash(stash);
+    const bytes = Uint8Array.from({ length: 600 * 1024 }, (_, index) => index % 251);
+    const hash = await sha256Hex(bytes.slice().buffer as ArrayBuffer);
+    const first = createCommits(workerEnv, {
+      now: () => 10_000,
+      createId: () => "binary-spill-one",
+      createBlobGeneration: () => generation(1),
+    });
+    const committed = await first.createCommit(
+      stash,
+      {
+        entries: [
+          {
+            op: "put",
+            path: "large.bin",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: base64(bytes),
+          },
+        ],
+      },
+      { principal: "test" },
+    );
+    expect(committed).toMatchObject({
+      ok: true,
+      value: { entries: [{ hash, size: bytes.length }] },
+    });
+    await expect(
+      env.DB.prepare("SELECT body_bytes, r2_key FROM byte_blobs WHERE stash_name = ? AND hash = ?")
+        .bind(stash, hash)
+        .first(),
+    ).resolves.toEqual({
+      body_bytes: null,
+      r2_key: `v2/${stash}/${hash}/${generation(1)}`,
+    });
+
+    await seedFile(stash, "raced.txt", "before");
+    const refusedBytes = bytes.map((byte) => byte ^ 0xff);
+    const refusedHash = await sha256Hex(refusedBytes.slice().buffer as ArrayBuffer);
+    const writes = store(11_000).writes;
+    const raced = createCommits(workerEnv, {
+      now: () => 12_000,
+      createId: () => "binary-spill-raced",
+      createBlobGeneration: () => generation(2),
+      onBeforeCommit: async () => {
+        const winner = await writes.put(stash, "raced.txt", {
+          body: "winner",
+          expectedVersion: 1,
+        });
+        if (!winner.ok) throw new Error("Failed to commit race winner");
+      },
+    });
+    const refused = await raced.createCommit(
+      stash,
+      {
+        entries: [
+          {
+            op: "put",
+            path: "refused.bin",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: base64(refusedBytes),
+          },
+          { op: "put", path: "raced.txt", expectedVersion: 1, body: "loser" },
+        ],
+      },
+      { principal: "test" },
+    );
+    expect(refused).toMatchObject({ ok: false, error: { code: "commit-conflict" } });
+    await expect(
+      env.DB.prepare("SELECT 1 FROM byte_blobs WHERE stash_name = ? AND hash = ?")
+        .bind(stash, refusedHash)
+        .first(),
+    ).resolves.toBeNull();
+    const orphanKey = `v2/${stash}/${refusedHash}/${generation(2)}`;
+    await expect(env.BLOBS.head(orphanKey)).resolves.not.toBeNull();
+    await expect(
+      env.DB.prepare("SELECT 1 FROM byte_blobs WHERE r2_key = ?").bind(orphanKey).first(),
+    ).resolves.toBeNull();
   });
 
   it("builds copy and rollback entries from live stored versions", async () => {

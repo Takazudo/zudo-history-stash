@@ -25,6 +25,7 @@ describe("binary object settings", () => {
       contentAccess: ["inline", "raw", "deleted"],
       transferModes: ["json", "single", "multipart"],
       storageTiers: ["d1", "r2"],
+      commitEntryKinds: ["put-text", "put-binary", "copy", "delete", "rollback"],
       limits: { maxMultipartParts: MAX_MULTIPART_PARTS },
     });
   });
@@ -39,6 +40,7 @@ describe("binary object settings", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       representations: ["text", "binary"],
+      commitEntryKinds: ["put-text", "put-binary", "copy", "delete", "rollback"],
       limits: { maxFileBytes: 100_000_000, multipartPartBytes: 8_388_608 },
     });
   });
