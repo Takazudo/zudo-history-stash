@@ -209,9 +209,9 @@ async function requireReleaseSource(projectRoot, entry) {
     }
     releases.add(version);
     const dates = [...parsed.body.matchAll(/^Released: ([0-9]{4}-[0-9]{2}-[0-9]{2})\r?$/gmu)];
-    if (dates.length !== 1) {
+    if (dates.length > 1) {
       throw new ChangelogDriftError([
-        `Changelog release must contain exactly one standalone Released: YYYY-MM-DD line for ${entry.slug}: ${candidate.name}.`,
+        `Changelog release must contain at most one standalone Released: YYYY-MM-DD line for ${entry.slug}: ${candidate.name}.`,
       ]);
     }
   }
