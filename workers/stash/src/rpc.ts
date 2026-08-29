@@ -14,6 +14,7 @@ import {
   type MutationOptions,
   type StashRpcMethods,
 } from "@takazudo/zudo-history-stash";
+import { statusForCode, validateStashName } from "@takazudo/zudo-history-stash-core";
 import type {
   CandidateDiffResult,
   ApproveChangeSetBody,
@@ -347,6 +348,17 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     stash: string,
     options?: ListFilesOptions,
   ): Promise<ClientResult<FileListResponse>> {
+    const stashValidation = validateStashName(stash);
+    if (!stashValidation.ok) {
+      return {
+        ok: false,
+        error: {
+          code: stashValidation.error,
+          status: statusForCode(stashValidation.error),
+          message: stashValidation.message,
+        },
+      };
+    }
     return noThrow(async () => {
       let response: Response;
       try {
