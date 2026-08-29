@@ -4,7 +4,7 @@ import type { DiffHunk, DiffResult, DiffStats } from "../diff.js";
 import type { ERROR_CODES } from "../errors.js";
 import type {
   CandidateDiffResult,
-  ApproveProposalResult,
+  ApproveChangeSetResult,
   ChangesPage,
   ChangeItem,
   CreateStashResult,
@@ -35,10 +35,16 @@ import type {
   ListStashesResult,
   ListTokensResult,
   MeResponse,
-  ProposalDiffResult,
-  ProposalListResponse,
-  ProposalRecord,
-  ProposalWithBody,
+  ChangeSetDiffResult,
+  ChangeSetListResponse,
+  ChangeSetRecord,
+  CommitDiffResult,
+  CommitEntryRecord,
+  CommitListResponse,
+  CommitRecord,
+  CommitResult,
+  CommitSummary,
+  SnapshotResponse,
   PutCreatedResult,
   PutUnchangedResult,
   RotateTokenResult,
@@ -47,7 +53,8 @@ import type {
   StashListResponse,
   StashChangeEvent,
   StashEvent,
-  StashProposalEvent,
+  StashCommitEvent,
+  StashChangeSetEvent,
   StashReadyEvent,
   StashReconnectEvent,
   StashRecord,
@@ -88,25 +95,42 @@ describe("response schema type locks", () => {
       z.infer<typeof RESPONSE_SCHEMAS.StashChangeEvent>
     >().toEqualTypeOf<StashChangeEvent>();
     expectTypeOf<
-      z.infer<typeof RESPONSE_SCHEMAS.StashProposalEvent>
-    >().toEqualTypeOf<StashProposalEvent>();
+      z.infer<typeof RESPONSE_SCHEMAS.StashCommitEvent>
+    >().toEqualTypeOf<StashCommitEvent>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.StashChangeSetEvent>
+    >().toEqualTypeOf<StashChangeSetEvent>();
     expectTypeOf<
       z.infer<typeof RESPONSE_SCHEMAS.StashReconnectEvent>
     >().toEqualTypeOf<StashReconnectEvent>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.StashEvent>>().toEqualTypeOf<StashEvent>();
-    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.ProposalRecord>>().toEqualTypeOf<ProposalRecord>();
     expectTypeOf<
-      z.infer<typeof RESPONSE_SCHEMAS.ProposalWithBody>
-    >().toEqualTypeOf<ProposalWithBody>();
+      z.infer<typeof RESPONSE_SCHEMAS.CommitEntryRecord>
+    >().toEqualTypeOf<CommitEntryRecord>();
+    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.CommitRecord>>().toEqualTypeOf<CommitRecord>();
+    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.CommitResult>>().toEqualTypeOf<CommitResult>();
+    expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.CommitSummary>>().toEqualTypeOf<CommitSummary>();
     expectTypeOf<
-      z.infer<typeof RESPONSE_SCHEMAS.ProposalListResponse>
-    >().toEqualTypeOf<ProposalListResponse>();
+      z.infer<typeof RESPONSE_SCHEMAS.CommitListResponse>
+    >().toEqualTypeOf<CommitListResponse>();
     expectTypeOf<
-      z.infer<typeof RESPONSE_SCHEMAS.ApproveProposalResult>
-    >().toEqualTypeOf<ApproveProposalResult>();
+      z.infer<typeof RESPONSE_SCHEMAS.CommitDiffResult>
+    >().toEqualTypeOf<CommitDiffResult>();
     expectTypeOf<
-      z.infer<typeof RESPONSE_SCHEMAS.ProposalDiffResult>
-    >().toEqualTypeOf<ProposalDiffResult>();
+      z.infer<typeof RESPONSE_SCHEMAS.SnapshotResponse>
+    >().toEqualTypeOf<SnapshotResponse>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ChangeSetRecord>
+    >().toEqualTypeOf<ChangeSetRecord>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ChangeSetListResponse>
+    >().toEqualTypeOf<ChangeSetListResponse>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ChangeSetDiffResult>
+    >().toEqualTypeOf<ChangeSetDiffResult>();
+    expectTypeOf<
+      z.infer<typeof RESPONSE_SCHEMAS.ApproveChangeSetResult>
+    >().toEqualTypeOf<ApproveChangeSetResult>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.TokenRecord>>().toEqualTypeOf<TokenRecord>();
     expectTypeOf<z.infer<typeof RESPONSE_SCHEMAS.CreatedToken>>().toEqualTypeOf<CreatedToken>();
     expectTypeOf<
@@ -215,17 +239,17 @@ describe("response schema samples", () => {
       }).success,
     ).toBe(false);
     expect(
-      RESPONSE_SCHEMAS.ProposalRecord.safeParse({
-        ...SAMPLES.ProposalRecord,
-        id: "proposal-not-time-sortable",
+      RESPONSE_SCHEMAS.StashChangeEvent.safeParse({
+        ...SAMPLES.StashChangeEvent,
+        commitId: undefined,
       }).success,
     ).toBe(false);
     expect(
-      RESPONSE_SCHEMAS.ProposalDiffResult.safeParse({
-        ...SAMPLES.ProposalDiffResult,
-        current: undefined,
+      RESPONSE_SCHEMAS.ErrorResponse.safeParse({
+        error: { code: "commit-conflict", message: "Conflict" },
+        conflicts: [{ path: "docs/a.md", expectedVersion: null, current: null }],
       }).success,
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 

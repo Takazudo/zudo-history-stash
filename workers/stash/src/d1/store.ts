@@ -1,6 +1,5 @@
 import { createReads } from "./reads.js";
 import { createWrites } from "./writes.js";
-import { createProposals } from "./proposals.js";
 import type { Env } from "../env.js";
 
 export interface StoreDependencies {
@@ -18,7 +17,6 @@ export function createStashStore(env: Env, deps: Partial<StoreDependencies> = {}
   return {
     reads: createReads(env, dependencies),
     writes: createWrites(env, dependencies),
-    proposals: createProposals(env, dependencies),
     deps: dependencies,
   };
 }

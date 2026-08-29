@@ -10,29 +10,23 @@ import { createTestEnv } from "./helpers/env.js";
 
 type RouteTuple = readonly [string, string];
 
-const proposalRouteProbes = [
-  { id: "createProposal", method: "POST", path: "/v1/stashes/route-pin/proposals" },
-  { id: "listProposals", method: "GET", path: "/v1/stashes/route-pin/proposals" },
+const skeletonRouteProbes = [
+  { id: "createCommit", method: "POST", path: "/v1/stashes/route-pin/commits" },
+  { id: "getCommit", method: "GET", path: "/v1/stashes/route-pin/commits/cmt_1" },
+  { id: "listCommits", method: "GET", path: "/v1/stashes/route-pin/commits" },
+  { id: "getCommitDiff", method: "GET", path: "/v1/stashes/route-pin/commits/cmt_1/diff" },
+  { id: "revertCommit", method: "POST", path: "/v1/stashes/route-pin/commits/cmt_1/revert" },
+  { id: "getSnapshot", method: "GET", path: "/v1/stashes/route-pin/snapshot?at=commit%3Acmt_1" },
+  { id: "createChangeSet", method: "POST", path: "/v1/stashes/route-pin/change-sets" },
+  { id: "listChangeSets", method: "GET", path: "/v1/stashes/route-pin/change-sets" },
+  { id: "getChangeSet", method: "GET", path: "/v1/stashes/route-pin/change-sets/chs_1" },
+  { id: "getChangeSetDiff", method: "GET", path: "/v1/stashes/route-pin/change-sets/chs_1/diff" },
   {
-    id: "getProposal",
-    method: "GET",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef",
-  },
-  {
-    id: "getProposalDiff",
-    method: "GET",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/diff",
-  },
-  {
-    id: "approveProposal",
+    id: "approveChangeSet",
     method: "POST",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/approve",
+    path: "/v1/stashes/route-pin/change-sets/chs_1/approve",
   },
-  {
-    id: "rejectProposal",
-    method: "POST",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/reject",
-  },
+  { id: "rejectChangeSet", method: "POST", path: "/v1/stashes/route-pin/change-sets/chs_1/reject" },
 ] as const;
 
 beforeEach(resetDatabase);
@@ -129,45 +123,48 @@ describe("route contract pin", () => {
     expect(concealed.status).toBe(404);
   });
 
-  it.each(proposalRouteProbes)("mounts the dedicated real handler for $id", async (route) => {
+  it.each(skeletonRouteProbes)("mounts the 501 skeleton for $id", async (route) => {
     await seedStash("route-pin");
-    const hasBody = route.method === "POST";
     const response = await request(app, `http://stash.test${route.path}`, {
       method: route.method,
       headers: {
         ...bearer("test-admin"),
-        ...(hasBody ? { "Content-Type": "application/json" } : {}),
+        ...(route.method === "POST" ? { "Content-Type": "application/json" } : {}),
       },
-      ...(hasBody ? { body: "{}" } : {}),
+      ...(route.method === "POST" ? { body: "{}" } : {}),
     });
-
-    expect(response.status).not.toBe(501);
-    expect(response.status).toBe(
-      route.id === "listProposals" ? 200 : route.id === "createProposal" ? 400 : 404,
-    );
+    expect(response.status).toBe(501);
   });
 
-  it("keeps all six raw proposal RPC methods on generic request transport", async () => {
+  it("keeps all twelve raw skeleton RPC methods on generic request transport", async () => {
     await seedStash("route-pin");
     const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
-    const createdResponse = await rpc.createProposal(
-      "test-admin",
-      "route-pin",
-      { path: "docs/proposal.md", body: "candidate", baseVersion: null },
-      "route-pin-create",
-    );
-    expect(createdResponse.status).toBe(201);
-    const proposalId = (await createdResponse.json<{ id: string }>()).id;
-
-    expect(
-      (await rpc.listProposals("test-admin", "route-pin", { status: "all", limit: 1 })).status,
-    ).toBe(200);
-    expect((await rpc.getProposal("test-admin", "route-pin", proposalId)).status).toBe(200);
-    expect(
-      (await rpc.getProposalDiff("test-admin", "route-pin", proposalId, { context: 1 })).status,
-    ).toBe(200);
-    expect((await rpc.approveProposal("test-admin", "route-pin", proposalId, {})).status).toBe(200);
-    expect((await rpc.rejectProposal("test-admin", "route-pin", proposalId, {})).status).toBe(409);
+    const entry = { op: "put" as const, path: "docs/a.md", expectedVersion: null, body: "a" };
+    const changeSetEntry = { op: "put" as const, path: "docs/a.md", baseVersion: null, body: "a" };
+    const responses = await Promise.all([
+      rpc.createCommit("test-admin", "route-pin", { entries: [entry] }, "route-pin-create"),
+      rpc.getCommit("test-admin", "route-pin", "cmt_1"),
+      rpc.listCommits("test-admin", "route-pin"),
+      rpc.getCommitDiff("test-admin", "route-pin", "cmt_1"),
+      rpc.revertCommit("test-admin", "route-pin", "cmt_1", {}, "route-pin-revert"),
+      rpc.getSnapshot("test-admin", "route-pin", {
+        at: "commit:cmt_1",
+        includeDeleted: false,
+        limit: 50,
+      }),
+      rpc.createChangeSet(
+        "test-admin",
+        "route-pin",
+        { entries: [changeSetEntry] },
+        "route-pin-change-set",
+      ),
+      rpc.listChangeSets("test-admin", "route-pin"),
+      rpc.getChangeSet("test-admin", "route-pin", "chs_1"),
+      rpc.getChangeSetDiff("test-admin", "route-pin", "chs_1"),
+      rpc.approveChangeSet("test-admin", "route-pin", "chs_1", {}),
+      rpc.rejectChangeSet("test-admin", "route-pin", "chs_1", {}),
+    ]);
+    expect(responses.map(({ status }) => status)).toEqual(Array(12).fill(501));
   });
 
   it("exports one parser and transport-error identity from the client package root", async () => {

@@ -174,6 +174,7 @@ async function replay<T>(
   const row = await readVersion(db, ledger.stash_name, ledger.path, ledger.version);
   if (!row) return failure("internal", 500, "Idempotency result is missing");
   const base = {
+    commitId: `legacy:${row.id}`,
     version: row.version,
     changeId: row.id,
     createdAt: new Date(row.created_at).toISOString(),
@@ -327,6 +328,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
         if (id === null) return failure("internal", 500, "Missing put change id");
         return created(
           {
+            commitId: `legacy:${id}`,
             version: (input.expectedVersion ?? 0) + 1,
             hash,
             size,
@@ -418,6 +420,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
         if (id === null) return failure("internal", 500, "Missing delete change id");
         return created(
           {
+            commitId: `legacy:${id}`,
             version: input.expectedVersion + 1,
             changeId: id,
             createdAt: new Date(createdAt).toISOString(),
@@ -522,6 +525,7 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
         if (id === null) return failure("internal", 500, "Missing rollback change id");
         return created(
           {
+            commitId: `legacy:${id}`,
             version: input.expectedVersion + 1,
             hash: target.blob_hash,
             rollbackOf: input.toVersion,

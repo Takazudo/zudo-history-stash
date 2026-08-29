@@ -48,7 +48,7 @@ is not guaranteed to reach dispatch. A `Request` or `Response` sent through the 
 `requestStream()` bridge is RPC-aware: its body stream is not serialized into that value payload.
 The SDK selects this bridge for raw, capabilities, and upload routes when the binding exposes it.
 That transport boundary is independent from Stash's content policy:
-the compatibility JSON/proposal/import path is text-only with a 5,000,000 UTF-8-byte body rule,
+the compatibility JSON/change set/import path is text-only with a 5,000,000 UTF-8-byte body rule,
 while raw uploads preserve either text or binary and use the capability settings
 (`HTTP_REQUEST_MAX_BYTES=100000000`, `SINGLE_UPLOAD_MAX_BYTES=33554432`, and multipart above the
 single limit). Above 5,000,000 bytes does not imply binary; valid UTF-8 remains text. Representation,

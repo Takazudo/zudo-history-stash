@@ -48,7 +48,7 @@ RPC を使用しても、プラットフォームと API のどちらの上限�
 `Request` または `Response` を flow-controlled `requestStream()` bridge で渡す場合は RPC-aware であり、body stream は
 その value payload にシリアライズされません。binding が公開していれば、SDK は raw、capabilities、upload route に
 この bridge を選びます。
-この transport 境界は Stash の content policy とは独立しています。互換性 JSON/proposal/import 経路は
+この transport 境界は Stash の content policy とは独立しています。互換性 JSON/change set/import 経路は
 テキスト専用で 5,000,000 UTF-8 byte の本文ルールを使います。一方 raw upload は text または binary を
 そのまま保持し、capabilities の設定（`HTTP_REQUEST_MAX_BYTES=100000000`、
 `SINGLE_UPLOAD_MAX_BYTES=33554432`、および single 上限を超えた場合の multipart）を使います。

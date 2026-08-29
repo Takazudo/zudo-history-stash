@@ -8,8 +8,6 @@ export const GOLDEN_ROTATED_TOKEN_ID = `tok_${"0".repeat(31)}3`;
 export const GOLDEN_READ_TOKEN_SECRET = `zhs_${"0".repeat(42)}1`;
 export const GOLDEN_WRITE_TOKEN_SECRET = `zhs_${"0".repeat(42)}2`;
 export const GOLDEN_ROTATED_TOKEN_SECRET = `zhs_${"0".repeat(42)}3`;
-export const GOLDEN_PROPOSAL_ID = "prp_178761600000000000001";
-export const GOLDEN_PROPOSAL_EXPIRES_AT = "2026-09-08T00:00:00.000Z";
 
 export const GOLDEN_RESPONSES = {
   stash: {
@@ -111,116 +109,6 @@ export const GOLDEN_RESPONSES = {
     startedAt: GOLDEN_CREATED_AT,
     finishedAt: null,
     error: null,
-  },
-  proposal: {
-    id: GOLDEN_PROPOSAL_ID,
-    stash: "golden",
-    path: "docs/proposal.md",
-    baseVersion: null,
-    author: "proposal-bot",
-    message: "golden candidate",
-    meta: { source: "golden", proposalId: GOLDEN_PROPOSAL_ID },
-    size: 5,
-    hash: GOLDEN_HELLO_HASH,
-    createdAt: GOLDEN_CREATED_AT,
-    expiresAt: GOLDEN_PROPOSAL_EXPIRES_AT,
-    status: "open",
-    decidedAt: null,
-    decidedBy: null,
-    decisionReason: null,
-    appliedVersion: null,
-    appliedChangeId: null,
-  },
-  proposalWithBody: {
-    id: GOLDEN_PROPOSAL_ID,
-    stash: "golden",
-    path: "docs/proposal.md",
-    baseVersion: null,
-    author: "proposal-bot",
-    message: "golden candidate",
-    meta: { source: "golden", proposalId: GOLDEN_PROPOSAL_ID },
-    size: 5,
-    hash: GOLDEN_HELLO_HASH,
-    createdAt: GOLDEN_CREATED_AT,
-    expiresAt: GOLDEN_PROPOSAL_EXPIRES_AT,
-    status: "open",
-    decidedAt: null,
-    decidedBy: null,
-    decisionReason: null,
-    appliedVersion: null,
-    appliedChangeId: null,
-    body: "hello",
-  },
-  proposalList: {
-    proposals: [
-      {
-        id: GOLDEN_PROPOSAL_ID,
-        stash: "golden",
-        path: "docs/proposal.md",
-        baseVersion: null,
-        author: "proposal-bot",
-        message: "golden candidate",
-        meta: { source: "golden", proposalId: GOLDEN_PROPOSAL_ID },
-        size: 5,
-        hash: GOLDEN_HELLO_HASH,
-        createdAt: GOLDEN_CREATED_AT,
-        expiresAt: GOLDEN_PROPOSAL_EXPIRES_AT,
-        status: "open",
-        decidedAt: null,
-        decidedBy: null,
-        decisionReason: null,
-        appliedVersion: null,
-        appliedChangeId: null,
-      },
-    ],
-    nextAfter: null,
-    total: 1,
-  },
-  proposalDiff: {
-    state: "ready",
-    unified: "@@ -0,0 +1 @@\n+hello\n",
-    truncated: false,
-    hunks: [
-      {
-        oldStart: 0,
-        oldLines: 0,
-        newStart: 1,
-        newLines: 1,
-        lines: ["+hello"],
-      },
-    ],
-    stats: { added: 1, removed: 0 },
-    base: { version: null, hash: null, deleted: false },
-    candidate: { hash: GOLDEN_HELLO_HASH, size: 5 },
-    current: null,
-    stale: false,
-  },
-  proposalApproval: {
-    status: "applied",
-    appliedVersion: 1,
-    appliedChangeId: 1,
-    hash: GOLDEN_HELLO_HASH,
-    createdAt: GOLDEN_CREATED_AT,
-  },
-  proposalStale: {
-    ok: false,
-    error: { code: "stale", message: "Proposal base is stale.", status: 409 },
-    current: {
-      version: 1,
-      hash: GOLDEN_HELLO_HASH,
-      deleted: false,
-      kind: "put",
-      author: "fixture",
-      createdAt: GOLDEN_CREATED_AT,
-    },
-  },
-  proposalExpired: {
-    ok: false,
-    error: { code: "proposal-expired", message: "Proposal is expired.", status: 409 },
-  },
-  proposalClosed: {
-    ok: false,
-    error: { code: "proposal-closed", message: "Proposal is closed.", status: 409 },
   },
   readToken: {
     id: GOLDEN_READ_TOKEN_ID,
@@ -324,6 +212,7 @@ export const GOLDEN_RESPONSES = {
     ],
   },
   put: {
+    commitId: "cmt_fake_1",
     version: 1,
     hash: GOLDEN_HELLO_HASH,
     size: 5,
@@ -361,6 +250,7 @@ export const GOLDEN_RESPONSES = {
     },
   },
   deleted: {
+    commitId: "cmt_fake_2",
     version: 2,
     changeId: 2,
     createdAt: GOLDEN_CREATED_AT,

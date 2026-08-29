@@ -25,7 +25,7 @@ async function collect(body: ReadableStream<Uint8Array>) {
 describe("parseStashEventStream", () => {
   it("parses every single split position, including a split UTF-8 code point", async () => {
     const frame =
-      'event: change\nid: 42\ndata: {"type":"change","changeId":42,"stash":"notes","path":"文書/é.md","version":3,"kind":"put","origin":"tab-a","createdAt":"2026-08-28T01:02:03.000Z"}\n\n';
+      'event: change\nid: 42\ndata: {"type":"change","changeId":42,"commitId":"legacy:42","stash":"notes","path":"文書/é.md","version":3,"kind":"put","origin":"tab-a","createdAt":"2026-08-28T01:02:03.000Z"}\n\n';
     const bytes = encoder.encode(frame);
 
     for (let split = 0; split <= bytes.length; split += 1) {
@@ -36,6 +36,7 @@ describe("parseStashEventStream", () => {
           event: {
             type: "change",
             changeId: 42,
+            commitId: "legacy:42",
             stash: "notes",
             path: "文書/é.md",
             version: 3,
@@ -67,9 +68,9 @@ describe("parseStashEventStream", () => {
     const parsed = await collect(
       textStream(
         "retry: 1000\n",
-        "event: proposal\n",
+        "event: change-set\n",
         "id: opaque:value\n",
-        'data:  {"type":"proposal","proposalId":"prp_1724800000000deadbeef","stash":"s","path":"a.md","status":"open","origin":null}\n\n',
+        'data:  {"type":"change-set","changeSetId":"chs_1724800000000deadbeef","stash":"s","status":"open","paths":["a.md"],"origin":null}\n\n',
         'event: ready\ndata:{"type":"ready","head":null,"checkpoint":null}\n\n',
       ),
     );
@@ -78,11 +79,11 @@ describe("parseStashEventStream", () => {
       {
         id: "opaque:value",
         event: {
-          type: "proposal",
-          proposalId: "prp_1724800000000deadbeef",
+          type: "change-set",
+          changeSetId: "chs_1724800000000deadbeef",
           stash: "s",
-          path: "a.md",
           status: "open",
+          paths: ["a.md"],
           origin: null,
         },
       },

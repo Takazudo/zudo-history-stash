@@ -267,7 +267,7 @@ describe("committed Wrangler config drift", () => {
       STASH_DELETE_GRACE_DAYS: "30",
       GC_ORPHAN_MIN_AGE_MS: "900000",
       GC_LEASE_TTL_MS: "300000",
-      PROPOSAL_TTL_DAYS: "14",
+      CHANGE_SET_TTL_DAYS: "14",
       STASH_EVENTS_MAX_STREAM_MS: "300000",
       JSON_INLINE_MAX_BYTES: "5000000",
       D1_INLINE_MAX_BYTES: "524288",

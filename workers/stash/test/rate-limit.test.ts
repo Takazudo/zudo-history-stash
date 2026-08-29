@@ -42,7 +42,7 @@ function middlewareApp(principal: Principal, onRequest: () => void): Hono<AppEnv
   return middleware;
 }
 
-const MUTATION_TABLES = ["files", "versions", "blobs", "idempotency", "proposals"] as const;
+const MUTATION_TABLES = ["files", "versions", "blobs", "idempotency"] as const;
 type MutationTable = (typeof MUTATION_TABLES)[number];
 
 async function mutationCounts(): Promise<Record<MutationTable, number>> {
@@ -81,12 +81,18 @@ describe("rate-limit route buckets", () => {
       listChanges: null,
       runGc: "RL_WRITE",
       listGcRuns: "RL_READ",
-      createProposal: "RL_WRITE",
-      listProposals: "RL_READ",
-      getProposal: "RL_READ",
-      getProposalDiff: "RL_DIFF",
-      approveProposal: "RL_WRITE",
-      rejectProposal: "RL_WRITE",
+      createCommit: "RL_WRITE",
+      getCommit: "RL_READ",
+      listCommits: "RL_READ",
+      getCommitDiff: "RL_DIFF",
+      revertCommit: "RL_WRITE",
+      getSnapshot: "RL_READ",
+      createChangeSet: "RL_WRITE",
+      listChangeSets: "RL_READ",
+      getChangeSet: "RL_READ",
+      getChangeSetDiff: "RL_DIFF",
+      approveChangeSet: "RL_WRITE",
+      rejectChangeSet: "RL_WRITE",
       stashEvents: "RL_READ",
       listFiles: "RL_READ",
       getFile: "RL_READ",
@@ -150,32 +156,18 @@ describe("rate-limit route buckets", () => {
   });
 
   it.each([
-    { method: "POST", path: "/proposals", binding: "RL_WRITE", body: {} },
-    { method: "GET", path: "/proposals", binding: "RL_READ", body: undefined },
-    {
-      method: "GET",
-      path: "/proposals/prp_0000000000000deadbeef",
-      binding: "RL_READ",
-      body: undefined,
-    },
-    {
-      method: "GET",
-      path: "/proposals/prp_0000000000000deadbeef/diff",
-      binding: "RL_DIFF",
-      body: undefined,
-    },
-    {
-      method: "POST",
-      path: "/proposals/prp_0000000000000deadbeef/approve",
-      binding: "RL_WRITE",
-      body: {},
-    },
-    {
-      method: "POST",
-      path: "/proposals/prp_0000000000000deadbeef/reject",
-      binding: "RL_WRITE",
-      body: {},
-    },
+    { method: "POST", path: "/commits", binding: "RL_WRITE", body: {} },
+    { method: "GET", path: "/commits", binding: "RL_READ", body: undefined },
+    { method: "GET", path: "/commits/cmt_1", binding: "RL_READ", body: undefined },
+    { method: "GET", path: "/commits/cmt_1/diff", binding: "RL_DIFF", body: undefined },
+    { method: "POST", path: "/commits/cmt_1/revert", binding: "RL_WRITE", body: {} },
+    { method: "GET", path: "/snapshot", binding: "RL_READ", body: undefined },
+    { method: "POST", path: "/change-sets", binding: "RL_WRITE", body: {} },
+    { method: "GET", path: "/change-sets", binding: "RL_READ", body: undefined },
+    { method: "GET", path: "/change-sets/chs_1", binding: "RL_READ", body: undefined },
+    { method: "GET", path: "/change-sets/chs_1/diff", binding: "RL_DIFF", body: undefined },
+    { method: "POST", path: "/change-sets/chs_1/approve", binding: "RL_WRITE", body: {} },
+    { method: "POST", path: "/change-sets/chs_1/reject", binding: "RL_WRITE", body: {} },
   ] as const)("classifies $method $path as $binding", async ({ method, path, binding, body }) => {
     await seedStash("alpha");
     const token = await mintToken("alpha", "write");
@@ -203,13 +195,6 @@ describe("rate-limit route buckets", () => {
     await expectRateLimited(response);
     expect(limiters[binding].limit).toHaveBeenCalledOnce();
     expect(limiters[binding].limit).toHaveBeenCalledWith({ key: `p:${token.id}` });
-    if (method === "POST" && path === "/proposals") {
-      await expect(
-        bindings.DB.prepare(
-          "SELECT (SELECT COUNT(*) FROM proposals) AS proposals, (SELECT COUNT(*) FROM blobs) AS blobs",
-        ).first(),
-      ).resolves.toMatchObject({ proposals: 0, blobs: 0 });
-    }
   });
 
   it.each([
@@ -525,7 +510,7 @@ describe("rate-limit control flow", () => {
     );
 
     await expectRateLimited(response);
-    expect(before).toEqual({ files: 0, versions: 0, blobs: 0, idempotency: 0, proposals: 0 });
+    expect(before).toEqual({ files: 0, versions: 0, blobs: 0, idempotency: 0 });
     expect(await mutationCounts()).toEqual(before);
   });
 

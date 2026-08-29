@@ -45,6 +45,7 @@ export interface UploadSessionRecord extends UploadSessionIdentity {
 }
 
 export interface UploadCommitResult {
+  commitId: string;
   version: number;
   hash: string;
   size: number;

@@ -12,7 +12,10 @@ category: reference
 
 | Constant | Exact decimal | Display | Meaning |
 | --- | ---: | ---: | --- |
-| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | 互換性 JSON/proposal/import の UTF-8 テキスト本文上限。 |
+| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | 互換性 JSON/change set/import の UTF-8 テキスト本文上限。 |
+| `MAX_COMMIT_ENTRIES` | `20` | 20 entries | atomic commit または change set の最大 entry 数。 |
+| `MAX_COMMIT_INLINE_BYTES` | `5000000` | 5,000,000 bytes | atomic commit の inline payload 合計上限。 |
+| `COMMIT_DIFF_INLINE_ENTRIES` | `8` | 8 entries | inline diff の最大 commit entry 数。 |
 | `MAX_PATH_BYTES` | `512` | 512 bytes | 正規化された UTF-8 ファイルパスの最大値。 |
 | `MAX_META_BYTES` | `4096` | 4 KiB | encode 済み metadata payload の最大値。 |
 | `MAX_AUTHOR_BYTES` | `200` | 200 bytes | UTF-8 author 値の最大値。 |
@@ -31,7 +34,7 @@ category: reference
 | `D1_INLINE_MAX_BYTES` | `524288` | 512 KiB | D1 に content を inline 配置する Worker のデフォルト閾値。 |
 | `D1_INLINE_MAX_BYTES_CEILING` | `1500000` | 1,500,000 bytes | D1 inline に設定できる安全な最大閾値。 |
 | `HTTP_REQUEST_MAX_BYTES` | `100000000` | 100,000,000 bytes | raw request/content の運用上限。 |
-| `JSON_INLINE_MAX_BYTES` | `5000000` | 5,000,000 bytes | JSON text access の Worker inline 閾値。proposal/import の parser は変更しません。 |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | 5,000,000 bytes | JSON text access の Worker inline 閾値。change set/import の parser は変更しません。 |
 | `MAX_FILE_BYTES` | `100000000` | 100,000,000 bytes | raw upload の宣言ファイルサイズのデフォルト最大値。 |
 | `MAX_FILE_BYTES_CEILING` | `1073741824` | 1 GiB | 設定可能なファイルサイズの正しさの上限。性能認証ではありません。 |
 | `MAX_MULTIPART_PARTS` | `10000` | 10,000 parts | multipart part 数の最大値。 |
@@ -55,7 +58,7 @@ byte 数を測る一方、冪等性キーの上限は character 数を数えま�
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
-| `JSON_INLINE_MAX_BYTES` | `5000000` | JSON 互換 read で text content を inline 返却できる上限。proposal/import の schema は text 専用です。 |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | JSON 互換 read で text content を inline 返却できる上限。change set/import の schema は text 専用です。 |
 | `D1_INLINE_MAX_BYTES` | `524288` | D1-inline 配置のデフォルト上限。 |
 | `HTTP_REQUEST_MAX_BYTES` | `100000000` | raw request/content の運用上限。Cloudflare plan の runtime discovery ではありません。 |
 | `SINGLE_UPLOAD_MAX_BYTES` | `33554432` | raw single upload の content 上限（32 MiB）。 |

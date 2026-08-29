@@ -17,9 +17,11 @@ const clientIdentityRouteIds = [
   "revokeToken",
   "importHistory",
   "runGc",
-  "createProposal",
-  "approveProposal",
-  "rejectProposal",
+  "createCommit",
+  "revertCommit",
+  "createChangeSet",
+  "approveChangeSet",
+  "rejectChangeSet",
   "putFile",
   "deleteFile",
   "rollbackFile",
@@ -60,8 +62,10 @@ describe("buildOpenApiDocument", () => {
   it("contains every operation with the route identity and short principal", () => {
     const document = buildOpenApiDocument({ version: "test" });
     const all = operations(document);
-    expect(all).toHaveLength(43);
-    expect(all.map((operation) => operation.operationId)).toEqual(ROUTES.map((route) => route.id));
+    expect(all).toHaveLength(49);
+    expect(new Set(all.map((operation) => operation.operationId))).toEqual(
+      new Set(ROUTES.map((route) => route.id)),
+    );
     for (const route of ROUTES) {
       const operation = all.find((candidate) => candidate.operationId === route.id);
       expect(operation?.["x-principal"], route.id).toBe(route.principal);
@@ -196,7 +200,7 @@ describe("buildOpenApiDocument", () => {
       const responses = operation.responses as Record<string, ObjectValue>;
       return responses["429"] !== undefined;
     });
-    expect(rateLimited).toHaveLength(29);
+    expect(rateLimited).toHaveLength(35);
     for (const operation of rateLimited) {
       const responses = operation.responses as Record<string, ObjectValue>;
       expect(responses["429"]?.headers).toHaveProperty("Retry-After");
@@ -230,7 +234,8 @@ describe("buildOpenApiDocument", () => {
     for (const name of [
       "StashReadyEvent",
       "StashChangeEvent",
-      "StashProposalEvent",
+      "StashCommitEvent",
+      "StashChangeSetEvent",
       "StashReconnectEvent",
       "StashEvent",
     ]) {
@@ -243,9 +248,9 @@ describe("buildOpenApiDocument", () => {
     for (const candidate of nonFetchOnly) expect(candidate["x-transport"]).toBeUndefined();
   });
 
-  it("documents proposal replay, filters, decisions, and stale current metadata", () => {
+  it("documents commit and change-set replay, conflicts, and decisions", () => {
     const document = buildOpenApiDocument({ version: "test" });
-    const create = document.paths["/v1/stashes/{stash}/proposals"]?.post;
+    const create = document.paths["/v1/stashes/{stash}/commits"]?.post;
     const createResponses = create?.responses as Record<string, ObjectValue>;
     expect(create?.parameters).toEqual(
       expect.arrayContaining([
@@ -253,30 +258,28 @@ describe("buildOpenApiDocument", () => {
       ]),
     );
     expect(createResponses["201"]?.headers).toHaveProperty("Idempotent-Replayed");
-    expect(
-      (createResponses["201"]?.headers as Record<string, ObjectValue>)["Idempotent-Replayed"]
-        ?.description,
-    ).toBe("Whether the server replayed an idempotent response.");
+    expect(createResponses["409"]?.description).toContain("`commit-conflict`");
 
-    const approve = document.paths["/v1/stashes/{stash}/proposals/{id}/approve"]?.post;
+    const approve = document.paths["/v1/stashes/{stash}/change-sets/{id}/approve"]?.post;
     const approveResponses = approve?.responses as Record<string, ObjectValue>;
-    expect(approveResponses["409"]?.description).toContain("`stale` (includes current)");
-    expect(approveResponses["409"]?.description).toContain("`proposal-expired`");
-    expect(approveResponses["409"]?.description).toContain("`proposal-closed`");
+    expect(approveResponses["409"]?.description).toContain("`commit-conflict`");
+    expect(approveResponses["409"]?.description).toContain("`change-set-expired`");
+    expect(approveResponses["409"]?.description).toContain("`change-set-closed`");
     expect(approveResponses["413"]?.description).toContain("`payload-too-large`");
 
-    const reject = document.paths["/v1/stashes/{stash}/proposals/{id}/reject"]?.post;
+    const reject = document.paths["/v1/stashes/{stash}/change-sets/{id}/reject"]?.post;
     const rejectResponses = reject?.responses as Record<string, ObjectValue>;
     expect(rejectResponses["413"]?.description).toContain("`payload-too-large`");
     const rejectExample = (
       (rejectResponses["200"]?.content as ObjectValue)["application/json"] as ObjectValue
     ).example;
-    expect(rejectExample).toEqual(SAMPLES.RejectedProposalRecord);
+    expect(rejectExample).toEqual(SAMPLES.RejectedChangeSetRecord);
     expect(rejectExample).toMatchObject({
       status: "rejected",
       decidedAt: "2026-08-26T01:00:00.000Z",
       decidedBy: "admin",
-      decisionReason: "Superseded by a newer proposal",
     });
+
+    expect(document.paths["/v1/stashes/{stash}/snapshot"]?.get?.operationId).toBe("getSnapshot");
   });
 });

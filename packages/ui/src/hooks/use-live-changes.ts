@@ -6,7 +6,8 @@ import { createRefreshScheduler } from "./refresh-scheduler.js";
 
 export type LiveChangesStatus = "live" | "reconnecting" | "polling" | "off";
 
-export type LiveRefreshReason = "ready" | "change" | "proposal" | "focus" | "visibility";
+export type LiveRefreshReason =
+  "ready" | "change" | "commit" | "change-set" | "focus" | "visibility";
 
 /** Advisory input for a host refresh. The host's `since=` feed remains the correctness source. */
 export interface LiveRefreshRequest {
@@ -252,11 +253,18 @@ export function useLiveChanges(
           continue;
         }
         if (clientId !== undefined && event.origin === clientId) continue;
+        const eventPath =
+          event.type === "change"
+            ? event.path
+            : event.type === "change-set" && event.paths.length === 1
+              ? event.paths[0]
+              : undefined;
         if (awaitingReady) {
-          bufferPath(event.path);
+          if (eventPath === undefined) mixedBufferedPaths = true;
+          else bufferPath(eventPath);
           continue;
         }
-        schedule(event.type, event.path);
+        schedule(event.type, eventPath);
       }
     };
     void consume().catch(() => {

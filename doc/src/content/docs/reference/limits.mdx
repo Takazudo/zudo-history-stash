@@ -12,7 +12,10 @@ Human-readable units do not replace those bytes, characters, items, milliseconds
 
 | Constant | Exact decimal | Display | Meaning |
 | --- | ---: | ---: | --- |
-| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | Compatibility JSON/proposal/import UTF-8 text-body limit. |
+| `MAX_BODY_BYTES` | `5000000` | 5,000,000 bytes | Compatibility JSON/change set/import UTF-8 text-body limit. |
+| `MAX_COMMIT_ENTRIES` | `20` | 20 entries | Maximum entries in one atomic commit or change set. |
+| `MAX_COMMIT_INLINE_BYTES` | `5000000` | 5,000,000 bytes | Maximum aggregate inline payload for an atomic commit. |
+| `COMMIT_DIFF_INLINE_ENTRIES` | `8` | 8 entries | Maximum commit entries diffed inline before truncation. |
 | `MAX_PATH_BYTES` | `512` | 512 bytes | Maximum canonical UTF-8 file path. |
 | `MAX_META_BYTES` | `4096` | 4 KiB | Maximum encoded metadata payload. |
 | `MAX_AUTHOR_BYTES` | `200` | 200 bytes | Maximum UTF-8 author value. |
@@ -31,7 +34,7 @@ Human-readable units do not replace those bytes, characters, items, milliseconds
 | `D1_INLINE_MAX_BYTES` | `524288` | 512 KiB | Default Worker threshold for placing content inline in D1. |
 | `D1_INLINE_MAX_BYTES_CEILING` | `1500000` | 1,500,000 bytes | Maximum safe configured D1-inline threshold. |
 | `HTTP_REQUEST_MAX_BYTES` | `100000000` | 100,000,000 bytes | Operator-declared raw request/content ceiling. |
-| `JSON_INLINE_MAX_BYTES` | `5000000` | 5,000,000 bytes | Worker threshold for inline JSON text access; it does not change proposal/import parsing. |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | 5,000,000 bytes | Worker threshold for inline JSON text access; it does not change change set/import parsing. |
 | `MAX_FILE_BYTES` | `100000000` | 100,000,000 bytes | Default maximum declared file size for raw upload. |
 | `MAX_FILE_BYTES_CEILING` | `1073741824` | 1 GiB | Maximum configurable file-size correctness ceiling, not a performance certification. |
 | `MAX_MULTIPART_PARTS` | `10000` | 10,000 parts | Maximum multipart part count. |
@@ -55,7 +58,7 @@ all invariants hold. They count exact content bytes, not JSON or protocol framin
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
-| `JSON_INLINE_MAX_BYTES` | `5000000` | Text content may be returned inline by JSON-compatible reads; proposal/import schemas remain text-only. |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | Text content may be returned inline by JSON-compatible reads; change set/import schemas remain text-only. |
 | `D1_INLINE_MAX_BYTES` | `524288` | Maximum default size eligible for D1-inline placement. |
 | `HTTP_REQUEST_MAX_BYTES` | `100000000` | Operator-declared raw request/content ceiling; not runtime Cloudflare-plan discovery. |
 | `SINGLE_UPLOAD_MAX_BYTES` | `33554432` | Maximum raw single-upload content (32 MiB). |

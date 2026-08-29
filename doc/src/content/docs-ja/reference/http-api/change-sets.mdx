@@ -1,0 +1,30 @@
+---
+title: 変更セット
+description: 複数パスのレビュー候補と承認・却下。
+sidebar_position: 185
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/change-sets`
+
+**Contract:** operation `createChangeSet`; principal `write`; transport `any`.
+
+### `GET /v1/stashes/{stash}/change-sets`
+
+**Contract:** operation `listChangeSets`; principal `read`; transport `any`.
+
+### `GET /v1/stashes/{stash}/change-sets/{id}`
+
+**Contract:** operation `getChangeSet`; principal `read`; transport `any`.
+
+### `GET /v1/stashes/{stash}/change-sets/{id}/diff`
+
+**Contract:** operation `getChangeSetDiff`; principal `read`; transport `any`.
+
+### `POST /v1/stashes/{stash}/change-sets/{id}/approve`
+
+**Contract:** operation `approveChangeSet`; principal `write`; transport `any`.
+
+### `POST /v1/stashes/{stash}/change-sets/{id}/reject`
+
+**Contract:** operation `rejectChangeSet`; principal `write`; transport `any`.

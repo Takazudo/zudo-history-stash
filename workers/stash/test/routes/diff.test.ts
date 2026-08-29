@@ -78,6 +78,7 @@ async function seedLiveFile(path: string, bodies: readonly string[]): Promise<st
 
 function version(versionNumber: number, hash: string): ReadVersionRecord {
   return {
+    commitId: "legacy:1",
     version: versionNumber,
     kind: "put",
     hash,

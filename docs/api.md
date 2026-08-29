@@ -74,7 +74,7 @@ An expected failure is JSON. Conflicts can also include the current head at the 
 | `401` | `unauthorized`                                                                                                             |
 | `403` | `scope`                                                                                                                    |
 | `404` | `not-found`, `file-deleted`, `version-not-found`                                                                           |
-| `409` | `stale`, `exists`, `already-deleted`, `gc-busy`, `already-rotated`, `token-expired`, `proposal-expired`, `proposal-closed`, `upload-session-not-open` |
+| `409` | `stale`, `exists`, `already-deleted`, `gc-busy`, `already-rotated`, `token-expired`, `commit-conflict`, `change-set-expired`, `change-set-closed`, `upload-session-not-open` |
 | `410` | `upload-session-expired`                                                                                                   |
 | `413` | `payload-too-large`                                                                                                        |
 | `416` | `range-not-satisfiable`                                                                                                    |
@@ -90,10 +90,11 @@ An `already-rotated` error carries the winning successor token ID as
 ## Limits and storage tiers
 
 The compatibility JSON API is text-only. Its core `MAX_BODY_BYTES` schema limit is **5,000,000
-UTF-8 bytes**, inclusive, for a JSON file PUT and for each `put` entry in a proposal or history
+UTF-8 bytes**, inclusive, for a JSON file PUT and for each inline `put` entry in a commit,
+change set, or history
 import. The default `JSON_INLINE_MAX_BYTES` setting has the same value and controls when text content
-can be returned inline; changing that setting does not change the fixed proposal/import schema.
-Proposal candidates and imports remain JSON/text-only even when raw uploads support binary, so their
+can be returned inline; changing that setting does not change the fixed change set/import schema.
+Change set candidates and imports remain JSON/text-only even when raw uploads support binary, so their
 5 MB rule is not a universal file-size or representation rule. A valid UTF-8 body larger than
 5,000,000 bytes is still `text` when sent through the raw upload API.
 
@@ -124,9 +125,9 @@ the ordering and recovery contract.
 
 Routes reachable by stash principals use three Cloudflare rate-limit buckets. `RL_READ` permits
 600 operations per 60 seconds, `RL_WRITE` permits 60 per 60 seconds, and `RL_DIFF` permits 120 per
-60 seconds. Stored, candidate, and proposal diff routes use `RL_DIFF`; write-capability file
-routes plus proposal create/approve/reject use `RL_WRITE`; `/v1/me`, stash metadata, file
-reads/lists/history, proposal list/get, the per-stash change feed, and each live-events connection
+60 seconds. Stored, candidate, commit, and change-set diff routes use `RL_DIFF`; write-capability
+file routes plus commit and change-set mutations use `RL_WRITE`; `/v1/me`, stash metadata, file
+reads/lists/history, commit/change-set reads, the per-stash change feed, and each live-events connection
 use `RL_READ`.
 
 Each request checks `p:<tokenId>` first and then `s:<principal-stash>`. Lifecycle routes and
@@ -276,7 +277,7 @@ the envelope. The flow-controlled `StashRpc.requestStream()` bridge instead pass
 `Request`/`Response` body streams without serialising their bytes into that value payload, and the
 client selects it for raw and upload routes when available. Independently, the raw API's default
 `HTTP_REQUEST_MAX_BYTES` is 100,000,000 and its single-upload default is 32 MiB; the compatibility
-JSON/proposal/import limit remains 5,000,000 UTF-8 bytes. The existing `env.STASH.fetch()` service
+JSON/change set/import limit remains 5,000,000 UTF-8 bytes. The existing `env.STASH.fetch()` service
 binding remains supported for HTTP-compatible consumers. These are independent transport and
 content contracts, not a claim that a deployment can discover its Cloudflare plan at runtime.
 
@@ -286,7 +287,7 @@ Binary metadata keeps representation (`text | binary`), content access (`inline 
 transfer mode, and physical storage tier independent. Legacy rows default to text and resolve from
 the legacy TEXT table; new versions carry an explicit storage discriminator so an identical SHA-256
 may coexist in the legacy and byte tables without ambiguous reads. Binary bytes are never base64 in
-JSON. Proposal candidates and history import remain JSON/text-only and reject raw/binary usage with
+JSON. Change set candidates and history import remain JSON/text-only and reject raw/binary usage with
 `422 unsupported-representation`.
 
 Published defaults are `JSON_INLINE_MAX_BYTES=5000000`, `D1_INLINE_MAX_BYTES=524288`,
@@ -506,74 +507,72 @@ The production cron invokes this bounded round-robin at `17 3 * * *` UTC. Previe
 must be run manually. Deploy generation-aware v2 writers and the migration before the API, verify
 the API's dry-run and recovery behavior, and deploy/enable the production schedule last.
 
-### `POST /v1/stashes/:stash/proposals`
+## Commits and change sets
 
-- **Principal/capability:** `write`; administrator or a matching `write` token.
-- **Request:** Strict JSON `{ path, body, baseVersion, author?, message?, meta?, expiresAt? }`,
-  optionally with `Idempotency-Key`. `baseVersion` is a positive version or `null` when the path
-  must not exist. `path` and `body` use the normal file-path and 5 MB well-formed-text rules.
-  `expiresAt`, when supplied, is a future ISO timestamp; otherwise the server uses
-  `PROPOSAL_TTL_DAYS` (default 14). `meta.proposalId` is platform-owned and therefore rejected;
-  the server stamps the generated proposal ID and validates the final metadata size.
-- **Response:** `201 ProposalRecord`. Replaying the same key and canonical body returns the same
-  record with the same `201` status and `Idempotent-Replayed: true`.
-- **Errors:** `400 validation`, `400 body-not-well-formed`, `401 unauthorized`, `403 scope`,
-  `404 not-found`, `413 payload-too-large`, `422 idempotency-key-reused`,
-  `422 unsupported-representation`, `429 rate-limited` with
-  `Retry-After: 60`, `500 internal`.
+Commits apply up to 20 entries atomically: the gate checks every expected version and the seal
+records one verdict, so either every entry lands or none does. Conflicts return root-level
+`conflicts[]`. Reverts create a new commit, never erase history. Change feeds group every written
+version by required `commitId`; change sets hold expiring candidates and approval never rebases.
 
-### `GET /v1/stashes/:stash/proposals`
+### `POST /v1/stashes/:stash/commits`
 
-- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
-- **Request:** Optional `status=open|applied|rejected|expired|all` (default `open`), exact `path`,
-  `limit` (default `50`, maximum `200`), and opaque `after` cursor.
-- **Response:** `200 { proposals, nextAfter, total }`. Results are ordered newest first by
-  `createdAt`, then `id`; `total` counts all rows matching the selected status and path filters,
-  not only the returned page. `nextAfter` is `null` when the filtered result is exhausted.
-- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited` with
-  `Retry-After: 60`.
+- **Response:** `201 CommitResult`; replay includes `Idempotent-Replayed`.
+- **Errors:** `400 validation`, `400 body-not-well-formed`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 commit-conflict`, `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited`, `500 internal`.
 
-### `GET /v1/stashes/:stash/proposals/:id`
+### `GET /v1/stashes/:stash/commits/:id`
 
-- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
-- **Request:** No body or query.
-- **Response:** `200 ProposalWithBody`, containing the proposal record plus its immutable
-  candidate `body`.
-- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited` with
-  `Retry-After: 60`, `500 internal`.
+- **Response:** `200 CommitRecord`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`.
 
-### `GET /v1/stashes/:stash/proposals/:id/diff`
+### `GET /v1/stashes/:stash/commits`
 
-- **Principal/capability:** `read`; administrator or a matching `read`/`write` token.
-- **Request:** Optional non-negative `context` query value.
-- **Response:** `200 ProposalDiffResult`: the normal three-state `DiffResult` plus immutable
-  `base`, `candidate`, and separately moving `current` and `stale` fields.
-- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited` with
-  `Retry-After: 60`, `500 internal`.
+- **Response:** `200 CommitListResponse`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`.
 
-### `POST /v1/stashes/:stash/proposals/:id/approve`
+### `GET /v1/stashes/:stash/commits/:id/diff`
 
-- **Principal/capability:** `write`; administrator or a matching `write` token. There is no
-  built-in approval policy or caller-supplied approver identity.
-- **Request:** Strict JSON `{ author?, message? }`. These optional values override the proposal's
-  stored author/message on the applied version; they do not control `decidedBy`.
-- **Response:** `200 { status: "applied", appliedVersion, appliedChangeId, hash, createdAt }`.
-  Re-approval of an already-applied proposal reconstructs and returns the same stored result,
-  including after the proposal's expiry time.
-- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 stale`
-  with root-level `current`, `409 proposal-expired`, `409 proposal-closed`,
-  `413 payload-too-large`, `429 rate-limited` with `Retry-After: 60`, `500 internal`.
+- **Response:** `200 CommitDiffResult`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`, `500 internal`.
 
-### `POST /v1/stashes/:stash/proposals/:id/reject`
+### `POST /v1/stashes/:stash/commits/:id/revert`
 
-- **Principal/capability:** `write`; administrator or a matching `write` token.
-- **Request:** Strict JSON `{ reason? }`; the optional well-formed reason is bounded to 2,000
-  UTF-8 bytes.
-- **Response:** `200 ProposalRecord`. Re-rejecting an already-rejected proposal is idempotent.
-  An open proposal may be rejected even when its expiry time has passed.
-- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`,
-  `409 proposal-closed` for an applied proposal, `413 payload-too-large`, `429 rate-limited` with
-  `Retry-After: 60`.
+- **Response:** `201 CommitResult`; replay includes `Idempotent-Replayed`.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 commit-conflict`, `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited`, `500 internal`.
+
+### `GET /v1/stashes/:stash/snapshot`
+
+- **Response:** `200 SnapshotResponse`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`.
+
+### `POST /v1/stashes/:stash/change-sets`
+
+- **Response:** `201 ChangeSetRecord`; replay includes `Idempotent-Replayed`.
+- **Errors:** `400 validation`, `400 body-not-well-formed`, `401 unauthorized`, `403 scope`, `404 not-found`, `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited`, `500 internal`.
+
+### `GET /v1/stashes/:stash/change-sets`
+
+- **Response:** `200 ChangeSetListResponse`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`.
+
+### `GET /v1/stashes/:stash/change-sets/:id`
+
+- **Response:** `200 ChangeSetRecord`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`.
+
+### `GET /v1/stashes/:stash/change-sets/:id/diff`
+
+- **Response:** `200 ChangeSetDiffResult`.
+- **Errors:** `400 validation`, `401 unauthorized`, `404 not-found`, `429 rate-limited`, `500 internal`.
+
+### `POST /v1/stashes/:stash/change-sets/:id/approve`
+
+- **Response:** `200 ApproveChangeSetResult`.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 commit-conflict`, `409 change-set-expired`, `409 change-set-closed`, `413 payload-too-large`, `429 rate-limited`, `500 internal`.
+
+### `POST /v1/stashes/:stash/change-sets/:id/reject`
+
+- **Response:** `200 ChangeSetRecord`.
+- **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 change-set-closed`, `413 payload-too-large`, `429 rate-limited`.
 
 ### `GET /v1/stashes/:stash/events`
 
@@ -582,7 +581,7 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
 - **Request:** Optional `since=<change-id>`, a non-negative integer replay checkpoint. No body.
 - **Response:** `200 text/event-stream` with `Cache-Control: no-store` and
   `X-Accel-Buffering: no`. The stream uses `event:`, `id:`, and `data:` fields for `ready`,
-  `change`, `proposal`, and `reconnect` events; heartbeat comments are not events. See
+  `change`, `change set`, and `reconnect` events; heartbeat comments are not events. See
   [Live change events](#live-change-events).
 - **Errors:** Before any stream bytes: `401 unauthorized`, `403 scope`, `404 not-found` for an
   unknown, deleted, or foreign stash, and `429 rate-limited` with `Retry-After: 60`.
@@ -802,47 +801,10 @@ the API's dry-run and recovery behavior, and deploy/enable the production schedu
   `410 upload-session-expired`, `422 idempotency-key-reused`, `429 rate-limited` with
   `Retry-After: 60`, `500 internal`.
 
-## Proposals
-
-A proposal is a stored candidate write: its path, candidate body, exact `baseVersion`, author,
-message, metadata, expiry, and optional creation idempotency key. Its ID is time-sortable
-(`prp_` plus a zero-padded 13-digit epoch-millisecond value and eight lowercase hex digits).
-`ProposalRecord` always includes `expiresAt` and has these lifecycle fields:
-
-- `status`: `open`, `applied`, `rejected`, or computed `expired`;
-- `decidedAt`, `decidedBy`, and `decisionReason` (nullable until a decision);
-- `appliedVersion` and `appliedChangeId` (nullable unless applied).
-
-Expiry is computed when an open proposal has `expiresAt <= now`; equality is expired. Expiry does
-not erase the proposal or its candidate. Approval of an expired open proposal returns
-`proposal-expired`, while rejection is still allowed and an already-applied proposal remains
-idempotently readable/approvable. `decidedBy` is always the authenticated identity (`admin` or the
-stash token ID), never a caller-supplied string.
-
-Approval is an exact-head fenced operation, not a rebase. One attempt first claims a live, open,
-unexpired proposal only when the path head still equals `baseVersion`; it then inserts an ordinary
-`put` version and writes the file head last in the same fenced batch. Exactly one changed head row
-is the verdict. A losing attempt writes no partial proposal, version, or head state. If the head
-moved, the API returns `409 stale` with `current` and leaves the proposal open. A successful
-version gets platform-stamped `meta.proposalId`, so the normal history, change feed, rollback, and
-diff surfaces retain the audit link. Approval appends one normal version even when the candidate
-body matches the base body. Repeating approval after a winner returns that winner's stored version
-result; rejecting an applied proposal returns `proposal-closed`.
-
-Any administrator or matching `write` credential may approve. Required approvers, roles, review
-comments, and other policy belong to consumers rather than this minimal platform flow.
-
-The review diff is permanently `base -> candidate`: a missing base or base tombstone is empty
-text, and the candidate comes from the proposal's referenced blob. `current` reports the live path
-head (or `null` when absent), while `stale` compares that moving head version with `baseVersion`.
-Moving the head never changes the displayed diff. An applied proposal normally reports
-`stale: true` afterward because approval advanced the head; consumers should read `status` before
-interpreting that flag.
-
 ## Live change events
 
 `GET /v1/stashes/:stash/events?since=<changeId>` is an advisory Server-Sent Events (SSE) channel.
-Callers still refetch the existing file list, history, change-feed, and proposal surfaces; the live
+Callers still refetch the existing file list, history, change-feed, and change set surfaces; the live
 channel is never the source of truth. It is intentionally fetch-only. Browser `EventSource`
 cannot attach the required bearer `Authorization` header, so clients use `fetch` and read the
 response stream. The named RPC table mechanically excludes this route.
@@ -854,14 +816,15 @@ produce `StashEvent` values.
 ```text
 event: change
 id: 42
-data: {"type":"change","changeId":42,"stash":"demo","path":"docs/guide.md","version":7,"kind":"put","origin":"viewer-1","createdAt":"2026-08-28T00:00:00.000Z"}
+data: {"type":"change","changeId":42,"commitId":"cmt_42","stash":"demo","path":"docs/guide.md","version":7,"kind":"put","origin":"viewer-1","createdAt":"2026-08-28T00:00:00.000Z"}
 ```
 
 The validated event union is:
 
 - `ready { type, head: number | null, checkpoint: number | null }`, emitted after replay;
-- `change { type, changeId, stash, path, version, kind, origin: string | null, createdAt }`;
-- `proposal { type, proposalId, stash, path, status, origin: string | null }`;
+- `change { type, changeId, commitId, stash, path, version, kind, origin, createdAt }`;
+- `commit { type, commitId, stash, entryCount, firstChangeId, lastChangeId, origin }`;
+- `change-set { type, changeSetId, stash, status, paths, origin }`;
 - `reconnect { type, reason: "lifetime" | "replay-limit" | "shutdown" }`.
 
 The server authorizes the credential, resolves a live stash, and charges `RL_READ` before sending
@@ -876,9 +839,10 @@ continue from the returned checkpoint.
 The client reconnects with that replay checkpoint (or the last replayed change ID), not merely the
 latest live ID: Durable Object delivery can arrive out of order, so advancing the checkpoint from
 a live frame could skip a D1 change. Duplicates across the replay/live boundary are valid and the
-client removes them by exact ID over a bounded recent-ID set. Proposal events are live-only and do
-not advance the replay cursor; focus/visibility refresh and polling recover any missed proposal
-state.
+client removes them by exact ID over a bounded recent-ID set. Commit and change-set events are
+advisory, live-only, and do not advance the replay cursor; focus/visibility refresh and polling
+recover any missed state. Mutation handlers publish a commit's ordered event frames as one array
+so the fan-out observes the batch in order.
 
 Healthy streams rotate after a bounded lifetime (300 seconds by default). A clean close or
 `reconnect` reason is normal rotation, not a failure; clients reconnect immediately with at most
@@ -955,11 +919,9 @@ version, metadata, and normalized defaults.
 The client mints a key for each mutation. Pass `{ idempotencyKey: "stable-job-key" }` when a retry
 must replay the same operation across process restarts.
 
-Proposal creation accepts the same header but stores the key and canonical request hash on the
-proposal row rather than in the version ledger. Repeating the same stash/key/body returns the
-existing proposal with `201` and `Idempotent-Replayed: true`; reusing the key with any different
-canonical body returns `422 idempotency-key-reused`. Proposal approval is idempotent by stored
-state instead: repeated approval returns the applied version result and does not append again.
+Commit idempotency keys are permanent. Repeating the same stash/key/body returns the original
+commit with `Idempotent-Replayed: true`; reusing the key with a different canonical body returns
+`422 idempotency-key-reused`. Change-set decisions are idempotent by their stored terminal state.
 
 ## Pagination and change polling
 
@@ -967,7 +929,7 @@ Every `limit` defaults to 50 and has a maximum of 200. Values above 200 return `
 they are never silently clamped.
 
 - Stash and file lists use `after` and return `nextAfter`.
-- Proposal lists use an opaque `after` cursor over `createdAt DESC, id DESC` and return
+- Commit and change-set lists use opaque `after` cursors over `createdAt DESC, id DESC` and return
   `nextAfter`; `total` is the count for the full applied filter.
 - History uses `before=<version>` and returns `nextBefore`.
 - Change feeds use `since=<changeId>` for ascending polling or `before=<changeId>` for descending
@@ -1044,5 +1006,5 @@ API accepts `Authorization`, `Content-Type`, `If-None-Match`, `Idempotency-Key`,
 The v1 HTTP contract intentionally defers:
 
 - multi-file atomic commits; v1 history and CAS are per path.
-- proposal approval policy (required approvers, roles, and review comments); any matching `write`
+- change set approval policy (required approvers, roles, and review comments); any matching `write`
   credential can approve.

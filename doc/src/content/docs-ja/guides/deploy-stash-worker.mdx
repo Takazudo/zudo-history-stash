@@ -15,7 +15,7 @@ category: guides
 
 | 種別 | バインディングまたはクラス | 用途 |
 | --- | --- | --- |
-| D1 | `DB` | stash、ファイル、バージョン、トークン、変更、提案の正本。 |
+| D1 | `DB` | stash、ファイル、バージョン、トークン、変更の正本。 |
 | 非公開 R2 | `BLOBS` | 退避された不変の text または binary bytes。オブジェクトキーと世代は公開 URL ではありません。 |
 | Durable Object | `STASH_EVENTS` → `StashEvents` | stash ごとの同期的なライブイベントのファンアウト。 |
 | レートリミッター | `RL_READ` | 読み取りルートの分類。 |
@@ -34,9 +34,9 @@ category: guides
 | `STASH_DELETE_GRACE_DAYS` | `30` 日。 |
 | `GC_ORPHAN_MIN_AGE_MS` | `900000` ミリ秒。 |
 | `GC_LEASE_TTL_MS` | `300000` ミリ秒。 |
-| `PROPOSAL_TTL_DAYS` | `14` 日。 |
+| `CHANGE_SET_TTL_DAYS` | `14` 日。 |
 | `STASH_EVENTS_MAX_STREAM_MS` | `300000` ミリ秒。 |
-| `JSON_INLINE_MAX_BYTES` | `5000000` byte。デフォルトの text inline-access 境界。JSON/proposal/import schema は `MAX_BODY_BYTES=5000000` のままです。 |
+| `JSON_INLINE_MAX_BYTES` | `5000000` byte。デフォルトの text inline-access 境界。JSON/change set/import schema は `MAX_BODY_BYTES=5000000` のままです。 |
 | `D1_INLINE_MAX_BYTES` | `524288` byte。 |
 | `HTTP_REQUEST_MAX_BYTES` | `100000000` の正確な content byte。raw upload の運用上限です。 |
 | `SINGLE_UPLOAD_MAX_BYTES` | `33554432` byte（32 MiB）。 |
@@ -61,7 +61,7 @@ representation（`text`/`binary`）、content access（`inline`/`raw`/`deleted`�
 ## 二つの異なるマイグレーション系列を適用する
 
 D1 スキーマのマイグレーションは `workers/stash/migrations` にあり、現在は `0001_init.sql` から
-`0007_multipart_runtime.sql` まで順番に実行します。アプリケーションをデプロイする前に完全な系列を選択した
+`0008_drop_proposals.sql` まで順番に実行します。アプリケーションをデプロイする前に完全な系列を選択した
 リモートの `DB` へ適用してください。upgrade では binary/upload runtime の保留中 migration を適用し、既存の
 row を作り直したり書き換えたりしないでください。
 

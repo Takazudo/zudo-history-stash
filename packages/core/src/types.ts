@@ -12,7 +12,7 @@ import type { UploadCompletionResult, UploadPartRecord, UploadSessionRecord } fr
 export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
 export type GcKind = "r2-orphans" | "ledger";
-export type ProposalStatus = "open" | "applied" | "rejected" | "expired";
+export type ChangeSetStatus = "open" | "applied" | "rejected" | "expired";
 export type ReconnectReason = "lifetime" | "replay-limit" | "shutdown";
 
 export interface StashReadyEvent {
@@ -24,6 +24,7 @@ export interface StashReadyEvent {
 export interface StashChangeEvent {
   type: "change";
   changeId: number;
+  commitId: string;
   stash: string;
   path: string;
   version: number;
@@ -32,12 +33,21 @@ export interface StashChangeEvent {
   createdAt: string;
 }
 
-export interface StashProposalEvent {
-  type: "proposal";
-  proposalId: string;
+export interface StashCommitEvent {
+  type: "commit";
+  commitId: string;
   stash: string;
-  path: string;
-  status: ProposalStatus;
+  entryCount: number;
+  firstChangeId: number;
+  lastChangeId: number;
+  origin: string | null;
+}
+export interface StashChangeSetEvent {
+  type: "change-set";
+  changeSetId: string;
+  stash: string;
+  status: ChangeSetStatus;
+  paths: string[];
   origin: string | null;
 }
 
@@ -48,7 +58,7 @@ export interface StashReconnectEvent {
 
 /** One validated advisory event yielded by the fetch-only live stream. */
 export type StashEvent =
-  StashReadyEvent | StashChangeEvent | StashProposalEvent | StashReconnectEvent;
+  StashReadyEvent | StashChangeEvent | StashCommitEvent | StashChangeSetEvent | StashReconnectEvent;
 
 /** Stream lifecycle state. Client packages bind the failure parameter to their HTTP error type. */
 export type LiveStatus<Failure = unknown> =
@@ -68,8 +78,9 @@ export type ErrorCode =
   | "gc-busy"
   | "already-rotated"
   | "token-expired"
-  | "proposal-expired"
-  | "proposal-closed"
+  | "commit-conflict"
+  | "change-set-expired"
+  | "change-set-closed"
   | "rate-limited"
   | "payload-too-large"
   | "idempotency-key-reused"
@@ -130,6 +141,7 @@ export interface ErrorDetail {
 export interface ErrorResponse {
   error: ErrorDetail;
   current?: Current;
+  conflicts?: CommitConflict[];
 }
 export interface ApiError extends ErrorDetail {
   status: number;
@@ -194,44 +206,111 @@ export interface GcRunResult {
 export interface GcRunsResponse {
   runs: GcRunResult[];
 }
-export interface ProposalRecord {
+export interface CommitConflict {
+  path: string;
+  expectedVersion: number | null;
+  current: Current | null;
+}
+export interface CommitEntryRecord {
+  path: string;
+  op: "put" | "copy" | "delete" | "rollback";
+  version: number;
+  kind: VersionKind;
+  changeId: number;
+  hash: string | null;
+  size: number;
+  contentType: string;
+  representation: Representation;
+  rollbackOf: number | null;
+  copiedFrom?: { path: string; version: number };
+  identicalToHead?: boolean;
+}
+export interface CommitRecord {
   id: string;
   stash: string;
-  path: string;
-  baseVersion: number | null;
+  source: string;
+  sourceId: string | null;
   author: string;
   message: string;
   meta: Record<string, JsonValue>;
-  size: number;
-  hash: string;
+  entryCount: number;
+  firstChangeId: number;
+  lastChangeId: number;
+  revertsCommitId: string | null;
+  createdBy: string;
   createdAt: string;
-  expiresAt: string;
-  status: ProposalStatus;
-  decidedAt: string | null;
-  decidedBy: string | null;
-  decisionReason: string | null;
-  appliedVersion: number | null;
-  appliedChangeId: number | null;
+  entries: CommitEntryRecord[];
 }
-export type ProposalWithBody = ProposalRecord & { body: string };
-export interface ProposalListResponse {
-  proposals: ProposalRecord[];
+export type CommitResult = CommitRecord & { skipped?: { path: string; reason: string }[] };
+export type CommitSummary = Omit<CommitRecord, "entries">;
+export interface CommitListResponse {
+  commits: CommitSummary[];
   nextAfter: string | null;
   total: number;
 }
-export interface ApproveProposalResult {
-  status: "applied";
-  appliedVersion: number;
-  appliedChangeId: number;
-  hash: string;
-  createdAt: string;
+export interface CommitDiffEntry {
+  path: string;
+  op: CommitEntryRecord["op"];
+  from: { version: number; hash: string | null } | null;
+  to: { version: number; hash: string | null };
+  diff: DiffResult | { state: "binary" | "oversized" };
 }
-export type ProposalDiffResult = DiffResult & {
-  base: { version: number | null; hash: string | null; deleted: boolean };
-  candidate: { hash: string; size: number };
+export interface CommitDiffResult {
+  entries: CommitDiffEntry[];
+  truncated: boolean;
+}
+export interface SnapshotResponse {
+  at: { commitId: string; changeId: number };
+  files: FileSummary[];
+  commonPrefixes?: string[];
+  nextAfter: string | null;
+}
+export interface ChangeSetEntryRecord {
+  path: string;
+  op: CommitEntryRecord["op"];
+  baseVersion: number | null;
   current: Current | null;
   stale: boolean;
-};
+}
+export interface ChangeSetRecord {
+  id: string;
+  stash: string;
+  status: ChangeSetStatus;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  expiresAt: string;
+  createdBy: string;
+  createdAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  commitId: string | null;
+  entries: ChangeSetEntryRecord[];
+}
+export interface ChangeSetListResponse {
+  changeSets: ChangeSetRecord[];
+  nextAfter: string | null;
+  total: number;
+}
+export interface ChangeSetDiffResult {
+  entries: Array<{
+    path: string;
+    op: CommitEntryRecord["op"];
+    base: Current | null;
+    candidate: Current | null;
+    current: Current | null;
+    stale: boolean;
+    diff: DiffResult | { state: "binary" | "oversized" };
+  }>;
+  stale: boolean;
+  status: ChangeSetStatus;
+  truncated: boolean;
+}
+export interface ApproveChangeSetResult {
+  status: "applied";
+  commit: CommitResult;
+}
 export interface TokenRecord {
   id: string;
   label: string;
@@ -269,6 +348,7 @@ export interface FileSummary extends CompatibleContentMetadata {
 }
 export interface FileListResponse {
   files: FileSummary[];
+  commonPrefixes?: string[];
   nextAfter: string | null;
 }
 export interface FileRecord extends CompatibleContentMetadata {
@@ -290,6 +370,7 @@ export type ResolvedFileRecord = Omit<
 > &
   ResolvedContent;
 export interface VersionRecord extends CompatibleContentMetadata {
+  commitId: string;
   version: number;
   kind: VersionKind;
   hash: string | null;
@@ -309,6 +390,7 @@ export interface HistoryPage {
   nextBefore: number | null;
 }
 export interface ChangeItem extends CompatibleContentMetadata {
+  commitId: string;
   changeId: number;
   stash: string;
   path: string;
@@ -329,6 +411,7 @@ export type ChangesPage = ChangesPageBase &
     | { nextBefore: number | null; nextSince?: never }
   );
 export interface PutCreatedResult {
+  commitId: string;
   version: number;
   hash: string;
   size: number;
@@ -341,11 +424,13 @@ export interface PutUnchangedResult {
 }
 export type PutResult = PutCreatedResult | PutUnchangedResult;
 export interface DeleteResult {
+  commitId: string;
   version: number;
   changeId: number;
   createdAt: string;
 }
 export interface RollbackResult {
+  commitId: string;
   version: number;
   hash: string;
   rollbackOf: number;
@@ -358,6 +443,7 @@ export interface RollbackResult {
   etag?: string;
 }
 export interface ImportResult {
+  commitId: string;
   path: string;
   headVersion: number;
   firstChangeId: number;
@@ -387,11 +473,17 @@ export interface CreateUploadSessionInput {
   resumable?: boolean;
   skipIfUnchanged?: boolean;
 }
-export type CreateProposalResult = ProposalRecord;
-export type ListProposalsResult = ProposalListResponse;
-export type GetProposalResult = ProposalWithBody;
-export type GetProposalDiffResult = ProposalDiffResult;
-export type RejectProposalResult = ProposalRecord;
+export type CreateCommitResult = CommitResult;
+export type GetCommitResult = CommitRecord;
+export type ListCommitsResult = CommitListResponse;
+export type GetCommitDiffResult = CommitDiffResult;
+export type RevertCommitResult = CommitResult;
+export type GetSnapshotResult = SnapshotResponse;
+export type CreateChangeSetResult = ChangeSetRecord;
+export type ListChangeSetsResult = ChangeSetListResponse;
+export type GetChangeSetResult = ChangeSetRecord;
+export type GetChangeSetDiffResult = ChangeSetDiffResult;
+export type RejectChangeSetResult = ChangeSetRecord;
 export type ListStashesResult = StashListResponse;
 export type ListTokensResult = TokenListResponse;
 export type ListFilesResult = FileListResponse;

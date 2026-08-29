@@ -1,0 +1,30 @@
+---
+title: コミットとスナップショット
+description: 複数パスのアトミック書き込み、履歴、差分、revert、snapshot。
+sidebar_position: 184
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/commits`
+
+**Contract:** operation `createCommit`; principal `write`; transport `any`.
+
+### `GET /v1/stashes/{stash}/commits/{id}`
+
+**Contract:** operation `getCommit`; principal `read`; transport `any`.
+
+### `GET /v1/stashes/{stash}/commits`
+
+**Contract:** operation `listCommits`; principal `read`; transport `any`.
+
+### `GET /v1/stashes/{stash}/commits/{id}/diff`
+
+**Contract:** operation `getCommitDiff`; principal `read`; transport `any`.
+
+### `POST /v1/stashes/{stash}/commits/{id}/revert`
+
+**Contract:** operation `revertCommit`; principal `write`; transport `any`.
+
+### `GET /v1/stashes/{stash}/snapshot`
+
+**Contract:** operation `getSnapshot`; principal `read`; transport `any`.

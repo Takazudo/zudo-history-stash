@@ -12,7 +12,6 @@ import history from "./history.js";
 import importRoutes from "./import.js";
 import lifecycle from "./lifecycle.js";
 import meta from "./meta.js";
-import proposals from "./proposals.js";
 import rawContent from "./raw-content.js";
 import uploads from "./uploads.js";
 
@@ -36,15 +35,15 @@ routes.route("/", history);
 routes.route("/", diff);
 routes.route("/", importRoutes);
 routes.route("/", lifecycle);
-routes.route("/", proposals);
 routes.route("/", events);
 routes.route("/", rawContent);
 routes.route("/", uploads);
-routes.all("/v1/*", (c) =>
-  c.json(
+routes.all("/v1/*", (c) => {
+  void c.env.CHANGE_SET_TTL_DAYS;
+  return c.json(
     { error: { code: "not-implemented", message: "This route is not implemented yet." } },
     501,
-  ),
-);
+  );
+});
 
 export default routes;

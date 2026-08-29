@@ -511,20 +511,12 @@ test("@live a foreign mutation refreshes the stash through SSE before polling", 
 
     let fileListResponses = 0;
     let recentChangesResponses = 0;
-    let proposalCountResponses = 0;
     page.on("response", (response) => {
       if (response.request().method() !== "GET" || response.status() !== 200) return;
       const url = new URL(response.url());
       if (url.pathname === "/api/v1/stashes/demo/files") fileListResponses += 1;
       if (url.pathname === "/api/v1/stashes/demo/changes" && !url.searchParams.has("since")) {
         recentChangesResponses += 1;
-      }
-      if (
-        url.pathname === "/api/v1/stashes/demo/proposals" &&
-        url.searchParams.get("status") === "open" &&
-        url.searchParams.get("limit") === "1"
-      ) {
-        proposalCountResponses += 1;
       }
     });
 
@@ -557,7 +549,6 @@ test("@live a foreign mutation refreshes the stash through SSE before polling", 
     expect(initialFeed.hasMore).toBe(false);
     await expect.poll(() => fileListResponses).toBeGreaterThanOrEqual(2);
     await expect.poll(() => recentChangesResponses).toBeGreaterThanOrEqual(2);
-    await expect.poll(() => proposalCountResponses).toBeGreaterThanOrEqual(2);
     expect(
       await page.evaluate((key) => sessionStorage.getItem(key), VIEWER_CLIENT_ID_STORAGE_KEY),
     ).toBe(browserClientId);
@@ -854,7 +845,7 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
     await expect(savedRailRow).toContainText("head");
 
     const fileRoute = `/s/demo/f/${path}`;
-    const reconciledLoads = { file: 0, history: 0, proposals: 0 };
+    const reconciledLoads = { file: 0, history: 0 };
     page.on("response", (response) => {
       if (response.request().method() !== "GET" || response.status() !== 200) return;
       const referer = response.request().headers().referer;
@@ -863,14 +854,6 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
       let kind: keyof typeof reconciledLoads | undefined;
       if (url.pathname === liveFileUrl(path) && url.search === "") kind = "file";
       if (url.pathname === liveHistoryUrl(path) && url.search === "") kind = "history";
-      if (
-        url.pathname === "/api/v1/stashes/demo/proposals" &&
-        url.searchParams.get("status") === "open" &&
-        url.searchParams.get("path") === path &&
-        url.searchParams.get("limit") === "1"
-      ) {
-        kind = "proposals";
-      }
       if (kind === undefined) return;
       void response.finished().then((failure) => {
         if (failure === null) reconciledLoads[kind] += 1;
@@ -939,166 +922,6 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
   }
 });
 
-test("@live workbench proposes, approves, and exposes the stamped history link", async ({
-  page,
-  request,
-}) => {
-  // 30s seeded-fixture readiness + 20s browser lifecycle + 10s verified cleanup.
-  test.setTimeout(60_000);
-  const pageErrors = capturePageErrors(page);
-  await waitForDemo(request);
-  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
-  const path = `e2e/proposal-${runId}.md`;
-  const label = `viewer-live-proposal-${runId}`;
-  const initialBody = `# Proposal ${runId}\n\nSeeded v1.\n`;
-  const candidateBody = `# Proposal ${runId}\n\nApproved candidate v2.\n`;
-  const proposalAuthor = "viewer-live-proposer";
-  const proposalMessage = "Approve isolated browser proposal";
-  const resources: LiveResources = {
-    path,
-    tokenLabel: label,
-    tokenId: null,
-    tokenSecret: null,
-  };
-  const browserMutations: string[] = [];
-  page.on("request", (browserRequest) => {
-    if (!["POST", "PUT", "PATCH", "DELETE"].includes(browserRequest.method())) return;
-    browserMutations.push(`${browserRequest.method()} ${new URL(browserRequest.url()).pathname}`);
-  });
-
-  let primaryFailure: unknown = null;
-  const cleanupFailures: Error[] = [];
-  try {
-    const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
-      headers: ADMIN_AUTHORIZATION,
-      data: { label, scope: "write" },
-    });
-    await requireStatus(mintResponse, 201, "mint proposal write token");
-    const minted = (await mintResponse.json()) as MintedToken;
-    if (typeof minted.id === "string") resources.tokenId = minted.id;
-    if (typeof minted.token === "string") resources.tokenSecret = minted.token;
-    expect(minted).toEqual({
-      id: expect.stringMatching(/^tok_/u),
-      token: expect.stringMatching(/^zhs_/u),
-      label,
-      scope: "write",
-      createdAt: expect.any(String),
-      expiresAt: null,
-      rotatedFrom: null,
-    });
-
-    const seeded = await request.put(liveFileUrl(path), {
-      headers: {
-        ...authorization(minted.token),
-        "Idempotency-Key": idempotencyKey("proposal-seed"),
-      },
-      data: {
-        body: initialBody,
-        expectedVersion: null,
-        author: "viewer-live-proposal-seed",
-        message: "Create isolated proposal fixture",
-      },
-    });
-    await requireStatus(seeded, 201, `create ${path} with proposal credential`);
-    expect(await seeded.json()).toMatchObject({
-      version: 1,
-      hash: expect.stringMatching(/^sha256-[0-9a-f]{64}$/u),
-      size: new TextEncoder().encode(initialBody).byteLength,
-      changeId: expect.any(Number),
-      createdAt: expect.any(String),
-    });
-
-    await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
-      token: minted.token,
-    });
-    await page.goto(`/s/demo/edit/${path}`);
-    const editor = page.getByRole("textbox", { name: "Draft body" });
-    await expect(editor).toHaveValue(initialBody);
-    await editor.fill(candidateBody);
-    await page.getByRole("button", { name: "Save…" }).click();
-
-    const saveDialog = page.getByRole("dialog", { name: "Review save against head v1" });
-    await saveDialog.getByRole("textbox", { name: "Author" }).fill(proposalAuthor);
-    await saveDialog.getByRole("textbox", { name: "Message" }).fill(proposalMessage);
-    await saveDialog.getByRole("button", { name: "Save as proposal" }).click();
-
-    const proposalUrl = /^\/s\/demo\/proposals\/(prp_\d{13}[0-9a-f]{8})$/u;
-    await expect(page).toHaveURL((url) => proposalUrl.test(url.pathname));
-    const match = proposalUrl.exec(new URL(page.url()).pathname);
-    if (match?.[1] === undefined) throw new Error("proposal navigation did not expose its id");
-    const proposalId = match[1];
-    await expect(
-      page.getByRole("status", { name: "Proposal creation confirmation" }),
-    ).toContainText("Proposal saved and ready for review.");
-    await expect(page.getByRole("heading", { level: 1, name: path })).toBeVisible();
-    const immutableDiff = page.getByRole("table", { name: "Unified diff" });
-    await expect(immutableDiff).toBeVisible();
-    await expect(immutableDiff).toContainText("Seeded v1.");
-    await expect(immutableDiff).toContainText("Approved candidate v2.");
-
-    await page.getByRole("button", { name: "Approve…" }).click();
-    const approveDialog = page.getByRole("dialog", { name: `Approve ${path}` });
-    await approveDialog.getByRole("button", { name: "Approve proposal", exact: true }).click();
-
-    await expect(page.getByLabel("Proposal status: applied")).toHaveCount(2);
-    const decision = page.getByRole("region", { name: "Decision record" });
-    await expect(decision).toBeVisible();
-    await expect(decision.getByText(minted.id, { exact: true })).toBeVisible();
-    const appliedVersion = decision.getByRole("link", { name: "v2" });
-    await expect(appliedVersion).toHaveAttribute("href", `/s/demo/f/${path}?version=2`);
-    await appliedVersion.click();
-
-    await expect(page).toHaveURL(
-      (url) => url.pathname === `/s/demo/f/${path}` && url.searchParams.get("version") === "2",
-    );
-    await expect(page.locator(".file-body-pane")).toHaveText(candidateBody.trim());
-    const appliedRow = page
-      .getByRole("region", { name: "History" })
-      .locator('[data-history-version="2"]');
-    await expect(appliedRow).toContainText(proposalAuthor);
-    await expect(appliedRow).toContainText(proposalMessage);
-
-    const persistedResponse = await request.get(`${liveHistoryUrl(path)}?limit=200`, {
-      headers: authorization(minted.token),
-    });
-    await requireStatus(persistedResponse, 200, `read proposal history for ${path}`);
-    const persisted = (await persistedResponse.json()) as HistoryResponse;
-    expect(persisted).toMatchObject({ headVersion: 2, total: 2 });
-    expect(persisted.versions.map(({ version }) => version)).toEqual([2, 1]);
-    expect(persisted.versions.filter(({ version }) => version === 2)).toHaveLength(1);
-    expect(persisted.versions[0]).toMatchObject({
-      version: 2,
-      kind: "put",
-      rollbackOf: null,
-      author: proposalAuthor,
-      message: proposalMessage,
-      meta: { proposalId },
-    });
-    expect(browserMutations).toEqual([
-      "POST /api/v1/stashes/demo/proposals",
-      `POST /api/v1/stashes/demo/proposals/${proposalId}/approve`,
-    ]);
-    expect(browserMutations.some((requestPath) => requestPath.includes(GUIDE_PATH))).toBe(false);
-    expect(pageErrors).toEqual([]);
-  } catch (error: unknown) {
-    primaryFailure = error;
-  } finally {
-    try {
-      await page.close();
-    } catch (error: unknown) {
-      cleanupFailures.push(errorFrom(error));
-    }
-    cleanupFailures.push(...(await cleanupUniqueResources(request, resources)));
-  }
-
-  if (primaryFailure !== null || cleanupFailures.length > 0) {
-    throw new AggregateError(
-      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
-      "proposal live viewer flow or its verified logical cleanup failed",
-    );
-  }
-});
-
 test("@live admin deletes and restores a unique stash through the viewer", async ({
   page,
   request,
@@ -1130,7 +953,7 @@ test("@live admin deletes and restores a unique stash through the viewer", async
       token: ADMIN_TOKEN,
     });
     const stashRoute = `/s/${stash}`;
-    const reconciledLoads = { files: 0, changes: 0, proposals: 0 };
+    const reconciledLoads = { files: 0, changes: 0 };
     page.on("response", (response) => {
       if (response.request().method() !== "GET" || response.status() !== 200) return;
       const referer = response.request().headers().referer;
@@ -1147,14 +970,6 @@ test("@live admin deletes and restores a unique stash through the viewer", async
       if (url.pathname === `/api/v1/stashes/${stash}/changes` && url.search === "") {
         kind = "changes";
       }
-      if (
-        url.pathname === `/api/v1/stashes/${stash}/proposals` &&
-        url.searchParams.get("status") === "open" &&
-        url.searchParams.get("limit") === "1" &&
-        !url.searchParams.has("path")
-      ) {
-        kind = "proposals";
-      }
       if (kind === undefined) return;
       void response.finished().then((failure) => {
         if (failure === null) reconciledLoads[kind] += 1;
@@ -1164,8 +979,7 @@ test("@live admin deletes and restores a unique stash through the viewer", async
     await expect(page.getByRole("heading", { name: stash, exact: true })).toBeVisible();
     await expect
       .poll(() => Math.min(...Object.values(reconciledLoads)), {
-        message:
-          "the lifecycle page's initial and ready-triggered files, changes, and proposal loads should finish",
+        message: "the lifecycle page's initial and ready-triggered files and changes should finish",
         timeout: 10_000,
       })
       .toBeGreaterThanOrEqual(2);

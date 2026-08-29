@@ -210,6 +210,8 @@ export function uploadFinalizeBatch(
       .prepare(
         `UPDATE upload_sessions SET state = 'committed', result_status = 201,
            result_json = json_object(
+             'commitId', 'legacy:' || (SELECT id FROM versions
+               WHERE stash_name = ? AND path = ? AND version = ?),
              'version', ?, 'hash', uploaded_hash, 'size', uploaded_size,
              'representation', representation, 'contentType', content_type,
              'changeId', (SELECT id FROM versions
@@ -222,6 +224,9 @@ export function uploadFinalizeBatch(
            AND finalization_lease_until > ? AND ${insertedVersion}`,
       )
       .bind(
+        input.session.stash_name,
+        input.session.path,
+        version,
         version,
         input.session.stash_name,
         input.session.path,

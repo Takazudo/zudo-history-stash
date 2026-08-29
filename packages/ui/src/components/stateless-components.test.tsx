@@ -19,6 +19,7 @@ import { clientValue, stashErrorMessage } from "./error-banner.js";
 
 const change: ChangeItem = {
   changeId: 1,
+  commitId: "legacy:1",
   stash: "notes",
   path: "docs/readme.txt",
   version: 2,

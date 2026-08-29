@@ -23,11 +23,12 @@ JSON の失敗は、機械可読な `error.code` が以下のいずれかの値�
 | `stale` | `409` | 期待した head が一致しなくなりました。 | 正本の head を再読み込みして照合し、その version で再試行してください。 |
 | `exists` | `409` | 作成専用の操作で既存リソースが見つかりました。 | 既存リソースを読むか、更新用のフェンスを使用してください。 |
 | `already-deleted` | `409` | ライフサイクルまたはファイルの削除が既存の tombstone を対象にしました。 | 削除済みとして扱うか、状態を更新してください。 |
+| `commit-conflict` | `409` | atomic commit の entry が fence に失敗しました。 | `conflicts` を確認し、対象 path を更新して新しい commit として再試行してください。 |
 | `gc-busy` | `409` | 別の世代がガベージコレクションのリースを所有しています。 | アクティブなリース期間の後で再試行してください。 |
 | `already-rotated` | `409` | 前の token にはすでに後継があります。 | 後継 ID を確認してください。シークレットを失った場合は後継を失効させ、新しく作成してください。 |
 | `token-expired` | `409` | ローテーション対象の前の token は期限切れです。 | admin 認証情報を使って新しい token を作成してください。 |
-| `proposal-expired` | `409` | open proposal が承認期限を過ぎました。 | 現在の head に対して新しい proposal を作成してください。 |
-| `proposal-closed` | `409` | proposal の判断が終端状態と競合しています。 | proposal を更新し、記録済みの判断に従ってください。 |
+| `change-set-expired` | `409` | open change set が承認期限を過ぎました。 | 現在の head に対して新しい change set を作成してください。 |
+| `change-set-closed` | `409` | change set の判断が終端状態と競合しています。 | change set を更新し、記録済みの判断に従ってください。 |
 | `payload-too-large` | `413` | encode 済みリクエストまたは保存内容が上限を超えています。 | ドキュメント化された上限と単位に従ってリクエストを減らしてください。 |
 | `idempotency-key-reused` | `422` | 一つのキーが別の正規リクエストに再利用されました。 | 新しいキーを生成してください。古いキーで再試行するリクエストを決して変更しないでください。 |
 | `rollback-target-tombstone` | `422` | ロールバックで削除済みの履歴 version が選ばれました。 | live version を選ぶか、明示的な delete/create workflow を実行してください。 |

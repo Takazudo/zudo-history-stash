@@ -668,10 +668,10 @@ describe("stash events route", () => {
       await reader.expectDone();
       await expect.poll(() => subscriberCount(baseBindings, stash)).toBe(0);
       await publish(baseBindings, stash, {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change-set",
+        changeSetId: "cst_1756339200000deadbeef",
         stash,
-        path: "after-revocation.txt",
+        paths: ["after-revocation.txt"],
         status: "open",
         origin: "peer-after-revocation",
       });
@@ -869,6 +869,7 @@ describe("stash events route", () => {
         event: {
           type: "change",
           changeId: second.changeId,
+          commitId: `legacy:${second.changeId}`,
           stash,
           path: "second.txt",
           version: 1,
@@ -911,6 +912,7 @@ describe("stash events route", () => {
       await publish(baseBindings, stash, {
         type: "change",
         changeId: created.changeId,
+        commitId: `legacy:${created.changeId}`,
         stash,
         path: "gap.txt",
         version: created.version,
@@ -935,10 +937,10 @@ describe("stash events route", () => {
       });
 
       const sentinel: StashEvent = {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change-set",
+        changeSetId: "cst_1756339200000deadbeef",
         stash,
-        path: "gap.txt",
+        paths: ["gap.txt"],
         status: "open",
         origin: null,
       };
@@ -964,6 +966,7 @@ describe("stash events route", () => {
       await publish(baseBindings, stash, {
         type: "change",
         changeId: created.changeId,
+        commitId: `legacy:${created.changeId}`,
         stash,
         path: "duplicate.txt",
         version: created.version,

@@ -15,11 +15,9 @@ import { useCallback, useState, type ChangeEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { useViewerLiveRefresh } from "../app/live-updates.js";
-import { proposalListHref } from "../app/proposal-routes.js";
 import { Page } from "../app/shell/page.js";
 import { Table } from "../app/shell/table.js";
 import { ErrorBanner, clientValue } from "../components/error-banner.js";
-import { useOpenProposalCount } from "../hooks/use-open-proposal-count.js";
 import { usePagedData } from "./use-paged-data.js";
 
 const fileKey = (file: FileSummary) => file.path;
@@ -78,7 +76,6 @@ export default function StashPage() {
   const hrefFor = useStashHref();
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const openProposals = useOpenProposalCount(client, stash);
   const files = usePagedData<FileSummary, string>(
     async (signal, after) => {
       if (!client || !stash) return { items: [], nextCursor: null };
@@ -112,21 +109,16 @@ export default function StashPage() {
   );
   const resetFiles = files.reset;
   const resetChanges = changes.reset;
-  const reloadOpenProposals = openProposals.reload;
   useViewerLiveRefresh(
     useCallback(
       async ({ signal }) => {
-        const results = await Promise.allSettled([
-          resetFiles(signal),
-          resetChanges(signal),
-          reloadOpenProposals(signal),
-        ]);
+        const results = await Promise.allSettled([resetFiles(signal), resetChanges(signal)]);
         const failed = results.find(
           (result): result is PromiseRejectedResult => result.status === "rejected",
         );
         if (failed !== undefined) throw failed.reason;
       },
-      [reloadOpenProposals, resetChanges, resetFiles],
+      [resetChanges, resetFiles],
     ),
   );
 
@@ -142,11 +134,6 @@ export default function StashPage() {
       actions={
         stash ? (
           <div className="page-actions">
-            <Link className="zhs-button zhs-button--secondary" to={proposalListHref(stash)}>
-              {openProposals.state === "ready" && openProposals.value !== null
-                ? `Proposals (${openProposals.value} open)`
-                : "Proposals"}
-            </Link>
             {write.ready && write.canWrite ? (
               <Link
                 className="zhs-button zhs-button--primary"

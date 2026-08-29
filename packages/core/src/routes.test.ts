@@ -18,12 +18,18 @@ const expected = [
   ["GET", "/v1/changes", "admin"],
   ["POST", "/v1/admin/gc", "admin"],
   ["GET", "/v1/admin/gc/runs", "admin"],
-  ["POST", "/v1/stashes/:stash/proposals", "write"],
-  ["GET", "/v1/stashes/:stash/proposals", "read"],
-  ["GET", "/v1/stashes/:stash/proposals/:id", "read"],
-  ["GET", "/v1/stashes/:stash/proposals/:id/diff", "read"],
-  ["POST", "/v1/stashes/:stash/proposals/:id/approve", "write"],
-  ["POST", "/v1/stashes/:stash/proposals/:id/reject", "write"],
+  ["POST", "/v1/stashes/:stash/commits", "write"],
+  ["GET", "/v1/stashes/:stash/commits/:id", "read"],
+  ["GET", "/v1/stashes/:stash/commits", "read"],
+  ["GET", "/v1/stashes/:stash/commits/:id/diff", "read"],
+  ["POST", "/v1/stashes/:stash/commits/:id/revert", "write"],
+  ["GET", "/v1/stashes/:stash/snapshot", "read"],
+  ["POST", "/v1/stashes/:stash/change-sets", "write"],
+  ["GET", "/v1/stashes/:stash/change-sets", "read"],
+  ["GET", "/v1/stashes/:stash/change-sets/:id", "read"],
+  ["GET", "/v1/stashes/:stash/change-sets/:id/diff", "read"],
+  ["POST", "/v1/stashes/:stash/change-sets/:id/approve", "write"],
+  ["POST", "/v1/stashes/:stash/change-sets/:id/reject", "write"],
   ["GET", "/v1/stashes/:stash/events", "read"],
   ["GET", "/v1/stashes/:stash/files", "read"],
   ["GET", "/v1/stashes/:stash/files/*path", "read"],
@@ -48,7 +54,7 @@ const expected = [
 ];
 
 it("pins every API endpoint, template, method, and capability", () => {
-  expect(ROUTES).toHaveLength(43);
+  expect(ROUTES).toHaveLength(49);
   expect(ROUTES.map(({ method, template, principal }) => [method, template, principal])).toEqual(
     expected,
   );
@@ -57,5 +63,5 @@ it("pins every API endpoint, template, method, and capability", () => {
   expect(ROUTES.filter(({ id }) => transportForRoute(id) === "fetch-only")).toContainEqual(
     expect.objectContaining({ id: "stashEvents", transport: "fetch-only" }),
   );
-  expect(ROUTES.filter(({ id }) => transportForRoute(id) === "any")).toHaveLength(30);
+  expect(ROUTES.filter(({ id }) => transportForRoute(id) === "any")).toHaveLength(36);
 });

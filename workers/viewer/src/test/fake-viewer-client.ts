@@ -6,10 +6,8 @@ import {
   type ListChangesResult,
   type ListStashesResult,
   type MeResponse,
-  type ProposalListResponse,
   type StashClient,
   type StashFilesClient,
-  type StashProposalsClient,
 } from "@takazudo/zudo-history-stash";
 import type { FakeStash } from "@takazudo/zudo-history-stash/testing";
 import type { ViewerStashClient } from "../app/auth/stash-client-provider.js";
@@ -19,7 +17,6 @@ export interface FakeViewerClientOverrides {
   stashes?: Partial<StashClient["stashes"]>;
   changes?: StashClient["changes"];
   files?: (stash: string) => StashFilesClient;
-  proposals?: (stash: string) => StashProposalsClient;
 }
 
 const emptyChanges: ListChangesResult = {
@@ -36,6 +33,7 @@ export const adminMe: ClientResult<MeResponse> = {
 export function change(overrides: Partial<ChangeItem> = {}): ChangeItem {
   return {
     changeId: 1,
+    commitId: "legacy:1",
     stash: "notes",
     path: "docs/readme.txt",
     version: 2,
@@ -76,14 +74,6 @@ export function createFakeViewerClient(
       value: { stashes: [], nextAfter: null },
     }),
   };
-  const defaultProposals = (stash: string): StashProposalsClient => ({
-    ...unreachable.proposals(stash),
-    list: async (): Promise<ClientResult<ProposalListResponse>> => ({
-      ok: true,
-      value: { proposals: [], nextAfter: null, total: 0 },
-    }),
-  });
-
   const client = {
     ...unreachable,
     me: overrides.me ?? (async () => adminMe),
@@ -95,7 +85,6 @@ export function createFakeViewerClient(
         value: emptyChanges,
       })),
     files: overrides.files ?? defaultFiles,
-    proposals: overrides.proposals ?? defaultProposals,
   } as ViewerStashClient;
   client.withSignal = () => client;
   return client;

@@ -183,29 +183,6 @@ export interface GcRunRow {
   finished_at: number | null;
 }
 
-export interface ProposalRow {
-  id: string;
-  stash_name: string;
-  path: string;
-  base_version: number | null;
-  blob_hash: string;
-  size_bytes: number;
-  author: string;
-  message: string;
-  meta_json: string;
-  status: "open" | "applied" | "rejected";
-  expires_at: number;
-  created_at: number;
-  idempotency_key: string | null;
-  request_hash: string | null;
-  decision_attempt: string | null;
-  decided_at: number | null;
-  decided_by: string | null;
-  decision_reason: string | null;
-  applied_version: number | null;
-  applied_change_id: number | null;
-}
-
 export const TABLE_NAMES = [
   "stashes",
   "tokens",
@@ -215,7 +192,6 @@ export const TABLE_NAMES = [
   "idempotency",
   "gc_jobs",
   "gc_runs",
-  "proposals",
   "byte_blobs",
   "upload_sessions",
   "upload_staged_bytes",
@@ -282,28 +258,6 @@ export const TABLE_COLUMNS = {
     "error",
     "started_at",
     "finished_at",
-  ],
-  proposals: [
-    "id",
-    "stash_name",
-    "path",
-    "base_version",
-    "blob_hash",
-    "size_bytes",
-    "author",
-    "message",
-    "meta_json",
-    "status",
-    "expires_at",
-    "created_at",
-    "idempotency_key",
-    "request_hash",
-    "decision_attempt",
-    "decided_at",
-    "decided_by",
-    "decision_reason",
-    "applied_version",
-    "applied_change_id",
   ],
   byte_blobs: [
     "stash_name",
@@ -383,7 +337,6 @@ export interface DatabaseSchema {
   idempotency: IdempotencyRow;
   gc_jobs: GcJobRow;
   gc_runs: GcRunRow;
-  proposals: ProposalRow;
   byte_blobs: ByteBlobRow;
   upload_sessions: UploadSessionRow;
   upload_staged_bytes: UploadStagedBytesRow;

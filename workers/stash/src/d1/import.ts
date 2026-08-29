@@ -323,6 +323,7 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
           statusCode: 201,
           createdVersions: exactCreatedVersions,
           value: {
+            commitId: `legacy:${firstChangeId}`,
             path: value.path,
             headVersion: prepared.at(-1)?.version ?? baseVersion,
             firstChangeId,

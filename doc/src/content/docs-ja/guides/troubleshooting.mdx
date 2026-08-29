@@ -61,7 +61,7 @@ Viewer プロキシが `authorization` を受け取ったことを確認し、�
 - `already-rotated`: 記録された後継のワークフローを使い、前のトークンを再びローテーションしないでください。
 - `token-expired`: 要求したトークン管理操作が状態の境界を越えています。Bearer プリンシパル自体が期限切れで、
   `401 unauthorized` として認証されない場合とは異なります。
-- `proposal-expired` と `proposal-closed`: 変更されない提案レコードを再読み込みします。期限切れ、却下済み、
+- `change-set-expired` と `change-set-closed`: 変更されない提案レコードを再読み込みします。期限切れ、却下済み、
   適用済みの提案は、再び open にしたり自動的にリベースしたりできません。
 
 ### `422 idempotency-key-reused`

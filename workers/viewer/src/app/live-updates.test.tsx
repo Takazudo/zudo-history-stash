@@ -263,7 +263,7 @@ describe("ViewerLiveUpdatesProvider", () => {
     rendered.unmount();
   });
 
-  it("owns one subscription across page navigation and fans ready/change/proposal refreshes", async () => {
+  it("owns one subscription across page navigation and fans ready/change/change-set refreshes", async () => {
     const fake = createFakeStash({ adminToken: ADMIN_TOKEN });
     fake.createStash("notes");
     fake.createStash("archive");
@@ -302,6 +302,7 @@ describe("ViewerLiveUpdatesProvider", () => {
       fake.events.emit({
         type: "change",
         changeId: 999,
+        commitId: "legacy:999",
         stash: "notes",
         path: "docs/own.txt",
         version: 1,
@@ -335,16 +336,16 @@ describe("ViewerLiveUpdatesProvider", () => {
 
     act(() => {
       fake.events.emit({
-        type: "proposal",
-        proposalId: "prp_1787875200000deadbeef",
+        type: "change-set",
+        changeSetId: "cst_1787875200000deadbeef",
         stash: "notes",
-        path: "docs/proposed.txt",
+        paths: ["docs/candidate.txt"],
         status: "open",
         origin: "peer-tab",
       });
     });
     await waitFor(() =>
-      expect(onRefresh.mock.calls.some(([batch]) => batch.reason === "proposal")).toBe(true),
+      expect(onRefresh.mock.calls.some(([batch]) => batch.reason === "change-set")).toBe(true),
     );
 
     await act(async () => rendered.router.navigate("/s/notes/two"));
@@ -619,6 +620,7 @@ describe("ViewerLiveUpdatesProvider", () => {
     source.emit({
       type: "change",
       changeId: 2,
+      commitId: "legacy:2",
       stash: "notes",
       path: "docs/misleading-hint.txt",
       version: 1,

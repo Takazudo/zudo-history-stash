@@ -12,6 +12,7 @@ function version(
   rollbackOf: number | null = null,
 ): VersionRecord {
   return {
+    commitId: `legacy:${number}`,
     version: number,
     kind,
     hash: kind === "delete" ? null : `sha256-${number}`,

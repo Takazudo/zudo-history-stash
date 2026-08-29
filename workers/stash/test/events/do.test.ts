@@ -84,6 +84,7 @@ describe("StashEvents Durable Object", () => {
       const event: StashEvent = {
         type: "change",
         changeId: 41,
+        commitId: "legacy:41",
         stash: "docs",
         path: "guide.json",
         version: 3,
@@ -114,12 +115,15 @@ describe("StashEvents Durable Object", () => {
       const slow = readerFor(await subscribe(instance));
       const fast = readerFor(await subscribe(instance));
       const event: StashEvent = {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change",
+        changeId: 42,
+        commitId: "legacy:42",
         stash: "docs",
         path: "x".repeat(70_000),
-        status: "open",
+        version: 1,
+        kind: "put",
         origin: null,
+        createdAt: "2026-08-28T00:00:00.000Z",
       };
       expect(encoder.encode(eventFrame(event)).byteLength * 4).toBeGreaterThan(256 * 1024);
 
@@ -223,12 +227,15 @@ describe("StashEvents Durable Object", () => {
         eventFrame({ type: "reconnect", reason: "lifetime" }),
       ).byteLength;
       const baseEvent: StashEvent = {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change",
+        changeId: 42,
+        commitId: "legacy:42",
         stash: "docs",
         path: "",
-        status: "open",
+        version: 1,
+        kind: "put",
         origin: null,
+        createdAt: "2026-08-28T00:00:00.000Z",
       };
       const baseBytes = encoder.encode(eventFrame(baseEvent)).byteLength;
       const targetBytes = 256 * 1024 - lifetimeFrameBytes + 1;

@@ -1,0 +1,42 @@
+---
+title: Commits and snapshots
+description: Atomic multi-path writes, commit history, diffs, reverts, and snapshots.
+sidebar_position: 184
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/commits`
+
+**Contract:** operation `createCommit`; principal `write`; transport `any`.
+
+Creates one atomic commit within the documented entry limit.
+
+### `GET /v1/stashes/{stash}/commits/{id}`
+
+**Contract:** operation `getCommit`; principal `read`; transport `any`.
+
+Returns a commit and its ordered version entries.
+
+### `GET /v1/stashes/{stash}/commits`
+
+**Contract:** operation `listCommits`; principal `read`; transport `any`.
+
+Lists commit summaries with an opaque cursor.
+
+### `GET /v1/stashes/{stash}/commits/{id}/diff`
+
+**Contract:** operation `getCommitDiff`; principal `read`; transport `any`.
+
+Returns bounded per-entry diffs.
+
+### `POST /v1/stashes/{stash}/commits/{id}/revert`
+
+**Contract:** operation `revertCommit`; principal `write`; transport `any`.
+
+Creates a new atomic commit that reverts the target commit.
+
+### `GET /v1/stashes/{stash}/snapshot`
+
+**Contract:** operation `getSnapshot`; principal `read`; transport `any`.
+
+Lists file state at a selected commit.

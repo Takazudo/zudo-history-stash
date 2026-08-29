@@ -83,7 +83,7 @@ export async function replaceLatestForSimpleIntent(input: {
 フェンスは新しい正規操作であり、新しい冪等性キーが必要です。異なるリクエストに同じキーを
 再利用すると `422 idempotency-key-reused` が返ります。
 
-SDK は通常の put、delete、rollback、proposal-create の各呼び出しに対して、キーを自動生成します。
+SDK は通常の put、delete、rollback の各呼び出しに対して、キーを自動生成します。
 曖昧なトランスポート障害から復旧するときは、安定したキーを指定して保持し、まったく同じリクエストを
 再生できるようにしてください。冪等性台帳は七日間保持されます。再生時には元の結果が再構成され、
 成功結果に `replayed` が現れます。
@@ -99,5 +99,5 @@ no-op でも、そのキーは確保されません。トランスポート障�
 
 履歴は追記専用のままです。削除は tombstone を追記し、ロールバックは現在の正の head をフェンスとして
 要求しながら、さらに一つのバージョンを追記します。tombstone をロールバック先にはできません。
-候補をバージョンにする前にレビューする必要がある場合は、
-[提案ガイド](./proposals-and-approval.mdx)を参照してください。
+レビュー候補のルート構成については、
+[change set HTTP 契約](../reference/http-api/change-sets.mdx)を参照してください。

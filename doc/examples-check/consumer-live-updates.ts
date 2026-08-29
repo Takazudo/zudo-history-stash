@@ -28,11 +28,16 @@ export function openAdvisoryUpdates(input: {
   const done = (async () => {
     try {
       for await (const event of stream) {
-        if (event.type === "ready" || event.type === "change" || event.type === "proposal") {
+        if (
+          event.type === "ready" ||
+          event.type === "change" ||
+          event.type === "commit" ||
+          event.type === "change-set"
+        ) {
           await input.refreshAuthoritativeState(event);
         }
         if (
-          (event.type === "change" || event.type === "proposal") &&
+          (event.type === "change" || event.type === "commit" || event.type === "change-set") &&
           event.origin !== input.clientId
         ) {
           input.onRemoteHint(event);

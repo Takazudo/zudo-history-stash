@@ -28,8 +28,5 @@ describe("defaultStashHref", () => {
     );
     expect(defaultStashHref({ kind: "new-file", stash: "notes" })).toBe("/s/notes/new");
     expect(defaultStashHref({ kind: "tokens", stash: "notes" })).toBe("/s/notes/tokens");
-    expect(defaultStashHref({ kind: "proposal", stash: "team notes", id: "prp_1/unsafe" })).toBe(
-      "/s/team%20notes/proposals/prp_1%2Funsafe",
-    );
   });
 });

@@ -141,6 +141,7 @@ function change(changeId: number): StashChangeEvent {
   return {
     type: "change",
     changeId,
+    commitId: `cmt_${changeId}`,
     stash: "notes",
     path: `${changeId}.md`,
     version: changeId,

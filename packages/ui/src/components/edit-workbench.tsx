@@ -2,7 +2,6 @@ import type {
   FileGetResult,
   FileRecord,
   FileRecordWithEtag,
-  ProposalRecord,
   StashClient,
 } from "@takazudo/zudo-history-stash";
 import {
@@ -53,7 +52,6 @@ export interface EditWorkbenchProps {
   path: string;
   initialSource?: number;
   onSaved?: (result: EditWorkbenchSaved) => void;
-  onProposed?: (record: ProposalRecord) => void;
   registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
 }
 
@@ -111,7 +109,6 @@ function EditWorkbenchAllowed({
   path,
   initialSource,
   onSaved,
-  onProposed,
   registerLiveRefresh,
 }: EditWorkbenchProps) {
   const workbench = useWorkbench({ stash, path, initialSource });
@@ -135,7 +132,6 @@ function EditWorkbenchAllowed({
   return (
     <EditWorkbenchReady
       key={`${stash}\u0000${path}\u0000${String(initialSource ?? "head")}`}
-      onProposed={onProposed}
       onSaved={onSaved}
       path={path}
       registerLiveRefresh={registerLiveRefresh}
@@ -278,14 +274,12 @@ function EditWorkbenchReady({
   path,
   workbench,
   onSaved,
-  onProposed,
   registerLiveRefresh,
 }: {
   stash: string;
   path: string;
   workbench: WorkbenchState;
   onSaved?: (result: EditWorkbenchSaved) => void;
-  onProposed?: (record: ProposalRecord) => void;
   registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
 }) {
   const client = useStashClient();
@@ -695,11 +689,6 @@ function EditWorkbenchReady({
         onDiscard={() => {
           closeDialog();
           handleDiscard();
-        }}
-        onProposed={(record) => {
-          machine.resetSession();
-          closeDialog();
-          onProposed?.(record);
         }}
         onSaved={(completion) => void handleSaved(completion)}
       />

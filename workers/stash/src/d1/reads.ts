@@ -62,6 +62,7 @@ export interface ReadFileSource {
 }
 
 export interface ReadVersionRecord {
+  commitId: string;
   version: number;
   kind: VersionKind;
   hash: string | null;
@@ -338,6 +339,7 @@ function mapFileSource(
 
 function mapVersion(row: HistoryVersionRow, jsonInlineMaxBytes: number): ReadVersionRecord {
   return {
+    commitId: `legacy:${row.change_id}`,
     version: row.version,
     kind: row.kind,
     hash: row.hash,
