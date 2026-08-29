@@ -23,6 +23,34 @@ copy_repository() {
     --exclude='dist' --exclude='worktrees' "$repo_root/" "$destination/"
 }
 
+seed_fixture_changelog_headings() {
+  local root=$1
+  local changelog path source_count dated_count
+  for changelog in \
+    packages/core/CHANGELOG.md \
+    packages/client/CHANGELOG.md \
+    packages/ui/CHANGELOG.md; do
+    path="$root/$changelog"
+    [[ -f "$path" && ! -L "$path" ]] || {
+      printf 'fixture changelog is missing or is not a regular file: %s\n' "$changelog" >&2
+      return 1
+    }
+    source_count=$(awk '$0 == "## [0.1.0]" { count++ } END { print count + 0 }' "$path")
+    [[ "$source_count" == '1' ]] || {
+      printf 'fixture changelog must contain exactly one undated 0.1.0 heading: %s (found %s)\n' \
+        "$changelog" "$source_count" >&2
+      return 1
+    }
+    perl -0pi -e 's/^## \[0\.1\.0\]$/## [0.1.0] - 2026-08-25/m' "$path"
+    dated_count=$(awk '$0 == "## [0.1.0] - 2026-08-25" { count++ } END { print count + 0 }' "$path")
+    [[ "$dated_count" == '1' ]] || {
+      printf 'fixture changelog must contain exactly one seeded dated 0.1.0 heading: %s (found %s)\n' \
+        "$changelog" "$dated_count" >&2
+      return 1
+    }
+  done
+}
+
 run_tree_case() {
   local name=$1
   local expected_status=$2
@@ -37,6 +65,7 @@ run_tree_case() {
   local output actual_status
 
   copy_repository "$repo"
+  seed_fixture_changelog_headings "$repo"
   mkdir -p "$shim_dir"
   ln -s "$test_dir/shims/bump-git" "$shim_dir/git"
   ln -s "$test_dir/shims/bump-pnpm" "$shim_dir/pnpm"
@@ -167,6 +196,7 @@ run_dry_case() {
   local before_hashes after_hashes before_status after_status output actual_status
 
   copy_repository "$repo"
+  seed_fixture_changelog_headings "$repo"
   mutate_heading_case "$name" "$repo"
   (
     cd "$repo"
