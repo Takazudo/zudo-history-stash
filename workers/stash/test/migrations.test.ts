@@ -91,6 +91,21 @@ describe("D1 migrations", () => {
     }>();
     expect(versionColumns.results.find(({ name }) => name === "commit_id")?.notnull).toBe(1);
 
+    const changeSetIndexes = await env.DB.prepare("PRAGMA index_list(change_sets)").all<{
+      name: string;
+      partial: number;
+    }>();
+    expect(changeSetIndexes.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "change_sets_stash_status_created", partial: 0 }),
+        expect.objectContaining({ name: "change_sets_stash_idempotency", partial: 1 }),
+      ]),
+    );
+    const entryIndexes = await env.DB.prepare("PRAGMA index_list(change_set_entries)").all<{
+      name: string;
+    }>();
+    expect(entryIndexes.results.map(({ name }) => name)).toContain("change_set_entries_stash_path");
+
     await expect(env.DB.prepare("SELECT 1 FROM proposals").first()).rejects.toThrow();
 
     const jobs = await env.DB.prepare(
