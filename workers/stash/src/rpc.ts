@@ -1,6 +1,7 @@
 import {
   createStashClient,
   parseClientResponse,
+  StashHttpError,
   type ChangesOptions,
   type ClientResult,
   type DiffOptions,
@@ -13,6 +14,7 @@ import {
   type MutationOptions,
   type StashRpcMethods,
 } from "@takazudo/zudo-history-stash";
+import { statusForCode, validateStashName } from "@takazudo/zudo-history-stash-core";
 import type {
   CandidateDiffResult,
   ApproveChangeSetBody,
@@ -364,7 +366,40 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     stash: string,
     options?: ListFilesOptions,
   ): Promise<ClientResult<FileListResponse>> {
-    return noThrow(() => rpcClient(this, token).files(stash).list(options));
+    const stashValidation = validateStashName(stash);
+    if (!stashValidation.ok) {
+      return {
+        ok: false,
+        error: {
+          code: stashValidation.error,
+          status: statusForCode(stashValidation.error),
+          message: stashValidation.message,
+        },
+      };
+    }
+    return noThrow(async () => {
+      let response: Response;
+      try {
+        response = await this.request({
+          method: "GET",
+          path: `/v1/stashes/${stash}/files`,
+          query: optionalQuery({
+            includeDeleted: options?.includeDeleted,
+            limit: options?.limit,
+            after: options?.after,
+            prefix: options?.prefix,
+            delimiter: options?.delimiter,
+          }),
+          token,
+        });
+      } catch (error) {
+        throw new StashHttpError(0, undefined, undefined, error);
+      }
+      return (await parseClientResponse<FileListResponse>(
+        response,
+        "listFiles",
+      )) as ClientResult<FileListResponse>;
+    });
   }
 
   async getFile(

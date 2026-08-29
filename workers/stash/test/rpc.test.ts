@@ -994,4 +994,15 @@ describe("typed StashRpc methods", () => {
       },
     });
   });
+
+  it("preserves local stash validation before the raw list request", async () => {
+    const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
+    const request = vi.spyOn(rpc, "request");
+
+    await expect(rpc.listFiles(RPC_READ_TOKEN, "INVALID_STASH")).resolves.toEqual({
+      ok: false,
+      error: { code: "validation", status: 400, message: "Invalid stash name" },
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
 });
