@@ -56,7 +56,8 @@ jobs:
           pull_json="$(node scripts/preview-reaper.mjs check-pr --pr "$PREVIEW_PR_NUMBER")"
           pr="$(jq -er '.pr | select(type == "number" and floor == . and . >= 1)' <<<"$pull_json")"
           state="$(jq -er '.state | select(. == "open" or . == "closed")' <<<"$pull_json")"
-          fork="$(jq -er '.fork | select(type == "boolean")' <<<"$pull_json")"
+          jq -e '.fork | type == "boolean"' <<<"$pull_json" >/dev/null
+          fork="$(jq -r '.fork' <<<"$pull_json")"
           [[ "$pr" == "$PREVIEW_PR_NUMBER" ]]
           [[ "$state" == "closed" ]]
           {
