@@ -159,3 +159,89 @@ export function deleteLedgerRows(
   }
   return statements;
 }
+
+export type ContentTable = "blobs" | "byte_blobs";
+
+export interface ContentRow {
+  rowid: number;
+  stash_name: string;
+  hash: string;
+}
+
+function unreferencedPredicate(table: ContentTable): string {
+  const contentStorage = table === "blobs" ? "legacy" : "bytes";
+  // This predicate owns exactly two placeholders, in order: content age cutoff,
+  // then change-set liveness cutoff.
+  return `${table}.created_at < ?
+    AND NOT EXISTS (
+      SELECT 1 FROM versions v
+      WHERE v.stash_name = ${table}.stash_name
+        AND v.blob_hash = ${table}.hash
+        AND v.content_storage = '${contentStorage}'
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM change_set_entries e
+      JOIN change_sets cs ON cs.id = e.change_set_id
+      WHERE e.stash_name = ${table}.stash_name
+        AND e.blob_hash = ${table}.hash
+        AND cs.status = 'open'
+        AND cs.expires_at > ?
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM upload_sessions s
+      WHERE s.stash_name = ${table}.stash_name
+        AND s.state IN ('open','uploaded','finalizing')
+        AND (s.uploaded_hash = ${table}.hash OR s.declared_hash = ${table}.hash)
+    )`;
+}
+
+export function selectContentPage(table: ContentTable): string {
+  return `SELECT rowid, stash_name, hash
+    FROM ${table}
+    WHERE ${unreferencedPredicate(table)}
+      AND (stash_name > ? OR (stash_name = ? AND hash > ?))
+    ORDER BY stash_name, hash
+    LIMIT ?`;
+}
+
+export const CONTENT_DELETE_ROW_CHUNK_SIZE = D1_MAX_BOUND_PARAMS - 5;
+
+export function buildContentDeletes(
+  db: Preparer,
+  input: {
+    table: ContentTable;
+    rows: readonly ContentRow[];
+    contentCutoff: number;
+    changeSetCutoff: number;
+    kind: GcJobKind;
+    owner: string;
+    generation: number;
+  },
+): D1PreparedStatement[] {
+  if (input.rows.length === 0) throw new Error("buildContentDeletes requires at least one row");
+  const statements: D1PreparedStatement[] = [];
+  for (let offset = 0; offset < input.rows.length; offset += CONTENT_DELETE_ROW_CHUNK_SIZE) {
+    const chunk = input.rows.slice(offset, offset + CONTENT_DELETE_ROW_CHUNK_SIZE);
+    statements.push(
+      db
+        .prepare(
+          `DELETE FROM ${input.table}
+           WHERE rowid IN (${chunk.map(() => "?").join(", ")})
+             AND ${unreferencedPredicate(input.table)}
+             AND EXISTS (
+               SELECT 1 FROM gc_jobs
+               WHERE kind = ? AND lease_owner = ? AND lease_generation = ?
+             )`,
+        )
+        .bind(
+          ...chunk.map(({ rowid }) => rowid),
+          input.contentCutoff,
+          input.changeSetCutoff,
+          input.kind,
+          input.owner,
+          input.generation,
+        ),
+    );
+  }
+  return statements;
+}

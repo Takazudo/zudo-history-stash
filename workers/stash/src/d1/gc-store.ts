@@ -3,14 +3,17 @@ import type { Env } from "../env.js";
 import type { GcJobKind, GcJobRow, GcRunRow } from "./schema.js";
 import {
   acquireLease,
+  buildContentDeletes,
   deleteLedgerRows,
   finishRunBatch,
   heartbeatLease,
   insertRun,
   releaseLease,
+  selectContentPage,
   selectLedgerPage,
   selectReferencedR2Keys,
 } from "./sql/gc.js";
+import type { ContentRow, ContentTable } from "./sql/gc.js";
 
 export const GC_LEASE_TTL_MS = 300_000;
 
@@ -333,6 +336,44 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
         .bind(cutoff, createdAt, createdAt, rowid, limit)
         .all<LedgerRow>();
       return rows.results;
+    },
+
+    async contentPage(
+      table: ContentTable,
+      cutoffs: { content: number; changeSet: number },
+      after: { stashName: string; hash: string } | null,
+      limit: number,
+    ): Promise<ContentRow[]> {
+      budget.charge();
+      const stashName = after?.stashName ?? "";
+      const hash = after?.hash ?? "";
+      const rows = await env.DB.withSession("first-primary")
+        .prepare(selectContentPage(table))
+        .bind(cutoffs.content, cutoffs.changeSet, stashName, stashName, hash, limit)
+        .all<ContentRow>();
+      return rows.results;
+    },
+
+    async deleteContentPage(
+      run: GcRunHandle,
+      table: ContentTable,
+      rows: readonly ContentRow[],
+      cutoffs: { content: number; changeSet: number },
+    ): Promise<number> {
+      if (rows.length === 0) return 0;
+      budget.charge();
+      const results = await env.DB.batch(
+        buildContentDeletes(env.DB, {
+          table,
+          rows,
+          contentCutoff: cutoffs.content,
+          changeSetCutoff: cutoffs.changeSet,
+          kind: run.kind,
+          owner: run.owner,
+          generation: run.generation,
+        }),
+      );
+      return results.reduce((total, result) => total + changed(result), 0);
     },
 
     async listRuns(kind: GcJobKind | undefined, limit: number): Promise<GcRunResult[]> {
