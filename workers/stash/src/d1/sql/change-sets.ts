@@ -136,8 +136,8 @@ export function insertEntryStatement(db: Preparer, row: ChangeSetEntryRow): D1Pr
       `INSERT INTO change_set_entries
        (change_set_id, stash_name, path, op, base_version, blob_hash, content_storage,
         representation, content_type, size_bytes, rollback_to, copied_from_path,
-        copied_from_version)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        copied_from_version, application_etag)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE EXISTS (SELECT 1 FROM change_sets WHERE id = ? AND stash_name = ?)`,
     )
     .bind(
@@ -154,6 +154,7 @@ export function insertEntryStatement(db: Preparer, row: ChangeSetEntryRow): D1Pr
       row.rollback_to,
       row.copied_from_path,
       row.copied_from_version,
+      row.application_etag,
       row.change_set_id,
       row.stash_name,
     );

@@ -9,6 +9,7 @@ import {
   StashError,
   canonicalJson,
   computeDiff,
+  decodeCanonicalBase64,
   isWellFormedString,
   sha256Hex,
   utf8ByteLength,
@@ -26,11 +27,13 @@ import {
   type ListCommitsQuery as ListCommitsQueryType,
   type RevertCommitBody as RevertCommitBodyType,
   type Result,
+  type StorageTier,
 } from "@takazudo/zudo-history-stash-core";
 import type { Principal } from "../context.js";
 import type { Env } from "../env.js";
 import { parseBinarySettings } from "../binary-config.js";
 import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./blobs.js";
+import { prepareByteWrite, type PreparedByteWrite } from "./byte-writes.js";
 import { createReads } from "./reads.js";
 import type { CommitRow } from "./schema.js";
 import { commitBatch, mintCommitId, type PreparedCommitEntry } from "./sql/commits.js";
@@ -68,6 +71,9 @@ interface CommittedVersionRow {
   content_type: string;
   representation: "text" | "binary";
   rollback_of: number | null;
+  copied_from_path: string | null;
+  copied_from_version: number | null;
+  storage_tier: StorageTier | null;
   previous_hash: string | null;
   previous_content_type: string | null;
   previous_representation: "text" | "binary" | null;
@@ -175,6 +181,33 @@ function snapshotPayload(entries: CommitEntryInput[]): string {
   );
 }
 
+function storageTierSql(alias: string): string {
+  return `CASE
+    WHEN ${alias}.blob_hash IS NULL THEN NULL
+    WHEN ${alias}.content_storage = 'bytes' AND EXISTS (
+      SELECT 1 FROM byte_blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.body_bytes IS NOT NULL
+    ) THEN 'd1'
+    WHEN ${alias}.content_storage = 'bytes' AND EXISTS (
+      SELECT 1 FROM byte_blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.r2_key IS NOT NULL
+    ) THEN 'r2'
+    WHEN ${alias}.content_storage = 'legacy' AND EXISTS (
+      SELECT 1 FROM blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.body IS NOT NULL
+    ) THEN 'd1'
+    WHEN ${alias}.content_storage = 'legacy' AND EXISTS (
+      SELECT 1 FROM blobs AS stored
+      WHERE stored.stash_name = ${alias}.stash_name AND stored.hash = ${alias}.blob_hash
+        AND stored.size_bytes = ${alias}.size_bytes AND stored.r2_key IS NOT NULL
+    ) THEN 'r2'
+    ELSE NULL
+  END`;
+}
+
 async function readSnapshot(
   db: D1DatabaseSession,
   stash: string,
@@ -276,7 +309,8 @@ async function resultFromCommit(
   const rows = await db
     .prepare(
       `SELECT id, path, version, kind, blob_hash, size_bytes, content_type,
-         representation, rollback_of,
+         representation, rollback_of, copied_from_path, copied_from_version,
+         ${storageTierSql("versions")} AS storage_tier,
          (SELECT previous.blob_hash FROM versions AS previous
           WHERE previous.stash_name = versions.stash_name
             AND previous.path = versions.path AND previous.version = versions.version - 1
@@ -314,8 +348,11 @@ async function resultFromCommit(
       size: row.size_bytes,
       contentType: row.content_type,
       representation: row.representation,
+      ...(row.storage_tier === null ? {} : { storageTier: row.storage_tier }),
       rollbackOf: row.rollback_of,
-      ...(requested.op === "copy" ? { copiedFrom: requested.from } : {}),
+      ...(row.copied_from_path !== null && row.copied_from_version !== null
+        ? { copiedFrom: { path: row.copied_from_path, version: row.copied_from_version } }
+        : {}),
       ...(requested.op === "rollback"
         ? {
             identicalToHead:
@@ -344,7 +381,10 @@ async function resultFromCommit(
   };
 }
 
-function operationFromVersion(row: Pick<CommittedVersionRow, "kind">): CommitEntryRecord["op"] {
+function operationFromVersion(
+  row: Pick<CommittedVersionRow, "kind" | "copied_from_path">,
+): CommitEntryRecord["op"] {
+  if (row.copied_from_path !== null) return "copy";
   return row.kind === "rollback" ? "rollback" : row.kind === "delete" ? "delete" : "put";
 }
 
@@ -357,6 +397,8 @@ async function commitVersions(
     .prepare(
       `SELECT current.id, current.path, current.version, current.kind, current.blob_hash,
          current.size_bytes, current.content_type, current.representation, current.rollback_of,
+         current.copied_from_path, current.copied_from_version,
+         ${storageTierSql("current")} AS storage_tier,
          previous.version AS previous_version, previous.blob_hash AS previous_hash,
          previous.size_bytes AS previous_size,
          previous.content_type AS previous_content_type,
@@ -406,7 +448,11 @@ function commitRecord(commit: CommitRow, rows: CommittedVersionRow[]): CommitRec
       size: row.size_bytes,
       contentType: row.content_type,
       representation: row.representation,
+      ...(row.storage_tier === null ? {} : { storageTier: row.storage_tier }),
       rollbackOf: row.rollback_of,
+      ...(row.copied_from_path !== null && row.copied_from_version !== null
+        ? { copiedFrom: { path: row.copied_from_path, version: row.copied_from_version } }
+        : {}),
       ...(row.kind === "rollback"
         ? {
             identicalToHead:
@@ -489,11 +535,19 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     if (input && typeof input === "object" && Array.isArray(input.entries)) {
       let rawBodyBytes = 0;
       for (const entry of input.entries) {
-        if (entry.op !== "put" || !("body" in entry) || typeof entry.body !== "string") continue;
-        if (!isWellFormedString(entry.body)) {
-          return failure("body-not-well-formed", 400, "Body is not well-formed Unicode");
+        if (entry.op !== "put") continue;
+        if ("bytesBase64" in entry && typeof entry.bytesBase64 === "string") {
+          try {
+            rawBodyBytes += decodeCanonicalBase64(entry.bytesBase64).byteLength;
+          } catch {
+            return failure("validation", 400, "Invalid binary commit body");
+          }
+        } else if ("body" in entry && typeof entry.body === "string") {
+          if (!isWellFormedString(entry.body)) {
+            return failure("body-not-well-formed", 400, "Body is not well-formed Unicode");
+          }
+          rawBodyBytes += utf8ByteLength(entry.body);
         }
-        rawBodyBytes += utf8ByteLength(entry.body);
       }
       if (rawBodyBytes > MAX_COMMIT_INLINE_BYTES) {
         return failure("payload-too-large", 413, "Commit bodies are too large");
@@ -511,31 +565,51 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     }
 
     let totalBytes = 0;
-    const putFacts = new Map<
-      number,
-      { body: string; hash: string; size: number; contentType: string }
-    >();
+    type PutFact =
+      | { representation: "text"; body: string; hash: string; size: number; contentType: string }
+      | {
+          representation: "binary";
+          bytes: Uint8Array<ArrayBuffer>;
+          hash: string;
+          size: number;
+          contentType: string;
+        };
+    const putFacts = new Map<number, PutFact>();
     const distinctPuts = new Map<string, { body: string; size: number }>();
+    const distinctBinaryPuts = new Map<
+      string,
+      { bytes: Uint8Array<ArrayBuffer>; size: number; contentType: string }
+    >();
     for (const [index, entry] of value.entries.entries()) {
-      if (entry.op === "put" && !("body" in entry)) {
-        return failure(
-          "unsupported-representation",
-          422,
-          "Binary commit entries are not supported by this store",
-        );
-      }
       if (entry.op !== "put") continue;
-      const size = utf8ByteLength(entry.body);
-      totalBytes += size;
-      const hash = await sha256Hex(entry.body);
-      const fact = {
-        body: entry.body,
-        hash,
-        size,
-        contentType: entry.contentType ?? DEFAULT_CONTENT_TYPE,
-      };
-      putFacts.set(index, fact);
-      if (!distinctPuts.has(hash)) distinctPuts.set(hash, { body: entry.body, size });
+      if ("bytesBase64" in entry) {
+        const bytes = decodeCanonicalBase64(entry.bytesBase64);
+        const size = bytes.byteLength;
+        totalBytes += size;
+        const hash = await sha256Hex(bytes);
+        putFacts.set(index, {
+          representation: "binary",
+          bytes,
+          hash,
+          size,
+          contentType: entry.contentType,
+        });
+        if (!distinctBinaryPuts.has(hash)) {
+          distinctBinaryPuts.set(hash, { bytes, size, contentType: entry.contentType });
+        }
+      } else {
+        const size = utf8ByteLength(entry.body);
+        totalBytes += size;
+        const hash = await sha256Hex(entry.body);
+        putFacts.set(index, {
+          representation: "text",
+          body: entry.body,
+          hash,
+          size,
+          contentType: entry.contentType ?? DEFAULT_CONTENT_TYPE,
+        });
+        if (!distinctPuts.has(hash)) distinctPuts.set(hash, { body: entry.body, size });
+      }
     }
     if (totalBytes > MAX_COMMIT_INLINE_BYTES)
       return failure("payload-too-large", 413, "Commit bodies are too large");
@@ -546,9 +620,13 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
         canonicalJson({
           entries: value.entries.map((entry, index) => {
             const fact = putFacts.get(index);
-            if (!fact || !("body" in entry)) return entry;
-            const { body: _body, ...rest } = entry;
-            return { ...rest, bodyHash: fact.hash };
+            if (!fact || entry.op !== "put") return entry;
+            if ("body" in entry) {
+              const { body: _body, ...rest } = entry;
+              return { ...rest, bodyHash: fact.hash };
+            }
+            const { bytesBase64: _bytesBase64, ...rest } = entry;
+            return { ...rest, bytesHash: fact.hash };
           }),
           author: value.author ?? "",
           message: value.message ?? "",
@@ -590,6 +668,20 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
         await prepareBlob(env, stash, hash, fact.body, deps.createBlobGeneration),
       );
     }
+    const binaryStorageByHash = new Map<string, PreparedByteWrite>();
+    for (const [hash, fact] of distinctBinaryPuts) {
+      binaryStorageByHash.set(
+        hash,
+        await prepareByteWrite(
+          env,
+          stash,
+          hash,
+          fact.bytes,
+          fact.contentType,
+          deps.createBlobGeneration,
+        ),
+      );
+    }
 
     await deps.onBeforeCommit?.();
     const prepared: PreparedCommitEntry[] = value.entries.map((entry, index) => {
@@ -604,19 +696,17 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
         metaJson,
         createdAt,
       };
-      if (entry.op === "put" && "body" in entry) {
+      if (entry.op === "put") {
         const fact = putFacts.get(index);
         if (!fact) throw new Error("Missing commit PUT fact");
+        if (fact.representation === "binary") {
+          const storage = binaryStorageByHash.get(fact.hash);
+          if (!storage) throw new Error("Missing prepared binary commit blob");
+          return { ...base, op: "put", ...fact, ...storage };
+        }
         const storage = storageByHash.get(fact.hash);
-        if (!storage) throw new Error("Missing prepared commit blob");
-        return {
-          ...base,
-          op: "put",
-          hash: fact.hash,
-          size: fact.size,
-          contentType: fact.contentType,
-          ...storage,
-        };
+        if (!storage) throw new Error("Missing prepared text commit blob");
+        return { ...base, op: "put", ...fact, ...storage };
       }
       if (entry.op === "copy") return { ...base, op: "copy", from: entry.from };
       if (entry.op === "rollback") return { ...base, op: "rollback", toVersion: entry.toVersion };

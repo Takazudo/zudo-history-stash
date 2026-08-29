@@ -89,14 +89,15 @@ An `already-rotated` error carries the winning successor token ID as
 
 ## Limits and storage tiers
 
-The compatibility JSON API is text-only. Its core `MAX_BODY_BYTES` schema limit is **5,000,000
-UTF-8 bytes**, inclusive, for a JSON file PUT and for each inline `put` entry in a commit,
-change set, or history
-import. The default `JSON_INLINE_MAX_BYTES` setting has the same value and controls when text content
-can be returned inline; changing that setting does not change the fixed change set/import schema.
-Change set candidates and imports remain JSON/text-only even when raw uploads support binary, so their
-5 MB rule is not a universal file-size or representation rule. A valid UTF-8 body larger than
-5,000,000 bytes is still `text` when sent through the raw upload API.
+The compatibility file JSON API is text-only. Its core `MAX_BODY_BYTES` schema limit is **5,000,000
+UTF-8 bytes**, inclusive, for a JSON file PUT and each history-import body. Commit and change-set
+requests also accept canonical padded base64 binary `put` entries and stored-version `copy` entries.
+Their fixed `MAX_COMMIT_INLINE_BYTES` limit is 5,000,000 exact content bytes in aggregate across all
+inline text and decoded binary entries; base64 and JSON framing do not count toward that content
+limit. The 32 MiB request-body limit leaves room for base64 inflation. The default
+`JSON_INLINE_MAX_BYTES` setting controls when text content can be returned inline; changing it does
+not change these fixed request-schema limits. A valid UTF-8 body larger than 5,000,000 bytes is still
+`text` when sent through the raw upload API.
 
 Raw uploads preserve exact bytes and choose `single` or `multipart` transfer from capabilities.
 The default `HTTP_REQUEST_MAX_BYTES` and `MAX_FILE_BYTES` are each 100,000,000 content bytes; a
@@ -276,8 +277,9 @@ Cloudflare RPC serialisation for the outer structured value payload is capped at
 the envelope. The flow-controlled `StashRpc.requestStream()` bridge instead passes RPC-aware
 `Request`/`Response` body streams without serialising their bytes into that value payload, and the
 client selects it for raw and upload routes when available. Independently, the raw API's default
-`HTTP_REQUEST_MAX_BYTES` is 100,000,000 and its single-upload default is 32 MiB; the compatibility
-JSON/change set/import limit remains 5,000,000 UTF-8 bytes. The existing `env.STASH.fetch()` service
+`HTTP_REQUEST_MAX_BYTES` is 100,000,000 and its single-upload default is 32 MiB; compatibility JSON
+file/import text bodies and aggregate decoded commit/change-set content remain capped at 5,000,000
+bytes. The existing `env.STASH.fetch()` service
 binding remains supported for HTTP-compatible consumers. These are independent transport and
 content contracts, not a claim that a deployment can discover its Cloudflare plan at runtime.
 
@@ -286,9 +288,9 @@ content contracts, not a claim that a deployment can discover its Cloudflare pla
 Binary metadata keeps representation (`text | binary`), content access (`inline | raw | deleted`),
 transfer mode, and physical storage tier independent. Legacy rows default to text and resolve from
 the legacy TEXT table; new versions carry an explicit storage discriminator so an identical SHA-256
-may coexist in the legacy and byte tables without ambiguous reads. Binary bytes are never base64 in
-JSON. Change set candidates and history import remain JSON/text-only and reject raw/binary usage with
-`422 unsupported-representation`.
+may coexist in the legacy and byte tables without ambiguous reads. Raw response bytes are never
+base64 in JSON. Commit and change-set inputs use strict canonical base64 for inline binary
+candidates; history import remains JSON/text-only.
 
 Published defaults are `JSON_INLINE_MAX_BYTES=5000000`, `D1_INLINE_MAX_BYTES=524288`,
 `HTTP_REQUEST_MAX_BYTES=100000000`, `SINGLE_UPLOAD_MAX_BYTES=33554432`, `MAX_FILE_BYTES=100000000`,
@@ -315,7 +317,7 @@ protocol framing. The settings must also satisfy the relationships described in
 - **Principal/capability:** `open`; no capability or token is required.
 - **Request:** No body or query.
 - **Response:** `200` with representations, content-access modes, transfer modes, storage tiers,
-  and the authoritative exact-content byte limits.
+  supported commit entry kinds, and the authoritative exact-content byte limits.
 - **Errors:** `500 internal`.
 
 ### `GET /v1/me`
@@ -513,6 +515,10 @@ Commits apply up to 20 entries atomically: the gate checks every expected versio
 records one verdict, so either every entry lands or none does. Conflicts return root-level
 `conflicts[]`. Reverts create a new commit, never erase history. Change feeds group every written
 version by required `commitId`; change sets hold expiring candidates and approval never rebases.
+Entry kinds are text `put`, binary `put` (`representation: "binary"`, `contentType`, and canonical
+`bytesBase64`), `copy` from a stored `{ path, version }` in the same stash, `delete`, and `rollback`.
+Copy sources cannot name another entry path in the same request. Binary candidates are decoded and
+staged when a change set is created; binary review diffs report base/candidate hashes and sizes.
 
 ### `POST /v1/stashes/:stash/commits`
 

@@ -9,6 +9,7 @@ import {
   MAX_MESSAGE_BYTES,
   MAX_META_BYTES,
 } from "./limits.js";
+import { isCanonicalBase64 } from "./binary.js";
 import { isWellFormedString, utf8ByteLength } from "./hash.js";
 import { validatePath, validateStashName } from "./paths.js";
 import type { StashEvent } from "./types.js";
@@ -238,6 +239,7 @@ const entryPath = z.string().refine((value) => validatePath(value).ok, "Invalid 
 const strictInteger = z.number().int();
 const commitExpectedVersion = strictInteger.nullable();
 const entryCommon = { path: entryPath, expectedVersion: commitExpectedVersion };
+const canonicalBase64 = z.string().refine(isCanonicalBase64, "Invalid canonical base64");
 export const CommitEntryInput = z.union([
   z.strictObject({
     op: z.literal("put"),
@@ -250,7 +252,7 @@ export const CommitEntryInput = z.union([
     ...entryCommon,
     representation: z.literal("binary"),
     contentType: wellFormed,
-    bytesBase64: z.string(),
+    bytesBase64: canonicalBase64,
   }),
   z.strictObject({
     op: z.literal("copy"),
@@ -340,7 +342,7 @@ export const ChangeSetEntryInput = z.union([
     ...changeSetCommon,
     representation: z.literal("binary"),
     contentType: wellFormed,
-    bytesBase64: z.string(),
+    bytesBase64: canonicalBase64,
   }),
   z.strictObject({
     op: z.literal("copy"),

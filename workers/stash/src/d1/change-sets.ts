@@ -9,6 +9,7 @@ import {
   StashError,
   canonicalJson,
   computeDiff,
+  decodeCanonicalBase64,
   isWellFormedString,
   sha256Hex,
   utf8ByteLength,
@@ -24,7 +25,8 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
-import { blobKey, prepareBlob, readBlob, type PreparedBlob } from "./blobs.js";
+import { prepareBlob, readBlob, type PreparedBlob } from "./blobs.js";
+import { prepareByteWrite, type PreparedByteWrite } from "./byte-writes.js";
 import { createByteStorageReader } from "./byte-reader.js";
 import type { ChangeSetEntryRow, ChangeSetRow } from "./schema.js";
 import {
@@ -52,6 +54,7 @@ interface VersionMaterialRow {
   content_type: string;
   representation: "text" | "binary";
   content_storage: "legacy" | "bytes";
+  application_etag: string | null;
   author: string;
   created_at: number;
   blob_body: string | null;
@@ -67,8 +70,8 @@ interface HeadRow extends VersionMaterialRow {
 
 interface StagedEntry extends ChangeSetEntryRow {
   textBody?: string;
-  binaryBody?: ArrayBuffer;
-  binaryR2Key?: string;
+  binaryBody?: Uint8Array<ArrayBuffer>;
+  preparedBinary?: PreparedByteWrite;
 }
 
 export interface ChangeSetDependencies extends StoreDependencies {
@@ -169,12 +172,9 @@ function validateKey(key: string | undefined): string | undefined {
   return key;
 }
 
-function decodeBinary(value: string, path: string): ArrayBuffer {
+function decodeBinary(value: string, path: string): Uint8Array<ArrayBuffer> {
   try {
-    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-      return validation(`Invalid binary body for ${path}.`);
-    }
-    return Uint8Array.from(atob(value), (character) => character.charCodeAt(0)).buffer;
+    return decodeCanonicalBase64(value);
   } catch {
     return validation(`Invalid binary body for ${path}.`);
   }
@@ -189,6 +189,7 @@ async function selectHead(
     .prepare(
       `SELECT v.stash_name, f.head_version, f.head_hash, f.deleted, v.version, v.kind, v.blob_hash,
          v.size_bytes, v.content_type, v.representation, v.content_storage, v.author, v.created_at,
+         v.application_etag,
          b.body AS blob_body, b.r2_key AS blob_r2_key, b.size_bytes AS blob_size
        FROM files f JOIN versions v
          ON v.stash_name = f.stash_name AND v.path = f.path AND v.version = f.head_version
@@ -209,6 +210,7 @@ async function selectVersion(
     .prepare(
       `SELECT v.stash_name, v.version, v.kind, v.blob_hash, v.size_bytes, v.content_type, v.representation,
          v.content_storage, v.author, v.created_at, b.body AS blob_body,
+         v.application_etag,
          b.r2_key AS blob_r2_key, b.size_bytes AS blob_size
        FROM versions v LEFT JOIN blobs b
          ON b.stash_name = v.stash_name AND b.hash = v.blob_hash
@@ -233,6 +235,7 @@ function sourceEntry(id: string, stash: string, input: ChangeSetEntryInput): Cha
     rollback_to: input.op === "rollback" ? input.toVersion : null,
     copied_from_path: input.op === "copy" ? input.from.path : null,
     copied_from_version: input.op === "copy" ? input.from.version : null,
+    application_etag: null,
   };
 }
 
@@ -269,6 +272,7 @@ async function stageEntry(
       entry.representation = "binary";
       entry.content_type = input.contentType;
       entry.size_bytes = bytes.byteLength;
+      entry.application_etag = entry.blob_hash;
     } else {
       entry.textBody = input.body;
       entry.blob_hash = await sha256Hex(input.body);
@@ -298,6 +302,7 @@ async function stageEntry(
   entry.representation = source.representation;
   entry.content_type = source.content_type;
   entry.size_bytes = source.size_bytes;
+  entry.application_etag = source.application_etag;
   return entry;
 }
 
@@ -491,7 +496,6 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       const staged = await Promise.all(
         input.entries.map((entry) => stageEntry(db, id, stash, entry)),
       );
-      const d1InlineMaxBytes = parseBinarySettings(env).d1InlineMaxBytes;
       const prepared = new Map<string, PreparedBlob>();
       for (const entry of staged) {
         if (
@@ -510,25 +514,15 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
             ),
           );
         }
-        if (
-          entry.binaryBody !== undefined &&
-          entry.blob_hash !== null &&
-          entry.binaryBody.byteLength > d1InlineMaxBytes
-        ) {
-          const key = blobKey(
+        if (entry.binaryBody !== undefined && entry.blob_hash !== null) {
+          entry.preparedBinary = await prepareByteWrite(
+            env,
             stash,
             entry.blob_hash,
-            deps.createBlobGeneration?.() ?? crypto.randomUUID(),
+            entry.binaryBody,
+            entry.content_type ?? "application/octet-stream",
+            deps.createBlobGeneration,
           );
-          const object = await env.BLOBS.put(key, entry.binaryBody, {
-            onlyIf: { etagDoesNotMatch: "*" },
-            httpMetadata: { contentType: entry.content_type ?? "application/octet-stream" },
-            customMetadata: { sha256: entry.blob_hash.slice("sha256-".length) },
-            sha256: entry.blob_hash.slice("sha256-".length),
-          });
-          if (object === null) return internal("Binary change-set content could not be staged.");
-          entry.binaryR2Key = key;
-          entry.binaryBody = undefined;
         }
       }
       const row: ChangeSetRow = {
@@ -555,9 +549,7 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       for (const entry of staged) {
         if (
           entry.blob_hash === null ||
-          (entry.textBody === undefined &&
-            entry.binaryBody === undefined &&
-            entry.binaryR2Key === undefined)
+          (entry.textBody === undefined && entry.preparedBinary === undefined)
         ) {
           continue;
         }
@@ -592,24 +584,22 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
                 ...expectedParams,
               ),
           );
-        } else if (
-          (entry.binaryBody !== undefined || entry.binaryR2Key !== undefined) &&
-          entry.blob_hash !== null
-        ) {
+        } else if (entry.preparedBinary !== undefined && entry.blob_hash !== null) {
           statements.push(
             db
               .prepare(
                 `INSERT INTO byte_blobs
                  (stash_name, hash, body_bytes, r2_key, storage_generation, size_bytes, created_at)
-                 SELECT ?, ?, ?, ?, 0, ?, ? WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
+                 SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
                    AND ${expectedFence}
                  ON CONFLICT(stash_name, hash) DO NOTHING`,
               )
               .bind(
                 stash,
                 entry.blob_hash,
-                entry.binaryBody ?? null,
-                entry.binaryR2Key ?? null,
+                entry.preparedBinary.bodyBytes,
+                entry.preparedBinary.r2Key,
+                entry.preparedBinary.storageGeneration,
                 entry.size_bytes,
                 now,
                 stash,
@@ -762,11 +752,20 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
                 };
           let diff: ChangeSetDiffResult["entries"][number]["diff"];
           if (
-            entry.op === "copy" ||
             entry.representation === "binary" ||
             (baseRow !== null && baseRow.representation === "binary")
           ) {
-            diff = { state: "binary" };
+            diff = {
+              state: "binary",
+              base:
+                baseRow?.blob_hash === null || baseRow === null
+                  ? null
+                  : { hash: baseRow.blob_hash, size: baseRow.size_bytes },
+              candidate:
+                entry.blob_hash === null || entry.size_bytes === null
+                  ? null
+                  : { hash: entry.blob_hash, size: entry.size_bytes },
+            };
           } else if (
             (baseRow?.size_bytes ?? 0) > diffMaxBytes ||
             (entry.size_bytes ?? 0) > diffMaxBytes
@@ -779,7 +778,7 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
                 : textFor(env, baseRow),
               entry.op === "delete" ? Promise.resolve("") : textFor(env, entry),
             ]);
-            diff = computeDiff({
+            const computed = computeDiff({
               fromText,
               toText,
               fromLabel:
@@ -789,6 +788,8 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
               toLabel: `b/${entry.path}@${id}`,
               context: options.context,
             });
+            if (computed.state === "binary") return internal();
+            diff = computed;
           }
           return {
             path: entry.path,

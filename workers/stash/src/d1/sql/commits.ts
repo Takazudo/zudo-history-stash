@@ -1,5 +1,6 @@
 import type { CommitRow } from "../schema.js";
 import type { PreparedBlob } from "../blobs.js";
+import type { PreparedByteWrite } from "../byte-writes.js";
 import type { SqlFragment } from "./writes.js";
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
@@ -161,6 +162,15 @@ export type PreparedCommitEntry =
   | (PreparedCommitBase &
       PreparedBlob & {
         op: "put";
+        representation: "text";
+        hash: string;
+        size: number;
+        contentType: string;
+      })
+  | (PreparedCommitBase &
+      PreparedByteWrite & {
+        op: "put";
+        representation: "binary";
         hash: string;
         size: number;
         contentType: string;
@@ -185,28 +195,60 @@ function putEntryStatements(
   entry: Extract<PreparedCommitEntry, { op: "put" }>,
 ): D1PreparedStatement[] {
   const fence = entryFence(input);
+  const storedBlob =
+    entry.representation === "text"
+      ? `EXISTS (SELECT 1 FROM blobs
+          WHERE stash_name = ? AND hash = ? AND size_bytes = ?
+            AND ((body IS NOT NULL AND r2_key IS NULL)
+              OR (body IS NULL AND r2_key IS NOT NULL)))`
+      : `EXISTS (SELECT 1 FROM byte_blobs
+          WHERE stash_name = ? AND hash = ? AND size_bytes = ?
+            AND ((body_bytes IS NOT NULL AND r2_key IS NULL)
+              OR (body_bytes IS NULL AND r2_key IS NOT NULL)))`;
+  const blobStatement =
+    entry.representation === "text"
+      ? db
+          .prepare(
+            `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
+             SELECT ?, ?, ?, ?, ?, ? WHERE ${fence.sql}
+             ON CONFLICT(stash_name, hash) DO NOTHING`,
+          )
+          .bind(
+            input.row.stash_name,
+            entry.hash,
+            entry.body,
+            entry.r2_key,
+            entry.size,
+            entry.createdAt,
+            ...fence.params,
+          )
+      : db
+          .prepare(
+            `INSERT INTO byte_blobs
+              (stash_name, hash, body_bytes, r2_key, storage_generation, size_bytes, created_at)
+             SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${fence.sql}
+             ON CONFLICT(stash_name, hash) DO NOTHING`,
+          )
+          .bind(
+            input.row.stash_name,
+            entry.hash,
+            entry.bodyBytes,
+            entry.r2Key,
+            entry.storageGeneration,
+            entry.size,
+            entry.createdAt,
+            ...fence.params,
+          );
   return [
-    db
-      .prepare(
-        `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
-         SELECT ?, ?, ?, ?, ?, ? WHERE ${fence.sql}
-         ON CONFLICT(stash_name, hash) DO NOTHING`,
-      )
-      .bind(
-        input.row.stash_name,
-        entry.hash,
-        entry.body,
-        entry.r2_key,
-        entry.size,
-        entry.createdAt,
-        ...fence.params,
-      ),
+    blobStatement,
     db
       .prepare(
         `INSERT INTO versions
           (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-           rollback_of, author, message, meta_json, created_at, commit_id)
-         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ?, ? WHERE ${fence.sql}`,
+           rollback_of, author, message, meta_json, created_at, representation,
+           application_etag, content_storage, commit_id, copied_from_path, copied_from_version)
+         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL
+         WHERE ${fence.sql} AND ${storedBlob}`,
       )
       .bind(
         input.row.stash_name,
@@ -219,8 +261,14 @@ function putEntryStatements(
         entry.message,
         entry.metaJson,
         entry.createdAt,
+        entry.representation,
+        entry.representation === "binary" ? entry.hash : null,
+        entry.representation === "binary" ? "bytes" : "legacy",
         input.row.id,
         ...fence.params,
+        input.row.stash_name,
+        entry.hash,
+        entry.size,
       ),
   ];
 }
@@ -236,10 +284,10 @@ function derivedEntryStatement(
       .prepare(
         `INSERT INTO versions
           (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-           rollback_of, author, message, meta_json, created_at, representation,
-           application_etag, content_storage, commit_id)
+         rollback_of, author, message, meta_json, created_at, representation,
+           application_etag, content_storage, commit_id, copied_from_path, copied_from_version)
          SELECT ?, ?, ?, 'delete', NULL, 0, current.content_type, NULL, ?, ?, ?, ?,
-           current.representation, NULL, current.content_storage, ?
+           current.representation, NULL, current.content_storage, ?, NULL, NULL
          FROM versions AS current
          WHERE current.stash_name = ? AND current.path = ? AND current.version = ?
            AND ${fence.sql}`,
@@ -262,15 +310,17 @@ function derivedEntryStatement(
   const source = entry.op === "copy" ? entry.from : { path: entry.path, version: entry.toVersion };
   const kind = entry.op === "rollback" ? "rollback" : "put";
   const rollbackOf = entry.op === "rollback" ? "source.version" : "NULL";
+  const copiedFromPath = entry.op === "copy" ? "source.path" : "NULL";
+  const copiedFromVersion = entry.op === "copy" ? "source.version" : "NULL";
   return db
     .prepare(
       `INSERT INTO versions
         (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
          rollback_of, author, message, meta_json, created_at, representation,
-         application_etag, content_storage, commit_id)
+         application_etag, content_storage, commit_id, copied_from_path, copied_from_version)
        SELECT ?, ?, ?, '${kind}', source.blob_hash, source.size_bytes, source.content_type,
          ${rollbackOf}, ?, ?, ?, ?, source.representation, source.application_etag,
-         source.content_storage, ?
+         source.content_storage, ?, ${copiedFromPath}, ${copiedFromVersion}
        FROM versions AS source
        WHERE source.stash_name = ? AND source.path = ? AND source.version = ?
          AND source.blob_hash IS NOT NULL AND ${fence.sql}`,

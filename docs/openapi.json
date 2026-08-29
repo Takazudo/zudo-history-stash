@@ -99,6 +99,27 @@
       "CapabilitiesResponse": {
         "additionalProperties": false,
         "properties": {
+          "commitEntryKinds": {
+            "prefixItems": [
+              {
+                "const": "put",
+                "type": "string"
+              },
+              {
+                "const": "copy",
+                "type": "string"
+              },
+              {
+                "const": "delete",
+                "type": "string"
+              },
+              {
+                "const": "rollback",
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
           "contentAccess": {
             "prefixItems": [
               {
@@ -233,7 +254,14 @@
             "type": "array"
           }
         },
-        "required": ["representations", "contentAccess", "transferModes", "storageTiers", "limits"],
+        "required": [
+          "representations",
+          "contentAccess",
+          "transferModes",
+          "storageTiers",
+          "commitEntryKinds",
+          "limits"
+        ],
         "type": "object"
       },
       "ChangeItem": {
@@ -360,17 +388,112 @@
                 "diff": {
                   "oneOf": [
                     {
-                      "$ref": "#/components/schemas/CandidateDiffResult"
-                    },
-                    {
                       "additionalProperties": false,
                       "properties": {
                         "state": {
-                          "enum": ["binary", "oversized"],
+                          "const": "same",
                           "type": "string"
                         }
                       },
                       "required": ["state"],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "reason": {
+                          "enum": ["bytes", "complexity"],
+                          "type": "string"
+                        },
+                        "state": {
+                          "const": "oversized",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state"],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "hunks": {
+                          "items": {
+                            "$ref": "#/components/schemas/DiffHunk"
+                          },
+                          "type": "array"
+                        },
+                        "state": {
+                          "const": "ready",
+                          "type": "string"
+                        },
+                        "stats": {
+                          "$ref": "#/components/schemas/DiffStats"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        },
+                        "unified": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state", "unified", "truncated", "hunks", "stats"],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "base": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hash": {
+                                  "pattern": "^sha256-[0-9a-f]{64}$",
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": ["hash", "size"],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "candidate": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hash": {
+                                  "pattern": "^sha256-[0-9a-f]{64}$",
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": ["hash", "size"],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "state": {
+                          "const": "binary",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state", "base", "candidate"],
                       "type": "object"
                     }
                   ]
@@ -1182,6 +1305,10 @@
                 "maximum": 9007199254740991,
                 "minimum": 0,
                 "type": "integer"
+              },
+              "storageTier": {
+                "enum": ["d1", "r2"],
+                "type": "string"
               },
               "version": {
                 "exclusiveMinimum": 0,
@@ -4387,6 +4514,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "commitEntryKinds": ["put", "copy", "delete", "rollback"],
                   "contentAccess": ["inline", "raw", "deleted"],
                   "limits": {
                     "d1InlineMaxBytes": 524288,

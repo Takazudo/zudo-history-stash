@@ -158,7 +158,7 @@ describe("commit routes", () => {
     expect(batches).toHaveLength(1);
   });
 
-  it("creates and replays a commit while classifying validation, conflict, size, and binary errors", async () => {
+  it("creates and replays a commit while classifying validation, conflict, and size errors", async () => {
     const stash = "commit-errors";
     await seedStash(stash);
     await put(stash, "existing.txt", "before\n", null);
@@ -227,10 +227,72 @@ describe("commit routes", () => {
         ],
       },
     });
-    expect(binary.status).toBe(422);
+    expect(binary.status).toBe(201);
     await expect(binary.json()).resolves.toMatchObject({
-      error: { code: "unsupported-representation" },
+      entries: [{ path: "binary.dat", representation: "binary", storageTier: "d1", size: 1 }],
     });
+  });
+
+  it("atomically commits mixed text, binary bytes, and a persisted copy source", async () => {
+    const stash = "commit-mixed-binary";
+    await seedStash(stash);
+    await put(stash, "logo.png", "old-logo", null);
+    const hero = Uint8Array.from({ length: 40 * 1024 }, (_, index) => index % 251);
+    let binary = "";
+    for (const byte of hero) binary += String.fromCharCode(byte);
+
+    const response = await api(stash, "", {
+      method: "POST",
+      body: {
+        entries: [
+          { op: "put", path: "index.html", expectedVersion: null, body: "<main />" },
+          { op: "put", path: "style.css", expectedVersion: null, body: "main{}" },
+          {
+            op: "put",
+            path: "hero.png",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "image/png",
+            bytesBase64: btoa(binary),
+          },
+          {
+            op: "copy",
+            path: "logo-old.png",
+            expectedVersion: null,
+            from: { path: "logo.png", version: 1 },
+          },
+        ],
+      },
+    });
+    expect(response.status).toBe(201);
+    const commit = await response.json<{ id: string }>();
+    const stored = await api(stash, `/${commit.id}`);
+    await expect(stored.json()).resolves.toMatchObject({
+      entryCount: 4,
+      entries: [
+        { path: "index.html", op: "put", representation: "text" },
+        { path: "style.css", op: "put", representation: "text" },
+        {
+          path: "hero.png",
+          op: "put",
+          representation: "binary",
+          storageTier: "d1",
+          contentType: "image/png",
+        },
+        {
+          path: "logo-old.png",
+          op: "copy",
+          copiedFrom: { path: "logo.png", version: 1 },
+        },
+      ],
+    });
+
+    const raw = await request(app, `http://stash.test/v1/stashes/${stash}/raw/hero.png`, {
+      headers: bearer("test-admin"),
+    });
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get("Content-Type")).toBe("image/png");
+    expect(new Uint8Array(await raw.arrayBuffer())).toEqual(hero);
   });
 
   it("uses the write limiter for commit creation", async () => {

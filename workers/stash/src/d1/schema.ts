@@ -67,6 +67,8 @@ export interface VersionRow {
   application_etag: string | null;
   content_storage: "legacy" | "bytes";
   commit_id: string;
+  copied_from_path: string | null;
+  copied_from_version: number | null;
 }
 
 export interface CommitRow {
@@ -123,6 +125,7 @@ export interface ChangeSetEntryRow {
   rollback_to: number | null;
   copied_from_path: string | null;
   copied_from_version: number | null;
+  application_etag: string | null;
 }
 
 export type UploadSessionState =
@@ -295,6 +298,8 @@ export const TABLE_COLUMNS = {
     "application_etag",
     "content_storage",
     "commit_id",
+    "copied_from_path",
+    "copied_from_version",
   ],
   change_set_entries: [
     "change_set_id",
@@ -310,6 +315,7 @@ export const TABLE_COLUMNS = {
     "rollback_to",
     "copied_from_path",
     "copied_from_version",
+    "application_etag",
   ],
   change_sets: [
     "id",

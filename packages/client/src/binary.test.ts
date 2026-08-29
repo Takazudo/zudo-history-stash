@@ -12,6 +12,7 @@ function capabilities(
     contentAccess: ["inline", "raw", "deleted"],
     transferModes: ["json", "single", "multipart"],
     storageTiers: ["d1", "r2"],
+    commitEntryKinds: ["put", "copy", "delete", "rollback"],
     limits: {
       jsonInlineMaxBytes: 3,
       d1InlineMaxBytes: 8,

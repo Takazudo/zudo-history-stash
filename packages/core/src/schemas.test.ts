@@ -272,6 +272,34 @@ describe("commit and change-set request schemas", () => {
       CreateCommitBody.safeParse({ entries: [{ ...put, expectedVersion: 1.5 }] }).success,
     ).toBe(false);
   });
+  it.each(["AB==", "AA=", "AA==\n", "_A=="])(
+    "rejects non-canonical binary input %j",
+    (bytesBase64) => {
+      const binary = {
+        op: "put" as const,
+        path: "bin/a",
+        expectedVersion: null,
+        representation: "binary" as const,
+        contentType: "application/octet-stream",
+        bytesBase64,
+      };
+      expect(CreateCommitBody.safeParse({ entries: [binary] }).success).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [
+            {
+              op: binary.op,
+              path: binary.path,
+              baseVersion: null,
+              representation: binary.representation,
+              contentType: binary.contentType,
+              bytesBase64: binary.bytesBase64,
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    },
+  );
   it("enforces entry count, unique paths, copy isolation, and platform metadata", () => {
     expect(CreateCommitBody.safeParse({ entries: [] }).success).toBe(false);
     expect(
