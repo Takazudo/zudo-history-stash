@@ -20,6 +20,7 @@ async function put(
 ): Promise<{
   commitId: string;
   version: number;
+  changeId: number;
 }> {
   const response = await api(`/files/${path}`, {
     method: "PUT",
@@ -30,13 +31,33 @@ async function put(
   return response.json();
 }
 
-async function deleteFile(path: string, expectedVersion: number): Promise<{ commitId: string }> {
+async function deleteFile(
+  path: string,
+  expectedVersion: number,
+): Promise<{ commitId: string; version: number; changeId: number }> {
   const response = await api(`/delete/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ expectedVersion }),
   });
   expect(response.status).toBe(200);
+  return response.json();
+}
+
+async function createCommit(entries: Array<{ path: string; body: string }>): Promise<{
+  id: string;
+  firstChangeId: number;
+  lastChangeId: number;
+  entries: Array<{ changeId: number }>;
+}> {
+  const response = await api("/commits", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      entries: entries.map(({ path, body }) => ({ op: "put", path, expectedVersion: null, body })),
+    }),
+  });
+  expect(response.status).toBe(201);
   return response.json();
 }
 
@@ -54,8 +75,12 @@ async function rollback(
   return response.json();
 }
 
+async function snapshotAt(at: string, query = ""): Promise<Response> {
+  return api(`/snapshot?at=${encodeURIComponent(at)}${query}`);
+}
+
 async function snapshot(commitId: string, query = ""): Promise<Response> {
-  return api(`/snapshot?at=${encodeURIComponent(`commit:${commitId}`)}${query}`);
+  return snapshotAt(`commit:${commitId}`, query);
 }
 
 beforeEach(async () => {
@@ -89,6 +114,14 @@ describe("snapshot route reads", () => {
     await expect(thirdWithDeleted.json()).resolves.toMatchObject({
       files: [{ path: "docs/readme.txt", headVersion: 3, deleted: true, hash: null }],
     });
+    const thirdWithDeletedAtChange = await snapshotAt(
+      `change:${third.changeId}`,
+      "&includeDeleted=true",
+    );
+    await expect(thirdWithDeletedAtChange.json()).resolves.toMatchObject({
+      at: { commitId: third.commitId, changeId: third.changeId },
+      files: [{ path: "docs/readme.txt", headVersion: 3, deleted: true, hash: null }],
+    });
 
     const fourthSnapshot = await snapshot(fourth.commitId);
     await expect(fourthSnapshot.json()).resolves.toMatchObject({
@@ -104,6 +137,53 @@ describe("snapshot route reads", () => {
     });
   });
 
+  it("floors change cursors to the previous sealed commit boundary", async () => {
+    await put("one.txt", "one", null);
+    const second = await put("two.txt", "two", null);
+    const third = await createCommit([
+      { path: "three.txt", body: "three" },
+      { path: "four.txt", body: "four" },
+    ]);
+
+    expect(third.firstChangeId).toBe(second.changeId + 1);
+    expect(third.lastChangeId).toBeGreaterThan(third.firstChangeId);
+
+    const exact = await snapshotAt(`change:${second.changeId}`);
+    expect(exact.status).toBe(200);
+    await expect(exact.json()).resolves.toMatchObject({
+      at: { commitId: second.commitId, changeId: second.changeId },
+    });
+
+    const between = await snapshotAt(`change:${third.firstChangeId}`);
+    expect(between.status).toBe(200);
+    await expect(between.json()).resolves.toMatchObject({
+      at: { commitId: second.commitId, changeId: second.changeId },
+      files: [{ path: "one.txt" }, { path: "two.txt" }],
+    });
+
+    const aboveNewest = await snapshotAt(`change:${third.lastChangeId + 100}`);
+    expect(aboveNewest.status).toBe(200);
+    await expect(aboveNewest.json()).resolves.toMatchObject({
+      at: { commitId: third.id, changeId: third.lastChangeId },
+      files: [
+        { path: "four.txt" },
+        { path: "one.txt" },
+        { path: "three.txt" },
+        { path: "two.txt" },
+      ],
+    });
+
+    const belowFirst = await snapshotAt("change:0");
+    expect(belowFirst.status).toBe(404);
+    await expect(belowFirst.json()).resolves.toMatchObject({ error: { code: "not-found" } });
+  });
+
+  it("returns 404 for a change cursor when the stash has no sealed commits", async () => {
+    const response = await snapshotAt("change:1");
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "not-found" } });
+  });
+
   it("applies prefix, delimiter, and keyset pagination to snapshot state", async () => {
     await put("site/a.css", "a", null);
     const second = await put("site/nested/b.css", "b", null);
@@ -113,9 +193,24 @@ describe("snapshot route reads", () => {
     await expect(bounded.json()).resolves.toMatchObject({
       files: [{ path: "site/a.css" }, { path: "site/nested/b.css" }],
     });
+    const boundedAtChange = await snapshotAt(`change:${second.changeId}`, "&prefix=site%2F");
+    await expect(boundedAtChange.json()).resolves.toMatchObject({
+      at: { commitId: second.commitId, changeId: second.changeId },
+      files: [{ path: "site/a.css" }, { path: "site/nested/b.css" }],
+    });
 
     const delimited = await snapshot(second.commitId, "&prefix=site%2F&delimiter=%2F");
     await expect(delimited.json()).resolves.toMatchObject({
+      files: [{ path: "site/a.css" }],
+      commonPrefixes: ["site/nested/"],
+      nextAfter: null,
+    });
+    const delimitedAtChange = await snapshotAt(
+      `change:${second.changeId}`,
+      "&prefix=site%2F&delimiter=%2F",
+    );
+    await expect(delimitedAtChange.json()).resolves.toMatchObject({
+      at: { commitId: second.commitId, changeId: second.changeId },
       files: [{ path: "site/a.css" }],
       commonPrefixes: ["site/nested/"],
       nextAfter: null,
@@ -130,6 +225,15 @@ describe("snapshot route reads", () => {
       `&prefix=site%2F&limit=1&after=${encodeURIComponent(body.nextAfter ?? "")}`,
     );
     await expect(next.json()).resolves.toMatchObject({
+      files: [{ path: "site/nested/b.css" }],
+      nextAfter: null,
+    });
+    const nextAtChange = await snapshotAt(
+      `change:${second.changeId}`,
+      `&prefix=site%2F&limit=1&after=${encodeURIComponent(body.nextAfter ?? "")}`,
+    );
+    await expect(nextAtChange.json()).resolves.toMatchObject({
+      at: { commitId: second.commitId, changeId: second.changeId },
       files: [{ path: "site/nested/b.css" }],
       nextAfter: null,
     });

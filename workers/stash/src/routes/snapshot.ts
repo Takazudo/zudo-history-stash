@@ -1,4 +1,8 @@
-import { SnapshotQuery, StashError } from "@takazudo/zudo-history-stash-core";
+import {
+  SnapshotQuery,
+  StashError,
+  parseSnapshotSelector,
+} from "@takazudo/zudo-history-stash-core";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import type { AppEnv } from "../context.js";
@@ -13,12 +17,17 @@ snapshot.get(
   }),
   async (c) => {
     const query = c.req.valid("query");
-    const commitId = query.at.slice("commit:".length);
-    const result = await createStashStore(c.env).reads.getSnapshot(
-      c.get("routeStash").name,
-      commitId,
-      query,
-    );
+    const selector = parseSnapshotSelector(query.at);
+    if (selector === null) throw new StashError("validation", "Invalid snapshot query.");
+    const stash = c.get("routeStash").name;
+    const reads = createStashStore(c.env).reads;
+    const commitId =
+      selector.kind === "commit"
+        ? selector.commitId
+        : await reads.resolveCommitAtChange(stash, selector.changeId);
+    if (commitId === null)
+      throw new StashError("not-found", "The requested resource was not found.");
+    const result = await reads.getSnapshot(stash, commitId, query);
     if (result === null) throw new StashError("not-found", "The requested resource was not found.");
     return c.json(result);
   },

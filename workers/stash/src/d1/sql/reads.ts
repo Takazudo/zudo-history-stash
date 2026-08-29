@@ -141,6 +141,17 @@ export const SELECT_SNAPSHOT_COMMIT = `
   LIMIT 1
 `;
 
+export const SELECT_SNAPSHOT_COMMIT_AT_CHANGE = `
+  SELECT id AS commit_id, last_change_id
+  FROM commits
+  WHERE stash_name = ?
+    AND sealed = 1
+    AND last_change_id IS NOT NULL
+    AND last_change_id <= ?
+  ORDER BY last_change_id DESC
+  LIMIT 1
+`;
+
 export const SELECT_SNAPSHOT_FILES = `
   SELECT
     f.path AS path,
