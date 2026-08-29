@@ -19,10 +19,6 @@ function largeFileBody(): string {
   return body;
 }
 
-function errorFrom(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
-}
-
 async function waitUntilAfter(expiresAt: string): Promise<void> {
   const expiresAtMs = Date.parse(expiresAt);
   if (!Number.isFinite(expiresAtMs)) throw new Error(`Invalid expiry timestamp: ${expiresAt}`);
