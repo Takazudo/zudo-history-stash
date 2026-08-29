@@ -298,6 +298,137 @@ describe("fake snapshot cursors and commit diff ranges", () => {
   });
 });
 
+describe("fake expected-last-change fences", () => {
+  const put = async (fake: ReturnType<typeof createFakeStash>, path: string, body = path) => {
+    const response = await request(fake, `/v1/stashes/demo/files/${path}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body, expectedVersion: null }),
+    });
+    expect(response.status).toBe(201);
+    return (await response.json()) as { changeId: number };
+  };
+
+  const createCommit = async (
+    fake: ReturnType<typeof createFakeStash>,
+    input: Record<string, unknown>,
+  ) => {
+    const path = typeof input.path === "string" ? input.path : "site/candidate.txt";
+    const { path: _path, ...fence } = input;
+    return request(fake, "/v1/stashes/demo/commits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entries: [{ op: "put", path, expectedVersion: null, body: "candidate" }],
+        ...fence,
+      }),
+    });
+  };
+
+  it("scopes commit fences by prefix while preserving whole-stash future strictness", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const site = await put(fake, "site/base.txt");
+    await put(fake, "docs/base.txt");
+
+    const scoped = await createCommit(fake, {
+      expectedLastChangeId: site.changeId,
+      expectedLastChangePrefix: "site",
+    });
+    expect(scoped.status).toBe(201);
+
+    const prefixStale = await createCommit(fake, {
+      path: "site/candidate-stale.txt",
+      expectedLastChangeId: site.changeId,
+      expectedLastChangePrefix: "site/",
+    });
+    expect(prefixStale.status).toBe(409);
+    expect(await errorCode(prefixStale)).toBe("stale");
+
+    const wholeFuture = await createCommit(fake, { path: "whole.txt", expectedLastChangeId: 100 });
+    expect(wholeFuture.status).toBe(409);
+    expect(await errorCode(wholeFuture)).toBe("stale");
+
+    const prefixFuture = await createCommit(fake, {
+      path: "site/future.txt",
+      expectedLastChangeId: 100,
+      expectedLastChangePrefix: "site",
+    });
+    expect(prefixFuture.status).toBe(201);
+
+    const prefixWithoutId = await createCommit(fake, {
+      path: "site/no-id.txt",
+      expectedLastChangePrefix: "site",
+    });
+    expect(prefixWithoutId.status).toBe(400);
+    expect(await errorCode(prefixWithoutId)).toBe("validation");
+
+    const invalidPrefix = await createCommit(fake, {
+      path: "site/invalid.txt",
+      expectedLastChangeId: 0,
+      expectedLastChangePrefix: "site//bad",
+    });
+    expect(invalidPrefix.status).toBe(400);
+    expect(await errorCode(invalidPrefix)).toBe("invalid-path");
+  });
+
+  it("stores a change-set prefix and re-evaluates it at approval", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const site = await put(fake, "site/base.txt");
+    await put(fake, "docs/base.txt");
+    const created = await request(fake, "/v1/stashes/demo/change-sets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entries: [{ op: "put", path: "site/review.txt", baseVersion: null, body: "review" }],
+        expectedLastChangeId: site.changeId,
+        expectedLastChangePrefix: "site/",
+      }),
+    });
+    expect(created.status).toBe(201);
+    const row = [...fake.state.changeSets.values()][0];
+    expect(row?.expectedLastChangePrefix).toBe("site/");
+
+    await put(fake, "docs/after.txt");
+    const createdBody = (await created.json()) as { id: string };
+    const approved = await request(fake, `/v1/stashes/demo/change-sets/${createdBody.id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(approved.status).toBe(200);
+
+    const staleFake = createFakeStash({ adminToken: ADMIN });
+    staleFake.createStash("demo");
+    const staleSite = await put(staleFake, "site/base.txt");
+    const staleCreated = await request(staleFake, "/v1/stashes/demo/change-sets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entries: [{ op: "put", path: "site/review.txt", baseVersion: null, body: "review" }],
+        expectedLastChangeId: staleSite.changeId,
+        expectedLastChangePrefix: "site",
+      }),
+    });
+    expect(staleCreated.status).toBe(201);
+    await put(staleFake, "site/after.txt");
+    const staleBody = (await staleCreated.json()) as { id: string };
+    const refused = await request(
+      staleFake,
+      `/v1/stashes/demo/change-sets/${staleBody.id}/approve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    expect(refused.status).toBe(409);
+    expect(await errorCode(refused)).toBe("commit-conflict");
+    expect([...staleFake.state.changeSets.values()][0]?.status).toBe("open");
+  });
+});
+
 describe("fake live events", () => {
   it("authenticates the route and emits replay followed by its authoritative ready checkpoint", async () => {
     const now = Date.parse("2026-08-28T01:02:03.000Z");
