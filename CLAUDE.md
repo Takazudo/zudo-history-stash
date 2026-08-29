@@ -2,6 +2,10 @@
 
 This repository is a Cloudflare-based, versioned text store with rollback, on-demand diff, and a standalone viewer. The authoritative architecture and testing contract is the [epic architecture contract](https://github.com/Takazudo/zudo-history-stash/issues/2#architecture-contract-shared-by-every-sub-issue).
 
+## Development status
+
+This project is pre-release work in progress with no users, no consumers, and no production data that must be preserved. Breaking changes are acceptable and expected: the HTTP contract, SDK API, viewer URL scheme, D1 schema, and stored data may be redesigned, migrated destructively, or reset when that is the clearest path. Do not design for backward compatibility, do not add compatibility facades, deprecation shims, or migration paths for existing rows, and do not wait for operator-acceptance gates whose only purpose is protecting existing data or mixed-version compatibility. Continue to protect credentials and account boundaries. This section is removed when the project is explicitly declared released.
+
 ## Tech stack
 
 | Dependency                        | Why it is here                                                                                |
