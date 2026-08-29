@@ -638,6 +638,7 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       created_at: createdAt,
     };
 
+    let results: D1Result<unknown>[] | null = null;
     try {
       let statements = commitBatch(db, {
         row,
@@ -647,19 +648,19 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
           : { expectedLastChangeId: value.expectedLastChangeId }),
       });
       statements = deps.alterCommitStatementsForTest?.(statements) ?? statements;
-      const results = await db.batch(statements);
-      if (results.at(-1)?.meta.changes === 1) {
-        const persisted = await db
-          .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
-          .bind(stash, commitId)
-          .first<CommitRow>();
-        const result = persisted ? await resultFromCommit(db, persisted, value.entries) : null;
-        if (!result) return failure("internal", 500, "Missing committed changes");
-        await options.onCommitted?.(result);
-        return { ok: true, value: result, statusCode: 201 };
-      }
+      results = await db.batch(statements);
     } catch {
       // UNIQUE idempotency races and CHECK rollbacks are classified by the same durable re-read.
+    }
+    if (results?.at(-1)?.meta.changes === 1) {
+      const persisted = await db
+        .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
+        .bind(stash, commitId)
+        .first<CommitRow>();
+      const result = persisted ? await resultFromCommit(db, persisted, value.entries) : null;
+      if (!result) return failure("internal", 500, "Missing committed changes");
+      await options.onCommitted?.(result);
+      return { ok: true, value: result, statusCode: 201 };
     }
 
     if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");

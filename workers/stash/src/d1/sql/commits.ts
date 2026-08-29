@@ -404,6 +404,12 @@ function commitSealStatement(db: Preparer, input: CommitBatchInput): D1PreparedS
                WHERE f.path IS NULL
                  OR f.head_version <> json_extract(expected.value, '$.version')
                  OR f.deleted <> json_extract(expected.value, '$.deleted')
+                 OR f.head_hash IS NOT (
+                   SELECT committed.blob_hash FROM versions AS committed
+                   WHERE committed.stash_name = commits.stash_name
+                     AND committed.path = json_extract(expected.value, '$.path')
+                     AND committed.version = json_extract(expected.value, '$.version')
+                 )
              )
            THEN (SELECT COUNT(*) FROM versions WHERE commit_id = commits.id)
            ELSE -1 END,

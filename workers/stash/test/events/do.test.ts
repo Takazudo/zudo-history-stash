@@ -124,13 +124,18 @@ describe("StashEvents Durable Object", () => {
         origin: null,
         createdAt: "2026-08-28T00:00:00.000Z",
       };
+      const secondChange: StashEvent = {
+        ...change,
+        changeId: 51,
+        path: "two.txt",
+      };
       const commit: StashEvent = {
         type: "commit",
         commitId: "cmt_batch",
         stash: "docs",
-        entryCount: 1,
+        entryCount: 2,
         firstChangeId: 50,
-        lastChangeId: 50,
+        lastChangeId: 51,
         origin: null,
       };
       try {
@@ -138,13 +143,18 @@ describe("StashEvents Durable Object", () => {
           request(STASH_EVENTS_PUBLISH_PATH, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify([change, commit]),
+            body: JSON.stringify([change, secondChange, commit]),
           }),
         );
         expect(response.status).toBe(204);
         expect(await readText(reader)).toEqual({ text: eventFrame(change), done: false });
+        expect(await readText(reader)).toEqual({ text: eventFrame(secondChange), done: false });
         expect(await readText(reader)).toEqual({ text: eventFrame(commit), done: false });
         expect(eventFrame(change)).toContain("id: 50\n");
+        expect(eventFrame(secondChange)).toContain("id: 51\n");
+        expect([change, secondChange].every((event) => event.commitId === commit.commitId)).toBe(
+          true,
+        );
         expect(eventFrame(commit)).not.toContain("id:");
       } finally {
         await cancelReader(reader);

@@ -122,7 +122,7 @@ async function publish(bindings: Env, stash: string, event: StashEvent): Promise
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event),
+      body: JSON.stringify([event]),
     },
   );
   expect(response.status).toBe(204);
