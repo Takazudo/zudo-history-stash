@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
 import { blobKey } from "../src/d1/blobs.js";
 import type { Env } from "../src/env.js";
+import { decodeGcCursor } from "../src/gc.js";
 import { resetDatabase, seedStash } from "./helpers/app.js";
 import { createTestEnv } from "./helpers/env.js";
 
@@ -29,6 +30,24 @@ async function seedLedger(count: number): Promise<void> {
         .bind(STASH, `ledger-${index}`, index),
     ),
   );
+}
+
+async function seedContent(count: number): Promise<void> {
+  const db = env.DB;
+  await db.batch(
+    Array.from({ length: count }, (_, index) =>
+      db
+        .prepare(
+          `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
+           VALUES (?, ?, ?, NULL, 1, 0)`,
+        )
+        .bind(STASH, `sha256-${String(index).padStart(64, "0")}`, String(index)),
+    ),
+  );
+}
+
+function orphanKey(index: number): string {
+  return blobKey(STASH, HASH, `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`);
 }
 
 function staleBucket(bucket: R2Bucket): R2Bucket {
@@ -58,10 +77,7 @@ function staleBucket(bucket: R2Bucket): R2Bucket {
 
 async function seedOrphans(count: number): Promise<void> {
   for (let index = 0; index < count; index += 1) {
-    await env.BLOBS.put(
-      blobKey(STASH, HASH, `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`),
-      String(index),
-    );
+    await env.BLOBS.put(orphanKey(index), String(index));
   }
 }
 
@@ -86,9 +102,10 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("scheduled GC orchestration", () => {
-  it("attempts both kinds fairly, caps R2 pages at 24, and stops at the shared 45-op budget", async () => {
+  it("runs all kinds fairly, caps R2 pages at 24, and stops at the shared 45-op budget", async () => {
     await seedOrphans(50);
     await seedLedger(500);
+    await seedContent(5);
     const bindings = createTestEnv().env;
     bindings.BLOBS = staleBucket(bindings.BLOBS);
 
@@ -106,36 +123,52 @@ describe("scheduled GC orchestration", () => {
       finished_at: number | null;
     }>();
     expect(runs.results).toHaveLength(3);
-    expect(
-      runs.results.map(({ job_kind, scanned, eligible, deleted }) => ({
-        job_kind,
-        scanned,
-        eligible,
-        deleted,
-      })),
-    ).toEqual([
-      { job_kind: "r2-orphans", scanned: 24, eligible: 24, deleted: 24 },
-      { job_kind: "ledger", scanned: 80, eligible: 80, deleted: 80 },
-      { job_kind: "r2-orphans", scanned: 1, eligible: 1, deleted: 1 },
+    expect(runs.results.map(({ job_kind }) => job_kind).sort()).toEqual([
+      "content",
+      "ledger",
+      "r2-orphans",
     ]);
     expect(runs.results.every(({ finished_at }) => finished_at === NOW)).toBe(true);
-    expect(runs.results[0]?.next_cursor).not.toBeNull();
-    expect(runs.results[1]?.next_cursor).not.toBeNull();
-    expect(runs.results[2]?.next_cursor).not.toBeNull();
+    expect(runs.results.every(({ next_cursor }) => next_cursor !== null)).toBe(true);
+
+    const runsByKind = new Map(runs.results.map((run) => [run.job_kind, run]));
+    expect(runsByKind.get("r2-orphans")).toMatchObject({
+      scanned: 24,
+      eligible: 24,
+      deleted: 24,
+    });
+    expect(runsByKind.get("ledger")).toMatchObject({
+      scanned: 80,
+      eligible: 80,
+      deleted: 80,
+    });
+    expect(runsByKind.get("content")).toMatchObject({
+      scanned: 5,
+      eligible: 5,
+      deleted: 5,
+    });
 
     const jobs = await env.DB.prepare("SELECT kind, next_cursor FROM gc_jobs ORDER BY kind").all<{
       kind: string;
       next_cursor: string | null;
     }>();
     expect(jobs.results).toEqual([
+      { kind: "content", next_cursor: expect.any(String) },
       { kind: "ledger", next_cursor: expect.any(String) },
       { kind: "r2-orphans", next_cursor: expect.any(String) },
     ]);
+    expect(decodeGcCursor("content", jobs.results[0]!.next_cursor!)).toEqual({
+      v: 1,
+      kind: "content",
+      table: "byte_blobs",
+      after: null,
+    });
   });
 
   it("continues persisted cursors on the next invocation without skipping objects or ledger rows", async () => {
     await seedOrphans(50);
     await seedLedger(500);
+    await seedContent(5);
     const bindings = createTestEnv().env;
     bindings.BLOBS = staleBucket(bindings.BLOBS);
 
@@ -143,22 +176,47 @@ describe("scheduled GC orchestration", () => {
     await invokeScheduled(bindings);
 
     const remainingObjects = await bindings.BLOBS.list({ limit: 100 });
-    expect(remainingObjects.objects).toHaveLength(0);
+    expect(remainingObjects.objects.map(({ key }) => key).sort()).toEqual(
+      [orphanKey(48), orphanKey(49)].sort(),
+    );
     await expect(
       env.DB.prepare("SELECT COUNT(*) AS count FROM idempotency").first(),
     ).resolves.toEqual({ count: 340 });
     await expect(
       env.DB.prepare("SELECT next_cursor FROM gc_jobs WHERE kind = 'r2-orphans'").first(),
+    ).resolves.toEqual({ next_cursor: expect.any(String) });
+    await expect(
+      env.DB.prepare("SELECT next_cursor FROM gc_jobs WHERE kind = 'content'").first(),
     ).resolves.toEqual({ next_cursor: null });
     const r2Runs = await env.DB.prepare(
-      "SELECT scanned, deleted FROM gc_runs WHERE job_kind = 'r2-orphans' ORDER BY rowid",
-    ).all<{ scanned: number; deleted: number }>();
-    expect(r2Runs.results).toEqual([
-      { scanned: 24, deleted: 24 },
-      { scanned: 1, deleted: 1 },
-      { scanned: 24, deleted: 24 },
-      { scanned: 1, deleted: 1 },
-    ]);
+      `SELECT input_cursor, next_cursor, scanned, deleted
+         FROM gc_runs WHERE job_kind = 'r2-orphans' ORDER BY rowid`,
+    ).all<{
+      input_cursor: string | null;
+      next_cursor: string | null;
+      scanned: number;
+      deleted: number;
+    }>();
+    expect(r2Runs.results).toHaveLength(2);
+    const firstR2Run = r2Runs.results[0]!;
+    const secondR2Run = r2Runs.results[1]!;
+    expect(firstR2Run).toMatchObject({
+      input_cursor: null,
+      scanned: 24,
+      deleted: 24,
+    });
+    expect(firstR2Run.next_cursor).not.toBeNull();
+    expect(secondR2Run).toMatchObject({
+      input_cursor: firstR2Run.next_cursor,
+      scanned: 24,
+      deleted: 24,
+    });
+    expect(secondR2Run.next_cursor).not.toBeNull();
+    expect(secondR2Run.next_cursor).not.toBe(firstR2Run.next_cursor);
+    expect(
+      r2Runs.results.reduce((total, { deleted }) => total + deleted, 0) +
+        remainingObjects.objects.length,
+    ).toBe(50);
   });
 
   it("surfaces scheduled setup errors through waitUntil", async () => {

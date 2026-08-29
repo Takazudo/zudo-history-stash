@@ -10,9 +10,10 @@ import type { Env } from "./env.js";
 export const GC_SCHEDULED_MAX_OBJECTS = 80;
 export const GC_SCHEDULED_MAX_PAGES_PER_KIND = 10;
 
-const GC_KINDS: readonly GcKind[] = ["r2-orphans", "ledger"];
+const GC_KINDS: readonly GcKind[] = ["r2-orphans", "ledger", "content"];
 
 function minimumPageOperations(kind: GcKind): number {
+  // Content charges acquire + startRun + contentPage + heartbeat + delete-batch + finish = 6, exactly the ledger cost.
   return kind === "r2-orphans" ? 8 : 6;
 }
 
