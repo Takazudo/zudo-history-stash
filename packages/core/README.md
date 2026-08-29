@@ -3,9 +3,10 @@
 Runtime-agnostic types, schemas, validators, hashes, limits, and diff helpers shared by the
 zudo-history-stash packages.
 
-```bash
-pnpm add @takazudo/zudo-history-stash-core
-```
+This package is not published to npm yet. Clone the repository and build the workspace packages
+from the workspace root with `pnpm install` followed by `pnpm build:libs`. Then depend on the
+workspace package at `packages/core`, or run `pnpm pack` in that directory and install the
+generated tarball.
 
 See the [repository documentation](https://github.com/Takazudo/zudo-history-stash/tree/main/docs)
 for the API reference and architecture guides.

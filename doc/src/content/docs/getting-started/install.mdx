@@ -5,10 +5,20 @@ sidebar_position: 2
 category: getting-started
 ---
 
-Add the isomorphic client package with `pnpm add @takazudo/zudo-history-stash`. Import only from the
-package root; its public client and types work in Node.js, browser bundles, and Cloudflare Workers.
-See [versions](../reference/versions.mdx) for the repository's current Node.js, pnpm, and package
-requirements.
+The client package is not published to npm yet. Clone this repository and build the workspace
+packages from the workspace root:
+
+```bash
+pnpm install
+pnpm build:libs
+```
+
+Then depend on the workspace package at `packages/client`. To use the client outside the workspace,
+run `pnpm pack` in `packages/client` and install the generated tarball.
+
+Import only from the package root; its public client and types work in Node.js, browser bundles,
+and Cloudflare Workers. See [versions](../reference/versions.mdx) for the repository's current
+Node.js, pnpm, and package requirements.
 
 Runtime support does not make every credential safe in every runtime. Keep the administrator token
 and stash-scoped write tokens in a trusted server or Worker secret. A browser-direct client should
