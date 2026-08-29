@@ -15,6 +15,7 @@ import importRoutes from "./import.js";
 import lifecycle from "./lifecycle.js";
 import meta from "./meta.js";
 import rawContent from "./raw-content.js";
+import snapshot from "./snapshot.js";
 import uploads from "./uploads.js";
 
 function middlewarePath(route: (typeof ROUTES)[number]): string {
@@ -41,6 +42,7 @@ routes.route("/", importRoutes);
 routes.route("/", lifecycle);
 routes.route("/", events);
 routes.route("/", rawContent);
+routes.route("/", snapshot);
 routes.route("/", uploads);
 routes.all("/v1/*", (c) => {
   void c.env.CHANGE_SET_TTL_DAYS;
