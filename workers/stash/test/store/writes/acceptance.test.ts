@@ -27,7 +27,9 @@ describe("stash writes", () => {
     const commits = await env.DB.prepare(
       `SELECT id, source, entry_count, change_count, sealed, first_change_id, last_change_id
        FROM commits WHERE stash_name = ? ORDER BY first_change_id`,
-    ).bind(stash).all();
+    )
+      .bind(stash)
+      .all();
     expect(commits.results).toEqual([
       {
         id: put.value.commitId,

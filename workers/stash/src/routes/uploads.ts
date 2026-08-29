@@ -972,8 +972,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
   }
   const committed = await finalizeUpload(c.env.DB, {
     commitId: mintCommitId(finalizationNow, c.get("deps").createId),
-    createdBy:
-      row.principal_kind === "admin" ? "admin" : (row.principal_id ?? "unknown-principal"),
+    createdBy: row.principal_kind === "admin" ? "admin" : (row.principal_id ?? "unknown-principal"),
     session: row,
     lease: leaseState.current,
     createdAt: finalizationNow,
