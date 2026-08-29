@@ -40,6 +40,27 @@ self-skip green while either secret is absent. Fork PRs skip before any secret-b
 Optional `STASH_SMOKE_BASE_URL` and `VIEWER_SMOKE_BASE_URL` variables enable the existing
 post-deploy production smoke URLs; they are not PR-preview prerequisites.
 
+## Deploy-workflow gating audit
+
+`PRODUCTION_DEPLOY_DISABLED` is a repository variable, set with `gh variable set`, not a secret.
+Because the production deploy workflows run from the default branch (`main`), it protects nothing
+until `scripts/deploy-gate.sh` is merged to `main`. The
+[disposable-account verification runbook](disposable-account-verification.md) uses this variable
+during throwaway-account verification.
+
+| Workflow               | Gate mechanism                             | Custom domain?                    | `PRODUCTION_DEPLOY_DISABLED`? |
+| ---------------------- | ------------------------------------------ | --------------------------------- | ----------------------------- |
+| `deploy-stash.yml`     | `scripts/deploy-gate.sh`                   | Yes (`custom_domain = true`)      | Yes                           |
+| `deploy-viewer.yml`    | `scripts/deploy-gate.sh`                   | Yes (`custom_domain = true`)      | Yes                           |
+| `doc-deploy.yml`       | `scripts/deploy-gate.sh`                   | Yes (`custom_domain = true`)      | Yes                           |
+| `preview.yml`          | `scripts/preview-gate.sh`                  | No (route-free config)            | No                            |
+| `preview-teardown.yml` | `scripts/preview-gate.sh`                  | No (route-free resources)         | No                            |
+| `preview-reaper.yml`   | `scripts/preview-gate.sh`                  | No (route-free resources)         | No                            |
+| `doc-preview.yml`      | `wrangler versions upload --preview-alias` | No (version upload has no route)  | No                            |
+
+PR previews deliberately remain outside this switch because they are what the operator is
+verifying.
+
 ## Documentation site
 
 The production documentation Worker is `zudo-history-stash-docs`. The committed
