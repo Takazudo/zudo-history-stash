@@ -23,13 +23,22 @@ entry のパスは重複できません。`copy` の参照元は同じ stash に
 `409 stale` です。競合していない entry だけを適用することはありません。関係する head をすべて再取得し、
 意図を確認して新しい commit を組み立ててください。自動 merge や rebase は行われません。
 
+`expectedLastChangePrefix` を指定すると、`expectedLastChangeId` の対象を一つの prefix 配下のパスに
+限定できます。この指定には `expectedLastChangeId` が必須であり、単独で送ると `400 validation` です。
+prefix fence は commit 作成と change set 作成に適用されます。change set は作成時に fence を保存し、承認時に
+もう一度評価します。stash 全体の fence は等値判定なので、最新 change より先の cursor も stale です。一方、
+prefix fence が問うのは、その prefix 配下により新しい change がないことだけなので、現在より先を指す cursor
+でも通過します。prefix は子孫パスの範囲として照合されます。`site` と `site/` は同等ですが、
+`site2/index.html` は `site` 配下ではありません。
+
 ### `POST /v1/stashes/{stash}/commits`
 
 **Contract:** operation `createCommit`; principal `write`; transport `any`.
 
 一つのアトミックな commit を作成します。`entries` は必須で、`author`、`message`、JSON の `meta`、
-`expectedLastChangeId` は任意です。entry の decode 後の合計 content は、JSON request size とは独立して
-5,000,000 byte が上限です。
+`expectedLastChangeId`、`expectedLastChangePrefix` は任意です。後者の field を指定できるのは、
+`expectedLastChangeId` も指定した場合だけです。entry の decode 後の合計 content は、JSON request size とは
+独立して 5,000,000 byte が上限です。
 
 ```json
 {
@@ -81,10 +90,16 @@ entry のパスは重複できません。`copy` の参照元は同じ stash に
 **Contract:** operation `getCommitDiff`; principal `read`; transport `any`.
 
 commit の before-to-after diff を上限付きで返します。`context` は負でない context line 数、`path` は完全一致の
-entry 一つを選びます。`path` がない場合に展開するのは最大 `COMMIT_DIFF_INLINE_ENTRIES` 件で、response の
-`truncated` が省略の有無を示します。各結果は `from` と `to` の version/hash を持ちます。text は `ready`、
-`same`、`oversized` のいずれかです。binary など diff 対象外の content は、text を捏造せず明示的な metadata
-state を返します。
+entry 一つを選びます。任意の `from=commit:{id}` を指定すると、その commit を排他的な下限とする range diff
+になります。結果は変更されたパスごとに一つの entry を持ちます。`to` は範囲内の最新 version、`from` は範囲
+直前の version で、範囲内で作成されたパスでは `null` です。任意の `prefix` filter は `path` と組み合わせて
+使用できます。
+
+対象より新しい `from` commit は `400 validation`、不明な `from` commit は `404 not-found` です。対象と同じ
+`from` commit なら entry は返りません。response は引き続き `CommitDiffResult` であり、overflow を示すのは
+`truncated` だけで、pagination はありません。`path` がない場合に展開するのは最大
+`COMMIT_DIFF_INLINE_ENTRIES` 件です。text は `ready`、`same`、`oversized` のいずれかです。binary など diff
+対象外の content は、text を捏造せず明示的な metadata state を返します。
 
 ### `POST /v1/stashes/{stash}/commits/{id}/revert`
 
@@ -103,7 +118,9 @@ body の `author`、`message`、`meta` は任意です。成功時は `201 Commi
 
 **Contract:** operation `getSnapshot`; principal `read`; transport `any`.
 
-commit 境界時点のファイル状態を一覧表示します。必須 selector は `at=commit:{id}` です。任意の `prefix`、
-`delimiter`、`includeDeleted`、`limit`、不透明な `after` は
+commit 境界時点のファイル状態を一覧表示します。必須の `at` selector には `commit:{id}` または
+`change:{n}` を指定できます。`change:` cursor は、その値以下の `last_change_id` を持つ seal 済み commit の
+うち、最新のものへ切り下げて解決され、response の `at` は解決後の境界を示します。その値以下に境界が
+存在しなければ `404 not-found` です。任意の `prefix`、`delimiter`、`includeDeleted`、`limit`、不透明な `after` は
 [ファイル、履歴、差分](./files-history-and-diffs.mdx#prefix-listing-and-commit-snapshots)で説明します。
 snapshot は不変履歴から導出する読み取りであり、保存済み tree、branch、可動 reference ではありません。
