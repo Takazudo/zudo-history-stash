@@ -791,6 +791,10 @@ describe("workflow contracts", () => {
       /workflow_dispatch:[\s\S]*?pr:[\s\S]*?required: true[\s\S]*?type: number/u,
     );
     assert.match(teardown, /contents: read\n\s+pull-requests: write/u);
+    assert.match(
+      teardown,
+      /- name: Setup Node\.js\n\s+uses: actions\/setup-node@[a-f0-9]{40}[^\n]*\n\s+with:\n\s+node-version: 22\.13\.0\n\s+package-manager-cache: false\n\n\s+- name: Require an exact closed pull request/u,
+    );
     assert.equal((teardown.match(/persist-credentials: false/gu) ?? []).length, 2);
     assert.equal(
       (
@@ -824,6 +828,10 @@ describe("workflow contracts", () => {
     assert.match(reaper, /schedule:\n\s+- cron: "17 3 \* \* 0"/u);
     assert.match(reaper, /workflow_dispatch:/u);
     assert.match(reaper, /contents: read\n\s+pull-requests: read/u);
+    assert.match(
+      reaper,
+      /- name: Setup Node\.js\n\s+uses: actions\/setup-node@[a-f0-9]{40}[^\n]*\n\s+with:\n\s+node-version: 22\.13\.0\n\s+package-manager-cache: false\n\n\s+- name: Recheck pull request after acquiring the preview lock/u,
+    );
     assert.equal(reaper.includes("preview-comment.mjs"), false);
     assert.equal((reaper.match(/persist-credentials: false/gu) ?? []).length, 3);
     assert.equal(
