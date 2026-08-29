@@ -63,6 +63,8 @@ export interface CommitGateInput {
   row: CommitInsertRow;
   entries: CommitGateEntry[];
   expectedLastChangeId?: number;
+  expectedLastChangePrefixLo?: string;
+  expectedLastChangePrefixHi?: string;
 }
 
 /**
@@ -79,9 +81,20 @@ export function commitGateStatement(db: Preparer, input: CommitGateInput): D1Pre
          reverts_commit_id, idempotency_key, request_hash, created_by, created_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
-         AND (? IS NULL OR COALESCE(
-           (SELECT MAX(id) FROM versions WHERE stash_name = ?), 0
-         ) = ?)
+         AND (
+           ? IS NULL
+           OR (
+             ? IS NULL
+             AND COALESCE((SELECT MAX(id) FROM versions WHERE stash_name = ?), 0) = ?
+           )
+           OR (
+             ? IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM versions
+               WHERE stash_name = ? AND id > ? AND path >= ? AND path < ?
+             )
+           )
+         )
          AND NOT EXISTS (
            SELECT 1
            FROM json_each(?) AS e
@@ -131,8 +144,14 @@ export function commitGateStatement(db: Preparer, input: CommitGateInput): D1Pre
       row.created_at,
       row.stash_name,
       input.expectedLastChangeId ?? null,
+      input.expectedLastChangePrefixLo ?? null,
       row.stash_name,
       input.expectedLastChangeId ?? null,
+      input.expectedLastChangePrefixLo ?? null,
+      row.stash_name,
+      input.expectedLastChangeId ?? null,
+      input.expectedLastChangePrefixLo ?? null,
+      input.expectedLastChangePrefixHi ?? null,
       JSON.stringify(input.entries),
       row.stash_name,
       row.stash_name,
@@ -183,6 +202,8 @@ export interface CommitBatchInput {
   row: CommitInsertRow;
   entries: PreparedCommitEntry[];
   expectedLastChangeId?: number;
+  expectedLastChangePrefixLo?: string;
+  expectedLastChangePrefixHi?: string;
 }
 
 function entryFence(input: CommitBatchInput): SqlFragment {
@@ -419,6 +440,12 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
       ...(input.expectedLastChangeId === undefined
         ? {}
         : { expectedLastChangeId: input.expectedLastChangeId }),
+      ...(input.expectedLastChangePrefixLo === undefined
+        ? {}
+        : {
+            expectedLastChangePrefixLo: input.expectedLastChangePrefixLo,
+            expectedLastChangePrefixHi: input.expectedLastChangePrefixHi,
+          }),
     }),
   ];
   for (const entry of input.entries) {

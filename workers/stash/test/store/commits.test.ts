@@ -394,6 +394,151 @@ describe("commit store", () => {
     expect(await tableCount("versions", stash)).toBe(1);
   });
 
+  it("allows a prefix-scoped commit after only an unrelated prefix changed", async () => {
+    const stash = "commit-prefix-unrelated";
+    await seedStash(stash);
+    const site = await seedFile(stash, "site/index.html", "one");
+    const docs = await seedFile(stash, "docs/readme.md", "later");
+    expect(docs.changeId).toBeGreaterThan(site.changeId);
+
+    const result = await store().commits.createCommit(
+      stash,
+      {
+        entries: [{ op: "put", path: "site/about.html", expectedVersion: null, body: "about" }],
+        expectedLastChangeId: site.changeId,
+        expectedLastChangePrefix: "site",
+      },
+      { principal: "test" },
+    );
+
+    expect(result).toMatchObject({ ok: true, statusCode: 201 });
+  });
+
+  it("rejects a prefix-scoped commit after that prefix changed", async () => {
+    const stash = "commit-prefix-stale";
+    await seedStash(stash);
+    const cursor = await seedFile(stash, "site/index.html", "one");
+    let newerChangeId: number | undefined;
+    const commits = createCommits(workerEnv, {
+      now: () => 10_000,
+      createId: () => `prefix-stale-${++sequence}`,
+      onBeforeCommit: async () => {
+        const newer = await seedFile(stash, "site/about.html", "later");
+        newerChangeId = newer.changeId;
+      },
+    });
+
+    const result = await commits.createCommit(
+      stash,
+      {
+        entries: [{ op: "put", path: "site/new.html", expectedVersion: null, body: "new" }],
+        expectedLastChangeId: cursor.changeId,
+        expectedLastChangePrefix: "site/",
+      },
+      { principal: "test" },
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "stale", status: 409 } });
+    if (result.ok) throw new Error("Expected stale result");
+    expect(result.error.message).toContain('for prefix "site/"');
+    expect(newerChangeId).toBeDefined();
+    expect(result.error.message).toContain(`newest change is ${newerChangeId}`);
+  });
+
+  it("rejects a future whole-stash cursor but accepts a future prefix cursor", async () => {
+    const stash = "commit-prefix-future";
+    await seedStash(stash);
+    const seeded = await seedFile(stash, "existing.txt", "one");
+    const futureCursor = seeded.changeId + 100;
+
+    const wholeStash = await store().commits.createCommit(
+      stash,
+      {
+        entries: [{ op: "put", path: "whole.txt", expectedVersion: null, body: "whole" }],
+        expectedLastChangeId: futureCursor,
+      },
+      { principal: "test" },
+    );
+    const prefixScoped = await store().commits.createCommit(
+      stash,
+      {
+        entries: [{ op: "put", path: "site/new.html", expectedVersion: null, body: "site" }],
+        expectedLastChangeId: futureCursor,
+        expectedLastChangePrefix: "site",
+      },
+      { principal: "test" },
+    );
+
+    expect(wholeStash).toMatchObject({ ok: false, error: { code: "stale", status: 409 } });
+    expect(prefixScoped).toMatchObject({ ok: true, statusCode: 201 });
+  });
+
+  it("allows a prefix-scoped commit when the prefix has no existing writes", async () => {
+    const stash = "commit-prefix-empty";
+    await seedStash(stash);
+    const unrelated = await seedFile(stash, "docs/readme.md", "docs");
+
+    const result = await store().commits.createCommit(
+      stash,
+      {
+        entries: [{ op: "put", path: "site/index.html", expectedVersion: null, body: "site" }],
+        expectedLastChangeId: unrelated.changeId,
+        expectedLastChangePrefix: "site",
+      },
+      { principal: "test" },
+    );
+
+    expect(result).toMatchObject({ ok: true, statusCode: 201 });
+  });
+
+  it("rejects an invalid expected-last-change prefix", async () => {
+    const stash = "commit-prefix-invalid";
+    await seedStash(stash);
+
+    const result = await store().commits.createCommit(
+      stash,
+      {
+        entries: [{ op: "put", path: "new.txt", expectedVersion: null, body: "new" }],
+        expectedLastChangeId: 0,
+        expectedLastChangePrefix: "..",
+      },
+      { principal: "test" },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "invalid-path", status: 400, message: "Invalid file path" },
+    });
+    expect(await tableCount("commits", stash)).toBe(0);
+  });
+
+  it("treats different expected-last-change prefixes as different idempotent requests", async () => {
+    const stash = "commit-prefix-idempotency";
+    await seedStash(stash);
+    const input = {
+      entries: [{ op: "put" as const, path: "new.txt", expectedVersion: null, body: "new" }],
+      expectedLastChangeId: 100,
+    };
+    const commits = store().commits;
+
+    const first = await commits.createCommit(
+      stash,
+      { ...input, expectedLastChangePrefix: "site" },
+      { principal: "test", idempotencyKey: "prefix-key" },
+    );
+    const reused = await commits.createCommit(
+      stash,
+      { ...input, expectedLastChangePrefix: "docs" },
+      { principal: "test", idempotencyKey: "prefix-key" },
+    );
+
+    expect(first).toMatchObject({ ok: true, statusCode: 201 });
+    expect(reused).toMatchObject({
+      ok: false,
+      error: { code: "idempotency-key-reused", status: 422 },
+    });
+  });
+
   it("classifies malformed text before schema validation", async () => {
     const stash = "commit-malformed";
     await seedStash(stash);
