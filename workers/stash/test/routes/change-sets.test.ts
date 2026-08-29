@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { StashEventSchema, type StashEvent } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { bearer, request, resetDatabase, seedStash } from "../helpers/app.js";
@@ -25,6 +26,24 @@ describe("change-set routes", () => {
   it("creates, gets, lists, diffs, and publishes the replay header", async () => {
     await seedStash(STASH);
     const worker = app();
+    const events: StashEvent[] = [];
+    const bindings = {
+      ...env,
+      STASH_EVENTS: new Proxy(env.STASH_EVENTS, {
+        get(target, property, receiver) {
+          if (property === "getByName") {
+            return () => ({
+              fetch: async (eventRequest: Request) => {
+                events.push(StashEventSchema.parse(await eventRequest.json()));
+                return new Response(null, { status: 204 });
+              },
+            });
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    };
     const input = {
       entries: [{ op: "put", path: "route.txt", baseVersion: null, body: "candidate\n" }],
       author: "route-test",
@@ -33,20 +52,31 @@ describe("change-set routes", () => {
       worker,
       `http://localhost/v1/stashes/${STASH}/change-sets`,
       json(input, { "Idempotency-Key": "route-replay" }),
-      env,
+      bindings,
     );
     expect(first.status).toBe(201);
     const created = await first.json<{ id: string }>();
+    expect(events).toEqual([
+      {
+        type: "change-set",
+        changeSetId: created.id,
+        stash: STASH,
+        status: "open",
+        paths: ["route.txt"],
+        origin: null,
+      },
+    ]);
 
     const replay = await request(
       worker,
       `http://localhost/v1/stashes/${STASH}/change-sets`,
       json(input, { "Idempotency-Key": "route-replay" }),
-      env,
+      bindings,
     );
     expect(replay.status).toBe(201);
     expect(replay.headers.get("Idempotent-Replayed")).toBe("true");
     await expect(replay.json()).resolves.toMatchObject({ id: created.id });
+    expect(events).toHaveLength(1);
 
     const listed = await request(
       worker,

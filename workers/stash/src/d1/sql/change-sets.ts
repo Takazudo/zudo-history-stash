@@ -48,9 +48,9 @@ export function selectChangeSets(db: Preparer, input: ListChangeSetSqlInput): D1
       `SELECT cs.* FROM change_sets cs
        JOIN stashes s ON s.name = cs.stash_name AND s.deleted_at IS NULL
        WHERE cs.stash_name = ? AND ${statusPredicate(input.status)}
-         AND (? IS NULL OR EXISTS (
-           SELECT 1 FROM change_set_entries e
-           WHERE e.change_set_id = cs.id AND e.stash_name = cs.stash_name AND e.path = ?
+         AND (? IS NULL OR cs.id IN (
+           SELECT e.change_set_id FROM change_set_entries e
+           WHERE e.stash_name = cs.stash_name AND e.path = ?
          ))
          AND (? IS NULL OR cs.created_at < ? OR (cs.created_at = ? AND cs.id < ?))
        ORDER BY cs.created_at DESC, cs.id DESC LIMIT ?`,
@@ -77,9 +77,9 @@ export function countChangeSets(
       `SELECT COUNT(*) AS total FROM change_sets cs
        JOIN stashes s ON s.name = cs.stash_name AND s.deleted_at IS NULL
        WHERE cs.stash_name = ? AND ${statusPredicate(input.status)}
-         AND (? IS NULL OR EXISTS (
-           SELECT 1 FROM change_set_entries e
-           WHERE e.change_set_id = cs.id AND e.stash_name = cs.stash_name AND e.path = ?
+         AND (? IS NULL OR cs.id IN (
+           SELECT e.change_set_id FROM change_set_entries e
+           WHERE e.stash_name = cs.stash_name AND e.path = ?
          ))`,
     )
     .bind(

@@ -133,4 +133,47 @@ describe("change-set store", () => {
       store.changeSets.listChangeSets(STASH, { status: "all", path: "one.txt" }),
     ).resolves.toMatchObject({ total: 1, changeSets: [{ entries: [{ path: "one.txt" }] }] });
   });
+
+  it("returns metadata outcomes for binary and copy entries", async () => {
+    await seedStash(STASH);
+    const store = createStashStore(env as Env, dependencies());
+    await store.writes.put(STASH, "source.txt", { body: "source", expectedVersion: null });
+    const created = await store.changeSets.createChangeSet(STASH, {
+      entries: [
+        {
+          op: "put",
+          path: "binary.bin",
+          baseVersion: null,
+          representation: "binary",
+          contentType: "application/octet-stream",
+          bytesBase64: "AAEC",
+        },
+        {
+          op: "copy",
+          path: "copy.txt",
+          baseVersion: null,
+          from: { path: "source.txt", version: 1 },
+        },
+      ],
+    });
+    const diff = await store.changeSets.getChangeSetDiff(STASH, created.value.id);
+    expect(diff?.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "binary.bin", diff: { state: "binary" } }),
+        expect.objectContaining({ path: "copy.txt", diff: { state: "binary" } }),
+      ]),
+    );
+  });
+
+  it("reports expected-last-change conflicts instead of persistence failures", async () => {
+    await seedStash(STASH);
+    const store = createStashStore(env as Env, dependencies());
+    await store.writes.put(STASH, "existing.txt", { body: "one", expectedVersion: null });
+    await expect(
+      store.changeSets.createChangeSet(STASH, {
+        entries: [{ op: "put", path: "new.txt", baseVersion: null, body: "candidate" }],
+        expectedLastChangeId: 0,
+      }),
+    ).rejects.toMatchObject({ code: "commit-conflict", status: 409 });
+  });
 });

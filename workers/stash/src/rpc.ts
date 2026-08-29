@@ -264,28 +264,33 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     input: CreateChangeSetBody,
     idempotencyKey?: string,
   ): Promise<Response> {
-    return this.jsonSkeleton(
-      "POST",
-      `/v1/stashes/${stash}/change-sets`,
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/change-sets`,
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
+      },
+      body: JSON.stringify(input),
       token,
-      input,
-      idempotencyKey,
-    );
+    });
   }
   async listChangeSets(
     token: string,
     stash: string,
     query: Partial<ListChangeSetsQuery> = {},
   ): Promise<Response> {
+    const options = optionalQuery(query);
     return this.request({
       method: "GET",
       path: `/v1/stashes/${stash}/change-sets`,
-      query: optionalQuery(query),
+      query: options,
       token,
     });
   }
   async getChangeSet(token: string, stash: string, id: string): Promise<Response> {
-    return this.request({ method: "GET", path: `/v1/stashes/${stash}/change-sets/${id}`, token });
+    const path = `/v1/stashes/${stash}/change-sets/${id}`;
+    return this.request({ method: "GET", path, token });
   }
   async getChangeSetDiff(
     token: string,
@@ -293,10 +298,11 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     id: string,
     query: ChangeSetDiffQuery = {},
   ): Promise<Response> {
+    const options = optionalQuery(query);
     return this.request({
       method: "GET",
       path: `/v1/stashes/${stash}/change-sets/${id}/diff`,
-      query: optionalQuery(query),
+      query: options,
       token,
     });
   }

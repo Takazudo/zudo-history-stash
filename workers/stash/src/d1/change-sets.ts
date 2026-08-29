@@ -4,10 +4,12 @@ import {
   IDEMPOTENCY_KEY_MAX_CHARS,
   LIST_LIMIT_DEFAULT,
   LIST_LIMIT_MAX,
+  MAX_COMMIT_INLINE_BYTES,
   MAX_META_BYTES,
   StashError,
   canonicalJson,
   computeDiff,
+  isWellFormedString,
   sha256Hex,
   utf8ByteLength,
   validatePath,
@@ -22,7 +24,7 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
-import { prepareBlob, readBlob, type PreparedBlob } from "./blobs.js";
+import { blobKey, prepareBlob, readBlob, type PreparedBlob } from "./blobs.js";
 import { createByteStorageReader } from "./byte-reader.js";
 import type { ChangeSetEntryRow, ChangeSetRow } from "./schema.js";
 import {
@@ -66,6 +68,7 @@ interface HeadRow extends VersionMaterialRow {
 interface StagedEntry extends ChangeSetEntryRow {
   textBody?: string;
   binaryBody?: ArrayBuffer;
+  binaryR2Key?: string;
 }
 
 export interface ChangeSetDependencies extends StoreDependencies {
@@ -92,6 +95,14 @@ export interface ChangeSetDiffOptions {
 
 function validation(message: string): never {
   throw new StashError("validation", message);
+}
+
+async function ensureLive(db: D1DatabaseSession, stash: string): Promise<void> {
+  const row = await db
+    .prepare("SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL")
+    .bind(stash)
+    .first();
+  if (row === null) throw new StashError("not-found", "Stash not found.");
 }
 
 function internal(message = "Stored change-set data is unavailable or invalid."): never {
@@ -341,7 +352,12 @@ function decodeCursor(value: string | undefined): { createdAt: number; id: strin
     const separator = decoded.indexOf(":");
     const createdAt = Number(decoded.slice(0, separator));
     const id = decoded.slice(separator + 1);
-    if (separator < 1 || !Number.isSafeInteger(createdAt) || !CHANGE_SET_ID.test(id)) {
+    if (
+      separator < 1 ||
+      !Number.isSafeInteger(createdAt) ||
+      !CHANGE_SET_ID.test(id) ||
+      Number(id.slice(4, 17)) !== createdAt
+    ) {
       return validation("Invalid change-set cursor.");
     }
     return { createdAt, id };
@@ -404,17 +420,34 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       input: CreateChangeSetInput,
       options: { idempotencyKey?: string; createdBy?: string } = {},
     ): Promise<ChangeSetCreateResult> {
+      if (input === null || typeof input !== "object" || !Array.isArray(input.entries)) {
+        validation("Invalid change-set input.");
+      }
+      let inlineBytes = 0;
+      for (const entry of input.entries) {
+        if (entry.op !== "put") continue;
+        if ("bytesBase64" in entry) {
+          inlineBytes += decodeBinary(entry.bytesBase64, entry.path).byteLength;
+        } else {
+          if (!isWellFormedString(entry.body)) {
+            throw new StashError(
+              "body-not-well-formed",
+              `Body for ${entry.path} is not well-formed Unicode.`,
+            );
+          }
+          inlineBytes += utf8ByteLength(entry.body);
+        }
+      }
+      if (inlineBytes > MAX_COMMIT_INLINE_BYTES) {
+        throw new StashError("payload-too-large", "Change-set bodies are too large.");
+      }
       const parsed = CreateChangeSetBody.safeParse(input);
       if (!parsed.success) validation("Invalid change-set input.");
       const key = validateKey(options.idempotencyKey);
       const now = deps.now();
       const requestHash = await sha256Hex(canonicalJson(input as JsonValue));
       const db = env.DB.withSession("first-primary");
-      const live = await db
-        .prepare("SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL")
-        .bind(stash)
-        .first();
-      if (live === null) throw new StashError("not-found", "Stash not found.");
+      await ensureLive(db, stash);
       if (key !== undefined) {
         const prior = await db
           .prepare(SELECT_CHANGE_SET_BY_KEY)
@@ -428,6 +461,18 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
             );
           }
           return { value: await mapRecord(db, prior, now), replayed: true };
+        }
+      }
+      if (input.expectedLastChangeId !== undefined) {
+        const latest = await db
+          .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
+          .bind(stash)
+          .first<{ id: number }>();
+        if ((latest?.id ?? 0) !== input.expectedLastChangeId) {
+          throw new StashError(
+            "commit-conflict",
+            `Expected last change ${input.expectedLastChangeId}, newest change is ${latest?.id ?? 0}.`,
+          );
         }
       }
       const explicitExpiry = input.expiresAt === undefined ? null : Date.parse(input.expiresAt);
@@ -446,6 +491,7 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       const staged = await Promise.all(
         input.entries.map((entry) => stageEntry(db, id, stash, entry)),
       );
+      const d1InlineMaxBytes = parseBinarySettings(env).d1InlineMaxBytes;
       const prepared = new Map<string, PreparedBlob>();
       for (const entry of staged) {
         if (
@@ -463,6 +509,26 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
               deps.createBlobGeneration,
             ),
           );
+        }
+        if (
+          entry.binaryBody !== undefined &&
+          entry.blob_hash !== null &&
+          entry.binaryBody.byteLength > d1InlineMaxBytes
+        ) {
+          const key = blobKey(
+            stash,
+            entry.blob_hash,
+            deps.createBlobGeneration?.() ?? crypto.randomUUID(),
+          );
+          const object = await env.BLOBS.put(key, entry.binaryBody, {
+            onlyIf: { etagDoesNotMatch: "*" },
+            httpMetadata: { contentType: entry.content_type ?? "application/octet-stream" },
+            customMetadata: { sha256: entry.blob_hash.slice("sha256-".length) },
+            sha256: entry.blob_hash.slice("sha256-".length),
+          });
+          if (object === null) return internal("Binary change-set content could not be staged.");
+          entry.binaryR2Key = key;
+          entry.binaryBody = undefined;
         }
       }
       const row: ChangeSetRow = {
@@ -485,10 +551,19 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
         commit_id: null,
       };
       const statements: D1PreparedStatement[] = [];
-      const insertedHashes = new Set<string>();
+      const insertedBlobs = new Set<string>();
       for (const entry of staged) {
-        if (entry.blob_hash === null || insertedHashes.has(entry.blob_hash)) continue;
-        insertedHashes.add(entry.blob_hash);
+        if (
+          entry.blob_hash === null ||
+          (entry.textBody === undefined &&
+            entry.binaryBody === undefined &&
+            entry.binaryR2Key === undefined)
+        ) {
+          continue;
+        }
+        const blobKey = `${entry.content_storage}:${entry.blob_hash}`;
+        if (insertedBlobs.has(blobKey)) continue;
+        insertedBlobs.add(blobKey);
         const expectedFence =
           row.expected_last_change_id === null
             ? "1 = 1"
@@ -517,20 +592,24 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
                 ...expectedParams,
               ),
           );
-        } else if (entry.binaryBody !== undefined && entry.blob_hash !== null) {
+        } else if (
+          (entry.binaryBody !== undefined || entry.binaryR2Key !== undefined) &&
+          entry.blob_hash !== null
+        ) {
           statements.push(
             db
               .prepare(
                 `INSERT INTO byte_blobs
                  (stash_name, hash, body_bytes, r2_key, storage_generation, size_bytes, created_at)
-                 SELECT ?, ?, ?, NULL, 0, ?, ? WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
+                 SELECT ?, ?, ?, ?, 0, ?, ? WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
                    AND ${expectedFence}
                  ON CONFLICT(stash_name, hash) DO NOTHING`,
               )
               .bind(
                 stash,
                 entry.blob_hash,
-                entry.binaryBody,
+                entry.binaryBody ?? null,
+                entry.binaryR2Key ?? null,
                 entry.size_bytes,
                 now,
                 stash,
@@ -568,12 +647,25 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
           return { value: await mapRecord(db, winner, now), replayed: true };
         }
       }
+      if (input.expectedLastChangeId !== undefined) {
+        const latest = await db
+          .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM versions WHERE stash_name = ?")
+          .bind(stash)
+          .first<{ id: number }>();
+        if ((latest?.id ?? 0) !== input.expectedLastChangeId) {
+          throw new StashError(
+            "commit-conflict",
+            `Expected last change ${input.expectedLastChangeId}, newest change is ${latest?.id ?? 0}.`,
+          );
+        }
+      }
       return internal("Change-set create failed its persistence fence.");
     },
 
     async getChangeSet(stash: string, id: string): Promise<ChangeSetRecord | null> {
       if (!CHANGE_SET_ID.test(id)) validation("Invalid change-set id.");
       const db = env.DB.withSession("first-primary");
+      await ensureLive(db, stash);
       const row = await db.prepare(SELECT_CHANGE_SET).bind(stash, id).first<ChangeSetRow>();
       return row === null ? null : mapRecord(db, row, deps.now());
     },
@@ -596,6 +688,7 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       const after = decodeCursor(options.after);
       const now = deps.now();
       const db = env.DB.withSession("first-primary");
+      await ensureLive(db, stash);
       const query = { stash, status, path: options.path ?? null, now };
       const [page, count] = await Promise.all([
         selectChangeSets(db, { ...query, after, limit: limit + 1 }).all<ChangeSetRow>(),
@@ -623,7 +716,11 @@ export function createChangeSets(env: Env, deps: ChangeSetDependencies) {
       ) {
         validation("Invalid diff context.");
       }
+      if (options.path !== undefined && !validatePath(options.path).ok) {
+        validation("Invalid change-set path.");
+      }
       const db = env.DB.withSession("first-primary");
+      await ensureLive(db, stash);
       const row = await db.prepare(SELECT_CHANGE_SET).bind(stash, id).first<ChangeSetRow>();
       if (row === null) return null;
       let entries = await entriesFor(db, id);

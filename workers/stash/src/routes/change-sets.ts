@@ -19,7 +19,16 @@ function invalid(message: string): never {
 changeSets.post(
   "/v1/stashes/:stash/change-sets",
   zValidator("json", CreateChangeSetBody, (result) => {
-    if (!result.success) invalid("Invalid change-set input.");
+    if (!result.success) {
+      const bodyIssue = result.error.issues.find((issue) => issue.path.at(-1) === "body");
+      if (bodyIssue?.message === "String is not well-formed") {
+        throw new StashError("body-not-well-formed", "Body is not well-formed Unicode.");
+      }
+      if (bodyIssue?.message.startsWith("Body exceeds ")) {
+        throw new StashError("payload-too-large", "Change-set body is too large.");
+      }
+      invalid("Invalid change-set input.");
+    }
   }),
   async (c) => {
     const stash = c.get("routeStash").name;
