@@ -1,6 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { MAX_BODY_BYTES } from "./limits.js";
-import type { LiveStatus, StashEvent } from "./types.js";
 import {
   ChangesQuery,
   ApproveChangeSetBody,
@@ -27,11 +26,8 @@ import {
   RunGcBody,
   RotateTokenBody,
   STASH_CLIENT_ID_HEADER,
-  StashChangeEventSchema,
   StashClientIdSchema,
   StashEventSchema,
-  StashReadyEventSchema,
-  StashReconnectEventSchema,
 } from "./schemas.js";
 
 const importPut = (createdAt: number) => ({ kind: "put" as const, body: "x", createdAt });
