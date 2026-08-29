@@ -13,6 +13,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AppEnv } from "../context.js";
 import { createStashStore } from "../d1/store.js";
 import type { StoreCommitResult } from "../d1/commits.js";
+import { commitEvents, eventOrigin, publishEvents } from "../events/publish.js";
 
 const commits = new Hono<AppEnv>();
 const JSON_CONTENT_TYPE = /^application\/([a-z-.]+\+)?json(;\s*[a-zA-Z0-9-]+=([^;]+))*$/i;
@@ -54,15 +55,15 @@ function commitResponse(c: Context<AppEnv>, result: StoreCommitResult): Response
 
 commits.post("/v1/stashes/:stash/commits", async (c) => {
   const input = await jsonBody(c);
+  const stash = c.get("routeStash").name;
+  const origin = eventOrigin(c.req.raw);
   const store = createStashStore(c.env, c.get("deps"));
-  const result = await store.commits.createCommit(
-    c.get("routeStash").name,
-    input as CreateCommitBodyType,
-    {
-      principal: c.get("principal"),
-      idempotencyKey: idempotencyKey(c),
-    },
-  );
+  const result = await store.commits.createCommit(stash, input as CreateCommitBodyType, {
+    principal: c.get("principal"),
+    idempotencyKey: idempotencyKey(c),
+    onCommitted: (committed) =>
+      publishEvents(c.env, c.executionCtx, stash, commitEvents(committed, origin)),
+  });
   return commitResponse(c, result);
 });
 
