@@ -1,4 +1,5 @@
 import { createExecutionContext } from "cloudflare:test";
+import { StashEventSchema, type StashEvent } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createStashStore } from "../../src/d1/store.js";
@@ -39,7 +40,124 @@ async function put(stash: string, path: string, body: string, expectedVersion: n
   });
 }
 
+function recordingEventsEnv(): {
+  bindings: ReturnType<typeof createTestEnv>["env"];
+  batches: StashEvent[][];
+  names: string[];
+} {
+  const base = createTestEnv().env;
+  const batches: StashEvent[][] = [];
+  const names: string[] = [];
+  const namespace = new Proxy(base.STASH_EVENTS, {
+    get(target, property, receiver) {
+      if (property === "getByName") {
+        return (name: string) => {
+          names.push(name);
+          const stub = target.getByName(name);
+          return new Proxy(stub, {
+            get(stubTarget, stubProperty, stubReceiver) {
+              if (stubProperty === "fetch") {
+                return async (input: Request): Promise<Response> => {
+                  batches.push(StashEventSchema.array().parse(await input.json()));
+                  return new Response(null, { status: 204 });
+                };
+              }
+              const value = Reflect.get(stubTarget, stubProperty, stubReceiver);
+              return typeof value === "function" ? value.bind(stubTarget) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { bindings: { ...base, STASH_EVENTS: namespace }, batches, names };
+}
+
 describe("commit routes", () => {
+  it("publishes one ordered live event batch and emits nothing for replay or refusal", async () => {
+    const stash = "commit-route-events";
+    await seedStash(stash);
+    const { bindings, batches, names } = recordingEventsEnv();
+    const body = {
+      entries: [
+        { op: "put", path: "one.txt", expectedVersion: null, body: "one" },
+        { op: "put", path: "two.txt", expectedVersion: null, body: "two" },
+      ],
+    } as const;
+    const created = await api(stash, "", { method: "POST", body, key: "events-create" }, bindings);
+    expect(created.status).toBe(201);
+    const result = await created.json<{
+      id: string;
+      firstChangeId: number;
+      lastChangeId: number;
+      entries: Array<{ changeId: number }>;
+    }>();
+    expect(names).toEqual([stash]);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toEqual([
+      expect.objectContaining({
+        type: "change",
+        commitId: result.id,
+        changeId: result.entries[0]?.changeId,
+        path: "one.txt",
+        origin: "commit-tests",
+      }),
+      expect.objectContaining({
+        type: "change",
+        commitId: result.id,
+        changeId: result.entries[1]?.changeId,
+        path: "two.txt",
+        origin: "commit-tests",
+      }),
+      {
+        type: "commit",
+        commitId: result.id,
+        stash,
+        entryCount: 2,
+        firstChangeId: result.firstChangeId,
+        lastChangeId: result.lastChangeId,
+        origin: "commit-tests",
+      },
+    ]);
+
+    const replayed = await api(stash, "", { method: "POST", body, key: "events-create" }, bindings);
+    expect(replayed.status).toBe(201);
+    expect(replayed.headers.get("Idempotent-Replayed")).toBe("true");
+
+    const refused = await api(
+      stash,
+      "",
+      {
+        method: "POST",
+        body: {
+          entries: [{ op: "put", path: "one.txt", expectedVersion: 99, body: "refused" }],
+        },
+      },
+      bindings,
+    );
+    expect(refused.status).toBe(409);
+
+    const invalid = await api(
+      stash,
+      "",
+      {
+        method: "POST",
+        body: {
+          entries: [
+            { op: "put", path: "same.txt", expectedVersion: null, body: "one" },
+            { op: "put", path: "same.txt", expectedVersion: null, body: "two" },
+          ],
+        },
+      },
+      bindings,
+    );
+    expect(invalid.status).toBe(400);
+    expect(names).toEqual([stash]);
+    expect(batches).toHaveLength(1);
+  });
+
   it("creates and replays a commit while classifying validation, conflict, size, and binary errors", async () => {
     const stash = "commit-errors";
     await seedStash(stash);
