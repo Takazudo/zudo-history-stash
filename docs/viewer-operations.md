@@ -53,10 +53,14 @@ revoke its token record and mint a replacement. Revocation takes effect for subs
 investigate and revoke immediately if a secret may have escaped. Mint and revoke operations require
 an admin principal.
 
-The current API does not promise token expiry or rate limiting. Do not invent either policy in a
-host. Those controls are tracked in [issue #110](https://github.com/Takazudo/zudo-history-stash/issues/110);
-until they land, use Access policy duration, narrow credentials, and monitoring as deployment
-controls.
+Tokens can carry an expiry (`expiresAt: null` means never expires); an expired token is rejected
+exactly like an unknown token with the same `401`, so its existence is not disclosed. One-shot
+rotation supports a grace window, and each token can be rotated only once. Per-principal and
+per-stash rate limits return `429 rate-limited` with `Retry-After: 60`; the administrator is
+exempt, so admin-only token-management routes are intentionally not limited. The limiter FAILS
+OPEN when its binding is unavailable, so it is not a hard security boundary. See the exact
+contract in [docs/api.md](api.md). Keep Access policy duration, narrow credentials, and monitoring
+as defence-in-depth.
 
 ## Deep links
 
