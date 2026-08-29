@@ -113,7 +113,7 @@ export interface StashCommits {
   getCommitDiff(
     stash: string,
     id: string,
-    query?: { context?: number; path?: string },
+    query?: { context?: number; path?: string; from?: string; prefix?: string },
   ): Promise<CommitDiffResult | null>;
   revertCommit(
     stash: string,
@@ -425,6 +425,55 @@ async function commitVersions(
        ORDER BY current.id`,
     )
     .bind(stash, id)
+    .all<CommitVersionRow>();
+  return rows.results;
+}
+
+async function rangeVersions(
+  db: D1DatabaseSession,
+  stash: string,
+  fromChangeId: number,
+  toChangeId: number,
+  range: PathPrefixRange | null,
+): Promise<CommitVersionRow[]> {
+  const rows = await db
+    .prepare(
+      `WITH ranged AS (
+         SELECT path, MAX(id) AS change_id
+         FROM versions
+         WHERE stash_name = ? AND id > ? AND id <= ?
+           AND (? IS NULL OR (path >= ? AND path < ?))
+         GROUP BY path
+       )
+       SELECT current.id, current.path, current.version, current.kind, current.blob_hash,
+         current.size_bytes, current.content_type, current.representation, current.rollback_of,
+         current.copied_from_path, current.copied_from_version,
+         ${storageTierSql("current")} AS storage_tier,
+         previous.version AS previous_version, previous.blob_hash AS previous_hash,
+         previous.size_bytes AS previous_size,
+         previous.content_type AS previous_content_type,
+         previous.representation AS previous_representation
+       FROM ranged
+       JOIN versions AS current ON current.id = ranged.change_id
+       LEFT JOIN versions AS previous ON previous.id = (
+         SELECT v.id
+         FROM versions AS v
+         WHERE v.stash_name = ? AND v.path = current.path AND v.id <= ?
+         ORDER BY v.version DESC
+         LIMIT 1
+       )
+       ORDER BY current.path`,
+    )
+    .bind(
+      stash,
+      fromChangeId,
+      toChangeId,
+      range?.lo ?? null,
+      range?.lo ?? null,
+      range?.hi ?? null,
+      stash,
+      fromChangeId,
+    )
     .all<CommitVersionRow>();
   return rows.results;
 }
@@ -872,7 +921,7 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
   async function getCommitDiff(
     stash: string,
     id: string,
-    query: { context?: number; path?: string } = {},
+    query: { context?: number; path?: string; from?: string; prefix?: string } = {},
   ): Promise<CommitDiffResult | null> {
     if (
       query.context !== undefined &&
@@ -886,7 +935,29 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       .bind(stash, id)
       .first<CommitRow>();
     if (commit === null) return null;
-    const allRows = await commitVersions(db, stash, id);
+    const prefixResult = pathPrefixRange(query.prefix);
+    if (!prefixResult.ok) throw new StashError(prefixResult.error, prefixResult.message);
+    const range = prefixResult.range;
+    let allRows: CommitVersionRow[];
+    if (query.from === undefined) {
+      allRows = await commitVersions(db, stash, id);
+      if (range !== null) {
+        allRows = allRows.filter((row) => row.path >= range.lo && row.path < range.hi);
+      }
+    } else {
+      const fromCommit = await db
+        .prepare("SELECT * FROM commits WHERE stash_name = ? AND id = ? AND sealed = 1")
+        .bind(stash, query.from.slice("commit:".length))
+        .first<CommitRow>();
+      if (fromCommit === null) return null;
+      const fromChangeId = fromCommit.last_change_id!;
+      const toChangeId = commit.last_change_id!;
+      if (fromChangeId > toChangeId) {
+        throw new StashError("validation", "from must not be newer than the target commit.");
+      }
+      if (fromChangeId === toChangeId) return { entries: [], truncated: false };
+      allRows = await rangeVersions(db, stash, fromChangeId, toChangeId, range);
+    }
     const filtered =
       query.path === undefined ? allRows : allRows.filter((row) => row.path === query.path);
     const truncated = filtered.length > COMMIT_DIFF_INLINE_ENTRIES;
