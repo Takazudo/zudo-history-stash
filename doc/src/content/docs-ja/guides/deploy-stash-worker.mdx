@@ -60,10 +60,9 @@ representation（`text`/`binary`）、content access（`inline`/`raw`/`deleted`�
 
 ## 二つの異なるマイグレーション系列を適用する
 
-D1 スキーマのマイグレーションは `workers/stash/migrations` にあり、現在は `0001_init.sql` から
-`0008_drop_proposals.sql` まで順番に実行します。アプリケーションをデプロイする前に完全な系列を選択した
-リモートの `DB` へ適用してください。upgrade では binary/upload runtime の保留中 migration を適用し、既存の
-row を作り直したり書き換えたりしないでください。
+D1 スキーマのマイグレーションは `workers/stash/migrations` にあり、現在は `0001` から `0011` まで番号順に
+実行します。アプリケーションをデプロイする前に完全な系列を選択したリモートの `DB` へ適用してください。
+upgrade では保留中の migration をすべて適用し、既存の row を作り直したり書き換えたりしないでください。
 
 Wrangler の `[[migrations]]` にある `v1` タグの項目は別物であり、SQLite ベースの `StashEvents`
 Durable Object クラスを登録します。そのマイグレーションと対応するバインディングを、デプロイするすべての

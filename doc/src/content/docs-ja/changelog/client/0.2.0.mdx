@@ -1,0 +1,15 @@
+---
+title: 0.2.0
+description: 型付き commit、snapshot、change-set client。
+sidebar_position: 1
+category: changelog
+---
+
+Released: 2026-08-29
+
+- fetch と named RPC transport に `commits(stash)`、`changeSets(stash)`、
+  `files(stash).snapshot()` API を追加しました。
+- `conflicts[]` と `isCommitConflict` guard で atomic conflict の詳細を公開しました。複数パスの stale を
+  自動再試行することはありません。
+- version、history、change-feed、live-event の型で `commitId` を必須にし、fake と conformance surface でも
+  all-or-none behavior を維持しました。

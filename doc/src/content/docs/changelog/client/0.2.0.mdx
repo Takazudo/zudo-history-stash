@@ -1,0 +1,15 @@
+---
+title: 0.2.0
+description: Typed commit, snapshot, and change-set clients.
+sidebar_position: 1
+category: changelog
+---
+
+Released: 2026-08-29
+
+- Add `commits(stash)`, `changeSets(stash)`, and `files(stash).snapshot()` APIs over fetch and named
+  RPC transports.
+- Expose atomic conflict details through `conflicts[]` and the `isCommitConflict` guard; no automatic
+  multi-path stale retry is performed.
+- Require `commitId` in version, history, change-feed, and live-event types and extend the fake and
+  conformance surfaces to preserve all-or-none behavior.

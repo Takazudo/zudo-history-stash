@@ -61,10 +61,10 @@ independent-axis contract.
 
 ## Apply two distinct migration tracks
 
-D1 schema migrations live under `workers/stash/migrations` and currently run in order from
-`0001_init.sql` through `0008_drop_proposals.sql`. Apply the complete sequence to the selected
-remote `DB` before the application deploy; an upgrade must apply the pending binary/upload runtime
-migrations rather than recreating or rewriting existing rows.
+D1 schema migrations live under `workers/stash/migrations` and currently run in numeric order from
+`0001` through `0011`. Apply the complete sequence to the selected remote `DB` before the
+application deploy; an upgrade must apply every pending migration rather than recreating or
+rewriting existing rows.
 
 The Wrangler `[[migrations]]` entry tagged `v1` is different: it registers the SQLite-backed
 `StashEvents` Durable Object class. Keep that migration and its matching binding in every deployed

@@ -296,7 +296,8 @@ Published defaults are `JSON_INLINE_MAX_BYTES=5000000`, `D1_INLINE_MAX_BYTES=524
 `HTTP_REQUEST_MAX_BYTES=100000000`, `SINGLE_UPLOAD_MAX_BYTES=33554432`, `MAX_FILE_BYTES=100000000`,
 `DIFF_MAX_BYTES=524288`, `MULTIPART_PART_BYTES=8388608`, `MAX_OPEN_UPLOAD_SESSIONS=8`,
 `MAX_RESERVED_UPLOAD_BYTES=500000000`, and `UPLOAD_SESSION_TTL_SECONDS=86400`. Multipart parts
-are at least 5 MiB in production and total parts never exceed 10,000. D1 inline is capped at
+are at least 5 MiB in production and total parts never exceed 10,000. Change sets default to
+`CHANGE_SET_TTL_DAYS=14` when creation omits `expiresAt`. D1 inline is capped at
 1,500,000 bytes; `MAX_FILE_BYTES` is capped at 1 GiB and requires reservation capacity at least as
 large as that setting. One GiB is a configurable correctness ceiling, not a performance
 certification or load-test claim. Every threshold counts exact content bytes, excluding JSON and
@@ -927,7 +928,9 @@ must replay the same operation across process restarts.
 
 Commit idempotency keys are permanent. Repeating the same stash/key/body returns the original
 commit with `Idempotent-Replayed: true`; reusing the key with a different canonical body returns
-`422 idempotency-key-reused`. Change-set decisions are idempotent by their stored terminal state.
+`422 idempotency-key-reused`. Repeating approval of an applied change set returns its stored commit;
+other decision attempts against a closed change set return `409 change-set-closed` without changing
+the terminal state.
 
 ## Pagination and change polling
 
@@ -1011,6 +1014,9 @@ API accepts `Authorization`, `Content-Type`, `If-None-Match`, `Idempotency-Key`,
 
 The v1 HTTP contract intentionally defers:
 
-- multi-file atomic commits; v1 history and CAS are per path.
 - change set approval policy (required approvers, roles, and review comments); any matching `write`
   credential can approve.
+- mutable change-set drafts, automatic rebasing, and change-set-bound upload sessions; create a new
+  immutable change set after resolving stale bases.
+- tree objects, branches, refs/tags, and snapshots at arbitrary change cursors; v1 snapshots are
+  derived only at sealed commit boundaries.

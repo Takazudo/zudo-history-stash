@@ -1,6 +1,6 @@
 # zudo-history-stash
 
-`zudo-history-stash` is a small, git-shaped versioned text and binary store on Cloudflare Workers with rollback, diff, idempotent writes, and a standalone viewer. Its first consumer is a Slack-bot project that keeps an AI-updated, skill-like text layer: this service replaces the GitHub PR diff/approval/revert loop with an HTTP history and rollback API while leaving approval in the consumer.
+`zudo-history-stash` is a small, git-shaped versioned text and binary store on Cloudflare Workers with rollback, diff, idempotent writes, and a standalone viewer. Its first consumer is a Slack-bot project that keeps an AI-updated, skill-like text layer: this service replaces the GitHub PR diff/approval/revert loop with HTTP history, reviewable change sets, and rollback while leaving approval policy to the consumer.
 
 ## Architecture
 
@@ -64,6 +64,70 @@ const rollback = await files.rollback("docs/guide.md", {
   expectedVersion: put.value.version,
 });
 if (!rollback.ok) throw new Error(rollback.error.message);
+```
+
+Use `commits.create` when multiple paths must move together. Every entry carries its own head fence;
+the server either applies all entries or returns `commit-conflict` with the failing paths and applies
+none:
+
+```ts
+const commit = await client.commits("demo").create({
+  entries: [
+    {
+      op: "put",
+      path: "site/index.html",
+      expectedVersion: null,
+      body: "<!doctype html><link rel=\"stylesheet\" href=\"styles.css\">\n",
+      contentType: "text/html",
+    },
+    {
+      op: "put",
+      path: "site/styles.css",
+      expectedVersion: null,
+      body: "body { font-family: system-ui; }\n",
+      contentType: "text/css",
+    },
+  ],
+  author: "site-builder",
+  message: "Publish site shell",
+});
+if (!commit.ok) {
+  if (commit.error.code === "commit-conflict") console.error(commit.conflicts);
+  throw new Error(commit.error.message);
+}
+```
+
+For review before publication, create an immutable change set, inspect its candidate diffs, then
+approve or reject it. Approval rechecks every captured base and creates exactly one commit; it never
+silently rebases a stale candidate:
+
+```ts
+const changeSets = client.changeSets("demo");
+const created = await changeSets.create({
+  entries: [
+    {
+      op: "put",
+      path: "docs/guide.md",
+      baseVersion: rollback.value.version,
+      body: "Reviewed guide\n",
+      contentType: "text/markdown",
+    },
+  ],
+  author: "docs-bot",
+  message: "Review guide refresh",
+});
+if (!created.ok) throw new Error(created.error.message);
+
+const review = await changeSets.diff(created.value.id, { context: 3 });
+if (!review.ok) throw new Error(review.error.message);
+if (review.value.stale) throw new Error("Change set is stale; create a new review candidate");
+
+const approved = await changeSets.approve(created.value.id, {
+  author: "reviewer",
+  message: "Approve guide refresh",
+});
+if (!approved.ok) throw new Error(approved.error.message);
+console.log(approved.value.commit.id);
 ```
 
 Raw uploads keep bytes unchanged and choose a transport from the server capabilities. This example

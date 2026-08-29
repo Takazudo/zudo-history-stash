@@ -17,7 +17,9 @@ D1 owns metadata and mutable heads; large immutable bytes can spill into a priva
 | `tokens` | Credential hashes, scope, expiry, revocation, and rotation metadata; never recoverable secrets. |
 | `blobs` | Content-addressed text/binary metadata and the inline-or-R2 storage reference. |
 | `files` | The mutable head for each stash/path pair. |
-| `versions` | Append-only history; its database-global ID is also the change cursor. |
+| `commits` | One durable, sealed verdict for every successful write unit. |
+| `versions` | Append-only history; every row has a required commit ID, and its database-global ID is also the change cursor. |
+| `change_sets`, `change_set_entries` | Immutable, expiring review candidates and their decision state. |
 | `idempotency` | Request-identity ledger for safe write replay. |
 | `gc_jobs`, `gc_runs` | Generation-fenced garbage-collection leases, progress, and results. |
 
@@ -28,16 +30,32 @@ inline, raw streaming, and the 524,288-byte-per-side diff bound are independent 
 
 ## Write protocol
 
-1. Validate authorization, the path, request limits, and the expected head.
-2. Store a possible large immutable object in R2 before the database transaction.
-3. In one fenced D1 batch, record or reuse the blob, append a version, and publish the file-head
-   mutation last.
-4. Record the idempotency result and publish advisory live activity.
+1. Validate authorization, entry shapes and limits, and prepare any immutable R2 objects before the
+   database batch.
+2. Insert one unsealed commit row through an aggregate gate that checks every path fence and the
+   optional whole-stash cursor together.
+3. Make every blob, version, and head statement conditional on `EXISTS` of that gate row and repeat
+   its own per-path fence. Each appended version receives the commit ID; the head mutation follows
+   its version.
+4. Run the seal `UPDATE` last. It records the entry/change counts and first/last change IDs. Exactly
+   `meta.changes === 1` on this statement is the sole success verdict.
+5. After the sealed batch succeeds, publish the commit's ordered advisory live-event frames.
 
-The compare-and-set fence prevents a lost update. If the fence loses after an R2 upload, the object
-can remain unreferenced until garbage collection; it never becomes a file head. Create, update,
-delete, rollback, and import all use fences. A rollback appends a new version—it does not move history
-backward.
+The seal is last because D1 batch statements cannot use an earlier statement's metadata as a SQL
+predicate. A table check makes an incomplete seal throw and rolls the entire batch back. Code
+collects change IDs by querying rows with the commit ID; per-statement `last_row_id` is not a reliable
+source because a zero-row fenced insert can retain a stale value.
+
+This protocol makes commits all-or-none. A lost aggregate or per-path compare-and-set fence produces
+`409 commit-conflict` with only the failed entries in `conflicts[]`; no commit, version, or head from
+that attempt remains visible. Consumers must refresh and decide how to rebuild the entire operation.
+Approval uses the same aggregate fence and never rebases a candidate.
+
+Single-path create, update, delete, rollback, import, and upload completion are uniform one-entry
+commits, so every version has a non-null commit ID. `skipIfUnchanged` and unchanged upload completion
+append no version and mint no commit. A rollback or commit revert appends new versions—it never moves
+history backward. If a fence loses after an R2 upload, the object can remain unreferenced until
+garbage collection, but it never becomes a file head.
 
 An idempotency key identifies one canonical request. Reusing the key with changed content is a
 `422 idempotency-key-reused` error, not permission to change a replayed operation.
@@ -49,5 +67,5 @@ but does not revive those credentials. Garbage collection uses generation-fenced
 expired runner cannot finalize or release a successor's work, and every bounded run is recorded.
 
 Live delivery subscribes before replay, then emits advisory events. A consumer must reconcile with
-the authoritative change feed and resource reads after `ready`, `change`, `change set`, or reconnect;
-the event stream is not a second source of truth.
+the authoritative change feed and resource reads after `ready`, `change`, `commit`, `change-set`, or
+reconnect; the event stream is not a second source of truth.

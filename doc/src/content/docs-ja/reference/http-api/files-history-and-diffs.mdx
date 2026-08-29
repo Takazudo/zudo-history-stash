@@ -11,6 +11,25 @@ category: reference
 
 任意の tombstone、上限付きの `limit`、path keyset の `after` cursor とともに、ファイル summary を昇順で
 一覧表示します。各 summary は head version、hash、size、deletion state、update time を報告します。
+`prefix` と `delimiter` により、directory を保存済み resource にすることなく directory のように閲覧できます。
+
+## Prefix listing and commit snapshots
+
+`prefix=site` と `prefix=site/` はどちらも `site/` 配下を選び、`site-old/index.html` のように似た名前のパスは
+範囲外です。delimiter がなければ、一致するすべての file を path 順で返します。対応する delimiter は `/` のみ
+です。指定すると直下の file は `files` に残り、より深い descendant は一意な `commonPrefixes` にまとめられます。
+たとえば `site/assets/` のように末尾 slash を持ちます。file と common prefix は一つの sorted page と `limit` を共有するため、
+最後の item が common prefix でも `nextAfter` を変更せず次へ渡してください。`includeDeleted` の既定値は
+`false` です。
+
+`GET /v1/stashes/{stash}/snapshot?at=commit:{id}` も同じ `prefix`、`delimiter`、`includeDeleted`、`limit`、
+`after` を受け取ります。選択した commit の seal 済み `lastChangeId` 以下で各パスの最後に当たる version と、
+`at: { commitId, changeId }` を返します。それより後の書き込みがこの導出 view に影響することはありません。
+未知または seal されていない commit ID は `404 not-found` として隠され、任意の change cursor を selector にする
+ことはできません。
+
+現在の一覧と履歴 snapshot が返すのは metadata であり、directory archive や file body ではありません。content が
+必要なら、返された path/version を file route または raw-version route へ渡してください。
 
 ### `GET /v1/stashes/{stash}/files/{path}`
 
@@ -136,7 +155,8 @@ live な `toVersion` から、`expectedVersion` でフェンスした新しい v
 **Contract:** operation `getHistory`; principal `read`; transport `any`.
 
 metadata だけの version を新しい順で返します。現在の head、deletion state、total、`before` cursor が
-含まれます。version の body は引き続きファイル読み取り route で取得します。
+含まれます。各 history item は、その version を追加した必須の commit ID を持ちます。version の body は
+引き続きファイル読み取り route で取得します。
 
 ### `GET /v1/stashes/{stash}/diff/{path}`
 

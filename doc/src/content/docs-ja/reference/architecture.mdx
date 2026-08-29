@@ -18,7 +18,9 @@ R2 バケットへ退避できます。
 | `tokens` | 認証情報のハッシュ、スコープ、有効期限、失効、ローテーションのメタデータ。シークレットは復元できません。 |
 | `blobs` | コンテンツアドレス方式の text/binary metadata と、inline または R2 のストレージ参照。 |
 | `files` | stash とパスの各組み合わせに対する変更可能な head。 |
-| `versions` | 追記専用の履歴。データベース全体で一意な ID は変更カーソルでもあります。 |
+| `commits` | 成功した書き込み単位ごとに一つ存在する、永続的で seal 済みの判定。 |
+| `versions` | 追記専用の履歴。全 row が必須の commit ID を持ち、データベース全体で一意な ID は変更カーソルでもあります。 |
+| `change_sets`, `change_set_entries` | 不変で有効期限付きのレビュー候補と decision state。 |
 | `idempotency` | 安全に書き込みを再実行するためのリクエスト同一性台帳。 |
 | `gc_jobs`, `gc_runs` | 世代でフェンスされたガベージコレクションのリース、進捗、結果。 |
 
@@ -29,16 +31,30 @@ D1 inline、raw streaming、各 side 524,288 バイトの diff 上限も独立�
 
 ## 書き込みプロトコル
 
-1. 認可、パス、リクエスト上限、期待する head を検証します。
-2. 大きい可能性がある不変オブジェクトを、データベーストランザクションより先に R2 へ保存します。
-3. フェンスされた一つの D1 バッチで blob を記録または再利用し、version を追加して、最後にファイル
-   head の変更を公開します。
-4. 冪等性の結果を記録し、助言的なライブアクティビティを公開します。
+1. 認可、entry の形と上限を検証し、不変な R2 object があれば database batch より先に準備します。
+2. すべての path fence と任意の stash 全体 cursor をまとめて検査する aggregate gate を通じ、未 seal の
+   commit row を一つ insert します。
+3. blob、version、head の全 statement を gate row の `EXISTS` で条件付け、各 path fence も繰り返します。
+   追加する全 version に commit ID を設定し、その version の後で head を変更します。
+4. seal の `UPDATE` を最後に実行し、entry/change count と最初/最後の change ID を記録します。この statement の
+   `meta.changes === 1` だけが成功判定です。
+5. seal 済み batch の成功後、commit の順序どおりに助言的な live-event frame を公開します。
 
-compare-and-set のフェンスにより、更新の消失を防ぎます。R2 へのアップロード後にフェンスで負けた場合、
-そのオブジェクトはガベージコレクションまで未参照のまま残ることがありますが、ファイルの head には
-なりません。作成、更新、削除、ロールバック、インポートはすべてフェンスを使用します。
-ロールバックは新しい version を追加するものであり、履歴を過去へ戻すものではありません。
+D1 batch の statement は、それより前の statement metadata を SQL predicate に使えないため、seal は最後です。
+table check により不完全な seal は例外となり、batch 全体が rollback されます。change ID は commit ID で row を
+query して集めます。row を挿入しなかった fenced insert が古い値を保持し得るため、statement ごとの
+`last_row_id` は信頼できる情報源ではありません。
+
+この protocol により commit は all-or-none になります。aggregate または path ごとの compare-and-set fence で
+負けると、`409 commit-conflict` となり、失敗 entry だけを `conflicts[]` に含みます。その試行の commit、version、
+head は一つも見えません。利用側は再取得したうえで、操作全体をどう作り直すか判断する必要があります。
+change set の承認も同じ aggregate fence を使い、candidate を rebase しません。
+
+単一パスの作成、更新、削除、rollback、import、upload completion も一 entry の uniform commit なので、すべての
+version が non-null の commit ID を持ちます。`skipIfUnchanged` と unchanged upload completion は version も
+commit も追加しません。rollback と commit revert は新しい version を追加するもので、履歴を過去へ動かしません。
+R2 upload 後に fence で負けた object は garbage collection まで未参照で残ることがありますが、file head には
+なりません。
 
 冪等性キーは一つの正規リクエストを識別します。内容を変えてキーを再利用すると
 `422 idempotency-key-reused` エラーになり、再実行した操作を変更する許可にはなりません。
@@ -51,5 +67,5 @@ stash の削除は論理削除であり、処理は延期されます。削除�
 上限付きの各実行はすべて記録されます。
 
 ライブ配信は replay より先に購読し、その後で助言的なイベントを発行します。利用側は `ready`、
-`change`、`change set`、再接続の後に、正本である変更フィードとリソース読み取りを使って照合する必要が
-あります。イベントストリームは第二の正本ではありません。
+`change`、`commit`、`change-set`、再接続の後に、正本である変更フィードとリソース読み取りを使って照合する
+必要があります。イベントストリームは第二の正本ではありません。

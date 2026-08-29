@@ -1,0 +1,13 @@
+---
+title: 0.2.0
+description: Multi-path history and review routes.
+sidebar_position: 1
+category: changelog
+---
+
+Released: 2026-08-29
+
+- Add `/s/:stash/commits`, `/s/:stash/commits/:id`, `/s/:stash/change-sets`, and
+  `/s/:stash/change-sets/:id` as the stable URL scheme for multi-path history and review.
+- Group change rows by required `commitId`, expose bounded per-entry diffs, and provide atomic
+  revert and change-set decision flows to write-capable principals.

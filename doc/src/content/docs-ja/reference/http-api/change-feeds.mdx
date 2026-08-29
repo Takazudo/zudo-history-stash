@@ -17,6 +17,7 @@ category: reference
 
 **Contract:** operation `getStashChanges`; principal `read`; transport `any`.
 
-同じ cursor と順序の契約を、認可された一つの stash に限定して使用します。各 change は全体で一意な
-`changeId`、path、version、kind、authorship、size、timestamp を持ちます。live event の後では、この feed を
-正本の照合元として扱ってください。有効な checkpoint を進める前に、`hasMore` の全 page を処理します。
+同じ cursor と順序の契約を、認可された一つの stash に限定して使用します。各 change は必須の `commitId`、
+全体で一意な `changeId`、path、version、kind、authorship、size、timestamp を持ちます。同じ commit ID の連続
+row は、一つのアトミック書き込みに属する順序付き version です。live event の後では、この feed を正本の
+照合元として扱ってください。有効な checkpoint を進める前に、`hasMore` の全 page を処理します。

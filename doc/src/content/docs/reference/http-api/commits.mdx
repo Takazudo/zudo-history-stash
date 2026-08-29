@@ -5,38 +5,104 @@ sidebar_position: 184
 category: reference
 ---
 
+A commit is the durable unit of change. Every successful file mutation belongs to exactly one
+commit, including writes made through the single-path, upload, rollback, and import APIs. The commit
+API additionally applies 1–20 path operations as one unit: either every entry appends a version and
+moves its head, or none does.
+
+Entry paths must be unique. A `copy` source must be an already stored `{ path, version }` in the same
+stash and cannot name another destination in the request. Text `put` entries use `body`; binary
+entries use `representation: "binary"`, `contentType`, and canonical `bytesBase64`. `delete` and
+`rollback` require an existing positive head version.
+
+For each entry, `expectedVersion: null` means “create only”; an integer must equal the current head.
+The optional `expectedLastChangeId` adds a whole-stash fence. The server evaluates every fence
+together and returns `409 commit-conflict` with only the failing entries in root-level `conflicts[]`.
+It never applies the non-conflicting subset. Refresh all affected heads and deliberately construct a
+new commit; there is no automatic merge or rebase.
+
 ### `POST /v1/stashes/{stash}/commits`
 
 **Contract:** operation `createCommit`; principal `write`; transport `any`.
 
-Creates one atomic commit within the documented entry limit.
+Creates one atomic commit. `entries` is required; `author`, `message`, JSON `meta`, and
+`expectedLastChangeId` are optional. The aggregate decoded entry content is limited to 5,000,000
+bytes, independently of the JSON request-size limit.
+
+```json
+{
+  "entries": [
+    {
+      "op": "put",
+      "path": "site/index.html",
+      "expectedVersion": 4,
+      "body": "<!doctype html><title>History</title>\n",
+      "contentType": "text/html"
+    },
+    {
+      "op": "copy",
+      "path": "site/logo.png",
+      "expectedVersion": null,
+      "from": { "path": "assets/logo.png", "version": 2 }
+    }
+  ],
+  "author": "site-builder",
+  "message": "Publish site"
+}
+```
+
+A success is `201 CommitResult`. Ordered `entries` contain the assigned `version` and `changeId`;
+the enclosing record includes `id`, `entryCount`, `firstChangeId`, and `lastChangeId`. A supplied
+`Idempotency-Key` permanently identifies the canonical stash/request pair. An exact replay returns
+the original result with `Idempotent-Replayed: true`; changed input under the same key is
+`422 idempotency-key-reused`.
 
 ### `GET /v1/stashes/{stash}/commits/{id}`
 
 **Contract:** operation `getCommit`; principal `read`; transport `any`.
 
-Returns a commit and its ordered version entries.
+Returns `200 CommitRecord` with its ordered entries. `source` and optional `sourceId` identify how
+the commit was created; `revertsCommitId` names the reversed commit when applicable. Entry metadata
+describes the resulting immutable version, including representation, content type, hash, size, and
+copy or rollback provenance where relevant. Bodies are read through the file or raw-version routes.
 
 ### `GET /v1/stashes/{stash}/commits`
 
 **Contract:** operation `listCommits`; principal `read`; transport `any`.
 
-Lists commit summaries with an opaque cursor.
+Lists summaries newest first. `path` filters commits containing that exact path. `limit` defaults to
+50 and is at most 200; `after` is an opaque `(createdAt, id)` cursor and must be passed back
+unchanged. The response returns `commits`, `nextAfter`, and the full filtered `total`.
 
 ### `GET /v1/stashes/{stash}/commits/{id}/diff`
 
 **Contract:** operation `getCommitDiff`; principal `read`; transport `any`.
 
-Returns bounded per-entry diffs.
+Returns bounded before-to-after diffs for the commit. `context` controls non-negative context lines,
+and `path` selects one exact entry. Without `path`, at most `COMMIT_DIFF_INLINE_ENTRIES` entries are
+expanded and response-level `truncated` reports omitted entries. Each result identifies `from` and
+`to` versions/hashes. Text is `ready`, `same`, or `oversized`; binary and otherwise ineligible
+content report explicit metadata states rather than fabricated text.
 
 ### `POST /v1/stashes/{stash}/commits/{id}/revert`
 
 **Contract:** operation `revertCommit`; principal `write`; transport `any`.
 
-Creates a new atomic commit that reverts the target commit.
+Creates a new atomic commit that reverses every entry of the named commit against the current heads.
+It does not erase the original commit or move history backward. A path created by the original
+commit receives a tombstone; an updated or deleted path receives a new version restoring the former
+state. If any current head no longer matches the target commit's result, the entire revert fails with
+`409 commit-conflict` and `conflicts[]`.
+
+The body accepts optional `author`, `message`, and `meta`. Success is `201 CommitResult`, with
+`revertsCommitId` set to the target. `Idempotency-Key` has the same permanent replay semantics as
+commit creation.
 
 ### `GET /v1/stashes/{stash}/snapshot`
 
 **Contract:** operation `getSnapshot`; principal `read`; transport `any`.
 
-Lists file state at a selected commit.
+Lists file state at a commit boundary. The required selector is `at=commit:{id}`. Optional `prefix`,
+`delimiter`, `includeDeleted`, `limit`, and opaque `after` behave as described in
+[Files, history, and diffs](./files-history-and-diffs.mdx#prefix-listing-and-commit-snapshots).
+Snapshots are derived immutable-history reads, not stored trees, branches, or movable references.

@@ -1,0 +1,129 @@
+---
+title: Commit a directory as one unit
+description: Publish HTML, CSS, and images under one prefix with atomic SDK commits.
+sidebar_position: 85
+category: guides
+---
+
+A Stash directory is a naming convention, not a stored object. Map a local tree to one path prefix,
+then send its changed files as commit entries. If the plan fits the 20-entry and 5,000,000 decoded
+content-byte limits, every file head moves in one atomic commit. A larger tree requires multiple
+commits; each chunk is atomic, but the directory as a whole is not.
+
+Suppose the local tree is:
+
+```text
+example-site/
+├── index.html
+├── styles.css
+└── images/
+    └── logo.png
+```
+
+Under prefix `site`, these become `site/index.html`, `site/styles.css`, and
+`site/images/logo.png`. The prefix does not create a `site` resource.
+
+## Build one commit with the SDK
+
+For an initial publish, use `expectedVersion: null` for every path. Send UTF-8 HTML/CSS as text and
+the PNG as canonical base64 binary. `commits.create` returns a typed business result and never
+applies only part of the array.
+
+```js
+import { readFile } from "node:fs/promises";
+import { createStashClient } from "@takazudo/zudo-history-stash";
+
+const client = createStashClient({
+  baseUrl: process.env.STASH_URL,
+  token: process.env.STASH_WRITE_TOKEN,
+});
+
+const [html, css, logo] = await Promise.all([
+  readFile("example-site/index.html", "utf8"),
+  readFile("example-site/styles.css", "utf8"),
+  readFile("example-site/images/logo.png"),
+]);
+
+const result = await client.commits("demo").create(
+  {
+    entries: [
+      {
+        op: "put",
+        path: "site/index.html",
+        expectedVersion: null,
+        body: html,
+        contentType: "text/html; charset=utf-8",
+      },
+      {
+        op: "put",
+        path: "site/styles.css",
+        expectedVersion: null,
+        body: css,
+        contentType: "text/css; charset=utf-8",
+      },
+      {
+        op: "put",
+        path: "site/images/logo.png",
+        expectedVersion: null,
+        representation: "binary",
+        contentType: "image/png",
+        bytesBase64: logo.toString("base64"),
+      },
+    ],
+    author: "site-builder",
+    message: "Publish example site",
+  },
+  { idempotencyKey: "example-site:initial" },
+);
+
+if (!result.ok) {
+  if (result.error.code === "commit-conflict") console.error(result.conflicts);
+  throw new Error(result.error.message);
+}
+console.log(result.value.id);
+```
+
+For later synchronization, list all pages with `files.list({ prefix: "site" })` and retain each
+remote `headVersion` and hash. Unchanged hashes need no entry. Use the current positive version as
+`expectedVersion` for replacements and deletes, and `null` only for absent paths. If any fence loses,
+the server returns `commit-conflict` and writes none of the entries. Refresh the prefix and construct
+a new operation instead of reusing the old idempotency key with changed content.
+
+## Use the repository helper
+
+From a repository checkout, `scripts/commit-dir.mjs` performs that walk, paginated head listing,
+hash comparison, text/binary encoding, and entry derivation. Validate the job and preview its summary
+first:
+
+```bash
+STASH_WRITE_TOKEN=your-write-token \
+  node scripts/commit-dir.mjs example-site site demo \
+  --base-url https://stash.example \
+  --job-id example-site-20260829 \
+  --dry-run
+```
+
+Remove `--dry-run` to write. Keep the same `--job-id` only when replaying the same derived job after
+an interrupted run: chunk keys are `<jobId>:<zero-based-chunk-index>`. Choose a new job ID after
+changing local files, remote expectations, metadata, or options.
+
+Useful options are:
+
+- `--prune` adds deletes for live remote paths under the prefix that are missing locally.
+- `--change-set` stores the derived entries as open review candidates instead of applying commits.
+- `--expected-last-change-id N` adds a whole-stash fence in addition to every path fence.
+- `--author`, `--message`, and `--meta JSON` annotate each created chunk.
+- `--directory`, `--prefix`, and `--stash` are named alternatives to the three positional arguments;
+  `--token` is an alternative to `STASH_WRITE_TOKEN`, `STASH_ADMIN_TOKEN`, or `STASH_TOKEN`.
+
+The helper prints a loud warning when more than 20 entries require multiple chunks. Do not describe
+that result as one atomic directory publish. It refuses any derived chunk whose decoded `put`
+content exceeds the aggregate byte limit; split the source into smaller releases. The same
+whole-stash `--expected-last-change-id` is sent to every chunk; after the first successful commit
+changes the stash cursor, a later chunk can correctly fail that fence. Split or coordinate the
+release explicitly when whole-directory atomicity is required.
+
+Use `--change-set` when a human should review the HTML, CSS, and image metadata before publication.
+Inspect each newly created open record through the
+[change-set API](../reference/http-api/change-sets.mdx) or Viewer, then approve it into one commit.
+Approval repeats all path fences and never rebases stale candidates.
