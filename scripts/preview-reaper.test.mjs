@@ -795,6 +795,11 @@ describe("workflow contracts", () => {
       teardown,
       /- name: Setup Node\.js\n\s+uses: actions\/setup-node@[a-f0-9]{40}[^\n]*\n\s+with:\n\s+node-version: 22\.13\.0\n\s+package-manager-cache: false\n\n\s+- name: Require an exact closed pull request/u,
     );
+    assert.match(
+      teardown,
+      /jq -e '\.fork \| type == "boolean"' <<<"\$pull_json" >\/dev\/null\n\s+fork="\$\(jq -r '\.fork' <<<"\$pull_json"\)"/u,
+    );
+    assert.equal(teardown.includes('.fork | select(type == "boolean")'), false);
     assert.equal((teardown.match(/persist-credentials: false/gu) ?? []).length, 2);
     assert.equal(
       (
