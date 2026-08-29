@@ -40,6 +40,35 @@ async function put(stash: string, path: string, body: string, expectedVersion: n
   });
 }
 
+async function seedCommitRange(stash: string): Promise<string[]> {
+  await seedStash(stash);
+  const ids: string[] = [];
+  for (let version = 1; version <= 4; version += 1) {
+    const created = await api(stash, "", {
+      method: "POST",
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "site/page.txt",
+            expectedVersion: version === 1 ? null : version - 1,
+            body: `site version ${String(version)}\n`,
+          },
+          {
+            op: "put",
+            path: "docs/guide.txt",
+            expectedVersion: version === 1 ? null : version - 1,
+            body: `docs version ${String(version)}\n`,
+          },
+        ],
+      },
+    });
+    expect(created.status).toBe(201);
+    ids.push((await created.json<{ id: string }>()).id);
+  }
+  return ids;
+}
+
 function recordingEventsEnv(): {
   bindings: ReturnType<typeof createTestEnv>["env"];
   batches: StashEvent[][];
@@ -531,6 +560,92 @@ describe("commit routes", () => {
     const filtered = await api(stash, `/${commit.id}/diff?path=entry-8.txt`, {}, bindings);
     await expect(filtered.json()).resolves.toMatchObject({
       entries: [{ path: "entry-8.txt", diff: { state: "oversized" } }],
+      truncated: false,
+    });
+  });
+
+  it("collapses repeated path changes to the newest version with the pre-range source", async () => {
+    const stash = "commit-range-collapse";
+    const [, fromId, , targetId] = await seedCommitRange(stash);
+    const response = await api(
+      stash,
+      `/${targetId}/diff?from=${encodeURIComponent(`commit:${fromId}`)}&path=site/page.txt`,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      entries: [
+        {
+          path: "site/page.txt",
+          op: "put",
+          from: { version: 2 },
+          to: { version: 4 },
+          diff: { state: "ready", stats: { added: 1, removed: 1 } },
+        },
+      ],
+      truncated: false,
+    });
+  });
+
+  it("limits a commit range diff to descendants of the requested prefix", async () => {
+    const stash = "commit-range-prefix";
+    const [, fromId, , targetId] = await seedCommitRange(stash);
+    const response = await api(
+      stash,
+      `/${targetId}/diff?from=${encodeURIComponent(`commit:${fromId}`)}&prefix=site`,
+    );
+    expect(response.status).toBe(200);
+    const value = await response.json<{ entries: Array<{ path: string }>; truncated: boolean }>();
+    expect(value).toMatchObject({ entries: [{ path: "site/page.txt" }], truncated: false });
+    expect(value.entries.some((entry) => entry.path.startsWith("docs/"))).toBe(false);
+  });
+
+  it("returns an empty diff when from equals the target commit", async () => {
+    const stash = "commit-range-equal";
+    const [, , , targetId] = await seedCommitRange(stash);
+    const response = await api(
+      stash,
+      `/${targetId}/diff?from=${encodeURIComponent(`commit:${targetId}`)}`,
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ entries: [], truncated: false });
+  });
+
+  it("rejects a from commit newer than the target commit", async () => {
+    const stash = "commit-range-reversed";
+    const [, targetId, , fromId] = await seedCommitRange(stash);
+    const response = await api(
+      stash,
+      `/${targetId}/diff?from=${encodeURIComponent(`commit:${fromId}`)}`,
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "validation",
+        message: "from must not be newer than the target commit.",
+      },
+    });
+  });
+
+  it("retains single-commit diff behavior when from is omitted", async () => {
+    const stash = "commit-range-no-from";
+    const [, , , targetId] = await seedCommitRange(stash);
+    const response = await api(stash, `/${targetId}/diff`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      entries: [
+        {
+          path: "site/page.txt",
+          op: "put",
+          from: { version: 3 },
+          to: { version: 4 },
+        },
+        {
+          path: "docs/guide.txt",
+          op: "put",
+          from: { version: 3 },
+          to: { version: 4 },
+        },
+      ],
       truncated: false,
     });
   });
