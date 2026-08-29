@@ -95,9 +95,29 @@ describe("single raw upload lifecycle", () => {
 
     const committed = await complete(session.id);
     expect(committed.status).toBe(201);
-    const value = await committed.json<{ version: number; hash: string; changeId: number }>();
+    const value = await committed.json<{
+      commitId: string;
+      version: number;
+      hash: string;
+      changeId: number;
+    }>();
     expect(value).toMatchObject({ version: 1, hash });
     expect(value.changeId).toBeGreaterThan(0);
+    await expect(
+      env.DB.prepare(
+        `SELECT source, source_id, entry_count, change_count, sealed,
+           first_change_id, last_change_id
+         FROM commits WHERE id = ?`,
+      ).bind(value.commitId).first(),
+    ).resolves.toEqual({
+      source: "upload",
+      source_id: session.id,
+      entry_count: 1,
+      change_count: 1,
+      sealed: 1,
+      first_change_id: value.changeId,
+      last_change_id: value.changeId,
+    });
     const downloaded = await request(
       createApp(),
       `http://stash.test/v1/stashes/${STASH}/raw/asset.bin`,
@@ -113,6 +133,9 @@ describe("single raw upload lifecycle", () => {
     await expect(env.DB.prepare("SELECT COUNT(*) AS count FROM versions").first()).resolves.toEqual(
       { count: 1 },
     );
+    await expect(env.DB.prepare("SELECT COUNT(*) AS count FROM commits").first()).resolves.toEqual({
+      count: 1,
+    });
     await expect(
       env.DB.prepare("SELECT COUNT(*) AS count FROM upload_staged_bytes").first(),
     ).resolves.toEqual({ count: 0 });

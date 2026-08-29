@@ -140,7 +140,7 @@ export const selectHeadForWrite = `
 export const selectVersionMeta = `
   SELECT v.id, v.version, v.kind, v.blob_hash, v.size_bytes, v.content_type,
     v.rollback_of, v.author, v.message, v.meta_json, v.created_at,
-    v.representation, v.application_etag, v.content_storage,
+    v.representation, v.application_etag, v.content_storage, v.commit_id,
     previous.blob_hash AS previous_blob_hash,
     previous.representation AS previous_representation,
     previous.content_type AS previous_content_type

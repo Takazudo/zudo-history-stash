@@ -16,6 +16,7 @@ import { wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
 import { generation, generationFactory } from "../helpers/blob-generations.js";
 
 const workerEnv = env as Env;
+let idSequence = 0;
 
 async function seedStash(name: string): Promise<void> {
   await env.DB.prepare(
@@ -34,7 +35,7 @@ function importer(
   let generationSequence = 0;
   return createImport(bindings, {
     now: () => now,
-    createId: () => "unused",
+    createId: () => `import-${++idSequence}`,
     createBlobGeneration: createBlobGeneration ?? (() => generation((generationSequence += 1))),
     ...(onBeforeCommit ? { onBeforeCommit } : {}),
   });
@@ -116,11 +117,25 @@ describe("history import store", () => {
       statusCode: 201,
       value: { path: "history.txt", headVersion: 5 },
     });
+    if (!result.ok) throw new Error("Expected committed import");
+    await expect(
+      env.DB.prepare(
+        `SELECT source, entry_count, change_count, sealed, first_change_id, last_change_id
+         FROM commits WHERE id = ?`,
+      ).bind(result.value.commitId).first(),
+    ).resolves.toEqual({
+      source: "import",
+      entry_count: 5,
+      change_count: 5,
+      sealed: 1,
+      first_change_id: result.value.firstChangeId,
+      last_change_id: result.createdVersions.at(-1)?.changeId,
+    });
 
     const times = [1_001, 1_002, 1_003, 1_004, 1_005];
     const writes = createWrites(workerEnv, {
       now: () => times.shift() ?? 9_999,
-      createId: () => "unused",
+      createId: () => `written-${++idSequence}`,
     });
     await writes.put("written", "history.txt", {
       body: "one",
@@ -392,6 +407,11 @@ describe("history import store", () => {
         .first(),
     ).resolves.toBeNull();
     expect(await counts(stash)).toEqual({ blobs: 3, versions: 3, files: 1, idempotency: 0 });
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM commits WHERE stash_name = ?")
+        .bind(stash)
+        .first(),
+    ).resolves.toEqual({ count: 2 });
     const objectKeys = (await env.BLOBS.list({ prefix: `v2/${stash}/` })).objects
       .map(({ key }) => key)
       .sort();
@@ -691,7 +711,10 @@ describe("history import store", () => {
 
   it("keeps the SQL batch fenced and writes the final tombstone head last", async () => {
     await seedStash("batch-fence");
-    const writes = createWrites(workerEnv, { now: () => 1_000, createId: () => "unused" });
+    const writes = createWrites(workerEnv, {
+      now: () => 1_000,
+      createId: () => `fence-${++idSequence}`,
+    });
     await writes.put("batch-fence", "race.txt", { body: "one", expectedVersion: null });
     const db = env.DB.withSession("first-primary");
     const prepared: PreparedImportVersion[] = [

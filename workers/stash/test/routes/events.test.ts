@@ -13,7 +13,6 @@ import type { Env } from "../../src/env.js";
 import { effectiveStashEventsLifetimeMs } from "../../src/routes/events.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
-import { seedCommit } from "../helpers/seed-rows.js";
 
 const decoder = new TextDecoder();
 
@@ -468,16 +467,22 @@ function delayedAscendingSnapshot(db: D1Database): {
 }
 
 async function seedChanges(bindings: Env, stash: string, count: number): Promise<void> {
-  for (let offset = 0; offset < count; offset += 100) {
+  for (let offset = 0; offset < count; offset += 50) {
     const statements: D1PreparedStatement[] = [];
-    for (const index of Array.from({ length: Math.min(100, count - offset) }, (_, i) => i)) {
+    for (const index of Array.from({ length: Math.min(50, count - offset) }, (_, i) => i)) {
       const change = offset + index + 1;
-      const commitId = await seedCommit(stash, `cmt_events_${change}`, change);
-      statements.push(bindings.DB.prepare(
-        `INSERT INTO versions
+      const commitId = `cmt_events_${change}`;
+      statements.push(
+        bindings.DB.prepare(
+          `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+           VALUES (?, ?, 'put', 1, 'test-fixture', ?)`,
+        ).bind(commitId, stash, change),
+        bindings.DB.prepare(
+          `INSERT INTO versions
            (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at, commit_id)
          VALUES (?, ?, 1, 'put', ?, 1, '', '', ?, ?)`,
-      ).bind(stash, `bulk/${change}.txt`, `hash-${change}`, change, commitId));
+        ).bind(stash, `bulk/${change}.txt`, `hash-${change}`, change, commitId),
+      );
     }
     await bindings.DB.batch(statements);
   }
