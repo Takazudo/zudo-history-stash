@@ -46,10 +46,13 @@ predicate. A table check makes an incomplete seal throw and rolls the entire bat
 collects change IDs by querying rows with the commit ID; per-statement `last_row_id` is not a reliable
 source because a zero-row fenced insert can retain a stale value.
 
-This protocol makes commits all-or-none. A lost aggregate or per-path compare-and-set fence produces
-`409 commit-conflict` with only the failed entries in `conflicts[]`; no commit, version, or head from
-that attempt remains visible. Consumers must refresh and decide how to rebuild the entire operation.
-Approval uses the same aggregate fence and never rebases a candidate.
+This protocol makes commits all-or-none. A failed entry fence exposes only the failed entries in
+root-level `conflicts[]`; exactly one failure whose `current` is `null` is `404 not-found`, and every
+other commit entry-fence failure is `409 commit-conflict`. On commit creation, a whole-stash fence
+failure is `409 stale` without per-entry conflicts. No commit, version, or head from the attempt
+remains visible. Consumers must refresh and decide how to rebuild the entire operation. Approval
+uses the same aggregate fence and never rebases a candidate; for approval specifically, one missing
+`delete` target is `404 not-found`, while other entry conflicts are `409 commit-conflict`.
 
 Single-path create, update, delete, rollback, import, and upload completion are uniform one-entry
 commits, so every version has a non-null commit ID. `skipIfUnchanged` and unchanged upload completion

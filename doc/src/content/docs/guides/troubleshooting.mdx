@@ -50,8 +50,16 @@ stash. Restore a deleted resource only through an authorized workflow.
 
 The loaded compare-and-set head no longer matches. Preserve dirty draft text and its pinned
 comparison, fetch the authoritative head, compare, and deliberately reapply the change. Never
-silently merge, rebase, or blind-retry the mutation. The same fence refuses approval of a change set
-whose base is no longer current.
+silently merge, rebase, or blind-retry the mutation.
+
+### Atomic entry fences
+
+Atomic commit and change-set approval failures can include root-level `conflicts[]`. Commit creation
+and revert return `404 not-found` when exactly one failed entry has `current: null`; their other
+entry-fence failures return `409 commit-conflict`. For one missing `delete` target, approval returns
+`404 not-found`; its other entry conflicts return `409 commit-conflict`. Inspect a present
+`conflicts[]`, refresh every listed path, and rebuild the entire operation; no partial remainder was
+applied.
 
 Other `409` operation states need their own recovery:
 

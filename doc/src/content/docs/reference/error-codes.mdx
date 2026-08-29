@@ -41,5 +41,12 @@ below. Route pages and the OpenAPI document define which errors apply to a parti
 | `rate-limited` | `429` | The principal exceeded its request class budget. | Honor `Retry-After` and back off. |
 | `internal` | `500` | The server could not safely complete the operation. | Record request context and retry only when the operation protocol permits. |
 
+Atomic entry-fence failures use two status branches while preserving root-level `conflicts[]`.
+Commit creation and revert return `404 not-found` when exactly one failed entry has `current: null`;
+their other entry-fence failures return `409 commit-conflict`. Change-set approval returns
+`404 not-found` only for one missing `delete` target and `409 commit-conflict` for its other entry
+conflicts. The typed client's `isCommitConflict` guard narrows the `409 commit-conflict` branch
+specifically; inspect a present `conflicts[]` array when handling both branches together.
+
 Transport failures and malformed responses can reject before a typed error result exists. Do not
 infer success from the absence of one of these business codes.

@@ -67,8 +67,9 @@ if (!rollback.ok) throw new Error(rollback.error.message);
 ```
 
 Use `commits.create` when multiple paths must move together. Every entry carries its own head fence;
-the server either applies all entries or returns `commit-conflict` with the failing paths and applies
-none:
+the server either applies all entries or returns a failure with the fenced paths in root-level
+`conflicts[]` and applies none. Exactly one failure whose current head is absent is `404 not-found`;
+all other entry-fence failures are `409 commit-conflict`:
 
 ```ts
 const commit = await client.commits("demo").create({
@@ -92,7 +93,7 @@ const commit = await client.commits("demo").create({
   message: "Publish site shell",
 });
 if (!commit.ok) {
-  if (commit.error.code === "commit-conflict") console.error(commit.conflicts);
+  if (commit.conflicts !== undefined) console.error(commit.conflicts);
   throw new Error(commit.error.message);
 }
 ```

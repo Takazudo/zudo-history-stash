@@ -41,5 +41,12 @@ JSON の失敗は、機械可読な `error.code` が以下のいずれかの値�
 | `rate-limited` | `429` | principal がリクエスト分類の予算を超えました。 | `Retry-After` に従い、backoff してください。 |
 | `internal` | `500` | サーバーは操作を安全に完了できませんでした。 | リクエストの文脈を記録し、操作プロトコルで許可されている場合だけ再試行してください。 |
 
+atomic entry fence の失敗は、ルートの `conflicts[]` を維持したまま二つの status branch を使います。commit の
+作成と revert では、`404 not-found` を返すのは失敗した entry が一つだけで `current: null` の場合です。それ以外の
+entry fence 失敗は `409 commit-conflict` です。change set の承認では、`404 not-found` を返すのは存在しない
+`delete` 対象一つだけの場合で、それ以外の entry conflict では `409 commit-conflict` を返します。typed client の
+`isCommitConflict` guard は `409 commit-conflict` branch だけを narrow します。両 branch をまとめて処理する
+場合は、存在する `conflicts[]` array を確認してください。
+
 転送の失敗や不正なレスポンスでは、型付きエラー結果が存在する前に reject されることがあります。これらの
 業務コードがないことから、成功を推測しないでください。

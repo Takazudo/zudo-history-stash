@@ -17,9 +17,11 @@ entry のパスは重複できません。`copy` の参照元は同じ stash に
 
 各 entry の `expectedVersion: null` は「新規作成のみ」を意味し、整数の場合は現在の head と一致する必要が
 あります。任意の `expectedLastChangeId` を加えると、stash 全体にもフェンスを設定できます。サーバーは
-すべてのフェンスをまとめて判定し、競合時には `409 commit-conflict` を返して、失敗した entry だけをルートの
-`conflicts[]` に入れます。競合していない entry だけを適用することはありません。関係する head を
-すべて再取得し、意図を確認して新しい commit を組み立ててください。自動 merge や rebase は行われません。
+すべてのフェンスをまとめて判定します。entry fence の失敗時は、失敗した entry だけをルートの
+`conflicts[]` に入れます。失敗が一つだけで `current` が `null` なら `404 not-found`、それ以外の entry fence
+失敗は `409 commit-conflict` です。`expectedLastChangeId` fence の失敗は entry ごとの conflict を伴わない
+`409 stale` です。競合していない entry だけを適用することはありません。関係する head をすべて再取得し、
+意図を確認して新しい commit を組み立ててください。自動 merge や rebase は行われません。
 
 ### `POST /v1/stashes/{stash}/commits`
 
@@ -91,7 +93,8 @@ state を返します。
 指定した commit の全 entry を現在の head に対して打ち消す、新しいアトミック commit を作成します。元の
 commit を消したり、履歴を過去へ戻したりはしません。元の commit が作成したパスには tombstone を追加し、
 更新または削除したパスには直前の状態を復元する新しい version を追加します。一つでも現在の head が対象
-commit の結果と一致しなければ、revert 全体が `409 commit-conflict` と `conflicts[]` で失敗します。
+commit の結果と一致しなければ、revert 全体がルートの `conflicts[]` を伴って失敗します。不一致が一つだけで
+`current` が `null` なら `404 not-found`、それ以外の不一致は `409 commit-conflict` です。
 
 body の `author`、`message`、`meta` は任意です。成功時は `201 CommitResult` を返し、`revertsCommitId` に
 対象を設定します。`Idempotency-Key` の永続的な replay semantics は commit 作成時と同じです。

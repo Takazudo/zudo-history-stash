@@ -17,9 +17,11 @@ entries use `representation: "binary"`, `contentType`, and canonical `bytesBase6
 
 For each entry, `expectedVersion: null` means “create only”; an integer must equal the current head.
 The optional `expectedLastChangeId` adds a whole-stash fence. The server evaluates every fence
-together and returns `409 commit-conflict` with only the failing entries in root-level `conflicts[]`.
-It never applies the non-conflicting subset. Refresh all affected heads and deliberately construct a
-new commit; there is no automatic merge or rebase.
+together. An entry-fence failure returns only the failing entries in root-level `conflicts[]`:
+exactly one failure whose `current` is `null` is `404 not-found`, while every other entry-fence
+failure is `409 commit-conflict`. A failed `expectedLastChangeId` fence is `409 stale` without
+per-entry conflicts. The server never applies the non-conflicting subset. Refresh all affected heads
+and deliberately construct a new commit; there is no automatic merge or rebase.
 
 ### `POST /v1/stashes/{stash}/commits`
 
@@ -92,7 +94,8 @@ Creates a new atomic commit that reverses every entry of the named commit agains
 It does not erase the original commit or move history backward. A path created by the original
 commit receives a tombstone; an updated or deleted path receives a new version restoring the former
 state. If any current head no longer matches the target commit's result, the entire revert fails with
-`409 commit-conflict` and `conflicts[]`.
+root-level `conflicts[]`. Exactly one mismatch whose `current` is `null` is `404 not-found`; every
+other mismatch is `409 commit-conflict`.
 
 The body accepts optional `author`, `message`, and `meta`. Success is `201 CommitResult`, with
 `revertsCommitId` set to the target. `Idempotency-Key` has the same permanent replay semantics as

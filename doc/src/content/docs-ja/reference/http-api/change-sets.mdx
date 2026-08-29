@@ -17,8 +17,10 @@ entry は commit と同じ `put`、binary `put`、`copy`、`delete`、`rollback`
 
 現在の head が記録済み base と異なると、open record は stale になります。record/diff の `stale` は読み取り
 時点の観測結果であり lock ではありません。承認時には decision batch 内で aggregate fence を再評価するため、
-直前の読み取りが non-stale でも同時書き込みにより `409 commit-conflict` になり得ます。競合を解決して新しい
-change set を作成してください。close 済み record は不変であり、再び open にはできません。
+直前の読み取りが non-stale でも承認できるとは限りません。fence の失敗時は、失敗した entry をルートの
+`conflicts[]` に含めます。存在しない `delete` 対象一つだけが失敗した場合は `404 not-found`、それ以外の entry
+conflict は `409 commit-conflict` です。競合を解決して新しい change set を作成してください。close 済み
+record は不変であり、再び open にはできません。
 
 ### `POST /v1/stashes/{stash}/change-sets`
 
@@ -93,9 +95,11 @@ open かつ期限内の record を claim し、全 candidate を一つの commit
 `commit.id` を参照します。
 
 承認は保存済み terminal state により冪等です。applied record の承認を繰り返すと、保存済みの結果を返します。
-base が stale なら `409 commit-conflict` と `conflicts[]`、期限切れなら
-`409 change-set-expired`、競合する terminal decision なら `409 change-set-closed` です。どの失敗でも
-partial commit が見えることはありません。
+base が stale なら、ルートの `conflicts[]` を返します。存在しない `delete` 対象一つだけが失敗した場合は
+`404 not-found`、それ以外の entry conflict は `409 commit-conflict` です。期限切れは
+`409 change-set-expired`、競合する terminal decision は `409 change-set-closed` です。stash 全体の fence が
+stale の場合も、entry ごとの conflict を伴わない `409 commit-conflict` です。どの失敗でも partial commit が
+見えることはありません。
 
 ### `POST /v1/stashes/{stash}/change-sets/{id}/reject`
 

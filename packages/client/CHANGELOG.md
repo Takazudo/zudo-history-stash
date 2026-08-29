@@ -8,8 +8,9 @@ The format is based on Keep a Changelog, and release notes are generated from th
 
 - Add `commits(stash)`, `changeSets(stash)`, and `files(stash).snapshot()` APIs over fetch and named
   RPC transports.
-- Expose atomic conflict details through `conflicts[]` and the `isCommitConflict` guard; no automatic
-  multi-path stale retry is performed.
+- Preserve atomic `conflicts[]` on both `404 not-found` and `409 commit-conflict` results, and add the
+  `isCommitConflict` guard for the `409 commit-conflict` branch specifically; no automatic multi-path
+  stale retry is performed.
 - Require `commitId` in version, history, change-feed, and live-event types and extend the fake and
   conformance surfaces to preserve all-or-none behavior.
 

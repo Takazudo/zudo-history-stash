@@ -17,9 +17,10 @@ creation, so review and approval do not depend on a caller retaining the origina
 
 An open record can become stale whenever a current head differs from its captured base. `stale` on
 the record/diff is an observation at read time, not a lock. Approval repeats the aggregate fence
-inside the decision batch; a concurrent write can therefore produce `409 commit-conflict` even
-after a fresh, non-stale read. Create a new change set after resolving conflicts. Closed records are
-immutable and cannot be reopened.
+inside the decision batch, so a fresh, non-stale read does not guarantee approval. Fence failures
+include the failed entries in root-level `conflicts[]`: exactly one missing `delete` target is
+`404 not-found`, while other entry conflicts are `409 commit-conflict`. Create a new change set after
+resolving conflicts. Closed records are immutable and cannot be reopened.
 
 ### `POST /v1/stashes/{stash}/change-sets`
 
@@ -95,9 +96,11 @@ Claims an open, unexpired record and applies every candidate as one commit. The 
 the stored change set then has `status: "applied"` and points to `commit.id`.
 
 Approval is idempotent by terminal state: repeating approval of an already applied record returns
-its stored result. A stale base is `409 commit-conflict` with `conflicts[]`; expiry is
-`409 change-set-expired`; a competing terminal decision is `409 change-set-closed`. No partial
-commit is visible for any failure.
+its stored result. A stale base returns root-level `conflicts[]`. Exactly one missing `delete` target
+is `404 not-found`; other entry conflicts are `409 commit-conflict`. Expiry is
+`409 change-set-expired`; a competing terminal decision is `409 change-set-closed`. A stale
+whole-stash fence is also `409 commit-conflict`, without per-entry conflicts. No partial commit is
+visible for any failure.
 
 ### `POST /v1/stashes/{stash}/change-sets/{id}/reject`
 

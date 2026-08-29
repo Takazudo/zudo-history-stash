@@ -77,7 +77,7 @@ const result = await client.commits("demo").create(
 );
 
 if (!result.ok) {
-  if (result.error.code === "commit-conflict") console.error(result.conflicts);
+  if (result.conflicts !== undefined) console.error(result.conflicts);
   throw new Error(result.error.message);
 }
 console.log(result.value.id);
@@ -86,8 +86,10 @@ console.log(result.value.id);
 二回目以降の同期では、`files.list({ prefix: "site" })` を全 page について呼び出し、remote の
 `headVersion` と hash を保持します。hash が同じ file には entry が不要です。置き換えと削除には現在の正の
 version を `expectedVersion` として使い、パスが存在しない場合だけ `null` を使います。どれか一つの fence で
-負けると、サーバーは `commit-conflict` を返し、どの entry も書き込みません。prefix を再取得して新しい操作を
-組み立て、内容を変えたまま古い idempotency key を再利用しないでください。
+負けても、サーバーはどの entry も書き込まず、失敗した path をルートの `conflicts[]` に含めます。失敗が一つ
+だけで現在の head が存在しない場合は `404 not-found`、それ以外の entry fence 失敗は
+`409 commit-conflict` です。prefix を再取得して新しい操作を組み立て、内容を変えたまま古い idempotency key を
+再利用しないでください。
 
 ## repository helper を使う
 

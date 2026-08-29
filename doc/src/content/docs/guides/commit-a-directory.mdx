@@ -77,7 +77,7 @@ const result = await client.commits("demo").create(
 );
 
 if (!result.ok) {
-  if (result.error.code === "commit-conflict") console.error(result.conflicts);
+  if (result.conflicts !== undefined) console.error(result.conflicts);
   throw new Error(result.error.message);
 }
 console.log(result.value.id);
@@ -86,8 +86,10 @@ console.log(result.value.id);
 For later synchronization, list all pages with `files.list({ prefix: "site" })` and retain each
 remote `headVersion` and hash. Unchanged hashes need no entry. Use the current positive version as
 `expectedVersion` for replacements and deletes, and `null` only for absent paths. If any fence loses,
-the server returns `commit-conflict` and writes none of the entries. Refresh the prefix and construct
-a new operation instead of reusing the old idempotency key with changed content.
+the server writes none of the entries and includes the failed paths in root-level `conflicts[]`.
+Exactly one failure whose current head is absent is `404 not-found`; all other entry-fence failures
+are `409 commit-conflict`. Refresh the prefix and construct a new operation instead of reusing the
+old idempotency key with changed content.
 
 ## Use the repository helper
 

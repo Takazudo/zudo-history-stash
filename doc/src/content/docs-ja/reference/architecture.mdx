@@ -45,10 +45,13 @@ table check により不完全な seal は例外となり、batch 全体が roll
 query して集めます。row を挿入しなかった fenced insert が古い値を保持し得るため、statement ごとの
 `last_row_id` は信頼できる情報源ではありません。
 
-この protocol により commit は all-or-none になります。aggregate または path ごとの compare-and-set fence で
-負けると、`409 commit-conflict` となり、失敗 entry だけを `conflicts[]` に含みます。その試行の commit、version、
-head は一つも見えません。利用側は再取得したうえで、操作全体をどう作り直すか判断する必要があります。
-change set の承認も同じ aggregate fence を使い、candidate を rebase しません。
+この protocol により commit は all-or-none になります。entry fence の失敗時は、失敗した entry だけをルートの
+`conflicts[]` に含めます。失敗が一つだけで `current` が `null` なら `404 not-found`、それ以外の commit entry
+fence 失敗は `409 commit-conflict` です。commit 作成時に stash 全体の fence が失敗すると、entry ごとの
+conflict を伴わない `409 stale` になります。その試行の commit、version、head は一つも見えません。利用側は
+再取得したうえで、操作全体をどう作り直すか判断する必要があります。change set の承認も同じ aggregate fence
+を使い、candidate を rebase しません。承認の場合に限り、存在しない `delete` 対象一つだけの失敗は
+`404 not-found`、それ以外の entry conflict は `409 commit-conflict` です。
 
 単一パスの作成、更新、削除、rollback、import、upload completion も一 entry の uniform commit なので、すべての
 version が non-null の commit ID を持ちます。`skipIfUnchanged` と unchanged upload completion は version も
