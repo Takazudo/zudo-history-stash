@@ -57,7 +57,6 @@ async function installFixture(page: Page) {
     const url = new URL(request.url());
     const signature = `${request.method()} ${url.pathname}${url.search}`;
 
-
     if (request.method() === "GET" && url.pathname === "/api/v1/me" && url.search === "") {
       await route.fulfill({ status: 200, json: { principal: "admin" } });
       return;

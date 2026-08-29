@@ -95,9 +95,7 @@ function diffResult(from: number, to: number): ClientResult<GetDiffResult> {
   };
 }
 
-function clientWithFiles(
-  overrides: Partial<StashFilesClient> = {},
-): ViewerStashClient {
+function clientWithFiles(overrides: Partial<StashFilesClient> = {}): ViewerStashClient {
   const base = createFakeViewerClient();
   const defaults: Pick<StashFilesClient, "get" | "history" | "diff"> = {
     get: async (): Promise<FileGetResult> => ({ ok: true, value: fileRecord() }),
@@ -191,7 +189,6 @@ describe("FilePage", () => {
     await waitFor(() =>
       expect(screen.getByRole("region", { name: "History" }).textContent).toContain("Peer update"),
     );
-
   });
 
   it("shows loading states for the representation and history", () => {

@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  CLIENT_ROUTES,
-  StashHttpError,
-  createStashClient,
-  validatePath,
-} from "./index.js";
+import { CLIENT_ROUTES, StashHttpError, createStashClient, validatePath } from "./index.js";
 import { createRpcSend } from "./transport.js";
 import type { StashFetch, StashRpcBinding } from "./index.js";
 import {
@@ -538,7 +533,6 @@ describe("response mapping and safety", () => {
       error: { code: "stale", message: "head moved", status: 409 },
       current,
     });
-
   });
 
   it("maps 304 to a distinct notModified result and sends the supplied ETag", async () => {

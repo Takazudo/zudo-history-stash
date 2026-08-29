@@ -112,10 +112,7 @@ export default function StashPage() {
   useViewerLiveRefresh(
     useCallback(
       async ({ signal }) => {
-        const results = await Promise.allSettled([
-          resetFiles(signal),
-          resetChanges(signal),
-        ]);
+        const results = await Promise.allSettled([resetFiles(signal), resetChanges(signal)]);
         const failed = results.find(
           (result): result is PromiseRejectedResult => result.status === "rejected",
         );

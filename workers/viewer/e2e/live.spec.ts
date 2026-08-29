@@ -979,8 +979,7 @@ test("@live admin deletes and restores a unique stash through the viewer", async
     await expect(page.getByRole("heading", { name: stash, exact: true })).toBeVisible();
     await expect
       .poll(() => Math.min(...Object.values(reconciledLoads)), {
-        message:
-          "the lifecycle page's initial and ready-triggered files and changes should finish",
+        message: "the lifecycle page's initial and ready-triggered files and changes should finish",
         timeout: 10_000,
       })
       .toBeGreaterThanOrEqual(2);

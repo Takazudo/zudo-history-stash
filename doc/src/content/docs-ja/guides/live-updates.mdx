@@ -56,9 +56,7 @@ export function openAdvisoryUpdates(input: {
           await input.refreshAuthoritativeState(event);
         }
         if (
-          (event.type === "change" ||
-            event.type === "commit" ||
-            event.type === "change-set") &&
+          (event.type === "change" || event.type === "commit" || event.type === "change-set") &&
           event.origin !== input.clientId
         ) {
           input.onRemoteHint(event);

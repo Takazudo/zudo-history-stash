@@ -199,21 +199,146 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     return noThrow(() => rpcClient(this, token).admin.gc.runs(options));
   }
 
-  async createCommit(token: string, stash: string, input: CreateCommitBody, idempotencyKey?: string): Promise<Response> { return this.jsonSkeleton("POST", `/v1/stashes/${stash}/commits`, token, input, idempotencyKey); }
-  async getCommit(token: string, stash: string, id: string): Promise<Response> { return this.request({ method: "GET", path: `/v1/stashes/${stash}/commits/${id}`, token }); }
-  async listCommits(token: string, stash: string, query: Partial<ListCommitsQuery> = {}): Promise<Response> { return this.request({ method: "GET", path: `/v1/stashes/${stash}/commits`, query: optionalQuery(query), token }); }
-  async getCommitDiff(token: string, stash: string, id: string, query: CommitDiffQuery = {}): Promise<Response> { return this.request({ method: "GET", path: `/v1/stashes/${stash}/commits/${id}/diff`, query: optionalQuery(query), token }); }
-  async revertCommit(token: string, stash: string, id: string, input: RevertCommitBody, idempotencyKey?: string): Promise<Response> { return this.jsonSkeleton("POST", `/v1/stashes/${stash}/commits/${id}/revert`, token, input, idempotencyKey); }
-  async getSnapshot(token: string, stash: string, query: SnapshotQuery): Promise<Response> { return this.request({ method: "GET", path: `/v1/stashes/${stash}/snapshot`, query: optionalQuery(query), token }); }
-  async createChangeSet(token: string, stash: string, input: CreateChangeSetBody, idempotencyKey?: string): Promise<Response> { return this.jsonSkeleton("POST", `/v1/stashes/${stash}/change-sets`, token, input, idempotencyKey); }
-  async listChangeSets(token: string, stash: string, query: Partial<ListChangeSetsQuery> = {}): Promise<Response> { return this.request({ method: "GET", path: `/v1/stashes/${stash}/change-sets`, query: optionalQuery(query), token }); }
-  async getChangeSet(token: string, stash: string, id: string): Promise<Response> { return this.request({ method: "GET", path: `/v1/stashes/${stash}/change-sets/${id}`, token }); }
-  async getChangeSetDiff(token: string, stash: string, id: string, query: ChangeSetDiffQuery = {}): Promise<Response> { return this.request({ method: "GET", path: `/v1/stashes/${stash}/change-sets/${id}/diff`, query: optionalQuery(query), token }); }
-  async approveChangeSet(token: string, stash: string, id: string, input: ApproveChangeSetBody): Promise<Response> { return this.jsonSkeleton("POST", `/v1/stashes/${stash}/change-sets/${id}/approve`, token, input); }
-  async rejectChangeSet(token: string, stash: string, id: string, input: RejectChangeSetBody): Promise<Response> { return this.jsonSkeleton("POST", `/v1/stashes/${stash}/change-sets/${id}/reject`, token, input); }
+  async createCommit(
+    token: string,
+    stash: string,
+    input: CreateCommitBody,
+    idempotencyKey?: string,
+  ): Promise<Response> {
+    return this.jsonSkeleton("POST", `/v1/stashes/${stash}/commits`, token, input, idempotencyKey);
+  }
+  async getCommit(token: string, stash: string, id: string): Promise<Response> {
+    return this.request({ method: "GET", path: `/v1/stashes/${stash}/commits/${id}`, token });
+  }
+  async listCommits(
+    token: string,
+    stash: string,
+    query: Partial<ListCommitsQuery> = {},
+  ): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/commits`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+  async getCommitDiff(
+    token: string,
+    stash: string,
+    id: string,
+    query: CommitDiffQuery = {},
+  ): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/commits/${id}/diff`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+  async revertCommit(
+    token: string,
+    stash: string,
+    id: string,
+    input: RevertCommitBody,
+    idempotencyKey?: string,
+  ): Promise<Response> {
+    return this.jsonSkeleton(
+      "POST",
+      `/v1/stashes/${stash}/commits/${id}/revert`,
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+  async getSnapshot(token: string, stash: string, query: SnapshotQuery): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/snapshot`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+  async createChangeSet(
+    token: string,
+    stash: string,
+    input: CreateChangeSetBody,
+    idempotencyKey?: string,
+  ): Promise<Response> {
+    return this.jsonSkeleton(
+      "POST",
+      `/v1/stashes/${stash}/change-sets`,
+      token,
+      input,
+      idempotencyKey,
+    );
+  }
+  async listChangeSets(
+    token: string,
+    stash: string,
+    query: Partial<ListChangeSetsQuery> = {},
+  ): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/change-sets`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+  async getChangeSet(token: string, stash: string, id: string): Promise<Response> {
+    return this.request({ method: "GET", path: `/v1/stashes/${stash}/change-sets/${id}`, token });
+  }
+  async getChangeSetDiff(
+    token: string,
+    stash: string,
+    id: string,
+    query: ChangeSetDiffQuery = {},
+  ): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/change-sets/${id}/diff`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+  async approveChangeSet(
+    token: string,
+    stash: string,
+    id: string,
+    input: ApproveChangeSetBody,
+  ): Promise<Response> {
+    return this.jsonSkeleton(
+      "POST",
+      `/v1/stashes/${stash}/change-sets/${id}/approve`,
+      token,
+      input,
+    );
+  }
+  async rejectChangeSet(
+    token: string,
+    stash: string,
+    id: string,
+    input: RejectChangeSetBody,
+  ): Promise<Response> {
+    return this.jsonSkeleton("POST", `/v1/stashes/${stash}/change-sets/${id}/reject`, token, input);
+  }
 
-  private jsonSkeleton(method: "POST", path: string, token: string, input: unknown, idempotencyKey?: string): Promise<Response> {
-    return this.request({ method, path, headers: { "Content-Type": "application/json", ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }) }, body: JSON.stringify(input), token });
+  private jsonSkeleton(
+    method: "POST",
+    path: string,
+    token: string,
+    input: unknown,
+    idempotencyKey?: string,
+  ): Promise<Response> {
+    return this.request({
+      method,
+      path,
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
+      },
+      body: JSON.stringify(input),
+      token,
+    });
   }
 
   async listFiles(

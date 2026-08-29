@@ -571,5 +571,4 @@ describe("EditPage", () => {
     );
     expect(screen.getByLabelText("destination flash").textContent).toBe("Saved v3.");
   });
-
 });

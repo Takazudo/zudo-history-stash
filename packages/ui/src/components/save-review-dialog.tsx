@@ -158,10 +158,7 @@ function SaveReviewDialogOpen({
   const machineSaving = machine.state === "saving";
   const busy = machineSaving || reconciling || reloading || retrying;
   const fieldsDisabled =
-    busy ||
-    machine.state === "error" ||
-    machine.state === "saved" ||
-    machine.state === "unchanged";
+    busy || machine.state === "error" || machine.state === "saved" || machine.state === "unchanged";
 
   useLayoutEffect(() => {
     renderEpochRef.current += 1;
@@ -225,9 +222,7 @@ function SaveReviewDialogOpen({
   }, [machine.state]);
 
   function requestClose() {
-    if (
-      pendingOperationRef.current !== null || machine.state === "saving"
-    ) {
+    if (pendingOperationRef.current !== null || machine.state === "saving") {
       return;
     }
     if (!machine.resetSession()) return;
@@ -235,9 +230,7 @@ function SaveReviewDialogOpen({
   }
 
   function requestDiscard() {
-    if (
-      pendingOperationRef.current !== null || machine.state === "saving"
-    ) {
+    if (pendingOperationRef.current !== null || machine.state === "saving") {
       return;
     }
     if (!machine.resetSession()) return;
@@ -289,11 +282,7 @@ function SaveReviewDialogOpen({
   }
 
   async function reloadAndCompare() {
-    if (
-      machine.state !== "stale" ||
-      busy ||
-      pendingOperationRef.current !== null
-    ) {
+    if (machine.state !== "stale" || busy || pendingOperationRef.current !== null) {
       return;
     }
     const lifecycle = lifecycleRef.current;
@@ -524,11 +513,7 @@ function SaveReviewDialogOpen({
               <Button disabled={busy} onClick={requestClose}>
                 Cancel
               </Button>
-              <Button
-                disabled={busy || sameAsHead !== false}
-                type="submit"
-                variant="primary"
-              >
+              <Button disabled={busy || sameAsHead !== false} type="submit" variant="primary">
                 {machineSaving
                   ? `Saving v${nextVersion}…`
                   : reconciling

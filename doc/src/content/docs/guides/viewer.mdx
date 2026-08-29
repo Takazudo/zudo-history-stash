@@ -1,6 +1,6 @@
 ---
 title: Operate the Viewer
-description: Use the hosted Viewer safely for browsing, editing, change sets, tokens, and live updates.
+description: Use the hosted Viewer safely for browsing, editing, tokens, and live updates.
 sidebar_position: 100
 category: guides
 ---
@@ -27,8 +27,8 @@ loading or changing:
 
 | Capability | Viewer operations |
 | --- | --- |
-| read | Browse stashes and files, inspect history and diffs, and list or review change sets. |
-| write | Create, edit, delete, restore, or roll back files, and create or decide change sets. |
+| read | Browse stashes and files, and inspect history and diffs. |
+| write | Create, edit, delete, restore, or roll back files. |
 | admin | Create, delete, or restore stashes; manage tokens; and run garbage collection. |
 
 ## Viewer routes
@@ -43,8 +43,6 @@ Viewer URLs are navigation state, not proof of access.
 | `/s/:stash/f/*` | Show a file; `?version=N` selects a historical version. |
 | `/s/:stash/diff/*` | Compare `?from=N&to=M&context=N`, or set `to=head` for the current head. |
 | `/s/:stash/edit/*` | Edit a file; optional `?from=N` pins the loaded source version. |
-| `/s/:stash/change-sets` | List `?status=open` or `?status=all`, optionally filtered by exact `?path=...`. |
-| `/s/:stash/change-sets/:id` | Review one change set and its immutable base/candidate diff. |
 | `/s/:stash/new` | Create a file. |
 | `/s/:stash/tokens` | Admin-only token management. |
 
@@ -74,10 +72,6 @@ A save uses the head loaded with the draft as its compare-and-set fence. If anot
 the head, the Viewer marks the draft stale while preserving dirty text and the pinned comparison.
 Reload and compare the authoritative version, then deliberately reapply the change. Do not blindly
 retry, silently merge, or silently rebase a stale draft.
-
-Change set base and candidate state are similarly immutable. Review the exact diff before deciding.
-Open/all and exact-path filters help triage, but approval and rejection remain write-gated. A stale
-approval is refused; it is never automatically rebased onto a newer head.
 
 Token plaintext is shown only once after minting. Move it directly to the intended secret store,
 then leave the page. A later list can show metadata but cannot recover the credential.

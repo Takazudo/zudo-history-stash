@@ -1,0 +1,55 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`projectRequestSchema > projects PutFileBody deterministically 1`] = `
+{
+  "additionalProperties": false,
+  "properties": {
+    "author": {
+      "description": "Must be a well-formed Unicode string. Maximum 200 UTF-8 bytes.",
+      "type": "string",
+    },
+    "body": {
+      "description": "Must be a well-formed Unicode string. Maximum 5000000 UTF-8 bytes.",
+      "type": "string",
+    },
+    "contentType": {
+      "description": "Must be a well-formed Unicode string.",
+      "type": "string",
+    },
+    "expectedVersion": {
+      "oneOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer",
+        },
+        {
+          "type": "null",
+        },
+      ],
+    },
+    "message": {
+      "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
+      "type": "string",
+    },
+    "meta": {
+      "additionalProperties": {
+        "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema.",
+      },
+      "description": "Serialized JSON must be at most 4096 UTF-8 bytes.",
+      "propertyNames": {
+        "type": "string",
+      },
+      "type": "object",
+    },
+    "skipIfUnchanged": {
+      "type": "boolean",
+    },
+  },
+  "required": [
+    "body",
+    "expectedVersion",
+  ],
+  "type": "object",
+}
+`;

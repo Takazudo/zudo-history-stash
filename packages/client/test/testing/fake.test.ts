@@ -383,10 +383,7 @@ describe("stash administration routes", () => {
       restorable: true,
     });
 
-    for (const path of [
-      "/v1/stashes/demo/files/a.txt",
-      "/v1/stashes/demo/tokens",
-    ]) {
+    for (const path of ["/v1/stashes/demo/files/a.txt", "/v1/stashes/demo/tokens"]) {
       const concealed = await request(fake, path);
       expect(concealed.status).toBe(404);
       expect(await errorCode(concealed)).toBe("not-found");
@@ -1518,7 +1515,6 @@ describe("validation and limits", () => {
     const excessiveLimit = await request(fake, "/v1/stashes/demo/files?limit=201");
     expect(excessiveLimit.status).toBe(400);
     expect(await errorCode(excessiveLimit)).toBe("validation");
-
   });
 
   it("distinguishes Unicode, body-byte, request-byte, and key limits", async () => {

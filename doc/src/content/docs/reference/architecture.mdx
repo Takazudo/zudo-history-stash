@@ -20,7 +20,6 @@ D1 owns metadata and mutable heads; large immutable bytes can spill into a priva
 | `versions` | Append-only history; its database-global ID is also the change cursor. |
 | `idempotency` | Request-identity ledger for safe write replay. |
 | `gc_jobs`, `gc_runs` | Generation-fenced garbage-collection leases, progress, and results. |
-| `change sets` | Immutable candidates with fenced decision state. |
 
 Representation (`text`/`binary`), content access (`inline`/`raw`/`deleted`), transfer
 (`json`/`single`/`multipart`), storage (`d1`/`r2`), and diff eligibility are separate contracts.
@@ -37,9 +36,8 @@ inline, raw streaming, and the 524,288-byte-per-side diff bound are independent 
 
 The compare-and-set fence prevents a lost update. If the fence loses after an R2 upload, the object
 can remain unreferenced until garbage collection; it never becomes a file head. Create, update,
-delete, rollback, import, and change set approval all use fences. A rollback appends a new version—it
-does not move history backward—and change set approval requires the change set's exact base head rather
-than rebasing it.
+delete, rollback, and import all use fences. A rollback appends a new version—it does not move history
+backward.
 
 An idempotency key identifies one canonical request. Reusing the key with changed content is a
 `422 idempotency-key-reused` error, not permission to change a replayed operation.

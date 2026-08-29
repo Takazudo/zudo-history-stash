@@ -312,7 +312,6 @@ describe("event publication", () => {
     });
   });
 
-
   it.each(["reject", "throw"] as const)(
     "swallows a %s from stub.fetch after the durable commit",
     async (failure) => {

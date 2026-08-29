@@ -511,7 +511,6 @@ describe("EditWorkbench", () => {
     expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).toBeNull();
   });
 
-
   it("shows stale state, reloads the new head explicitly, and never starts a second put", async () => {
     const fixture = await createFixture();
     renderWorkbench(fixture);

@@ -58,11 +58,7 @@ export interface StashReconnectEvent {
 
 /** One validated advisory event yielded by the fetch-only live stream. */
 export type StashEvent =
-  | StashReadyEvent
-  | StashChangeEvent
-  | StashCommitEvent
-  | StashChangeSetEvent
-  | StashReconnectEvent;
+  StashReadyEvent | StashChangeEvent | StashCommitEvent | StashChangeSetEvent | StashReconnectEvent;
 
 /** Stream lifecycle state. Client packages bind the failure parameter to their HTTP error type. */
 export type LiveStatus<Failure = unknown> =
@@ -210,51 +206,111 @@ export interface GcRunResult {
 export interface GcRunsResponse {
   runs: GcRunResult[];
 }
-export interface CommitConflict { path: string; expectedVersion: number | null; current: Current | null }
+export interface CommitConflict {
+  path: string;
+  expectedVersion: number | null;
+  current: Current | null;
+}
 export interface CommitEntryRecord {
-  path: string; op: "put" | "copy" | "delete" | "rollback"; version: number;
-  kind: VersionKind; changeId: number; hash: string | null; size: number;
-  contentType: string; representation: Representation; rollbackOf: number | null;
-  copiedFrom?: { path: string; version: number }; identicalToHead?: boolean;
+  path: string;
+  op: "put" | "copy" | "delete" | "rollback";
+  version: number;
+  kind: VersionKind;
+  changeId: number;
+  hash: string | null;
+  size: number;
+  contentType: string;
+  representation: Representation;
+  rollbackOf: number | null;
+  copiedFrom?: { path: string; version: number };
+  identicalToHead?: boolean;
 }
 export interface CommitRecord {
-  id: string; stash: string; source: string; sourceId: string | null; author: string;
-  message: string; meta: Record<string, JsonValue>; entryCount: number;
-  firstChangeId: number; lastChangeId: number; revertsCommitId: string | null;
-  createdBy: string; createdAt: string; entries: CommitEntryRecord[];
+  id: string;
+  stash: string;
+  source: string;
+  sourceId: string | null;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  entryCount: number;
+  firstChangeId: number;
+  lastChangeId: number;
+  revertsCommitId: string | null;
+  createdBy: string;
+  createdAt: string;
+  entries: CommitEntryRecord[];
 }
 export type CommitResult = CommitRecord & { skipped?: { path: string; reason: string }[] };
 export type CommitSummary = Omit<CommitRecord, "entries">;
-export interface CommitListResponse { commits: CommitSummary[]; nextAfter: string | null; total: number }
+export interface CommitListResponse {
+  commits: CommitSummary[];
+  nextAfter: string | null;
+  total: number;
+}
 export interface CommitDiffEntry {
-  path: string; op: CommitEntryRecord["op"];
+  path: string;
+  op: CommitEntryRecord["op"];
   from: { version: number; hash: string | null } | null;
   to: { version: number; hash: string | null };
   diff: DiffResult | { state: "binary" | "oversized" };
 }
-export interface CommitDiffResult { entries: CommitDiffEntry[]; truncated: boolean }
+export interface CommitDiffResult {
+  entries: CommitDiffEntry[];
+  truncated: boolean;
+}
 export interface SnapshotResponse {
-  at: { commitId: string; changeId: number }; files: FileSummary[];
-  commonPrefixes?: string[]; nextAfter: string | null;
+  at: { commitId: string; changeId: number };
+  files: FileSummary[];
+  commonPrefixes?: string[];
+  nextAfter: string | null;
 }
 export interface ChangeSetEntryRecord {
-  path: string; op: CommitEntryRecord["op"]; baseVersion: number | null;
-  current: Current | null; stale: boolean;
+  path: string;
+  op: CommitEntryRecord["op"];
+  baseVersion: number | null;
+  current: Current | null;
+  stale: boolean;
 }
 export interface ChangeSetRecord {
-  id: string; stash: string; status: ChangeSetStatus; author: string; message: string;
-  meta: Record<string, JsonValue>; expiresAt: string; createdBy: string; createdAt: string;
-  decidedAt: string | null; decidedBy: string | null; decisionReason: string | null;
-  commitId: string | null; entries: ChangeSetEntryRecord[];
+  id: string;
+  stash: string;
+  status: ChangeSetStatus;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  expiresAt: string;
+  createdBy: string;
+  createdAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  commitId: string | null;
+  entries: ChangeSetEntryRecord[];
 }
-export interface ChangeSetListResponse { changeSets: ChangeSetRecord[]; nextAfter: string | null; total: number }
+export interface ChangeSetListResponse {
+  changeSets: ChangeSetRecord[];
+  nextAfter: string | null;
+  total: number;
+}
 export interface ChangeSetDiffResult {
-  entries: Array<{ path: string; op: CommitEntryRecord["op"]; base: Current | null;
-    candidate: Current | null; current: Current | null; stale: boolean;
-    diff: DiffResult | { state: "binary" | "oversized" } }>;
-  stale: boolean; status: ChangeSetStatus; truncated: boolean;
+  entries: Array<{
+    path: string;
+    op: CommitEntryRecord["op"];
+    base: Current | null;
+    candidate: Current | null;
+    current: Current | null;
+    stale: boolean;
+    diff: DiffResult | { state: "binary" | "oversized" };
+  }>;
+  stale: boolean;
+  status: ChangeSetStatus;
+  truncated: boolean;
 }
-export interface ApproveChangeSetResult { status: "applied"; commit: CommitResult }
+export interface ApproveChangeSetResult {
+  status: "applied";
+  commit: CommitResult;
+}
 export interface TokenRecord {
   id: string;
   label: string;

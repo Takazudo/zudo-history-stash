@@ -498,52 +498,117 @@ export const CurrentSchema = z.strictObject({
 
 const CommitOperationSchema = z.enum(["put", "copy", "delete", "rollback"]);
 export const CommitEntryRecordSchema = z.strictObject({
-  path: z.string(), op: CommitOperationSchema, version: IntegerSchema, kind: VersionKindSchema,
-  changeId: IntegerSchema, hash: NullableHashSchema, size: NonNegativeIntegerSchema,
-  contentType: z.string(), representation: RepresentationSchema, rollbackOf: IntegerSchema.nullable(),
+  path: z.string(),
+  op: CommitOperationSchema,
+  version: IntegerSchema,
+  kind: VersionKindSchema,
+  changeId: IntegerSchema,
+  hash: NullableHashSchema,
+  size: NonNegativeIntegerSchema,
+  contentType: z.string(),
+  representation: RepresentationSchema,
+  rollbackOf: IntegerSchema.nullable(),
   copiedFrom: z.strictObject({ path: z.string(), version: IntegerSchema }).optional(),
   identicalToHead: z.boolean().optional(),
 });
 const CommitRecordFields = {
-  id: z.string(), stash: z.string(), source: z.string(), sourceId: z.string().nullable(), author: z.string(),
-  message: z.string(), meta: MetaSchema, entryCount: NonNegativeIntegerSchema,
-  firstChangeId: IntegerSchema, lastChangeId: IntegerSchema, revertsCommitId: z.string().nullable(),
-  createdBy: z.string(), createdAt: TimestampSchema,
+  id: z.string(),
+  stash: z.string(),
+  source: z.string(),
+  sourceId: z.string().nullable(),
+  author: z.string(),
+  message: z.string(),
+  meta: MetaSchema,
+  entryCount: NonNegativeIntegerSchema,
+  firstChangeId: IntegerSchema,
+  lastChangeId: IntegerSchema,
+  revertsCommitId: z.string().nullable(),
+  createdBy: z.string(),
+  createdAt: TimestampSchema,
 };
-export const CommitRecordSchema = z.strictObject({ ...CommitRecordFields, entries: z.array(CommitEntryRecordSchema) });
-export const CommitResultSchema = CommitRecordSchema.extend({
+export const CommitRecordSchema = z.strictObject({
+  ...CommitRecordFields,
+  entries: z.array(CommitEntryRecordSchema),
+});
+export const CommitResultSchema: z.ZodType<CommitResult> = CommitRecordSchema.extend({
   skipped: z.array(z.strictObject({ path: z.string(), reason: z.string() })).optional(),
 });
 export const CommitSummarySchema = z.strictObject(CommitRecordFields);
-export const CommitListResponseSchema = z.strictObject({ commits: z.array(CommitSummarySchema), nextAfter: z.string().nullable(), total: NonNegativeIntegerSchema });
-const DiffEnvelopeSchema = z.union([DiffResultSchema, z.strictObject({ state: z.enum(["binary", "oversized"]) })]);
+export const CommitListResponseSchema = z.strictObject({
+  commits: z.array(CommitSummarySchema),
+  nextAfter: z.string().nullable(),
+  total: NonNegativeIntegerSchema,
+});
+const DiffEnvelopeSchema = z.union([
+  DiffResultSchema,
+  z.strictObject({ state: z.enum(["binary", "oversized"]) }),
+]);
 export const CommitDiffResultSchema = z.strictObject({
-  entries: z.array(z.strictObject({ path: z.string(), op: CommitOperationSchema,
-    from: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }).nullable(),
-    to: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }), diff: DiffEnvelopeSchema })),
+  entries: z.array(
+    z.strictObject({
+      path: z.string(),
+      op: CommitOperationSchema,
+      from: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }).nullable(),
+      to: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }),
+      diff: DiffEnvelopeSchema,
+    }),
+  ),
   truncated: z.boolean(),
 });
 export const SnapshotResponseSchema = z.strictObject({
-  at: z.strictObject({ commitId: z.string(), changeId: IntegerSchema }), files: z.array(FileSummarySchema),
-  commonPrefixes: z.array(z.string()).optional(), nextAfter: z.string().nullable(),
+  at: z.strictObject({ commitId: z.string(), changeId: IntegerSchema }),
+  files: z.array(FileSummarySchema),
+  commonPrefixes: z.array(z.string()).optional(),
+  nextAfter: z.string().nullable(),
 });
 export const ChangeSetEntryRecordSchema = z.strictObject({
-  path: z.string(), op: CommitOperationSchema, baseVersion: IntegerSchema.nullable(),
-  current: CurrentSchema.nullable(), stale: z.boolean(),
+  path: z.string(),
+  op: CommitOperationSchema,
+  baseVersion: IntegerSchema.nullable(),
+  current: CurrentSchema.nullable(),
+  stale: z.boolean(),
 });
 export const ChangeSetRecordSchema = z.strictObject({
-  id: z.string(), stash: z.string(), status: ChangeSetStatusSchema, author: z.string(), message: z.string(),
-  meta: MetaSchema, expiresAt: TimestampSchema, createdBy: z.string(), createdAt: TimestampSchema,
-  decidedAt: TimestampSchema.nullable(), decidedBy: z.string().nullable(), decisionReason: z.string().nullable(),
-  commitId: z.string().nullable(), entries: z.array(ChangeSetEntryRecordSchema),
+  id: z.string(),
+  stash: z.string(),
+  status: ChangeSetStatusSchema,
+  author: z.string(),
+  message: z.string(),
+  meta: MetaSchema,
+  expiresAt: TimestampSchema,
+  createdBy: z.string(),
+  createdAt: TimestampSchema,
+  decidedAt: TimestampSchema.nullable(),
+  decidedBy: z.string().nullable(),
+  decisionReason: z.string().nullable(),
+  commitId: z.string().nullable(),
+  entries: z.array(ChangeSetEntryRecordSchema),
 });
-export const ChangeSetListResponseSchema = z.strictObject({ changeSets: z.array(ChangeSetRecordSchema), nextAfter: z.string().nullable(), total: NonNegativeIntegerSchema });
+export const ChangeSetListResponseSchema = z.strictObject({
+  changeSets: z.array(ChangeSetRecordSchema),
+  nextAfter: z.string().nullable(),
+  total: NonNegativeIntegerSchema,
+});
 export const ChangeSetDiffResultSchema = z.strictObject({
-  entries: z.array(z.strictObject({ path: z.string(), op: CommitOperationSchema, base: CurrentSchema.nullable(),
-    candidate: CurrentSchema.nullable(), current: CurrentSchema.nullable(), stale: z.boolean(), diff: DiffEnvelopeSchema })),
-  stale: z.boolean(), status: ChangeSetStatusSchema, truncated: z.boolean(),
+  entries: z.array(
+    z.strictObject({
+      path: z.string(),
+      op: CommitOperationSchema,
+      base: CurrentSchema.nullable(),
+      candidate: CurrentSchema.nullable(),
+      current: CurrentSchema.nullable(),
+      stale: z.boolean(),
+      diff: DiffEnvelopeSchema,
+    }),
+  ),
+  stale: z.boolean(),
+  status: ChangeSetStatusSchema,
+  truncated: z.boolean(),
 });
-export const ApproveChangeSetResultSchema = z.strictObject({ status: z.literal("applied"), commit: CommitResultSchema });
+export const ApproveChangeSetResultSchema: z.ZodType<ApproveChangeSetResult> = z.strictObject({
+  status: z.literal("applied"),
+  commit: CommitResultSchema,
+});
 
 export const ErrorCodeSchema = z.enum(ERROR_CODES);
 
@@ -556,7 +621,15 @@ export const ErrorDetailSchema = z.strictObject({
 export const ErrorResponseSchema = z.strictObject({
   error: ErrorDetailSchema,
   current: CurrentSchema.optional(),
-  conflicts: z.array(z.strictObject({ path: z.string(), expectedVersion: IntegerSchema.nullable(), current: CurrentSchema.nullable() })).optional(),
+  conflicts: z
+    .array(
+      z.strictObject({
+        path: z.string(),
+        expectedVersion: IntegerSchema.nullable(),
+        current: CurrentSchema.nullable(),
+      }),
+    )
+    .optional(),
 });
 
 interface ResponseTypeMap {

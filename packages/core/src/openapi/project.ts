@@ -290,9 +290,15 @@ function describeRequestRefinements(source: ZodType, schema: JsonSchema): void {
     schema.description = "Results are newest first; limit defaults to 50 and has a maximum of 200.";
     appendDescription(schema, "kind", "Optional garbage-collection job-kind filter.");
   } else if (source === CreateCommitBody || source === CreateChangeSetBody) {
-    schema.description = "Entry paths must be unique and copy.from.path cannot name another entry path.";
-    appendDescription(schema, "author", author); appendDescription(schema, "message", message);
-    appendDescription(schema, "meta", `${meta} commitId and changeSetId are platform-owned and must be absent.`);
+    schema.description =
+      "Entry paths must be unique and copy.from.path cannot name another entry path.";
+    appendDescription(schema, "author", author);
+    appendDescription(schema, "message", message);
+    appendDescription(
+      schema,
+      "meta",
+      `${meta} commitId and changeSetId are platform-owned and must be absent.`,
+    );
   } else if (source === ListChangeSetsQuery) {
     appendDescription(schema, "status", "Use all to disable the status filter.");
   } else if (source === ApproveChangeSetBody || source === RevertCommitBody) {

@@ -7,12 +7,7 @@ import { createRefreshScheduler } from "./refresh-scheduler.js";
 export type LiveChangesStatus = "live" | "reconnecting" | "polling" | "off";
 
 export type LiveRefreshReason =
-  | "ready"
-  | "change"
-  | "commit"
-  | "change-set"
-  | "focus"
-  | "visibility";
+  "ready" | "change" | "commit" | "change-set" | "focus" | "visibility";
 
 /** Advisory input for a host refresh. The host's `since=` feed remains the correctness source. */
 export interface LiveRefreshRequest {

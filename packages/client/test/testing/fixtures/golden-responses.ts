@@ -212,6 +212,7 @@ export const GOLDEN_RESPONSES = {
     ],
   },
   put: {
+    commitId: "cmt_fake_1",
     version: 1,
     hash: GOLDEN_HELLO_HASH,
     size: 5,
@@ -249,6 +250,7 @@ export const GOLDEN_RESPONSES = {
     },
   },
   deleted: {
+    commitId: "cmt_fake_2",
     version: 2,
     changeId: 2,
     createdAt: GOLDEN_CREATED_AT,

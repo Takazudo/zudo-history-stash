@@ -239,7 +239,12 @@ const strictInteger = z.number().int();
 const commitExpectedVersion = strictInteger.nullable();
 const entryCommon = { path: entryPath, expectedVersion: commitExpectedVersion };
 export const CommitEntryInput = z.union([
-  z.strictObject({ op: z.literal("put"), ...entryCommon, body, contentType: wellFormed.optional() }),
+  z.strictObject({
+    op: z.literal("put"),
+    ...entryCommon,
+    body,
+    contentType: wellFormed.optional(),
+  }),
   z.strictObject({
     op: z.literal("put"),
     ...entryCommon,
@@ -268,13 +273,25 @@ const entryListRefinement = <T extends { path: string; op: string }>(
   const paths = new Set<string>();
   value.entries.forEach((entry, index) => {
     if (paths.has(entry.path)) {
-      context.addIssue({ code: "custom", path: ["entries", index, "path"], message: "Entry paths must be unique" });
+      context.addIssue({
+        code: "custom",
+        path: ["entries", index, "path"],
+        message: "Entry paths must be unique",
+      });
     }
     paths.add(entry.path);
   });
   value.entries.forEach((entry, index) => {
-    if (entry.op === "copy" && "from" in entry && paths.has((entry as { from: { path: string } }).from.path)) {
-      context.addIssue({ code: "custom", path: ["entries", index, "from", "path"], message: "copy.from.path cannot name another entry path" });
+    if (
+      entry.op === "copy" &&
+      "from" in entry &&
+      paths.has((entry as { from: { path: string } }).from.path)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["entries", index, "from", "path"],
+        message: "copy.from.path cannot name another entry path",
+      });
     }
   });
 };
@@ -289,37 +306,79 @@ export const CreateCommitBody = z
   })
   .superRefine(entryListRefinement);
 export const RevertCommitBody = z.strictObject({ author, message, meta: commitMeta });
-export const ListCommitsQuery = z.strictObject({ limit, after: z.string().optional(), path: entryPath.optional() });
-export const CommitDiffQuery = z.strictObject({ context: optionalQueryInteger(0), path: entryPath.optional() });
+export const ListCommitsQuery = z.strictObject({
+  limit,
+  after: z.string().optional(),
+  path: entryPath.optional(),
+});
+export const CommitDiffQuery = z.strictObject({
+  context: optionalQueryInteger(0),
+  path: entryPath.optional(),
+});
 export const SnapshotQuery = z.strictObject({
   at: z.string().regex(/^commit:.+$/),
   prefix: z.string().optional(),
   delimiter: z.string().optional(),
-  includeDeleted: z.preprocess((value) => (value === "true" ? true : value === "false" ? false : value), z.boolean().default(false)),
+  includeDeleted: z.preprocess(
+    (value) => (value === "true" ? true : value === "false" ? false : value),
+    z.boolean().default(false),
+  ),
   limit,
   after: z.string().optional(),
 });
 
 const changeSetCommon = { path: entryPath, baseVersion: commitExpectedVersion };
 export const ChangeSetEntryInput = z.union([
-  z.strictObject({ op: z.literal("put"), ...changeSetCommon, body, contentType: wellFormed.optional() }),
-  z.strictObject({ op: z.literal("put"), ...changeSetCommon, representation: z.literal("binary"), contentType: wellFormed, bytesBase64: z.string() }),
-  z.strictObject({ op: z.literal("copy"), ...changeSetCommon, from: z.strictObject({ path: entryPath, version: strictInteger }) }),
+  z.strictObject({
+    op: z.literal("put"),
+    ...changeSetCommon,
+    body,
+    contentType: wellFormed.optional(),
+  }),
+  z.strictObject({
+    op: z.literal("put"),
+    ...changeSetCommon,
+    representation: z.literal("binary"),
+    contentType: wellFormed,
+    bytesBase64: z.string(),
+  }),
+  z.strictObject({
+    op: z.literal("copy"),
+    ...changeSetCommon,
+    from: z.strictObject({ path: entryPath, version: strictInteger }),
+  }),
   z.strictObject({ op: z.literal("delete"), path: entryPath, baseVersion: strictInteger }),
-  z.strictObject({ op: z.literal("rollback"), path: entryPath, baseVersion: strictInteger, toVersion: strictInteger }),
+  z.strictObject({
+    op: z.literal("rollback"),
+    path: entryPath,
+    baseVersion: strictInteger,
+    toVersion: strictInteger,
+  }),
 ]);
 export const CreateChangeSetBody = z
   .strictObject({
-    entries: z.array(ChangeSetEntryInput).min(1).max(MAX_COMMIT_ENTRIES), author, message,
-    meta: commitMeta, expiresAt: z.iso.datetime().optional(), expectedLastChangeId: strictInteger.optional(),
+    entries: z.array(ChangeSetEntryInput).min(1).max(MAX_COMMIT_ENTRIES),
+    author,
+    message,
+    meta: commitMeta,
+    expiresAt: z.iso.datetime().optional(),
+    expectedLastChangeId: strictInteger.optional(),
   })
   .superRefine(entryListRefinement);
 export const ApproveChangeSetBody = z.strictObject({ author, message });
-export const RejectChangeSetBody = z.strictObject({ reason: boundedString(MAX_MESSAGE_BYTES).optional() });
-export const ListChangeSetsQuery = z.strictObject({
-  status: z.enum(["open", "applied", "rejected", "expired", "all"]).default("open"), path: entryPath.optional(), limit, after: z.string().optional(),
+export const RejectChangeSetBody = z.strictObject({
+  reason: boundedString(MAX_MESSAGE_BYTES).optional(),
 });
-export const ChangeSetDiffQuery = z.strictObject({ context: optionalQueryInteger(0), path: entryPath.optional() });
+export const ListChangeSetsQuery = z.strictObject({
+  status: z.enum(["open", "applied", "rejected", "expired", "all"]).default("open"),
+  path: entryPath.optional(),
+  limit,
+  after: z.string().optional(),
+});
+export const ChangeSetDiffQuery = z.strictObject({
+  context: optionalQueryInteger(0),
+  path: entryPath.optional(),
+});
 
 /** Metadata-only creation request; content bytes always travel on a raw upload route. */
 export const CreateUploadSessionBody = z.strictObject({
@@ -366,11 +425,17 @@ export const StashChangeEventSchema = z.strictObject({
   createdAt: z.iso.datetime(),
 });
 export const StashCommitEventSchema = z.strictObject({
-  type: z.literal("commit"), commitId: z.string(), stash: z.string(), entryCount: strictInteger,
-  firstChangeId: strictInteger, lastChangeId: strictInteger, origin: StashClientIdSchema.nullable(),
+  type: z.literal("commit"),
+  commitId: z.string(),
+  stash: z.string(),
+  entryCount: strictInteger,
+  firstChangeId: strictInteger,
+  lastChangeId: strictInteger,
+  origin: StashClientIdSchema.nullable(),
 });
 export const StashChangeSetEventSchema = z.strictObject({
-  type: z.literal("change-set"), changeSetId: z.string(),
+  type: z.literal("change-set"),
+  changeSetId: z.string(),
   stash: z.string(),
   status: z.enum(["open", "applied", "rejected", "expired"]),
   paths: z.array(z.string()),

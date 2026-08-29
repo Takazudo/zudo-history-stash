@@ -124,7 +124,6 @@ export type ClientFailure<Code extends ErrorCode = ErrorCode> = {
 /** A client-facing business result. HTTP 4xx responses remain values, not thrown errors. */
 export type ClientResult<T> = ClientSuccess<T> | ClientFailure;
 
-
 /** A representation cache hit. This is deliberately separate from a file value. */
 export type NotModifiedResult = { ok: true; notModified: true };
 

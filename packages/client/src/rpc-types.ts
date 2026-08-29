@@ -105,18 +105,58 @@ export interface StashRpcMethods {
   listChanges(token: string, options?: ChangesOptions): Promise<ClientResult<ChangesPage>>;
   runGc(token: string, input: RunGcBody): Promise<ClientResult<GcRunResult>>;
   listGcRuns(token: string, options?: ListGcRunsOptions): Promise<ClientResult<GcRunsResponse>>;
-  createCommit(token: string, stash: string, input: CreateCommitBody, idempotencyKey?: string): Promise<Response>;
+  createCommit(
+    token: string,
+    stash: string,
+    input: CreateCommitBody,
+    idempotencyKey?: string,
+  ): Promise<Response>;
   getCommit(token: string, stash: string, id: string): Promise<Response>;
   listCommits(token: string, stash: string, query?: Partial<ListCommitsQuery>): Promise<Response>;
-  getCommitDiff(token: string, stash: string, id: string, query?: CommitDiffQuery): Promise<Response>;
-  revertCommit(token: string, stash: string, id: string, input: RevertCommitBody, idempotencyKey?: string): Promise<Response>;
+  getCommitDiff(
+    token: string,
+    stash: string,
+    id: string,
+    query?: CommitDiffQuery,
+  ): Promise<Response>;
+  revertCommit(
+    token: string,
+    stash: string,
+    id: string,
+    input: RevertCommitBody,
+    idempotencyKey?: string,
+  ): Promise<Response>;
   getSnapshot(token: string, stash: string, query: SnapshotQuery): Promise<Response>;
-  createChangeSet(token: string, stash: string, input: CreateChangeSetBody, idempotencyKey?: string): Promise<Response>;
-  listChangeSets(token: string, stash: string, query?: Partial<ListChangeSetsQuery>): Promise<Response>;
+  createChangeSet(
+    token: string,
+    stash: string,
+    input: CreateChangeSetBody,
+    idempotencyKey?: string,
+  ): Promise<Response>;
+  listChangeSets(
+    token: string,
+    stash: string,
+    query?: Partial<ListChangeSetsQuery>,
+  ): Promise<Response>;
   getChangeSet(token: string, stash: string, id: string): Promise<Response>;
-  getChangeSetDiff(token: string, stash: string, id: string, query?: ChangeSetDiffQuery): Promise<Response>;
-  approveChangeSet(token: string, stash: string, id: string, input: ApproveChangeSetBody): Promise<Response>;
-  rejectChangeSet(token: string, stash: string, id: string, input: RejectChangeSetBody): Promise<Response>;
+  getChangeSetDiff(
+    token: string,
+    stash: string,
+    id: string,
+    query?: ChangeSetDiffQuery,
+  ): Promise<Response>;
+  approveChangeSet(
+    token: string,
+    stash: string,
+    id: string,
+    input: ApproveChangeSetBody,
+  ): Promise<Response>;
+  rejectChangeSet(
+    token: string,
+    stash: string,
+    id: string,
+    input: RejectChangeSetBody,
+  ): Promise<Response>;
   listFiles(
     token: string,
     stash: string,

@@ -386,10 +386,7 @@ function FileRouteContent({
   useViewerLiveRefresh(
     useCallback(
       async ({ signal }) => {
-        const results = await Promise.allSettled([
-          reloadFile(signal),
-          reloadHistory(signal),
-        ]);
+        const results = await Promise.allSettled([reloadFile(signal), reloadHistory(signal)]);
         const failed = results.find(
           (result): result is PromiseRejectedResult => result.status === "rejected",
         );

@@ -315,19 +315,33 @@ function routeMatch(request: Request): MatchedRoute | undefined {
     return { routeId: "stashEvents", stash: decode(match[1]) };
   }
 
-  const skeletons: Array<[RegExp, RouteId, string]> = [
-    [/^\/v1\/stashes\/([^/]+)\/commits$/, method === "POST" ? "createCommit" : "listCommits", method],
-    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+$/, "getCommit", method],
-    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+\/diff$/, "getCommitDiff", method],
-    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+\/revert$/, "revertCommit", method],
-    [/^\/v1\/stashes\/([^/]+)\/snapshot$/, "getSnapshot", method],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets$/, method === "POST" ? "createChangeSet" : "listChangeSets", method],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+$/, "getChangeSet", method],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/diff$/, "getChangeSetDiff", method],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/approve$/, "approveChangeSet", method],
-    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/reject$/, "rejectChangeSet", method],
+  const commitCollection = /^\/v1\/stashes\/([^/]+)\/commits$/.exec(pathname);
+  if ((method === "GET" || method === "POST") && commitCollection?.[1] !== undefined) {
+    return {
+      routeId: method === "POST" ? "createCommit" : "listCommits",
+      stash: decode(commitCollection[1]),
+    };
+  }
+  const changeSetCollection = /^\/v1\/stashes\/([^/]+)\/change-sets$/.exec(pathname);
+  if ((method === "GET" || method === "POST") && changeSetCollection?.[1] !== undefined) {
+    return {
+      routeId: method === "POST" ? "createChangeSet" : "listChangeSets",
+      stash: decode(changeSetCollection[1]),
+    };
+  }
+
+  const skeletons: Array<[RegExp, RouteId, "GET" | "POST"]> = [
+    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+$/, "getCommit", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+\/diff$/, "getCommitDiff", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/commits\/[^/]+\/revert$/, "revertCommit", "POST"],
+    [/^\/v1\/stashes\/([^/]+)\/snapshot$/, "getSnapshot", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+$/, "getChangeSet", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/diff$/, "getChangeSetDiff", "GET"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/approve$/, "approveChangeSet", "POST"],
+    [/^\/v1\/stashes\/([^/]+)\/change-sets\/[^/]+\/reject$/, "rejectChangeSet", "POST"],
   ];
-  for (const [pattern, routeId] of skeletons) {
+  for (const [pattern, routeId, routeMethod] of skeletons) {
+    if (method !== routeMethod) continue;
     const skeleton = pattern.exec(pathname);
     if (skeleton?.[1] !== undefined) return { routeId, stash: decode(skeleton[1]) };
   }
@@ -574,6 +588,7 @@ function changesPage(rows: FakeVersionRow[], since: number | undefined, limit: n
   const page = orderedRows.slice(0, limit);
   const changes = page.map((row) => ({
     changeId: row.changeId,
+    commitId: `cmt_fake_${row.changeId}`,
     stash: row.stash,
     path: row.path,
     version: row.version,
@@ -1048,6 +1063,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     if (version === undefined)
       return fail("internal", "The fake ledger points at a missing version.");
     const base = {
+      commitId: `cmt_fake_${version.changeId}`,
       version: version.version,
       changeId: version.changeId,
       createdAt: iso(version.createdAt),
@@ -1723,6 +1739,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
+        commitId: `cmt_fake_${version.changeId}`,
         version: version.version,
         hash: bodyHash,
         size: version.size,
@@ -1777,7 +1794,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     );
     ledger(stash, key, requestHash, version, 200);
     return json(
-      { version: version.version, changeId: version.changeId, createdAt: iso(version.createdAt) },
+      {
+        commitId: `cmt_fake_${version.changeId}`,
+        version: version.version,
+        changeId: version.changeId,
+        createdAt: iso(version.createdAt),
+      },
       200,
     );
   };
@@ -1839,6 +1861,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     ledger(stash, key, requestHash, version, 201);
     return json(
       {
+        commitId: `cmt_fake_${version.changeId}`,
         version: version.version,
         hash: target.hash,
         rollbackOf: target.version,
@@ -1875,6 +1898,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       deleted: file.deleted,
       total: all.length,
       versions: page.map((version) => ({
+        commitId: `cmt_fake_${version.changeId}`,
         version: version.version,
         kind: version.kind,
         hash: version.hash,

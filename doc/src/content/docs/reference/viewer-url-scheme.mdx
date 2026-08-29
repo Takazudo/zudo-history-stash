@@ -17,15 +17,12 @@ represents the file path; HTTP references use OpenAPI braces such as `{stash}` a
 | `/s/:stash/f/*` | Optional positive `version`. | Read. |
 | `/s/:stash/diff/*` | Positive `from` (default 1), positive `to` or `head`, and accepted `context`. | Read. |
 | `/s/:stash/edit/*` | Optional positive `from` source version. | Write. |
-| `/s/:stash/change-sets` | `status=open` or `status=all` (default `open`), optional `path`. | Read; decisions are capability-gated. |
-| `/s/:stash/change-sets/:id` | Immutable change set ID. | Read; decision controls require write. |
 | `/s/:stash/new` | No query. | Write. |
 | `/s/:stash/tokens` | No query. | Admin. |
 
-Encode stash and change set IDs with `encodeURIComponent`. Encode file paths one segment at a time so
+Encode stash IDs with `encodeURIComponent`. Encode file paths one segment at a time so
 slashes remain separators. Preserve the full query string when sharing historical and diff links.
-`defaultStashHref` covers the core destinations; change set filters use `change setListHref`, so no one
-helper claims every stable URL.
+`defaultStashHref` covers the stable destinations.
 
 An unauthenticated deep link redirects to `/login?next=<encoded path+query+hash>`. Login accepts
 only a safe same-origin application path on return. Credentials live in tab-scoped session storage,

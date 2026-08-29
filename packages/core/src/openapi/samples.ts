@@ -126,8 +126,23 @@ const stashChangeEvent = {
   origin: "viewer-1",
   createdAt: UPDATED_AT,
 } as const;
-const stashCommitEvent = { type: "commit", commitId: COMMIT_ID, stash: "demo", entryCount: 1, firstChangeId: 7, lastChangeId: 7, origin: "viewer-1" } as const;
-const stashChangeSetEvent = { type: "change-set", changeSetId: "chs_1787702400000deadbeef", stash: "demo", status: "open", paths: ["docs/guide.md"] as string[], origin: "viewer-1" } as const;
+const stashCommitEvent = {
+  type: "commit",
+  commitId: COMMIT_ID,
+  stash: "demo",
+  entryCount: 1,
+  firstChangeId: 7,
+  lastChangeId: 7,
+  origin: "viewer-1",
+} as const;
+const stashChangeSetEvent = {
+  type: "change-set",
+  changeSetId: "chs_1787702400000deadbeef",
+  stash: "demo",
+  status: "open",
+  paths: ["docs/guide.md"] as string[],
+  origin: "viewer-1",
+} as const;
 const stashReconnectEvent = { type: "reconnect", reason: "lifetime" } as const;
 
 const diffLines = ["-Hello, stash!", "+Hello, history stash!"];
@@ -180,16 +195,105 @@ const currentHead = {
   createdAt: UPDATED_AT,
 } as const;
 
-const commitEntry = { path: "docs/guide.md", op: "put", version: 3, kind: "put", changeId: 7, hash: HASH_A, size: 13, contentType: "text/markdown", representation: "text", rollbackOf: null } as const;
-const commitRecord = { id: COMMIT_ID, stash: "demo", source: "api", sourceId: null, author: "docs-bot", message: "Update guide", meta: { source: "example" }, entryCount: 1, firstChangeId: 7, lastChangeId: 7, revertsCommitId: null, createdBy: "tok_example", createdAt: UPDATED_AT, entries: [commitEntry] as (typeof commitEntry)[] } as const;
-const commitSummary = { id: COMMIT_ID, stash: "demo", source: "api", sourceId: null, author: "docs-bot", message: "Update guide", meta: { source: "example" }, entryCount: 1, firstChangeId: 7, lastChangeId: 7, revertsCommitId: null, createdBy: "tok_example", createdAt: UPDATED_AT } as const;
-const commitDiffEntry = { path: "docs/guide.md", op: "put", from: { version: 2, hash: HASH_B }, to: { version: 3, hash: HASH_A }, diff: readyDiff } as const;
-const commitDiff = { entries: [commitDiffEntry] as (typeof commitDiffEntry)[], truncated: false } as const;
-const changeSetEntry = { path: "docs/guide.md", op: "put", baseVersion: 2, current: currentHead, stale: true } as const;
-const changeSetRecord = { id: "chs_1787702400000deadbeef", stash: "demo", status: "open", author: "review-bot", message: "Review guide", meta: {}, expiresAt: EXPIRES_AT, createdBy: "tok_example", createdAt: CREATED_AT, decidedAt: null, decidedBy: null, decisionReason: null, commitId: null, entries: [changeSetEntry] as (typeof changeSetEntry)[] } as const;
-const rejectedChangeSetRecord = { ...changeSetRecord, status: "rejected", decidedAt: UPDATED_AT, decidedBy: "admin", decisionReason: "Superseded" } as const;
-const changeSetDiffEntry = { path: "docs/guide.md", op: "put", base: currentHead, candidate: currentHead, current: currentHead, stale: false, diff: readyDiff } as const;
-const changeSetDiff = { entries: [changeSetDiffEntry] as (typeof changeSetDiffEntry)[], stale: false, status: "open", truncated: false } as const;
+const commitEntry = {
+  path: "docs/guide.md",
+  op: "put",
+  version: 3,
+  kind: "put",
+  changeId: 7,
+  hash: HASH_A,
+  size: 13,
+  contentType: "text/markdown",
+  representation: "text",
+  rollbackOf: null,
+} as const;
+const commitRecord = {
+  id: COMMIT_ID,
+  stash: "demo",
+  source: "api",
+  sourceId: null,
+  author: "docs-bot",
+  message: "Update guide",
+  meta: { source: "example" },
+  entryCount: 1,
+  firstChangeId: 7,
+  lastChangeId: 7,
+  revertsCommitId: null,
+  createdBy: "tok_example",
+  createdAt: UPDATED_AT,
+  entries: [commitEntry] as (typeof commitEntry)[],
+} as const;
+const commitSummary = {
+  id: COMMIT_ID,
+  stash: "demo",
+  source: "api",
+  sourceId: null,
+  author: "docs-bot",
+  message: "Update guide",
+  meta: { source: "example" },
+  entryCount: 1,
+  firstChangeId: 7,
+  lastChangeId: 7,
+  revertsCommitId: null,
+  createdBy: "tok_example",
+  createdAt: UPDATED_AT,
+} as const;
+const commitDiffEntry = {
+  path: "docs/guide.md",
+  op: "put",
+  from: { version: 2, hash: HASH_B },
+  to: { version: 3, hash: HASH_A },
+  diff: readyDiff,
+} as const;
+const commitDiff = {
+  entries: [commitDiffEntry] as (typeof commitDiffEntry)[],
+  truncated: false,
+} as const;
+const changeSetEntry = {
+  path: "docs/guide.md",
+  op: "put",
+  baseVersion: 2,
+  current: currentHead,
+  stale: true,
+} as const;
+const changeSetRecord = {
+  id: "chs_1787702400000deadbeef",
+  stash: "demo",
+  status: "open",
+  author: "review-bot",
+  message: "Review guide",
+  meta: {},
+  expiresAt: EXPIRES_AT,
+  createdBy: "tok_example",
+  createdAt: CREATED_AT,
+  decidedAt: null,
+  decidedBy: null,
+  decisionReason: null,
+  commitId: null,
+  entries: [changeSetEntry] as (typeof changeSetEntry)[],
+} as const;
+const rejectedChangeSetRecord = {
+  ...changeSetRecord,
+  status: "rejected",
+  decidedAt: UPDATED_AT,
+  decidedBy: "admin",
+  decisionReason: "Superseded",
+} as const;
+const changeSetDiffEntry = {
+  path: "docs/guide.md",
+  op: "put",
+  base: currentHead,
+  candidate: currentHead,
+  current: currentHead,
+  stale: false,
+  diff: readyDiff,
+} as const;
+const changeSetDiff = {
+  entries: [changeSetDiffEntry] as (typeof changeSetDiffEntry)[],
+  stale: false,
+  status: "open",
+  truncated: false,
+} as const;
 
 const uploadCommitResult = {
   commitId: COMMIT_ID,
@@ -282,12 +386,20 @@ const responseSamples = {
   CommitRecord: commitRecord,
   CommitResult: commitRecord,
   CommitSummary: commitSummary,
-  CommitListResponse: { commits: [commitSummary] as (typeof commitSummary)[], nextAfter: null, total: 1 },
+  CommitListResponse: {
+    commits: [commitSummary] as (typeof commitSummary)[],
+    nextAfter: null,
+    total: 1,
+  },
   CommitDiffResult: commitDiff,
   SnapshotResponse: { at: { commitId: COMMIT_ID, changeId: 7 }, files: oneFile, nextAfter: null },
   ChangeSetRecord: changeSetRecord,
   RejectedChangeSetRecord: rejectedChangeSetRecord,
-  ChangeSetListResponse: { changeSets: [changeSetRecord] as (typeof changeSetRecord)[], nextAfter: null, total: 1 },
+  ChangeSetListResponse: {
+    changeSets: [changeSetRecord] as (typeof changeSetRecord)[],
+    nextAfter: null,
+    total: 1,
+  },
   ChangeSetDiffResult: changeSetDiff,
   ApproveChangeSetResult: { status: "applied", commit: commitRecord },
   TokenRecord: tokenRecord,

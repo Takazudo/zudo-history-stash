@@ -73,7 +73,6 @@ describe("StashPage", () => {
         "docs/second.txt",
       ),
     );
-
   });
 
   it("shows the loading state", () => {
