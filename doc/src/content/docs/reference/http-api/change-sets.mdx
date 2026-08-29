@@ -1,0 +1,42 @@
+---
+title: Change sets
+description: Reviewable multi-path changes and their decisions.
+sidebar_position: 185
+category: reference
+---
+
+### `POST /v1/stashes/{stash}/change-sets`
+
+**Contract:** operation `createChangeSet`; principal `write`; transport `any`.
+
+Creates a fenced review candidate within the documented entry limit.
+
+### `GET /v1/stashes/{stash}/change-sets`
+
+**Contract:** operation `listChangeSets`; principal `read`; transport `any`.
+
+Lists change sets by status, path, and opaque cursor.
+
+### `GET /v1/stashes/{stash}/change-sets/{id}`
+
+**Contract:** operation `getChangeSet`; principal `read`; transport `any`.
+
+Returns the candidate entries and current stale verdict.
+
+### `GET /v1/stashes/{stash}/change-sets/{id}/diff`
+
+**Contract:** operation `getChangeSetDiff`; principal `read`; transport `any`.
+
+Returns bounded base-to-candidate diffs.
+
+### `POST /v1/stashes/{stash}/change-sets/{id}/approve`
+
+**Contract:** operation `approveChangeSet`; principal `write`; transport `any`.
+
+Applies an open, non-stale change set as one atomic commit.
+
+### `POST /v1/stashes/{stash}/change-sets/{id}/reject`
+
+**Contract:** operation `rejectChangeSet`; principal `write`; transport `any`.
+
+Closes an open change set without writing versions.

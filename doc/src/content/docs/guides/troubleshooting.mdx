@@ -32,7 +32,7 @@ was not confirmed.
 **Likely cause:** the valid principal lacks the needed read, write, admin, or stash scope.
 
 **Safe diagnostic:** inspect the resolved `/v1/me` capability and authorized stash set. Hidden
-buttons, a navigable route, outer Access, `clientId`, and proposal authorship do not grant scope.
+buttons, a navigable route, outer Access, `clientId`, and change set authorship do not grant scope.
 
 **Recovery:** use an appropriately scoped credential or ask an administrator to change access. Do
 not escalate a browser token to admin merely to bypass a control.
@@ -50,7 +50,7 @@ stash. Restore a deleted resource only through an authorized workflow.
 
 The loaded compare-and-set head no longer matches. Preserve dirty draft text and its pinned
 comparison, fetch the authoritative head, compare, and deliberately reapply the change. Never
-silently merge, rebase, or blind-retry the mutation. The same fence refuses approval of a proposal
+silently merge, rebase, or blind-retry the mutation. The same fence refuses approval of a change set
 whose base is no longer current.
 
 Other `409` operation states need their own recovery:
@@ -61,8 +61,8 @@ Other `409` operation states need their own recovery:
 - `already-rotated`: use the recorded successor workflow; do not rotate the predecessor again.
 - `token-expired`: the requested token-management operation has crossed its state boundary. This is
   distinct from an expired bearer principal authenticating as `401 unauthorized`.
-- `proposal-expired` and `proposal-closed`: reload the immutable proposal record. Expired, rejected,
-  and applied proposals cannot be reopened or automatically rebased.
+- `change-set-expired` and `change-set-closed`: reload the immutable change set record. Expired, rejected,
+  and applied change sets cannot be reopened or automatically rebased.
 
 ### `422 idempotency-key-reused`
 

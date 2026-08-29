@@ -1,6 +1,5 @@
 import type { Page, Request } from "@playwright/test";
 import { expect, test } from "./fixtures/console-errors.js";
-import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 const STASH = "notes";
 const PATH = "docs/readme.txt";
@@ -140,7 +139,6 @@ async function installFixture(page: Page) {
     const url = new URL(request.url());
     const signature = `${request.method()} ${url.pathname}${url.search}`;
 
-    if (await fulfillEmptyOpenProposalCount(route, [{ stash: STASH, path: PATH }])) return;
 
     if (request.method() === "GET" && url.pathname === "/api/v1/me" && url.search === "") {
       await route.fulfill({ status: 200, json: { principal: "admin" } });

@@ -4,6 +4,7 @@ import {
   LIST_LIMIT_MAX,
   MAX_AUTHOR_BYTES,
   MAX_BODY_BYTES,
+  MAX_COMMIT_ENTRIES,
   MAX_IMPORT_VERSIONS,
   MAX_MESSAGE_BYTES,
   MAX_META_BYTES,
@@ -52,10 +53,12 @@ const metaObject = z
   .record(z.string(), z.json())
   .refine((value) => utf8ByteLength(JSON.stringify(value)) <= MAX_META_BYTES, "Meta is too large");
 const meta = metaObject.optional();
-const proposalMeta = metaObject
+const commitMeta = metaObject
   .refine(
-    (value) => !Object.prototype.hasOwnProperty.call(value, "proposalId"),
-    "meta.proposalId is platform-owned",
+    (value) =>
+      !Object.prototype.hasOwnProperty.call(value, "commitId") &&
+      !Object.prototype.hasOwnProperty.call(value, "changeSetId"),
+    "meta.commitId and meta.changeSetId are platform-owned",
   )
   .optional();
 
@@ -199,6 +202,8 @@ export const ListFilesQuery = z.strictObject({
   ),
   limit,
   after: z.string().optional(),
+  prefix: z.string().optional(),
+  delimiter: z.string().optional(),
 });
 export const ChangesQuery = z
   .strictObject({ since: optionalQueryInteger(0), before: optionalQueryInteger(1), limit })
@@ -229,32 +234,92 @@ export const ListGcRunsQuery = z.strictObject({
   kind: z.enum(["r2-orphans", "ledger"]).optional(),
   limit,
 });
-export const CreateProposalBody = z.strictObject({
-  path: z.string().refine((value) => validatePath(value).ok, "Invalid file path"),
-  body,
-  baseVersion: expectedVersion,
-  author,
-  message,
-  meta: proposalMeta,
-  expiresAt: z.iso
-    .datetime()
-    .refine((value) => Date.parse(value) > Date.now(), "expiresAt must be in the future")
-    .optional(),
-});
-export const ListProposalsQuery = z.strictObject({
-  status: z.enum(["open", "applied", "rejected", "expired", "all"]).default("open"),
-  path: z
-    .string()
-    .refine((value) => validatePath(value).ok, "Invalid file path")
-    .optional(),
+const entryPath = z.string().refine((value) => validatePath(value).ok, "Invalid file path");
+const strictInteger = z.number().int();
+const commitExpectedVersion = strictInteger.nullable();
+const entryCommon = { path: entryPath, expectedVersion: commitExpectedVersion };
+export const CommitEntryInput = z.union([
+  z.strictObject({ op: z.literal("put"), ...entryCommon, body, contentType: wellFormed.optional() }),
+  z.strictObject({
+    op: z.literal("put"),
+    ...entryCommon,
+    representation: z.literal("binary"),
+    contentType: wellFormed,
+    bytesBase64: z.string(),
+  }),
+  z.strictObject({
+    op: z.literal("copy"),
+    ...entryCommon,
+    from: z.strictObject({ path: entryPath, version: strictInteger }),
+  }),
+  z.strictObject({ op: z.literal("delete"), path: entryPath, expectedVersion: strictInteger }),
+  z.strictObject({
+    op: z.literal("rollback"),
+    path: entryPath,
+    expectedVersion: strictInteger,
+    toVersion: strictInteger,
+  }),
+]);
+
+const entryListRefinement = <T extends { path: string; op: string }>(
+  value: { entries: T[] },
+  context: z.RefinementCtx,
+) => {
+  const paths = new Set<string>();
+  value.entries.forEach((entry, index) => {
+    if (paths.has(entry.path)) {
+      context.addIssue({ code: "custom", path: ["entries", index, "path"], message: "Entry paths must be unique" });
+    }
+    paths.add(entry.path);
+  });
+  value.entries.forEach((entry, index) => {
+    if (entry.op === "copy" && "from" in entry && paths.has((entry as { from: { path: string } }).from.path)) {
+      context.addIssue({ code: "custom", path: ["entries", index, "from", "path"], message: "copy.from.path cannot name another entry path" });
+    }
+  });
+};
+
+export const CreateCommitBody = z
+  .strictObject({
+    entries: z.array(CommitEntryInput).min(1).max(MAX_COMMIT_ENTRIES),
+    author,
+    message,
+    meta: commitMeta,
+    expectedLastChangeId: strictInteger.optional(),
+  })
+  .superRefine(entryListRefinement);
+export const RevertCommitBody = z.strictObject({ author, message, meta: commitMeta });
+export const ListCommitsQuery = z.strictObject({ limit, after: z.string().optional(), path: entryPath.optional() });
+export const CommitDiffQuery = z.strictObject({ context: optionalQueryInteger(0), path: entryPath.optional() });
+export const SnapshotQuery = z.strictObject({
+  at: z.string().regex(/^commit:.+$/),
+  prefix: z.string().optional(),
+  delimiter: z.string().optional(),
+  includeDeleted: z.preprocess((value) => (value === "true" ? true : value === "false" ? false : value), z.boolean().default(false)),
   limit,
   after: z.string().optional(),
 });
-export const ApproveProposalBody = z.strictObject({ author, message });
-export const RejectProposalBody = z.strictObject({
-  reason: boundedString(MAX_MESSAGE_BYTES).optional(),
+
+const changeSetCommon = { path: entryPath, baseVersion: commitExpectedVersion };
+export const ChangeSetEntryInput = z.union([
+  z.strictObject({ op: z.literal("put"), ...changeSetCommon, body, contentType: wellFormed.optional() }),
+  z.strictObject({ op: z.literal("put"), ...changeSetCommon, representation: z.literal("binary"), contentType: wellFormed, bytesBase64: z.string() }),
+  z.strictObject({ op: z.literal("copy"), ...changeSetCommon, from: z.strictObject({ path: entryPath, version: strictInteger }) }),
+  z.strictObject({ op: z.literal("delete"), path: entryPath, baseVersion: strictInteger }),
+  z.strictObject({ op: z.literal("rollback"), path: entryPath, baseVersion: strictInteger, toVersion: strictInteger }),
+]);
+export const CreateChangeSetBody = z
+  .strictObject({
+    entries: z.array(ChangeSetEntryInput).min(1).max(MAX_COMMIT_ENTRIES), author, message,
+    meta: commitMeta, expiresAt: z.iso.datetime().optional(), expectedLastChangeId: strictInteger.optional(),
+  })
+  .superRefine(entryListRefinement);
+export const ApproveChangeSetBody = z.strictObject({ author, message });
+export const RejectChangeSetBody = z.strictObject({ reason: boundedString(MAX_MESSAGE_BYTES).optional() });
+export const ListChangeSetsQuery = z.strictObject({
+  status: z.enum(["open", "applied", "rejected", "expired", "all"]).default("open"), path: entryPath.optional(), limit, after: z.string().optional(),
 });
-export const ProposalDiffQuery = z.strictObject({ context: optionalQueryInteger(0) });
+export const ChangeSetDiffQuery = z.strictObject({ context: optionalQueryInteger(0), path: entryPath.optional() });
 
 /** Metadata-only creation request; content bytes always travel on a raw upload route. */
 export const CreateUploadSessionBody = z.strictObject({
@@ -292,6 +357,7 @@ export const StashReadyEventSchema = z.strictObject({
 export const StashChangeEventSchema = z.strictObject({
   type: z.literal("change"),
   changeId: z.number().int().nonnegative(),
+  commitId: z.string(),
   stash: z.string(),
   path: z.string(),
   version: z.number().int().nonnegative(),
@@ -299,12 +365,15 @@ export const StashChangeEventSchema = z.strictObject({
   origin: StashClientIdSchema.nullable(),
   createdAt: z.iso.datetime(),
 });
-export const StashProposalEventSchema = z.strictObject({
-  type: z.literal("proposal"),
-  proposalId: z.string().regex(/^prp_\d{13}[0-9a-f]{8}$/),
+export const StashCommitEventSchema = z.strictObject({
+  type: z.literal("commit"), commitId: z.string(), stash: z.string(), entryCount: strictInteger,
+  firstChangeId: strictInteger, lastChangeId: strictInteger, origin: StashClientIdSchema.nullable(),
+});
+export const StashChangeSetEventSchema = z.strictObject({
+  type: z.literal("change-set"), changeSetId: z.string(),
   stash: z.string(),
-  path: z.string(),
   status: z.enum(["open", "applied", "rejected", "expired"]),
+  paths: z.array(z.string()),
   origin: StashClientIdSchema.nullable(),
 });
 export const StashReconnectEventSchema = z.strictObject({
@@ -314,7 +383,8 @@ export const StashReconnectEventSchema = z.strictObject({
 export const StashEventSchema: z.ZodType<StashEvent> = z.discriminatedUnion("type", [
   StashReadyEventSchema,
   StashChangeEventSchema,
-  StashProposalEventSchema,
+  StashCommitEventSchema,
+  StashChangeSetEventSchema,
   StashReconnectEventSchema,
 ]);
 
@@ -332,6 +402,18 @@ export type ListQuery = z.infer<typeof ListQuery>;
 export type ListStashesQuery = z.input<typeof ListStashesQuery>;
 export type ParsedListStashesQuery = z.output<typeof ListStashesQuery>;
 export type ListFilesQuery = z.infer<typeof ListFilesQuery>;
+export type CommitEntryInput = z.infer<typeof CommitEntryInput>;
+export type CreateCommitBody = z.infer<typeof CreateCommitBody>;
+export type RevertCommitBody = z.infer<typeof RevertCommitBody>;
+export type ListCommitsQuery = z.infer<typeof ListCommitsQuery>;
+export type CommitDiffQuery = z.infer<typeof CommitDiffQuery>;
+export type SnapshotQuery = z.infer<typeof SnapshotQuery>;
+export type ChangeSetEntryInput = z.infer<typeof ChangeSetEntryInput>;
+export type CreateChangeSetBody = z.infer<typeof CreateChangeSetBody>;
+export type ApproveChangeSetBody = z.infer<typeof ApproveChangeSetBody>;
+export type RejectChangeSetBody = z.infer<typeof RejectChangeSetBody>;
+export type ListChangeSetsQuery = z.infer<typeof ListChangeSetsQuery>;
+export type ChangeSetDiffQuery = z.infer<typeof ChangeSetDiffQuery>;
 export type ChangesQuery = z.infer<typeof ChangesQuery>;
 export type EventsQuery = z.infer<typeof EventsQuery>;
 export type FileGetQuery = z.infer<typeof FileGetQuery>;
@@ -340,12 +422,6 @@ export type RunGcBody = z.input<typeof RunGcBody>;
 export type ListGcRunsQuery = z.input<typeof ListGcRunsQuery>;
 export type ParsedRunGcBody = z.output<typeof RunGcBody>;
 export type ParsedListGcRunsQuery = z.output<typeof ListGcRunsQuery>;
-export type CreateProposalBody = z.infer<typeof CreateProposalBody>;
-export type ListProposalsQuery = z.input<typeof ListProposalsQuery>;
-export type ParsedListProposalsQuery = z.output<typeof ListProposalsQuery>;
-export type ApproveProposalBody = z.infer<typeof ApproveProposalBody>;
-export type RejectProposalBody = z.infer<typeof RejectProposalBody>;
-export type ProposalDiffQuery = z.infer<typeof ProposalDiffQuery>;
 export type CreateUploadSessionBody = z.input<typeof CreateUploadSessionBody>;
 export type ParsedCreateUploadSessionBody = z.output<typeof CreateUploadSessionBody>;
 export type CompleteUploadSessionBody = z.infer<typeof CompleteUploadSessionBody>;

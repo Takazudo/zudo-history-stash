@@ -20,7 +20,7 @@ D1 owns metadata and mutable heads; large immutable bytes can spill into a priva
 | `versions` | Append-only history; its database-global ID is also the change cursor. |
 | `idempotency` | Request-identity ledger for safe write replay. |
 | `gc_jobs`, `gc_runs` | Generation-fenced garbage-collection leases, progress, and results. |
-| `proposals` | Immutable candidates with fenced decision state. |
+| `change sets` | Immutable candidates with fenced decision state. |
 
 Representation (`text`/`binary`), content access (`inline`/`raw`/`deleted`), transfer
 (`json`/`single`/`multipart`), storage (`d1`/`r2`), and diff eligibility are separate contracts.
@@ -37,8 +37,8 @@ inline, raw streaming, and the 524,288-byte-per-side diff bound are independent 
 
 The compare-and-set fence prevents a lost update. If the fence loses after an R2 upload, the object
 can remain unreferenced until garbage collection; it never becomes a file head. Create, update,
-delete, rollback, import, and proposal approval all use fences. A rollback appends a new version—it
-does not move history backward—and proposal approval requires the proposal's exact base head rather
+delete, rollback, import, and change set approval all use fences. A rollback appends a new version—it
+does not move history backward—and change set approval requires the change set's exact base head rather
 than rebasing it.
 
 An idempotency key identifies one canonical request. Reusing the key with changed content is a
@@ -51,5 +51,5 @@ but does not revive those credentials. Garbage collection uses generation-fenced
 expired runner cannot finalize or release a successor's work, and every bounded run is recorded.
 
 Live delivery subscribes before replay, then emits advisory events. A consumer must reconcile with
-the authoritative change feed and resource reads after `ready`, `change`, `proposal`, or reconnect;
+the authoritative change feed and resource reads after `ready`, `change`, `change set`, or reconnect;
 the event stream is not a second source of truth.

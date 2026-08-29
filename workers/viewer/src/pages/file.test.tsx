@@ -7,10 +7,8 @@ import {
   type FileRecordWithEtag,
   type GetDiffResult,
   type HistoryPage,
-  type ProposalListResponse,
   type StashClient,
   type StashFilesClient,
-  type StashProposalsClient,
   type VersionRecord,
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
@@ -61,6 +59,7 @@ function version(overrides: Partial<VersionRecord> = {}): VersionRecord {
     meta: {},
     createdAt: "2026-08-25T09:00:00.000Z",
     ...overrides,
+    commitId: overrides.commitId ?? "legacy:4",
   };
 }
 
@@ -98,7 +97,6 @@ function diffResult(from: number, to: number): ClientResult<GetDiffResult> {
 
 function clientWithFiles(
   overrides: Partial<StashFilesClient> = {},
-  proposalList?: StashProposalsClient["list"],
 ): ViewerStashClient {
   const base = createFakeViewerClient();
   const defaults: Pick<StashFilesClient, "get" | "history" | "diff"> = {
@@ -112,9 +110,6 @@ function clientWithFiles(
   };
   return createFakeViewerClient({
     files: (stash) => ({ ...base.files(stash), ...defaults, ...overrides }),
-    ...(proposalList === undefined
-      ? {}
-      : { proposals: (stash: string) => ({ ...base.proposals(stash), list: proposalList }) }),
   });
 }
 
@@ -155,7 +150,7 @@ function renderFileRoute(initialEntry: InitialEntry, client: ViewerStashClient) 
 }
 
 describe("FilePage", () => {
-  it("refreshes the current head, history, and proposal count from shared live events", async () => {
+  it("refreshes the current head and history from shared live events", async () => {
     const token = "viewer-file-live";
     const fake = createFakeStash({ adminToken: token });
     fake.createStash("notes");
@@ -197,19 +192,6 @@ describe("FilePage", () => {
       expect(screen.getByRole("region", { name: "History" }).textContent).toContain("Peer update"),
     );
 
-    const proposal = await peer.proposals("notes").create({
-      path: "docs/readme.txt",
-      body: "candidate",
-      baseVersion: second.value.version,
-    });
-    if (!proposal.ok) throw new Error(proposal.error.message);
-    expect(
-      await screen.findByRole(
-        "link",
-        { name: "1 open proposal for docs/readme.txt" },
-        { timeout: 5_000 },
-      ),
-    ).toBeTruthy();
   });
 
   it("shows loading states for the representation and history", () => {
@@ -259,59 +241,6 @@ describe("FilePage", () => {
     await userEvent.click(screen.getByRole("checkbox", { name: "Wrap long lines" }));
     expect(body.getAttribute("data-wrap-long-lines")).toBe("true");
     expect(body.className).toContain("file-body-pane--wrap");
-  });
-
-  it("links a nonzero exact-path open count and hides a zero count", async () => {
-    const path = "folder/a file?#.txt";
-    const list = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
-      ok: true,
-      value: { proposals: [], nextAfter: null, total: 2 },
-    }));
-    const { unmount } = renderFileRoute(
-      "/s/notes/f/folder/a%20file%3F%23.txt",
-      clientWithFiles(
-        {
-          get: async () => ({ ok: true, value: fileRecord({ path }) }),
-          history: async () => ({ ok: true, value: historyPage({ path }) }),
-        },
-        list,
-      ),
-    );
-
-    const badge = await screen.findByRole("link", { name: `2 open proposals for ${path}` });
-    expect(badge.getAttribute("href")).toBe("/s/notes/proposals?path=folder%2Fa+file%3F%23.txt");
-    expect(list).toHaveBeenCalledWith({ status: "open", path, limit: 1 });
-
-    unmount();
-    const zeroList = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
-      ok: true,
-      value: { proposals: [], nextAfter: null, total: 0 },
-    }));
-    renderFileRoute("/s/notes/f/docs/readme.txt", clientWithFiles({}, zeroList));
-    await waitFor(() => expect(zeroList).toHaveBeenCalled());
-    expect(screen.queryByRole("link", { name: /open proposals? for/u })).toBeNull();
-  });
-
-  it("keeps proposal count failures independent and skips the count for invalid input", async () => {
-    const failedList = vi.fn(async (): Promise<ClientResult<ProposalListResponse>> => ({
-      ok: false,
-      error: { status: 503, code: "internal", message: "Proposal count unavailable" },
-    }));
-    const rendered = renderFileRoute("/s/notes/f/docs/readme.txt", clientWithFiles({}, failedList));
-
-    expect(
-      await screen.findByText(
-        (_content, element) =>
-          element?.tagName === "PRE" && element.textContent === "hello\nworld\n",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText("Proposal count unavailable")).toBeNull();
-    rendered.unmount();
-
-    const invalidList = vi.fn<StashProposalsClient["list"]>();
-    renderFileRoute("/s/notes/f/docs/readme.txt?version=zero", clientWithFiles({}, invalidList));
-    expect(await screen.findByText("The version query must be a positive integer.")).toBeTruthy();
-    expect(invalidList).not.toHaveBeenCalled();
   });
 
   it("copies the full hash while presenting a shortened value", async () => {
@@ -522,6 +451,7 @@ describe("FilePage", () => {
         rollbackOf: 2,
         identicalToHead: false,
         changeId: 9,
+        commitId: "legacy:9",
         createdAt: "2026-08-25T10:00:00.000Z",
       },
     }));
@@ -566,6 +496,7 @@ describe("FilePage", () => {
         rollbackOf: 2,
         identicalToHead: false,
         changeId: 9,
+        commitId: "legacy:9",
         createdAt: "2026-08-25T10:00:00.000Z",
       },
     }));
@@ -655,6 +586,7 @@ describe("FilePage", () => {
         rollbackOf: 2,
         identicalToHead: false,
         changeId: 9,
+        commitId: "legacy:9",
         createdAt: "2026-08-25T10:00:00.000Z",
       },
     }));

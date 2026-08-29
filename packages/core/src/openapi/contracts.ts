@@ -2,8 +2,11 @@ import type { ZodType } from "zod";
 import type { ErrorCode } from "../types.js";
 import {
   ChangesQuery,
-  ApproveProposalBody,
-  CreateProposalBody,
+  ApproveChangeSetBody,
+  ChangeSetDiffQuery,
+  CommitDiffQuery,
+  CreateChangeSetBody,
+  CreateCommitBody,
   CreateStashBody,
   CreateTokenBody,
   DeleteFileBody,
@@ -14,12 +17,14 @@ import {
   HistoryQuery,
   ImportBody,
   ListGcRunsQuery,
-  ListProposalsQuery,
+  ListChangeSetsQuery,
+  ListCommitsQuery,
   ListFilesQuery,
   ListStashesQuery,
   PutFileBody,
-  ProposalDiffQuery,
-  RejectProposalBody,
+  RejectChangeSetBody,
+  RevertCommitBody,
+  SnapshotQuery,
   RollbackBody,
   RunGcBody,
   RotateTokenBody,
@@ -358,138 +363,56 @@ export const ROUTE_CONTRACTS = {
     errors: [error("validation"), error("unauthorized")],
     wildcardPath: false,
   },
-  createProposal: {
-    summary: "Create a proposal",
-    description:
-      "Stores an expiring candidate write against an exact base version. An Idempotency-Key can replay the same proposal creation safely.",
-    principalNote: "write; administrator or a matching write stash token.",
-    body: CreateProposalBody,
+  createCommit: {
+    summary: "Create a commit", description: "Atomically applies one or more file entries.",
+    principalNote: "write; administrator or a matching write stash token.", body: CreateCommitBody,
     requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
-    responses: {
-      201: response("The stored proposal record.", "ProposalRecord", "ProposalRecord", [
-        "Idempotent-Replayed",
-      ]),
-    },
-    errors: [
-      error("validation"),
-      error("body-not-well-formed"),
-      error("unauthorized"),
-      error("scope"),
-      error("not-found"),
-      error("payload-too-large"),
-      error("idempotency-key-reused"),
-      error("unsupported-representation"),
-      rateLimited(),
-      error("internal"),
-    ],
-    wildcardPath: false,
+    responses: { 201: response("The committed entries.", "CommitResult", "CommitResult", ["Idempotent-Replayed"]) },
+    errors: [error("validation"), error("body-not-well-formed"), error("unauthorized"), error("scope"), error("not-found"), error("commit-conflict"), error("payload-too-large"), error("idempotency-key-reused"), rateLimited(), error("internal")], wildcardPath: false,
   },
-  listProposals: {
-    summary: "List proposals",
-    description:
-      "Returns proposals newest first with an opaque keyset cursor and a total for the selected status and path filters.",
-    principalNote: "read; administrator or a matching read/write stash token.",
-    query: ListProposalsQuery,
-    responses: {
-      200: response(
-        "A filtered page of proposals.",
-        "ProposalListResponse",
-        "ProposalListResponse",
-      ),
-    },
-    errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()],
-    wildcardPath: false,
+  getCommit: {
+    summary: "Get a commit", description: "Returns a commit and its entries.", principalNote: "read; administrator or a matching read/write stash token.",
+    responses: { 200: response("The commit record.", "CommitRecord", "CommitRecord") }, errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()], wildcardPath: false,
   },
-  getProposal: {
-    summary: "Get a proposal",
-    description: "Returns one proposal and its immutable candidate body.",
-    principalNote: "read; administrator or a matching read/write stash token.",
-    responses: {
-      200: response(
-        "The proposal record and candidate body.",
-        "ProposalWithBody",
-        "ProposalWithBody",
-      ),
-    },
-    errors: [
-      error("validation"),
-      error("unauthorized"),
-      error("not-found"),
-      rateLimited(),
-      error("internal"),
-    ],
-    wildcardPath: false,
+  listCommits: {
+    summary: "List commits", description: "Returns commits newest first.", principalNote: "read; administrator or a matching read/write stash token.", query: ListCommitsQuery,
+    responses: { 200: response("A page of commits.", "CommitListResponse", "CommitListResponse") }, errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()], wildcardPath: false,
   },
-  getProposalDiff: {
-    summary: "Get a proposal diff",
-    description:
-      "Computes the immutable base-to-candidate diff and separately reports the current head and whether it has moved.",
-    principalNote: "read; administrator or a matching read/write stash token.",
-    query: ProposalDiffQuery,
-    responses: {
-      200: response(
-        "The immutable proposal diff and current-head state.",
-        "ProposalDiffResult",
-        "ProposalDiffResult",
-      ),
-    },
-    errors: [
-      error("validation"),
-      error("unauthorized"),
-      error("not-found"),
-      rateLimited(),
-      error("internal"),
-    ],
-    wildcardPath: false,
+  getCommitDiff: {
+    summary: "Get a commit diff", description: "Returns per-entry diffs for a commit.", principalNote: "read; administrator or a matching read/write stash token.", query: CommitDiffQuery,
+    responses: { 200: response("The commit diff.", "CommitDiffResult", "CommitDiffResult") }, errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited(), error("internal")], wildcardPath: false,
   },
-  approveProposal: {
-    summary: "Approve a proposal",
-    description:
-      "Applies an open, unexpired proposal only when the current head still equals its exact base. Re-approving an applied proposal returns its stored result.",
-    principalNote: "write; administrator or a matching write stash token.",
-    body: ApproveProposalBody,
-    requestHeaders: [STASH_CLIENT_ID_HEADER],
-    responses: {
-      200: response(
-        "The applied proposal result.",
-        "ApproveProposalResult",
-        "ApproveProposalResult",
-      ),
-    },
-    errors: [
-      error("validation"),
-      error("unauthorized"),
-      error("scope"),
-      error("not-found"),
-      error("stale", true),
-      error("proposal-expired"),
-      error("proposal-closed"),
-      error("payload-too-large"),
-      rateLimited(),
-      error("internal"),
-    ],
-    wildcardPath: false,
+  revertCommit: {
+    summary: "Revert a commit", description: "Creates a new commit that reverses the named commit.", principalNote: "write; administrator or a matching write stash token.", body: RevertCommitBody, requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    responses: { 201: response("The revert commit.", "CommitResult", "CommitResult", ["Idempotent-Replayed"]) }, errors: [error("validation"), error("unauthorized"), error("scope"), error("not-found"), error("commit-conflict"), error("payload-too-large"), error("idempotency-key-reused"), rateLimited(), error("internal")], wildcardPath: false,
   },
-  rejectProposal: {
-    summary: "Reject a proposal",
-    description:
-      "Rejects an open proposal with an optional reason. Re-rejecting it is idempotent; applied proposals are closed.",
-    principalNote: "write; administrator or a matching write stash token.",
-    body: RejectProposalBody,
-    requestHeaders: [STASH_CLIENT_ID_HEADER],
-    responses: {
-      200: response("The rejected proposal record.", "ProposalRecord", "RejectedProposalRecord"),
-    },
-    errors: [
-      error("validation"),
-      error("unauthorized"),
-      error("scope"),
-      error("not-found"),
-      error("proposal-closed"),
-      error("payload-too-large"),
-      rateLimited(),
-    ],
-    wildcardPath: false,
+  getSnapshot: {
+    summary: "Get a snapshot", description: "Lists files as of a commit.", principalNote: "read; administrator or a matching read/write stash token.", query: SnapshotQuery,
+    responses: { 200: response("The snapshot page.", "SnapshotResponse", "SnapshotResponse") }, errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()], wildcardPath: false,
+  },
+  createChangeSet: {
+    summary: "Create a change set", description: "Stores an expiring multi-file candidate.", principalNote: "write; administrator or a matching write stash token.", body: CreateChangeSetBody, requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
+    responses: { 201: response("The change set.", "ChangeSetRecord", "ChangeSetRecord", ["Idempotent-Replayed"]) }, errors: [error("validation"), error("body-not-well-formed"), error("unauthorized"), error("scope"), error("not-found"), error("payload-too-large"), error("idempotency-key-reused"), rateLimited(), error("internal")], wildcardPath: false,
+  },
+  listChangeSets: {
+    summary: "List change sets", description: "Returns filtered change sets newest first.", principalNote: "read; administrator or a matching read/write stash token.", query: ListChangeSetsQuery,
+    responses: { 200: response("A page of change sets.", "ChangeSetListResponse", "ChangeSetListResponse") }, errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()], wildcardPath: false,
+  },
+  getChangeSet: {
+    summary: "Get a change set", description: "Returns a change set and current staleness.", principalNote: "read; administrator or a matching read/write stash token.",
+    responses: { 200: response("The change set.", "ChangeSetRecord", "ChangeSetRecord") }, errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited()], wildcardPath: false,
+  },
+  getChangeSetDiff: {
+    summary: "Get a change-set diff", description: "Returns candidate and current diffs.", principalNote: "read; administrator or a matching read/write stash token.", query: ChangeSetDiffQuery,
+    responses: { 200: response("The change-set diff.", "ChangeSetDiffResult", "ChangeSetDiffResult") }, errors: [error("validation"), error("unauthorized"), error("not-found"), rateLimited(), error("internal")], wildcardPath: false,
+  },
+  approveChangeSet: {
+    summary: "Approve a change set", description: "Atomically applies an open, current change set.", principalNote: "write; administrator or a matching write stash token.", body: ApproveChangeSetBody, requestHeaders: [STASH_CLIENT_ID_HEADER],
+    responses: { 200: response("The applied commit.", "ApproveChangeSetResult", "ApproveChangeSetResult") }, errors: [error("validation"), error("unauthorized"), error("scope"), error("not-found"), error("commit-conflict"), error("change-set-expired"), error("change-set-closed"), error("payload-too-large"), rateLimited(), error("internal")], wildcardPath: false,
+  },
+  rejectChangeSet: {
+    summary: "Reject a change set", description: "Rejects an open change set.", principalNote: "write; administrator or a matching write stash token.", body: RejectChangeSetBody, requestHeaders: [STASH_CLIENT_ID_HEADER],
+    responses: { 200: response("The rejected change set.", "ChangeSetRecord", "RejectedChangeSetRecord") }, errors: [error("validation"), error("unauthorized"), error("scope"), error("not-found"), error("change-set-closed"), error("payload-too-large"), rateLimited()], wildcardPath: false,
   },
   stashEvents: {
     summary: "Stream stash events",
@@ -499,7 +422,7 @@ export const ROUTE_CONTRACTS = {
     query: EventsQuery,
     responses: {
       200: eventStreamResponse(
-        "A Server-Sent Events stream of ready, change, proposal, and reconnect events.",
+        "A Server-Sent Events stream of ready, change, commit, change-set, and reconnect events.",
         "StashEvent",
         ["Cache-Control", "X-Accel-Buffering"],
       ),

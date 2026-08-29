@@ -6,6 +6,7 @@ const UPDATED_AT = "2026-08-26T01:00:00.000Z";
 const EXPIRES_AT = "2026-09-25T00:00:00.000Z";
 const HASH_A = `sha256-${"a".repeat(64)}`;
 const HASH_B = `sha256-${"b".repeat(64)}`;
+const COMMIT_ID = "cmt_1787702400000deadbeef";
 
 const stashRecord = {
   name: "demo",
@@ -88,6 +89,7 @@ const fileRecord = {
 } as const;
 
 const versionRecord = {
+  commitId: COMMIT_ID,
   version: 3,
   kind: "put",
   hash: HASH_A,
@@ -100,6 +102,7 @@ const versionRecord = {
 } as const;
 
 const changeItem = {
+  commitId: COMMIT_ID,
   changeId: 7,
   stash: "demo",
   path: "docs/guide.md",
@@ -115,6 +118,7 @@ const stashReadyEvent = { type: "ready", head: 7, checkpoint: 7 } as const;
 const stashChangeEvent = {
   type: "change",
   changeId: 7,
+  commitId: COMMIT_ID,
   stash: "demo",
   path: "docs/guide.md",
   version: 3,
@@ -122,14 +126,8 @@ const stashChangeEvent = {
   origin: "viewer-1",
   createdAt: UPDATED_AT,
 } as const;
-const stashProposalEvent = {
-  type: "proposal",
-  proposalId: "prp_1787702400000deadbeef",
-  stash: "demo",
-  path: "docs/proposed.md",
-  status: "open",
-  origin: "viewer-1",
-} as const;
+const stashCommitEvent = { type: "commit", commitId: COMMIT_ID, stash: "demo", entryCount: 1, firstChangeId: 7, lastChangeId: 7, origin: "viewer-1" } as const;
+const stashChangeSetEvent = { type: "change-set", changeSetId: "chs_1787702400000deadbeef", stash: "demo", status: "open", paths: ["docs/guide.md"] as string[], origin: "viewer-1" } as const;
 const stashReconnectEvent = { type: "reconnect", reason: "lifetime" } as const;
 
 const diffLines = ["-Hello, stash!", "+Hello, history stash!"];
@@ -165,34 +163,6 @@ const gcRun = {
   error: null,
 } as const;
 
-const proposalRecord = {
-  id: "prp_1787702400000deadbeef",
-  stash: "demo",
-  path: "docs/proposed.md",
-  baseVersion: 2,
-  author: "review-bot",
-  message: "Propose documentation update",
-  meta: { source: "automation" },
-  size: 22,
-  hash: HASH_A,
-  createdAt: CREATED_AT,
-  expiresAt: EXPIRES_AT,
-  status: "open",
-  decidedAt: null,
-  decidedBy: null,
-  decisionReason: null,
-  appliedVersion: null,
-  appliedChangeId: null,
-} as const;
-const rejectedProposalRecord = {
-  ...proposalRecord,
-  status: "rejected",
-  decidedAt: UPDATED_AT,
-  decidedBy: "admin",
-  decisionReason: "Superseded by a newer proposal",
-} as const;
-const oneProposal = [proposalRecord];
-
 const readyDiff = {
   state: "ready",
   unified: "@@ -1 +1 @@\n-Hello, stash!\n+Hello, history stash!\n",
@@ -210,7 +180,19 @@ const currentHead = {
   createdAt: UPDATED_AT,
 } as const;
 
+const commitEntry = { path: "docs/guide.md", op: "put", version: 3, kind: "put", changeId: 7, hash: HASH_A, size: 13, contentType: "text/markdown", representation: "text", rollbackOf: null } as const;
+const commitRecord = { id: COMMIT_ID, stash: "demo", source: "api", sourceId: null, author: "docs-bot", message: "Update guide", meta: { source: "example" }, entryCount: 1, firstChangeId: 7, lastChangeId: 7, revertsCommitId: null, createdBy: "tok_example", createdAt: UPDATED_AT, entries: [commitEntry] as (typeof commitEntry)[] } as const;
+const commitSummary = { id: COMMIT_ID, stash: "demo", source: "api", sourceId: null, author: "docs-bot", message: "Update guide", meta: { source: "example" }, entryCount: 1, firstChangeId: 7, lastChangeId: 7, revertsCommitId: null, createdBy: "tok_example", createdAt: UPDATED_AT } as const;
+const commitDiffEntry = { path: "docs/guide.md", op: "put", from: { version: 2, hash: HASH_B }, to: { version: 3, hash: HASH_A }, diff: readyDiff } as const;
+const commitDiff = { entries: [commitDiffEntry] as (typeof commitDiffEntry)[], truncated: false } as const;
+const changeSetEntry = { path: "docs/guide.md", op: "put", baseVersion: 2, current: currentHead, stale: true } as const;
+const changeSetRecord = { id: "chs_1787702400000deadbeef", stash: "demo", status: "open", author: "review-bot", message: "Review guide", meta: {}, expiresAt: EXPIRES_AT, createdBy: "tok_example", createdAt: CREATED_AT, decidedAt: null, decidedBy: null, decisionReason: null, commitId: null, entries: [changeSetEntry] as (typeof changeSetEntry)[] } as const;
+const rejectedChangeSetRecord = { ...changeSetRecord, status: "rejected", decidedAt: UPDATED_AT, decidedBy: "admin", decisionReason: "Superseded" } as const;
+const changeSetDiffEntry = { path: "docs/guide.md", op: "put", base: currentHead, candidate: currentHead, current: currentHead, stale: false, diff: readyDiff } as const;
+const changeSetDiff = { entries: [changeSetDiffEntry] as (typeof changeSetDiffEntry)[], stale: false, status: "open", truncated: false } as const;
+
 const uploadCommitResult = {
+  commitId: COMMIT_ID,
   version: 4,
   hash: HASH_A,
   size: 13,
@@ -292,27 +274,22 @@ const responseSamples = {
   GcRunsResponse: { runs: [gcRun] },
   StashReadyEvent: stashReadyEvent,
   StashChangeEvent: stashChangeEvent,
-  StashProposalEvent: stashProposalEvent,
+  StashCommitEvent: stashCommitEvent,
+  StashChangeSetEvent: stashChangeSetEvent,
   StashReconnectEvent: stashReconnectEvent,
   StashEvent: stashChangeEvent,
-  ProposalRecord: proposalRecord,
-  RejectedProposalRecord: rejectedProposalRecord,
-  ProposalWithBody: { ...proposalRecord, body: "Hello, proposed docs!\n" },
-  ProposalListResponse: { proposals: oneProposal, nextAfter: null, total: 1 },
-  ApproveProposalResult: {
-    status: "applied",
-    appliedVersion: 3,
-    appliedChangeId: 8,
-    hash: HASH_A,
-    createdAt: UPDATED_AT,
-  },
-  ProposalDiffResult: {
-    ...readyDiff,
-    base: { version: 2, hash: HASH_B, deleted: false },
-    candidate: { hash: HASH_A, size: 22 },
-    current: currentHead,
-    stale: true,
-  },
+  CommitEntryRecord: commitEntry,
+  CommitRecord: commitRecord,
+  CommitResult: commitRecord,
+  CommitSummary: commitSummary,
+  CommitListResponse: { commits: [commitSummary] as (typeof commitSummary)[], nextAfter: null, total: 1 },
+  CommitDiffResult: commitDiff,
+  SnapshotResponse: { at: { commitId: COMMIT_ID, changeId: 7 }, files: oneFile, nextAfter: null },
+  ChangeSetRecord: changeSetRecord,
+  RejectedChangeSetRecord: rejectedChangeSetRecord,
+  ChangeSetListResponse: { changeSets: [changeSetRecord] as (typeof changeSetRecord)[], nextAfter: null, total: 1 },
+  ChangeSetDiffResult: changeSetDiff,
+  ApproveChangeSetResult: { status: "applied", commit: commitRecord },
   TokenRecord: tokenRecord,
   CreatedToken: createdToken,
   TokenListResponse: { tokens: oneToken },
@@ -333,6 +310,7 @@ const responseSamples = {
   ChangeItem: changeItem,
   ChangesPage: { changes: oneChange, hasMore: false, nextSince: 7 },
   PutCreatedResult: {
+    commitId: COMMIT_ID,
     version: 3,
     hash: HASH_A,
     size: 13,
@@ -340,8 +318,9 @@ const responseSamples = {
     createdAt: UPDATED_AT,
   },
   PutUnchangedResult: { unchanged: true, version: 3 },
-  DeleteResult: { version: 4, changeId: 8, createdAt: UPDATED_AT },
+  DeleteResult: { commitId: COMMIT_ID, version: 4, changeId: 8, createdAt: UPDATED_AT },
   RollbackResult: {
+    commitId: COMMIT_ID,
     version: 5,
     hash: HASH_A,
     rollbackOf: 3,
@@ -349,7 +328,7 @@ const responseSamples = {
     changeId: 9,
     createdAt: UPDATED_AT,
   },
-  ImportResult: { path: "docs/guide.md", headVersion: 3, firstChangeId: 7 },
+  ImportResult: { commitId: COMMIT_ID, path: "docs/guide.md", headVersion: 3, firstChangeId: 7 },
   DiffSide: diffSideFrom,
   DiffHunk: diffHunk,
   DiffStats: diffStats,
@@ -385,7 +364,7 @@ const responseSamples = {
 export const SAMPLES = responseSamples satisfies {
   [K in ResponseSchemaName]: z.input<(typeof RESPONSE_SCHEMAS)[K]>;
 } & {
-  RejectedProposalRecord: z.input<(typeof RESPONSE_SCHEMAS)["ProposalRecord"]>;
+  RejectedChangeSetRecord: z.input<(typeof RESPONSE_SCHEMAS)["ChangeSetRecord"]>;
 };
 
 export const RESPONSE_SAMPLES = SAMPLES;

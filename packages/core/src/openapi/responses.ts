@@ -37,11 +37,17 @@ import type {
   ListStashesResult,
   ListTokensResult,
   MeResponse,
-  ProposalDiffResult,
-  ProposalListResponse,
-  ProposalRecord,
-  ProposalWithBody,
-  ApproveProposalResult,
+  CommitEntryRecord,
+  CommitRecord,
+  CommitResult,
+  CommitSummary,
+  CommitListResponse,
+  CommitDiffResult,
+  SnapshotResponse,
+  ChangeSetRecord,
+  ChangeSetListResponse,
+  ChangeSetDiffResult,
+  ApproveChangeSetResult,
   PutCreatedResult,
   PutUnchangedResult,
   RotateTokenResult,
@@ -50,7 +56,8 @@ import type {
   StashListResponse,
   StashChangeEvent,
   StashEvent,
-  StashProposalEvent,
+  StashCommitEvent,
+  StashChangeSetEvent,
   StashReadyEvent,
   StashReconnectEvent,
   StashRecord,
@@ -62,7 +69,8 @@ import type {
 import {
   StashChangeEventSchema,
   StashEventSchema,
-  StashProposalEventSchema,
+  StashCommitEventSchema,
+  StashChangeSetEventSchema,
   StashReadyEventSchema,
   StashReconnectEventSchema,
 } from "../schemas.js";
@@ -71,7 +79,7 @@ const TimestampSchema = z.iso.datetime();
 const HashSchema = z.string().regex(/^sha256-[0-9a-f]{64}$/);
 const VersionKindSchema = z.enum(["put", "delete", "rollback"]);
 const GcKindSchema = z.enum(["r2-orphans", "ledger"]);
-const ProposalStatusSchema = z.enum(["open", "applied", "rejected", "expired"]);
+const ChangeSetStatusSchema = z.enum(["open", "applied", "rejected", "expired"]);
 const TokenScopeSchema = z.enum(["read", "write"]);
 const MetaSchema = z.record(z.string(), z.json());
 const IntegerSchema = z.number().int();
@@ -201,6 +209,7 @@ export const FileSummarySchema = z.strictObject({
 
 export const FileListResponseSchema = z.strictObject({
   files: z.array(FileSummarySchema),
+  commonPrefixes: z.array(z.string()).optional(),
   nextAfter: z.string().nullable(),
 });
 
@@ -220,6 +229,7 @@ export const FileRecordSchema = z.strictObject({
 });
 
 export const VersionRecordSchema = z.strictObject({
+  commitId: z.string(),
   version: NonNegativeIntegerSchema,
   kind: VersionKindSchema,
   hash: NullableHashSchema,
@@ -242,6 +252,7 @@ export const HistoryPageSchema = z.strictObject({
 });
 
 export const ChangeItemSchema = z.strictObject({
+  commitId: z.string(),
   changeId: NonNegativeIntegerSchema,
   stash: z.string(),
   path: z.string(),
@@ -270,6 +281,7 @@ export const ChangesPageSchema: z.ZodType<ChangesPage> = z.union([
 ]);
 
 export const PutCreatedResultSchema = z.strictObject({
+  commitId: z.string(),
   version: NonNegativeIntegerSchema,
   hash: HashSchema,
   size: NonNegativeIntegerSchema,
@@ -283,12 +295,14 @@ export const PutUnchangedResultSchema = z.strictObject({
 });
 
 export const DeleteResultSchema = z.strictObject({
+  commitId: z.string(),
   version: NonNegativeIntegerSchema,
   changeId: NonNegativeIntegerSchema,
   createdAt: TimestampSchema,
 });
 
 export const RollbackResultSchema = z.strictObject({
+  commitId: z.string(),
   version: NonNegativeIntegerSchema,
   hash: HashSchema,
   rollbackOf: NonNegativeIntegerSchema,
@@ -302,6 +316,7 @@ export const RollbackResultSchema = z.strictObject({
 });
 
 export const ImportResultSchema = z.strictObject({
+  commitId: z.string(),
   path: z.string(),
   headVersion: NonNegativeIntegerSchema,
   firstChangeId: NonNegativeIntegerSchema,
@@ -337,44 +352,6 @@ export const GcRunsResponseSchema: z.ZodType<GcRunsResponse> = z.strictObject({
   runs: z.array(GcRunResultSchema),
 });
 
-export const ProposalRecordSchema = z.strictObject({
-  id: z.string().regex(/^prp_\d{13}[0-9a-f]{8}$/),
-  stash: z.string(),
-  path: z.string(),
-  baseVersion: z.number().int().positive().nullable(),
-  author: z.string(),
-  message: z.string(),
-  meta: MetaSchema,
-  size: NonNegativeIntegerSchema,
-  hash: HashSchema,
-  createdAt: TimestampSchema,
-  expiresAt: TimestampSchema,
-  status: ProposalStatusSchema,
-  decidedAt: TimestampSchema.nullable(),
-  decidedBy: z.string().nullable(),
-  decisionReason: z.string().nullable(),
-  appliedVersion: z.number().int().positive().nullable(),
-  appliedChangeId: z.number().int().positive().nullable(),
-});
-
-export const ProposalWithBodySchema: z.ZodType<ProposalWithBody> = ProposalRecordSchema.extend({
-  body: z.string(),
-});
-
-export const ProposalListResponseSchema = z.strictObject({
-  proposals: z.array(ProposalRecordSchema),
-  nextAfter: z.string().nullable(),
-  total: NonNegativeIntegerSchema,
-});
-
-export const ApproveProposalResultSchema = z.strictObject({
-  status: z.literal("applied"),
-  appliedVersion: z.number().int().positive(),
-  appliedChangeId: z.number().int().positive(),
-  hash: HashSchema,
-  createdAt: TimestampSchema,
-});
-
 export const DiffSideSchema = z.strictObject({
   version: NonNegativeIntegerSchema,
   hash: NullableHashSchema,
@@ -383,6 +360,7 @@ export const DiffSideSchema = z.strictObject({
 });
 
 export const UploadCommitResultSchema = z.strictObject({
+  commitId: z.string(),
   version: z.number().int().positive(),
   hash: HashSchema,
   size: NonNegativeIntegerSchema,
@@ -518,34 +496,54 @@ export const CurrentSchema = z.strictObject({
   createdAt: TimestampSchema,
 });
 
-const ProposalDiffFields = {
-  base: z.strictObject({
-    version: z.number().int().positive().nullable(),
-    hash: NullableHashSchema,
-    deleted: z.boolean(),
-  }),
-  candidate: z.strictObject({ hash: HashSchema, size: NonNegativeIntegerSchema }),
-  current: CurrentSchema.nullable(),
-  stale: z.boolean(),
+const CommitOperationSchema = z.enum(["put", "copy", "delete", "rollback"]);
+export const CommitEntryRecordSchema = z.strictObject({
+  path: z.string(), op: CommitOperationSchema, version: IntegerSchema, kind: VersionKindSchema,
+  changeId: IntegerSchema, hash: NullableHashSchema, size: NonNegativeIntegerSchema,
+  contentType: z.string(), representation: RepresentationSchema, rollbackOf: IntegerSchema.nullable(),
+  copiedFrom: z.strictObject({ path: z.string(), version: IntegerSchema }).optional(),
+  identicalToHead: z.boolean().optional(),
+});
+const CommitRecordFields = {
+  id: z.string(), stash: z.string(), source: z.string(), sourceId: z.string().nullable(), author: z.string(),
+  message: z.string(), meta: MetaSchema, entryCount: NonNegativeIntegerSchema,
+  firstChangeId: IntegerSchema, lastChangeId: IntegerSchema, revertsCommitId: z.string().nullable(),
+  createdBy: z.string(), createdAt: TimestampSchema,
 };
-
-export const ProposalDiffResultSchema: z.ZodType<ProposalDiffResult> = z.union([
-  z.strictObject({ state: z.literal("same"), ...ProposalDiffFields }),
-  z.strictObject({ state: z.literal("binary"), ...ProposalDiffFields }),
-  z.strictObject({
-    state: z.literal("oversized"),
-    reason: z.enum(["bytes", "complexity"]),
-    ...ProposalDiffFields,
-  }),
-  z.strictObject({
-    state: z.literal("ready"),
-    unified: z.string(),
-    truncated: z.boolean(),
-    hunks: z.array(DiffHunkSchema),
-    stats: DiffStatsSchema,
-    ...ProposalDiffFields,
-  }),
-]);
+export const CommitRecordSchema = z.strictObject({ ...CommitRecordFields, entries: z.array(CommitEntryRecordSchema) });
+export const CommitResultSchema = CommitRecordSchema.extend({
+  skipped: z.array(z.strictObject({ path: z.string(), reason: z.string() })).optional(),
+});
+export const CommitSummarySchema = z.strictObject(CommitRecordFields);
+export const CommitListResponseSchema = z.strictObject({ commits: z.array(CommitSummarySchema), nextAfter: z.string().nullable(), total: NonNegativeIntegerSchema });
+const DiffEnvelopeSchema = z.union([DiffResultSchema, z.strictObject({ state: z.enum(["binary", "oversized"]) })]);
+export const CommitDiffResultSchema = z.strictObject({
+  entries: z.array(z.strictObject({ path: z.string(), op: CommitOperationSchema,
+    from: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }).nullable(),
+    to: z.strictObject({ version: IntegerSchema, hash: NullableHashSchema }), diff: DiffEnvelopeSchema })),
+  truncated: z.boolean(),
+});
+export const SnapshotResponseSchema = z.strictObject({
+  at: z.strictObject({ commitId: z.string(), changeId: IntegerSchema }), files: z.array(FileSummarySchema),
+  commonPrefixes: z.array(z.string()).optional(), nextAfter: z.string().nullable(),
+});
+export const ChangeSetEntryRecordSchema = z.strictObject({
+  path: z.string(), op: CommitOperationSchema, baseVersion: IntegerSchema.nullable(),
+  current: CurrentSchema.nullable(), stale: z.boolean(),
+});
+export const ChangeSetRecordSchema = z.strictObject({
+  id: z.string(), stash: z.string(), status: ChangeSetStatusSchema, author: z.string(), message: z.string(),
+  meta: MetaSchema, expiresAt: TimestampSchema, createdBy: z.string(), createdAt: TimestampSchema,
+  decidedAt: TimestampSchema.nullable(), decidedBy: z.string().nullable(), decisionReason: z.string().nullable(),
+  commitId: z.string().nullable(), entries: z.array(ChangeSetEntryRecordSchema),
+});
+export const ChangeSetListResponseSchema = z.strictObject({ changeSets: z.array(ChangeSetRecordSchema), nextAfter: z.string().nullable(), total: NonNegativeIntegerSchema });
+export const ChangeSetDiffResultSchema = z.strictObject({
+  entries: z.array(z.strictObject({ path: z.string(), op: CommitOperationSchema, base: CurrentSchema.nullable(),
+    candidate: CurrentSchema.nullable(), current: CurrentSchema.nullable(), stale: z.boolean(), diff: DiffEnvelopeSchema })),
+  stale: z.boolean(), status: ChangeSetStatusSchema, truncated: z.boolean(),
+});
+export const ApproveChangeSetResultSchema = z.strictObject({ status: z.literal("applied"), commit: CommitResultSchema });
 
 export const ErrorCodeSchema = z.enum(ERROR_CODES);
 
@@ -558,6 +556,7 @@ export const ErrorDetailSchema = z.strictObject({
 export const ErrorResponseSchema = z.strictObject({
   error: ErrorDetailSchema,
   current: CurrentSchema.optional(),
+  conflicts: z.array(z.strictObject({ path: z.string(), expectedVersion: IntegerSchema.nullable(), current: CurrentSchema.nullable() })).optional(),
 });
 
 interface ResponseTypeMap {
@@ -575,14 +574,21 @@ interface ResponseTypeMap {
   GcRunsResponse: GcRunsResponse;
   StashReadyEvent: StashReadyEvent;
   StashChangeEvent: StashChangeEvent;
-  StashProposalEvent: StashProposalEvent;
+  StashCommitEvent: StashCommitEvent;
+  StashChangeSetEvent: StashChangeSetEvent;
   StashReconnectEvent: StashReconnectEvent;
   StashEvent: StashEvent;
-  ProposalRecord: ProposalRecord;
-  ProposalWithBody: ProposalWithBody;
-  ProposalListResponse: ProposalListResponse;
-  ApproveProposalResult: ApproveProposalResult;
-  ProposalDiffResult: ProposalDiffResult;
+  CommitEntryRecord: CommitEntryRecord;
+  CommitRecord: CommitRecord;
+  CommitResult: CommitResult;
+  CommitSummary: CommitSummary;
+  CommitListResponse: CommitListResponse;
+  CommitDiffResult: CommitDiffResult;
+  SnapshotResponse: SnapshotResponse;
+  ChangeSetRecord: ChangeSetRecord;
+  ChangeSetListResponse: ChangeSetListResponse;
+  ChangeSetDiffResult: ChangeSetDiffResult;
+  ApproveChangeSetResult: ApproveChangeSetResult;
   TokenRecord: TokenRecord;
   CreatedToken: CreatedToken;
   TokenListResponse: TokenListResponse;
@@ -637,14 +643,21 @@ export const RESPONSE_SCHEMAS = {
   GcRunsResponse: GcRunsResponseSchema,
   StashReadyEvent: StashReadyEventSchema,
   StashChangeEvent: StashChangeEventSchema,
-  StashProposalEvent: StashProposalEventSchema,
+  StashCommitEvent: StashCommitEventSchema,
+  StashChangeSetEvent: StashChangeSetEventSchema,
   StashReconnectEvent: StashReconnectEventSchema,
   StashEvent: StashEventSchema,
-  ProposalRecord: ProposalRecordSchema,
-  ProposalWithBody: ProposalWithBodySchema,
-  ProposalListResponse: ProposalListResponseSchema,
-  ApproveProposalResult: ApproveProposalResultSchema,
-  ProposalDiffResult: ProposalDiffResultSchema,
+  CommitEntryRecord: CommitEntryRecordSchema,
+  CommitRecord: CommitRecordSchema,
+  CommitResult: CommitResultSchema,
+  CommitSummary: CommitSummarySchema,
+  CommitListResponse: CommitListResponseSchema,
+  CommitDiffResult: CommitDiffResultSchema,
+  SnapshotResponse: SnapshotResponseSchema,
+  ChangeSetRecord: ChangeSetRecordSchema,
+  ChangeSetListResponse: ChangeSetListResponseSchema,
+  ChangeSetDiffResult: ChangeSetDiffResultSchema,
+  ApproveChangeSetResult: ApproveChangeSetResultSchema,
   TokenRecord: TokenRecordSchema,
   CreatedToken: CreatedTokenSchema,
   TokenListResponse: TokenListResponseSchema,

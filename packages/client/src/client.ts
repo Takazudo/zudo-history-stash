@@ -9,13 +9,10 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import type {
   ApiError,
-  ApproveProposalBody,
-  ApproveProposalResult,
   CandidateDiffResult,
   CapabilitiesResponse,
   ChangesPage,
   CompleteUploadResult,
-  CreateProposalBody,
   CreateStashBody,
   CreateStashResult,
   CreateTokenBody,
@@ -38,7 +35,6 @@ import type {
   ImportBody,
   ImportResult,
   ParsedListGcRunsQuery,
-  ParsedListProposalsQuery,
   ListChangesResult,
   ListFilesQuery,
   ParsedListStashesQuery,
@@ -47,12 +43,6 @@ import type {
   MeResponse,
   PutFileBody,
   PutResult,
-  ProposalDiffQuery,
-  ProposalDiffResult,
-  ProposalListResponse,
-  ProposalRecord,
-  ProposalWithBody,
-  RejectProposalBody,
   RollbackBody,
   RollbackResult,
   RestoreStashResult,
@@ -134,49 +124,6 @@ export type ClientFailure<Code extends ErrorCode = ErrorCode> = {
 /** A client-facing business result. HTTP 4xx responses remain values, not thrown errors. */
 export type ClientResult<T> = ClientSuccess<T> | ClientFailure;
 
-/** The exact stale approval branch, including the head that defeated the proposal fence. */
-export type ProposalStaleResult = ClientFailure<"stale"> & { current: Current };
-
-/** An approval refused at or after its expiry boundary. */
-export type ProposalExpiredResult = ClientFailure<"proposal-expired">;
-
-/** A proposal whose opposite terminal decision already won. */
-export type ProposalClosedResult = ClientFailure<"proposal-closed">;
-
-/** Typed approval outcomes, preserving stale/current and terminal proposal status branches. */
-export type ApproveProposalClientResult =
-  | ClientSuccess<ApproveProposalResult>
-  | ProposalStaleResult
-  | ProposalExpiredResult
-  | ProposalClosedResult
-  | ClientFailure<Exclude<ErrorCode, "stale" | "proposal-expired" | "proposal-closed">>;
-
-/** Typed rejection outcomes, including the already-applied terminal branch. */
-export type RejectProposalClientResult =
-  | ClientSuccess<ProposalRecord>
-  | ProposalClosedResult
-  | ClientFailure<Exclude<ErrorCode, "proposal-closed">>;
-
-/** Narrows an approval result to the stale branch whose current head is present. */
-export function isProposalStaleResult(
-  result: ClientResult<unknown>,
-): result is ProposalStaleResult {
-  return !result.ok && result.error.code === "stale" && result.current !== undefined;
-}
-
-/** Narrows a proposal decision to its expiry refusal. */
-export function isProposalExpiredResult(
-  result: ClientResult<unknown>,
-): result is ProposalExpiredResult {
-  return !result.ok && result.error.code === "proposal-expired";
-}
-
-/** Narrows a proposal decision to its opposite-terminal-state refusal. */
-export function isProposalClosedResult(
-  result: ClientResult<unknown>,
-): result is ProposalClosedResult {
-  return !result.ok && result.error.code === "proposal-closed";
-}
 
 /** A representation cache hit. This is deliberately separate from a file value. */
 export type NotModifiedResult = { ok: true; notModified: true };
@@ -191,8 +138,6 @@ export type FileGetResult = ClientResult<FileRecordWithEtag> | NotModifiedResult
 export type ListStashesOptions = Partial<ParsedListStashesQuery>;
 /** Options for listing garbage-collection run history. */
 export type ListGcRunsOptions = Partial<ParsedListGcRunsQuery>;
-/** Options for listing proposals. */
-export type ListProposalsOptions = Partial<ParsedListProposalsQuery>;
 /** Options for listing files. */
 export type ListFilesOptions = Partial<ListFilesQuery>;
 /** Options for a change feed. */
@@ -384,19 +329,6 @@ export interface StashFilesClient {
   uploads: StashUploadSessionsClient;
 }
 
-/** Proposal operations scoped to one stash. */
-export interface StashProposalsClient {
-  create(
-    input: CreateProposalBody,
-    options?: MutationOptions,
-  ): Promise<ClientResult<ProposalRecord>>;
-  list(options?: ListProposalsOptions): Promise<ClientResult<ProposalListResponse>>;
-  get(id: string): Promise<ClientResult<ProposalWithBody>>;
-  diff(id: string, options?: ProposalDiffQuery): Promise<ClientResult<ProposalDiffResult>>;
-  approve(id: string, input?: ApproveProposalBody): Promise<ApproveProposalClientResult>;
-  reject(id: string, input?: RejectProposalBody): Promise<RejectProposalClientResult>;
-}
-
 /** Administrative garbage-collection operations. */
 export interface StashGcClient {
   run(input: RunGcBody): Promise<ClientResult<GcRunResult>>;
@@ -425,7 +357,6 @@ export interface StashClient {
   admin: StashAdminClient;
   changes(options?: ChangesOptions): Promise<ClientResult<ChangesPage>>;
   files(stash: string): StashFilesClient;
-  proposals(stash: string): StashProposalsClient;
   putLatest(
     stash: string,
     path: string,
@@ -701,73 +632,6 @@ export function createStashClient(options: StashClientOptions): StashClient {
     uploads: createUploadSessionsClient(binaryContext, stash),
   });
 
-  const getProposalClient = (stash: string): StashProposalsClient => ({
-    async create(input, mutationOptions = {}) {
-      const invalid = filePath<ProposalRecord>(stash, input.path);
-      if (invalid !== undefined) return invalid;
-      const idempotencyKey = await mintKey(keyFactory, mutationOptions.idempotencyKey);
-      return (await call<ProposalRecord>(
-        "createProposal",
-        "POST",
-        target(route("createProposal", stash)),
-        input,
-        idempotencyKey,
-      )) as ClientResult<ProposalRecord>;
-    },
-    async list(listOptions = {}) {
-      const invalid = stashError<ProposalListResponse>(stash);
-      if (invalid !== undefined) return invalid;
-      return (await call<ProposalListResponse>(
-        "listProposals",
-        "GET",
-        target(route("listProposals", stash), [
-          ["status", listOptions.status],
-          ["path", listOptions.path],
-          ["limit", listOptions.limit],
-          ["after", listOptions.after],
-        ]),
-      )) as ClientResult<ProposalListResponse>;
-    },
-    async get(id) {
-      const invalid = stashError<ProposalWithBody>(stash);
-      if (invalid !== undefined) return invalid;
-      return (await call<ProposalWithBody>(
-        "getProposal",
-        "GET",
-        target(route("getProposal", stash, undefined, id)),
-      )) as ClientResult<ProposalWithBody>;
-    },
-    async diff(id, diffOptions = {}) {
-      const invalid = stashError<ProposalDiffResult>(stash);
-      if (invalid !== undefined) return invalid;
-      return (await call<ProposalDiffResult>(
-        "getProposalDiff",
-        "GET",
-        target(route("getProposalDiff", stash, undefined, id), [["context", diffOptions.context]]),
-      )) as ClientResult<ProposalDiffResult>;
-    },
-    async approve(id, input = {}) {
-      const invalid = stashError<ApproveProposalResult>(stash);
-      if (invalid !== undefined) return invalid as ApproveProposalClientResult;
-      return (await call<ApproveProposalResult>(
-        "approveProposal",
-        "POST",
-        target(route("approveProposal", stash, undefined, id)),
-        input,
-      )) as ApproveProposalClientResult;
-    },
-    async reject(id, input = {}) {
-      const invalid = stashError<ProposalRecord>(stash);
-      if (invalid !== undefined) return invalid as RejectProposalClientResult;
-      return (await call<ProposalRecord>(
-        "rejectProposal",
-        "POST",
-        target(route("rejectProposal", stash, undefined, id)),
-        input,
-      )) as RejectProposalClientResult;
-    },
-  });
-
   const stashes = {
     async list(listOptions: ListStashesOptions = {}) {
       return (await call<ListStashesResult>(
@@ -933,7 +797,6 @@ export function createStashClient(options: StashClientOptions): StashClient {
     admin,
     changes,
     files: getFileClient,
-    proposals: getProposalClient,
     async putLatest(stash, path, body, putOptions = {}) {
       const invalid = filePath<PutResult>(stash, path);
       if (invalid !== undefined) return invalid;

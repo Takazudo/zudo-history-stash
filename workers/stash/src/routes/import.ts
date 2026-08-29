@@ -29,6 +29,7 @@ importRoutes.post(
       result.createdVersions.map((entry) => ({
         type: "change" as const,
         changeId: entry.changeId,
+        commitId: result.value.commitId,
         stash,
         path: input.path,
         version: entry.version,

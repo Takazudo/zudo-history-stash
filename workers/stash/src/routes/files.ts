@@ -210,6 +210,7 @@ files.put("/v1/stashes/:stash/files/:path{.+}", async (c) => {
       {
         type: "change",
         changeId: result.value.changeId,
+        commitId: result.value.commitId,
         stash,
         path,
         version: result.value.version,
@@ -238,6 +239,7 @@ files.post("/v1/stashes/:stash/delete/:path{.+}", async (c) => {
       {
         type: "change",
         changeId: result.value.changeId,
+        commitId: result.value.commitId,
         stash,
         path,
         version: result.value.version,
@@ -266,6 +268,7 @@ files.post("/v1/stashes/:stash/rollback/:path{.+}", async (c) => {
       {
         type: "change",
         changeId: result.value.changeId,
+        commitId: result.value.commitId,
         stash,
         path,
         version: result.value.version,

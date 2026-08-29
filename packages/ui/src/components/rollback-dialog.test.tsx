@@ -23,6 +23,7 @@ function successResult(version = 3): ClientResult<RollbackResult> {
   return {
     ok: true,
     value: {
+      commitId: `legacy:${version}`,
       version,
       hash: "sha256-target",
       rollbackOf: 1,

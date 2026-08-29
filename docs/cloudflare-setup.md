@@ -235,7 +235,7 @@ not claim to discover or override the Cloudflare plan at runtime.
 
 | Variable | Default | Contract |
 | --- | ---: | --- |
-| `JSON_INLINE_MAX_BYTES` | `5000000` | Maximum text size returned inline by JSON-compatible reads; the current proposal/import body schema is the fixed `MAX_BODY_BYTES=5000000` contract. |
+| `JSON_INLINE_MAX_BYTES` | `5000000` | Maximum text size returned inline by JSON-compatible reads; the current commit/import body schema is the fixed `MAX_BODY_BYTES=5000000` contract. |
 | `D1_INLINE_MAX_BYTES` | `524288` | Bodies at or below this size may be stored inline in D1. |
 | `HTTP_REQUEST_MAX_BYTES` | `100000000` | Operator-declared request/content ceiling for raw upload handling. |
 | `SINGLE_UPLOAD_MAX_BYTES` | `33554432` | Maximum exact content bytes in one raw upload request (32 MiB). |

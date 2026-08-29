@@ -120,6 +120,7 @@ export const SELECT_HISTORY_HEAD = `
 
 export const SELECT_HISTORY_VERSIONS = `
   SELECT
+    v.id AS change_id,
     v.version AS version,
     v.kind AS kind,
     v.blob_hash AS hash,
@@ -245,6 +246,7 @@ export interface HistoryHeadRow {
 }
 
 export interface HistoryVersionRow {
+  change_id: number;
   version: number;
   kind: "put" | "delete" | "rollback";
   hash: string | null;

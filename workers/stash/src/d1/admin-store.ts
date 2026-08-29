@@ -448,6 +448,7 @@ function mapChange(row: ChangeRow, jsonInlineMaxBytes: number): ChangeItem {
   }
   return {
     changeId: row.change_id,
+    commitId: `legacy:${row.change_id}`,
     stash: row.stash,
     path: row.path,
     version: row.version,

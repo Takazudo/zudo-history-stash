@@ -44,7 +44,7 @@ describe("API reference route coverage", () => {
       "ready.checkpoint",
       "latest live ID",
       "exact ID",
-      "Proposal events are live-only",
+      "Commit and change-set events are",
       'reason: "lifetime" | "replay-limit" | "shutdown"',
       ": ping",
       "token-expiry boundary",

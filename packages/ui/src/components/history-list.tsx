@@ -316,6 +316,7 @@ function HistoryListForTarget({
     const { result, message } = success;
     const effectiveMessage = message || `Rollback to v${target.version}`;
     const created: VersionRecord = {
+      commitId: result.commitId,
       version: result.version,
       kind: "rollback",
       hash: result.hash,

@@ -154,7 +154,7 @@ direct fixture setup and assertions. `fake.reset()` clears those tables without 
 state object. Pass `now` to control timestamps and token expiry; pass `rateLimit` to inject
 Cloudflare-shaped capability/key verdicts (rejections fail open, matching the Worker).
 
-The fake implements the SDK route surface, including exact binary bytes, upload sessions, raw ranges, proposals, and the authenticated fetch-only
+The fake implements the SDK route surface, including exact binary bytes, upload sessions, raw ranges, and the authenticated fetch-only
 stash event stream, except for health, import, and cross-stash changes. Those unsupported routes
 and unknown routes return `501 not-implemented`.
 `await fake.mintToken()` remains available for direct fixture setup, accepts `expiresAt` or
@@ -168,14 +168,14 @@ const iterator = stream[Symbol.asyncIterator]();
 await iterator.next(); // authoritative ready event
 
 fake.events.emit({
-  type: "proposal",
-  proposalId: "prp_1787875200000deadbeef",
+  type: "change-set",
+  changeSetId: "cst_1787875200000deadbeef",
   stash: "docs",
-  path: "README.md",
+  paths: ["README.md"],
   status: "open",
   origin: null,
 });
-const proposal = await iterator.next();
+const changeSet = await iterator.next();
 
 fake.events.rotate("docs", "lifetime");
 stream.close();

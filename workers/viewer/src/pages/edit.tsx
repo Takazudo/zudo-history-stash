@@ -6,9 +6,7 @@ import {
   type EditWorkbenchLiveRefresh,
   type EditWorkbenchSaved,
 } from "@takazudo/zudo-history-stash-ui";
-import type { ProposalRecord } from "@takazudo/zudo-history-stash";
 import { useCallback, useRef } from "react";
-import { proposalCreatedLocationState } from "../app/proposal-routes.js";
 import { useViewerLiveRefresh } from "../app/live-updates.js";
 import { Page } from "../app/shell/page.js";
 
@@ -141,20 +139,12 @@ export default function EditPage() {
     });
   }
 
-  function handleProposed(record: ProposalRecord): void {
-    if (!stash) return;
-    navigate(hrefFor({ kind: "proposal", stash, id: record.id }), {
-      state: proposalCreatedLocationState(),
-    });
-  }
-
   return (
     <EditWorkbench
       initialSource={initialSource}
       path={path}
       registerLiveRefresh={registerLiveRefresh}
       stash={stash}
-      onProposed={handleProposed}
       onSaved={handleSaved}
     />
   );

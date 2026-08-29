@@ -622,6 +622,7 @@ async function publishCommitted(c: Context<AppEnv>, row: UploadSessionRow): Prom
       {
         type: "change",
         changeId: committed.changeId,
+        commitId: committed.commitId,
         stash: row.stash_name,
         path: row.path,
         version: committed.version,

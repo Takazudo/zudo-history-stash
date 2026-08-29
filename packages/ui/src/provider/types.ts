@@ -14,7 +14,6 @@ export type StashUiRoute =
       context?: number;
     }
   | { kind: "edit"; stash: string; path: string; from?: number }
-  | { kind: "proposal"; stash: string; id: string }
   | { kind: "new-file"; stash: string }
   | { kind: "tokens"; stash: string };
 

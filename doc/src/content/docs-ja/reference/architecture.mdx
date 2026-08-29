@@ -21,7 +21,7 @@ R2 バケットへ退避できます。
 | `versions` | 追記専用の履歴。データベース全体で一意な ID は変更カーソルでもあります。 |
 | `idempotency` | 安全に書き込みを再実行するためのリクエスト同一性台帳。 |
 | `gc_jobs`, `gc_runs` | 世代でフェンスされたガベージコレクションのリース、進捗、結果。 |
-| `proposals` | フェンスされた判断状態を持つ不変の候補。 |
+| `change sets` | フェンスされた判断状態を持つ不変の候補。 |
 
 representation（`text`/`binary`）、content access（`inline`/`raw`/`deleted`）、transfer
 （`json`/`single`/`multipart`）、storage（`d1`/`r2`）、diff eligibility は別々の契約です。
@@ -53,5 +53,5 @@ stash の削除は論理削除であり、処理は延期されます。削除�
 上限付きの各実行はすべて記録されます。
 
 ライブ配信は replay より先に購読し、その後で助言的なイベントを発行します。利用側は `ready`、
-`change`、`proposal`、再接続の後に、正本である変更フィードとリソース読み取りを使って照合する必要が
+`change`、`change set`、再接続の後に、正本である変更フィードとリソース読み取りを使って照合する必要が
 あります。イベントストリームは第二の正本ではありません。

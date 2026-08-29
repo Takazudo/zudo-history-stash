@@ -43,8 +43,8 @@ Viewer の URL はナビゲーション状態であり、アクセス権の証�
 | `/s/:stash/f/*` | ファイルを表示します。`?version=N` を指定すると履歴上のバージョンを選択します。 |
 | `/s/:stash/diff/*` | `?from=N&to=M&context=N` で指定したバージョンを比較します。現在の head を使う場合は `to=head` を指定します。 |
 | `/s/:stash/edit/*` | ファイルを編集します。任意の `?from=N` で読み込むソースバージョンを固定します。 |
-| `/s/:stash/proposals` | 提案を一覧表示します。`?status=open` または `?status=all` を指定し、必要に応じて完全一致の `?path=...` で絞り込めます。 |
-| `/s/:stash/proposals/:id` | 一つの提案と、変更されないベースと候補の差分をレビューします。 |
+| `/s/:stash/change-sets` | 提案を一覧表示します。`?status=open` または `?status=all` を指定し、必要に応じて完全一致の `?path=...` で絞り込めます。 |
+| `/s/:stash/change-sets/:id` | 一つの提案と、変更されないベースと候補の差分をレビューします。 |
 | `/s/:stash/new` | ファイルを作成します。 |
 | `/s/:stash/tokens` | 管理者専用のトークン管理です。 |
 

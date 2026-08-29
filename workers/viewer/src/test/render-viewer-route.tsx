@@ -18,8 +18,6 @@ import { TOKEN_STORAGE_KEY } from "../app/auth/token-store.js";
 import { ViewerStashUiProvider } from "../app/viewer-stash-ui-provider.js";
 import HomePage from "../pages/home.js";
 import LoginPage from "../pages/login.js";
-import ProposalPage from "../pages/proposal.js";
-import ProposalsPage from "../pages/proposals.js";
 import StashPage from "../pages/stash.js";
 
 export function renderViewerRoute(
@@ -52,8 +50,6 @@ export function renderViewerRoute(
             children: [
               { path: "/", element: <HomePage /> },
               { path: "/s/:stash", element: <StashPage /> },
-              { path: "/s/:stash/proposals", element: <ProposalsPage /> },
-              { path: "/s/:stash/proposals/:id", element: <ProposalPage /> },
             ],
           },
           { path: "*", element: <Navigate replace to="/" /> },

@@ -1,9 +1,12 @@
 import type {
   CandidateDiffResult,
-  ApproveProposalBody,
+  ApproveChangeSetBody,
+  ChangeSetDiffQuery,
+  CommitDiffQuery,
   ChangesPage,
   CreateStashBody,
-  CreateProposalBody,
+  CreateChangeSetBody,
+  CreateCommitBody,
   CreateStashResult,
   CreateTokenBody,
   CreateTokenResult,
@@ -23,14 +26,16 @@ import type {
   ListStashesResult,
   ListTokensResult,
   MeResponse,
-  ParsedListProposalsQuery,
-  ProposalDiffQuery,
+  ListChangeSetsQuery,
+  ListCommitsQuery,
   PutFileBody,
   PutResult,
   RollbackBody,
   RollbackResult,
   RestoreStashResult,
-  RejectProposalBody,
+  RejectChangeSetBody,
+  RevertCommitBody,
+  SnapshotQuery,
   RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
@@ -65,8 +70,8 @@ export interface StashRpcBinding {
 
 /**
  * One explicit RPC method per transport-eligible core route. Fetch-only routes remain available
- * through `request()` and are deliberately absent here. Proposal methods temporarily return their
- * registered HTTP skeleton response until the proposal client lifecycle is implemented.
+ * through `request()` and are deliberately absent here. New contract routes return their
+ * registered HTTP 501 skeleton response until their implementation waves land.
  */
 export interface StashRpcMethods {
   health(token: string): Promise<ClientResult<HealthResponse>>;
@@ -100,36 +105,18 @@ export interface StashRpcMethods {
   listChanges(token: string, options?: ChangesOptions): Promise<ClientResult<ChangesPage>>;
   runGc(token: string, input: RunGcBody): Promise<ClientResult<GcRunResult>>;
   listGcRuns(token: string, options?: ListGcRunsOptions): Promise<ClientResult<GcRunsResponse>>;
-  createProposal(
-    token: string,
-    stash: string,
-    input: CreateProposalBody,
-    idempotencyKey?: string,
-  ): Promise<Response>;
-  listProposals(
-    token: string,
-    stash: string,
-    query?: Partial<ParsedListProposalsQuery>,
-  ): Promise<Response>;
-  getProposal(token: string, stash: string, id: string): Promise<Response>;
-  getProposalDiff(
-    token: string,
-    stash: string,
-    id: string,
-    query?: ProposalDiffQuery,
-  ): Promise<Response>;
-  approveProposal(
-    token: string,
-    stash: string,
-    id: string,
-    input: ApproveProposalBody,
-  ): Promise<Response>;
-  rejectProposal(
-    token: string,
-    stash: string,
-    id: string,
-    input: RejectProposalBody,
-  ): Promise<Response>;
+  createCommit(token: string, stash: string, input: CreateCommitBody, idempotencyKey?: string): Promise<Response>;
+  getCommit(token: string, stash: string, id: string): Promise<Response>;
+  listCommits(token: string, stash: string, query?: Partial<ListCommitsQuery>): Promise<Response>;
+  getCommitDiff(token: string, stash: string, id: string, query?: CommitDiffQuery): Promise<Response>;
+  revertCommit(token: string, stash: string, id: string, input: RevertCommitBody, idempotencyKey?: string): Promise<Response>;
+  getSnapshot(token: string, stash: string, query: SnapshotQuery): Promise<Response>;
+  createChangeSet(token: string, stash: string, input: CreateChangeSetBody, idempotencyKey?: string): Promise<Response>;
+  listChangeSets(token: string, stash: string, query?: Partial<ListChangeSetsQuery>): Promise<Response>;
+  getChangeSet(token: string, stash: string, id: string): Promise<Response>;
+  getChangeSetDiff(token: string, stash: string, id: string, query?: ChangeSetDiffQuery): Promise<Response>;
+  approveChangeSet(token: string, stash: string, id: string, input: ApproveChangeSetBody): Promise<Response>;
+  rejectChangeSet(token: string, stash: string, id: string, input: RejectChangeSetBody): Promise<Response>;
   listFiles(
     token: string,
     stash: string,

@@ -20,9 +20,6 @@ export function defaultStashHref(route: StashUiRoute): string {
   if (route.kind === "stash") return stashBase;
   if (route.kind === "new-file") return `${stashBase}/new`;
   if (route.kind === "tokens") return `${stashBase}/tokens`;
-  if (route.kind === "proposal") {
-    return `${stashBase}/proposals/${encodeURIComponent(route.id)}`;
-  }
 
   const encodedPath = encodePath(route.path);
   if (route.kind === "file") {

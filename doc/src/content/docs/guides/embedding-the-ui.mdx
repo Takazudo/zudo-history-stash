@@ -15,9 +15,9 @@ The provider accepts `client`, optional `clientForSignal`, optional `hrefFor`, a
 `Anchor`. The public `StashClient` interface does not have `withSignal`; inject a factory that can
 construct an equivalent client for an `AbortSignal` when cancellable reads matter.
 
-The package route union contains exactly `home`, `stash`, `file`, `diff`, `edit`, `proposal`,
+The package route union contains exactly `home`, `stash`, `file`, `diff`, `edit`, `change set`,
 `new-file`, and `tokens`. A host may map those route values into its own router. The hosted Viewer
-has a proposal-list URL, but there is no package-level `proposals` route kind.
+has a change set-list URL, but there is no package-level `change sets` route kind.
 
 This complete host component mounts the public `HistoryList` below the provider. Its imports use
 only public package roots.

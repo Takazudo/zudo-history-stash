@@ -71,9 +71,9 @@ async function expectDiagnostic(options, pattern) {
 
 test("production English reference matches fresh Core and OpenAPI contracts", async () => {
   assert.deepEqual(await checkContract({ repositoryRoot: REPOSITORY_ROOT }), {
-    routes: 43,
-    errors: 27,
-    limits: 30,
+    routes: 49,
+    errors: 28,
+    limits: 33,
     locales: ["en"],
   });
 });
@@ -269,7 +269,8 @@ test("route discovery fails closed when all operation headings disappear", async
     "http-api/health-and-identity.mdx",
     "http-api/import.mdx",
     "http-api/live-events.mdx",
-    "http-api/proposals.mdx",
+    "http-api/change-sets.mdx",
+    "http-api/commits.mdx",
     "http-api/stashes.mdx",
     "http-api/tokens.mdx",
   ]) {
@@ -539,9 +540,9 @@ test("non-finite public numeric exports fail closed", async (t) => {
 test("the locale-neutral parser accepts a synthetic Japanese reference root", async (t) => {
   const value = await fixture(t, "ja");
   assert.deepEqual(await checkContract(value.options), {
-    routes: 43,
-    errors: 27,
-    limits: 30,
+    routes: 49,
+    errors: 28,
+    limits: 33,
     locales: ["ja"],
   });
 });

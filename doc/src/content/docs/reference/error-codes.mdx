@@ -23,11 +23,12 @@ below. Route pages and the OpenAPI document define which errors apply to a parti
 | `stale` | `409` | The expected head no longer matches. | Reload the authoritative head, reconcile, and retry with its version. |
 | `exists` | `409` | A create-only operation found an existing resource. | Read the existing resource or use an update fence. |
 | `already-deleted` | `409` | A lifecycle or file delete targeted an existing tombstone. | Treat it as already deleted or refresh state. |
+| `commit-conflict` | `409` | One or more atomic commit entries failed their fence. | Inspect `conflicts`, refresh every affected path, and retry as a new commit. |
 | `gc-busy` | `409` | Another generation owns the garbage-collection lease. | Retry after the active lease window. |
 | `already-rotated` | `409` | The predecessor token already has a successor. | Inspect the successor ID; revoke it and create anew if its secret was lost. |
 | `token-expired` | `409` | Token rotation targeted an expired predecessor. | Create a new token from an admin credential. |
-| `proposal-expired` | `409` | An open proposal passed its approval deadline. | Create a fresh proposal against the current head. |
-| `proposal-closed` | `409` | A proposal decision conflicts with its terminal state. | Refresh the proposal and respect the recorded decision. |
+| `change-set-expired` | `409` | An open change set passed its approval deadline. | Create a fresh change set against the current head. |
+| `change-set-closed` | `409` | A change set decision conflicts with its terminal state. | Refresh the change set and respect the recorded decision. |
 | `payload-too-large` | `413` | The encoded request or stored content exceeds a limit. | Reduce the request using the documented limit and unit. |
 | `idempotency-key-reused` | `422` | One key was reused for a different canonical request. | Generate a new key; never mutate a retried request under the old key. |
 | `rollback-target-tombstone` | `422` | Rollback selected a deleted historical version. | Choose a live version or perform an explicit delete/create workflow. |

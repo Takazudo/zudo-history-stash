@@ -81,7 +81,7 @@ the user what to do. Do not blindly resubmit the losing body. A new body or fenc
 operation and needs a new idempotency key; reusing one key with a different request returns
 `422 idempotency-key-reused`.
 
-The SDK creates keys automatically for ordinary put, delete, rollback, and proposal-create calls.
+The SDK creates keys automatically for ordinary put, delete, rollback, and commit-create calls.
 When recovering from an ambiguous transport failure, provide and retain a stable key so the exact
 same request can be replayed. The idempotency ledger lasts seven days; a replay reconstructs the
 original result and exposes `replayed` on success.
@@ -96,5 +96,5 @@ conflicts. Use explicit `files.put` when durable retry identity or a custom conf
 
 History remains append-only. Delete appends a tombstone, and rollback appends another version while
 requiring the current positive head as its fence. A tombstone cannot be a rollback target. See the
-[proposal guide](./proposals-and-approval.mdx) when a candidate must be reviewed before it becomes a
+[change set guide](../reference/http-api/change-sets.mdx) when a candidate must be reviewed before it becomes a
 version.

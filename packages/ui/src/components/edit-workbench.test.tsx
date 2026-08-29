@@ -1,7 +1,6 @@
 import {
   createStashClient,
   type FileRecordWithEtag,
-  type ProposalRecord,
   type StashClient,
   type StashFetch,
 } from "@takazudo/zudo-history-stash";
@@ -143,12 +142,10 @@ function renderWorkbench(
   fixture: Fixture,
   {
     initialSource,
-    onProposed,
     onSaved,
     registerLiveRefresh,
   }: {
     initialSource?: number;
-    onProposed?: (record: ProposalRecord) => void;
     onSaved?: (result: EditWorkbenchSaved) => void;
     registerLiveRefresh?: (refresh: EditWorkbenchLiveRefresh) => () => void;
   } = {},
@@ -160,7 +157,6 @@ function renderWorkbench(
         path={PATH}
         registerLiveRefresh={registerLiveRefresh}
         stash={STASH}
-        onProposed={onProposed}
         onSaved={onSaved}
       />
     </StashUiProvider>,
@@ -515,40 +511,6 @@ describe("EditWorkbench", () => {
     expect(sessionStorage.getItem(workbenchDraftKey(STASH, PATH))).toBeNull();
   });
 
-  it("threads Save as proposal through the workbench without moving the file head", async () => {
-    const fixture = await createFixture();
-    const onProposed = vi.fn<(record: ProposalRecord) => void>();
-    renderWorkbench(fixture, { onProposed });
-    const editor = await readyEditor();
-    fireEvent.change(editor, { target: { value: "alpha\nproposed locally\n" } });
-    await waitFor(() =>
-      expect((screen.getByRole("button", { name: "Save…" }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Save…" }));
-    const dialog = await screen.findByRole("dialog", { name: "Review save against head v2" });
-    await userEvent.type(within(dialog).getByRole("textbox", { name: "Author" }), "Ada");
-    await userEvent.type(within(dialog).getByRole("textbox", { name: "Message" }), "Please review");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Save as proposal" }));
-
-    await waitFor(() => expect(onProposed).toHaveBeenCalledTimes(1));
-    const record = onProposed.mock.calls[0]?.[0];
-    expect(record).toMatchObject({
-      path: PATH,
-      baseVersion: 2,
-      author: "Ada",
-      message: "Please review",
-      status: "open",
-    });
-    if (record === undefined) throw new Error("Proposal callback was not delivered");
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(editor.value).toBe("alpha\nproposed locally\n");
-    const proposal = await fixture.client.proposals(STASH).get(record.id);
-    expect(proposal.ok && proposal.value.body).toBe("alpha\nproposed locally\n");
-    const history = await fixture.client.files(STASH).history(PATH);
-    expect(history.ok && history.value.headVersion).toBe(2);
-  });
 
   it("shows stale state, reloads the new head explicitly, and never starts a second put", async () => {
     const fixture = await createFixture();

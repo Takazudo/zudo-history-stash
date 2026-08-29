@@ -260,6 +260,7 @@ describe("event publication", () => {
       true,
     );
     await expect(response.json()).resolves.toEqual({
+      commitId: `legacy:${exactIds[0]}`,
       path: "history.txt",
       headVersion: 3,
       firstChangeId: exactIds[0],
@@ -295,6 +296,7 @@ describe("event publication", () => {
     expect(events.at(-1)).toEqual({
       type: "change",
       changeId: rollbackRow.id,
+      commitId: `legacy:${rollbackRow.id}`,
       stash: STASH,
       path: "history.txt",
       version: 4,
@@ -303,80 +305,13 @@ describe("event publication", () => {
       createdAt: new Date(rollbackRow.created_at).toISOString(),
     });
     await expect(continued.json()).resolves.toEqual({
+      commitId: `legacy:${rollbackRow.id}`,
       path: "history.txt",
       headVersion: 4,
       firstChangeId: rollbackRow.id,
     });
   });
 
-  it("publishes proposal transitions once, with approval change before status", async () => {
-    const { bindings, events } = recordingEnv();
-    const createdResponse = await mutation(
-      bindings,
-      "/proposals",
-      { path: "review.md", body: "candidate", baseVersion: null },
-      { key: "proposal-one", clientId: "reviewer" },
-    );
-    const created = await createdResponse.json<{ id: string }>();
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "proposal",
-        proposalId: created.id,
-        status: "open",
-        origin: "reviewer",
-      }),
-    ]);
-    await mutation(
-      bindings,
-      "/proposals",
-      { path: "review.md", body: "candidate", baseVersion: null },
-      { key: "proposal-one" },
-    );
-    expect(events).toHaveLength(1);
-    const mismatch = await mutation(
-      bindings,
-      "/proposals",
-      { path: "review.md", body: "different", baseVersion: null },
-      { key: "proposal-one" },
-    );
-    expect(mismatch.status).toBe(422);
-    expect(events).toHaveLength(1);
-
-    const approvedResponse = await mutation(bindings, `/proposals/${created.id}/approve`, {});
-    const approved = await approvedResponse.json<{
-      appliedChangeId: number;
-      appliedVersion: number;
-      createdAt: string;
-    }>();
-    expect(events.slice(1)).toEqual([
-      expect.objectContaining({
-        type: "change",
-        changeId: approved.appliedChangeId,
-        version: approved.appliedVersion,
-        createdAt: approved.createdAt,
-      }),
-      expect.objectContaining({ type: "proposal", proposalId: created.id, status: "applied" }),
-    ]);
-    await mutation(bindings, `/proposals/${created.id}/approve`, {});
-    expect(events).toHaveLength(3);
-
-    const rejectCreate = await mutation(bindings, "/proposals", {
-      path: "reject.md",
-      body: "candidate",
-      baseVersion: null,
-    });
-    const rejected = await rejectCreate.json<{ id: string }>();
-    expect(events.at(-1)).toMatchObject({ type: "proposal", status: "open" });
-    await mutation(bindings, `/proposals/${rejected.id}/reject`, { reason: "no" });
-    expect(events.at(-1)).toMatchObject({
-      type: "proposal",
-      proposalId: rejected.id,
-      status: "rejected",
-    });
-    const count = events.length;
-    await mutation(bindings, `/proposals/${rejected.id}/reject`, { reason: "again" });
-    expect(events).toHaveLength(count);
-  });
 
   it.each(["reject", "throw"] as const)(
     "swallows a %s from stub.fetch after the durable commit",

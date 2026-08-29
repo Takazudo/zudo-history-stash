@@ -1,6 +1,5 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures/console-errors.js";
-import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 interface MockLiveSnapshot {
   opened: number;
@@ -30,7 +29,6 @@ test("@smoke shared mock live transport stays open and releases on stash navigat
   await page.addInitScript(tokenScript);
   const unexpectedRequests: string[] = [];
   await page.route("**/api/v1/**", async (route) => {
-    if (await fulfillEmptyOpenProposalCount(route, [{ stash: "notes" }])) return;
     const request = route.request();
     const url = new URL(request.url());
     const signature = `${request.method()} ${url.pathname}${url.search}`;

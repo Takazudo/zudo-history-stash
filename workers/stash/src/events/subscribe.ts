@@ -29,6 +29,7 @@ function replayEvent(change: {
   return {
     type: "change",
     changeId: change.changeId,
+    commitId: `legacy:${change.changeId}`,
     stash: change.stash,
     path: change.path,
     version: change.version,

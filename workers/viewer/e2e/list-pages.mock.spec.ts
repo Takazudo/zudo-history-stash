@@ -1,11 +1,9 @@
 import { expect, test } from "./fixtures/console-errors.js";
-import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 const tokenScript = () => sessionStorage.setItem("zhs.token", "zhs_test");
 
 test("@smoke login returns to the protected deep link", async ({ page }) => {
   await page.route("**/api/v1/**", async (route) => {
-    if (await fulfillEmptyOpenProposalCount(route, [{ stash: "notes" }])) return;
     const pathname = new URL(route.request().url()).pathname;
     const value =
       pathname === "/api/v1/me"
@@ -104,7 +102,6 @@ test("@smoke file list appends without duplicates and re-queries deleted files",
   await page.addInitScript(tokenScript);
   const fileRequests: string[] = [];
   await page.route("**/api/v1/**", async (route) => {
-    if (await fulfillEmptyOpenProposalCount(route, [{ stash: "notes" }])) return;
     const url = new URL(route.request().url());
     let value: object;
     if (url.pathname === "/api/v1/me") {

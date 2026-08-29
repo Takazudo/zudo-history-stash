@@ -15,7 +15,7 @@ treating all keys alike.
 
 | Kind | Binding or class | Purpose |
 | --- | --- | --- |
-| D1 | `DB` | Authoritative stashes, files, versions, tokens, changes, and proposals. |
+| D1 | `DB` | Authoritative stashes, files, versions, tokens, changes, and change sets. |
 | private R2 | `BLOBS` | Spilled immutable text or binary bytes; object keys and generations are not public URLs. |
 | Durable Object | `STASH_EVENTS` → `StashEvents` | Per-stash synchronous live-event fanout. |
 | rate limiter | `RL_READ` | Read-route classification. |
@@ -34,9 +34,9 @@ The checked variables and their committed defaults are:
 | `STASH_DELETE_GRACE_DAYS` | `30` days. |
 | `GC_ORPHAN_MIN_AGE_MS` | `900000` milliseconds. |
 | `GC_LEASE_TTL_MS` | `300000` milliseconds. |
-| `PROPOSAL_TTL_DAYS` | `14` days. |
+| `CHANGE_SET_TTL_DAYS` | `14` days. |
 | `STASH_EVENTS_MAX_STREAM_MS` | `300000` milliseconds. |
-| `JSON_INLINE_MAX_BYTES` | `5000000` bytes; default text inline-access boundary, while the JSON/proposal/import schema remains `MAX_BODY_BYTES=5000000`. |
+| `JSON_INLINE_MAX_BYTES` | `5000000` bytes; default text inline-access boundary, while the JSON/change set/import schema remains `MAX_BODY_BYTES=5000000`. |
 | `D1_INLINE_MAX_BYTES` | `524288` bytes. |
 | `HTTP_REQUEST_MAX_BYTES` | `100000000` exact content bytes; an operator-declared raw-upload ceiling. |
 | `SINGLE_UPLOAD_MAX_BYTES` | `33554432` bytes (32 MiB). |
