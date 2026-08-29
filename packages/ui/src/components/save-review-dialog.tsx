@@ -1,14 +1,6 @@
 import type { FileRecord, FileRecordWithEtag } from "@takazudo/zudo-history-stash";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-} from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useCandidateDiff } from "../hooks/use-candidate-diff.js";
 import { useDiffViewPreferences } from "../hooks/use-diff-view-preferences.js";
 import {
@@ -24,7 +16,6 @@ import { Notice } from "../primitives/notice.js";
 import { Textarea } from "../primitives/textarea.js";
 import { DiffControls } from "./diff-controls.js";
 import { DiffPane } from "./diff-pane.js";
-import { ErrorBanner } from "./error-banner.js";
 
 const AUTHOR_STORAGE_KEY = "zhs.author";
 const MAX_AUTHOR_BYTES = 200;

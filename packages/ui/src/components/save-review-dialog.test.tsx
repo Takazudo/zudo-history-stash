@@ -9,7 +9,7 @@ import {
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,8 +19,6 @@ import {
   type SaveMachine,
   type SaveMachineState,
 } from "../hooks/use-save-machine.js";
-import { useCanWrite } from "../provider/hooks.js";
-import { StashUiProvider } from "../provider/stash-ui-provider.js";
 import {
   SaveReviewDialog,
   type SaveReviewCompletion,

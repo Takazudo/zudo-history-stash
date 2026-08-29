@@ -17,7 +17,6 @@ import {
   ListFilesQuery,
   ListStashesQuery,
   MAX_BODY_BYTES,
-  MAX_META_BYTES,
   PutFileBody,
   R2_SPILL_BYTES,
   ROUTES,
@@ -489,27 +488,6 @@ function cloneMeta(meta: Record<string, JsonValue> | undefined): Record<string, 
 
 function iso(value: number): string {
   return new Date(value).toISOString();
-}
-
-function parseIsoDateTime(value: string): number | undefined {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/.exec(value);
-  if (match === null) return undefined;
-  const parsed = Date.parse(value);
-  if (!Number.isSafeInteger(parsed)) return undefined;
-  const date = new Date(parsed);
-  const expectedMilliseconds = Number((match[7] ?? "").padEnd(3, "0").slice(0, 3));
-  if (
-    date.getUTCFullYear() !== Number(match[1]) ||
-    date.getUTCMonth() + 1 !== Number(match[2]) ||
-    date.getUTCDate() !== Number(match[3]) ||
-    date.getUTCHours() !== Number(match[4]) ||
-    date.getUTCMinutes() !== Number(match[5]) ||
-    date.getUTCSeconds() !== Number(match[6]) ||
-    date.getUTCMilliseconds() !== expectedMilliseconds
-  ) {
-    return undefined;
-  }
-  return parsed;
 }
 
 function resolveTokenExpiry(input: FakeMintTokenOptions, now: number): number | null {

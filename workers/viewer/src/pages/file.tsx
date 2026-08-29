@@ -24,7 +24,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { useViewerLiveRefresh } from "../app/live-updates.js";
-import { Badge } from "../app/shell/badge.js";
 import { Page } from "../app/shell/page.js";
 import { ErrorBanner } from "../components/error-banner.js";
 import { useAsync } from "../hooks/use-async.js";
