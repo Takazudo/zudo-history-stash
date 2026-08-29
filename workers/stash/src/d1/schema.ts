@@ -89,6 +89,42 @@ export interface CommitRow {
   created_at: number;
 }
 
+export interface ChangeSetRow {
+  id: string;
+  stash_name: string;
+  status: "open" | "applied" | "rejected";
+  author: string;
+  message: string;
+  meta_json: string;
+  expires_at: number;
+  created_by: string;
+  created_at: number;
+  idempotency_key: string | null;
+  request_hash: string | null;
+  expected_last_change_id: number | null;
+  decision_attempt: string | null;
+  decided_at: number | null;
+  decided_by: string | null;
+  decision_reason: string | null;
+  commit_id: string | null;
+}
+
+export interface ChangeSetEntryRow {
+  change_set_id: string;
+  stash_name: string;
+  path: string;
+  op: "put" | "copy" | "delete" | "rollback";
+  base_version: number | null;
+  blob_hash: string | null;
+  content_storage: "legacy" | "bytes" | null;
+  representation: "text" | "binary" | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  rollback_to: number | null;
+  copied_from_path: string | null;
+  copied_from_version: number | null;
+}
+
 export type UploadSessionState =
   "open" | "uploaded" | "finalizing" | "committed" | "aborted" | "expired" | "stale" | "failed";
 
@@ -210,6 +246,8 @@ export const TABLE_NAMES = [
   "blobs",
   "files",
   "versions",
+  "change_set_entries",
+  "change_sets",
   "commits",
   "idempotency",
   "gc_jobs",
@@ -256,6 +294,40 @@ export const TABLE_COLUMNS = {
     "representation",
     "application_etag",
     "content_storage",
+    "commit_id",
+  ],
+  change_set_entries: [
+    "change_set_id",
+    "stash_name",
+    "path",
+    "op",
+    "base_version",
+    "blob_hash",
+    "content_storage",
+    "representation",
+    "content_type",
+    "size_bytes",
+    "rollback_to",
+    "copied_from_path",
+    "copied_from_version",
+  ],
+  change_sets: [
+    "id",
+    "stash_name",
+    "status",
+    "author",
+    "message",
+    "meta_json",
+    "expires_at",
+    "created_by",
+    "created_at",
+    "idempotency_key",
+    "request_hash",
+    "expected_last_change_id",
+    "decision_attempt",
+    "decided_at",
+    "decided_by",
+    "decision_reason",
     "commit_id",
   ],
   commits: [
@@ -376,6 +448,8 @@ export interface DatabaseSchema {
   blobs: BlobRow;
   files: FileRow;
   versions: VersionRow;
+  change_sets: ChangeSetRow;
+  change_set_entries: ChangeSetEntryRow;
   idempotency: IdempotencyRow;
   gc_jobs: GcJobRow;
   gc_runs: GcRunRow;

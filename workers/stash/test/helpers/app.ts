@@ -35,6 +35,8 @@ export async function resetDatabase(): Promise<void> {
     "upload_sessions",
     "gc_runs",
     "idempotency",
+    "change_set_entries",
+    "change_sets",
     "versions",
     "commits",
     "files",
