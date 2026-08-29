@@ -11,6 +11,7 @@ import {
   computeDiff,
   decodeCanonicalBase64,
   isWellFormedString,
+  pathPrefixRange,
   sha256Hex,
   utf8ByteLength,
   validateStashName,
@@ -25,6 +26,7 @@ import {
   type CreateCommitBody as CreateCommitBodyType,
   type Current,
   type ListCommitsQuery as ListCommitsQueryType,
+  type PathPrefixRange,
   type RevertCommitBody as RevertCommitBodyType,
   type Result,
   type StorageTier,
@@ -212,6 +214,7 @@ async function readSnapshot(
   db: D1DatabaseSession,
   stash: string,
   entries: CommitEntryInput[],
+  range: PathPrefixRange | null,
 ): Promise<CommitSnapshotRow[]> {
   const rows = await db
     .prepare(
@@ -225,7 +228,10 @@ async function readSnapshot(
          target.version AS target_version, target.blob_hash AS target_hash,
          target.size_bytes AS target_size, target.content_type AS target_content_type,
          target.representation AS target_representation,
-         COALESCE((SELECT MAX(id) FROM versions WHERE stash_name = ?), 0) AS newest_change_id
+         COALESCE((
+           SELECT MAX(id) FROM versions
+           WHERE stash_name = ? AND (? IS NULL OR (path >= ? AND path < ?))
+         ), 0) AS newest_change_id
        FROM json_each(?) AS e
        LEFT JOIN files AS f
          ON f.stash_name = ? AND f.path = json_extract(e.value, '$.path')
@@ -238,7 +244,15 @@ async function readSnapshot(
            AND target.version = json_extract(e.value, '$.targetVersion')
        ORDER BY CAST(e.key AS INTEGER)`,
     )
-    .bind(stash, snapshotPayload(entries), stash, stash)
+    .bind(
+      stash,
+      range?.lo ?? null,
+      range?.lo ?? null,
+      range?.hi ?? null,
+      snapshotPayload(entries),
+      stash,
+      stash,
+    )
     .all<CommitSnapshotRow>();
   return rows.results;
 }
@@ -556,6 +570,9 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     const parsed = CreateCommitBody.safeParse(input);
     if (!parsed.success) return failure("validation", 400, "Invalid commit input");
     const value = parsed.data;
+    const prefixResult = pathPrefixRange(value.expectedLastChangePrefix);
+    if (!prefixResult.ok) return failure(prefixResult.error, 400, prefixResult.message);
+    const expectedLastChangeRange = prefixResult.range;
     if (
       options.idempotencyKey !== undefined &&
       (options.idempotencyKey.length < 1 ||
@@ -632,6 +649,7 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
           message: value.message ?? "",
           meta: value.meta ?? {},
           expectedLastChangeId: value.expectedLastChangeId ?? null,
+          expectedLastChangePrefix: value.expectedLastChangePrefix ?? null,
         }),
       ));
     const db = env.DB.withSession("first-primary");
@@ -639,15 +657,21 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     const prior = await existingCommit(db, stash, options.idempotencyKey);
     if (prior) return replay(db, prior, requestHash, value.entries);
 
-    const initialSnapshot = await readSnapshot(db, stash, value.entries);
+    const initialSnapshot = await readSnapshot(db, stash, value.entries, expectedLastChangeRange);
     if (
       value.expectedLastChangeId !== undefined &&
-      latestChange(initialSnapshot) !== value.expectedLastChangeId
+      (expectedLastChangeRange === null
+        ? latestChange(initialSnapshot) !== value.expectedLastChangeId
+        : latestChange(initialSnapshot) > value.expectedLastChangeId)
     ) {
       return failure(
         "stale",
         409,
-        `Expected last change ${value.expectedLastChangeId}, newest change is ${latestChange(initialSnapshot)}`,
+        `Expected last change ${value.expectedLastChangeId}${
+          value.expectedLastChangePrefix === undefined
+            ? ""
+            : ` for prefix "${value.expectedLastChangePrefix}"`
+        }, newest change is ${latestChange(initialSnapshot)}`,
       );
     }
     const initialConflicts = entryConflicts(value.entries, initialSnapshot);
@@ -736,6 +760,12 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
         ...(value.expectedLastChangeId === undefined
           ? {}
           : { expectedLastChangeId: value.expectedLastChangeId }),
+        ...(expectedLastChangeRange === null
+          ? {}
+          : {
+              expectedLastChangePrefixLo: expectedLastChangeRange.lo,
+              expectedLastChangePrefixHi: expectedLastChangeRange.hi,
+            }),
       });
       statements = deps.alterCommitStatementsForTest?.(statements) ?? statements;
       results = await db.batch(statements);
@@ -756,15 +786,21 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
     if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const racedReplay = await existingCommit(db, stash, options.idempotencyKey);
     if (racedReplay) return replay(db, racedReplay, requestHash, value.entries);
-    const finalSnapshot = await readSnapshot(db, stash, value.entries);
+    const finalSnapshot = await readSnapshot(db, stash, value.entries, expectedLastChangeRange);
     if (
       value.expectedLastChangeId !== undefined &&
-      latestChange(finalSnapshot) !== value.expectedLastChangeId
+      (expectedLastChangeRange === null
+        ? latestChange(finalSnapshot) !== value.expectedLastChangeId
+        : latestChange(finalSnapshot) > value.expectedLastChangeId)
     ) {
       return failure(
         "stale",
         409,
-        `Expected last change ${value.expectedLastChangeId}, newest change is ${latestChange(finalSnapshot)}`,
+        `Expected last change ${value.expectedLastChangeId}${
+          value.expectedLastChangePrefix === undefined
+            ? ""
+            : ` for prefix "${value.expectedLastChangePrefix}"`
+        }, newest change is ${latestChange(finalSnapshot)}`,
       );
     }
     const conflicts = entryConflicts(value.entries, finalSnapshot);
