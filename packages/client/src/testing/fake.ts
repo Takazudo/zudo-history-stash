@@ -3156,6 +3156,8 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     }
     const parsed = CreateCommitBody.safeParse(candidate);
     if (!parsed.success) return fail("validation", "Invalid commit input.");
+    const prefixResult = pathPrefixRange(parsed.data.expectedLastChangePrefix);
+    if (!prefixResult.ok) return fail(prefixResult.error, prefixResult.message);
     const key = idempotencyKey(request);
     const requestHash = await commitRequestHash(parsed.data);
     const replayed = checkCommitReplay(findCommitByKey(stash, key), requestHash);
