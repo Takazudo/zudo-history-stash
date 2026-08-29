@@ -1,10 +1,13 @@
 import type { UploadCommitResult, UploadUnchangedResult } from "@takazudo/zudo-history-stash-core";
 import type { FinalizationLease } from "./upload-sessions.js";
 import type { UploadSessionRow } from "./schema.js";
+import { commitInsertStatement, sealStatement } from "./sql/commits.js";
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
 
 export interface UploadFinalizeInput {
+  commitId?: string;
+  createdBy?: string;
   session: UploadSessionRow;
   lease: FinalizationLease;
   createdAt: number;
@@ -63,6 +66,9 @@ export function uploadFinalizeBatch(
   db: Preparer,
   input: UploadFinalizeInput,
 ): D1PreparedStatement[] {
+  if (input.commitId === undefined || input.createdBy === undefined) {
+    throw new Error("Committed upload finalization requires commit attribution");
+  }
   const fence = casFence(input);
   const version = (input.session.expected_version ?? 0) + 1;
   const stagedSource =
@@ -85,6 +91,25 @@ export function uploadFinalizeBatch(
     ...fence.params,
   ];
   const statements: D1PreparedStatement[] = [
+    commitInsertStatement(
+      db,
+      {
+        id: input.commitId,
+        stash_name: input.session.stash_name,
+        source: "upload",
+        source_id: input.session.id,
+        author: input.session.principal_id ?? "",
+        message: "",
+        meta_json: "{}",
+        entry_count: 1,
+        reverts_commit_id: null,
+        idempotency_key: null,
+        request_hash: null,
+        created_by: input.createdBy,
+        created_at: input.createdAt,
+      },
+      fence,
+    ),
     db
       .prepare(
         `INSERT INTO byte_blobs
@@ -108,8 +133,8 @@ export function uploadFinalizeBatch(
         `INSERT INTO versions
            (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
             rollback_of, author, message, meta_json, created_at, representation,
-            application_etag, content_storage)
-         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, '', '{}', ?, ?, ?, 'bytes'
+            application_etag, content_storage, commit_id)
+         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, '', '{}', ?, ?, ?, 'bytes', ?
          WHERE ${versionFence}`,
       )
       .bind(
@@ -123,6 +148,7 @@ export function uploadFinalizeBatch(
         input.createdAt,
         input.session.representation,
         input.session.uploaded_hash,
+        input.commitId,
         ...versionFenceParams,
       ),
   ];
@@ -210,6 +236,7 @@ export function uploadFinalizeBatch(
       .prepare(
         `UPDATE upload_sessions SET state = 'committed', result_status = 201,
            result_json = json_object(
+             'commitId', ?,
              'version', ?, 'hash', uploaded_hash, 'size', uploaded_size,
              'representation', representation, 'contentType', content_type,
              'changeId', (SELECT id FROM versions
@@ -222,6 +249,7 @@ export function uploadFinalizeBatch(
            AND finalization_lease_until > ? AND ${insertedVersion}`,
       )
       .bind(
+        input.commitId,
         version,
         input.session.stash_name,
         input.session.path,
@@ -237,6 +265,18 @@ export function uploadFinalizeBatch(
         input.createdAt,
         ...insertedParams,
       ),
+  );
+  statements.push(
+    sealStatement(db, {
+      stash: input.session.stash_name,
+      id: input.commitId,
+      extraPredicate: {
+        sql: `EXISTS (SELECT 1 FROM upload_sessions
+          WHERE id = ? AND state = 'committed' AND result_status = 201
+            AND json_extract(result_json, '$.commitId') = ?)`,
+        params: [input.session.id, input.commitId],
+      },
+    }),
   );
   return statements;
 }

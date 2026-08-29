@@ -25,6 +25,8 @@ import {
   seedRpcFixture,
 } from "./helpers/rpc.js";
 
+let rpcCommitSequence = 0;
+
 const PARITY_HEADERS = [
   "etag",
   "x-stash-version",
@@ -46,6 +48,8 @@ interface ResponseSnapshot {
 
 interface ScenarioState {
   etag?: string;
+  commitId?: string;
+  changeSetId?: string;
 }
 
 interface ParityScenario {
@@ -151,7 +155,9 @@ async function putFixture(
   expectedVersion: number | null,
   idempotencyKey?: string,
 ): Promise<{ hash: string; version: number }> {
-  const result = await createStashStore(createTestEnv().env).writes.put(
+  const result = await createStashStore(createTestEnv().env, {
+    createId: () => `rpc-fixture-${++rpcCommitSequence}`,
+  }).writes.put(
     RPC_STASH,
     "docs/rpc.txt",
     { body, expectedVersion },
@@ -169,6 +175,51 @@ async function seedFile(body = "first version\n"): Promise<ScenarioState> {
 async function seedTwoVersions(): Promise<void> {
   await putFixture("first version\n", null);
   await putFixture("second version\n", 1);
+}
+
+async function seedCommitFixture(): Promise<ScenarioState> {
+  const result = await createStashStore(createTestEnv().env, {
+    createId: () => `rpc-fixture-commit-${++rpcCommitSequence}`,
+  }).commits.createCommit(
+    RPC_STASH,
+    {
+      entries: [
+        {
+          op: "put",
+          path: "docs/rpc-commit.txt",
+          expectedVersion: null,
+          body: "seeded commit\n",
+        },
+      ],
+      author: "rpc-fixture",
+      message: "Seed RPC commit",
+    },
+    { principal: "test-admin", idempotencyKey: "rpc-seeded-commit" },
+  );
+  if (!result.ok) throw new Error("RPC commit fixture failed");
+  return { commitId: result.value.id };
+}
+
+async function seedChangeSetFixture(): Promise<ScenarioState> {
+  const result = await createStashStore(createTestEnv().env, {
+    createId: () => `rpc-fixture-change-set-${++rpcCommitSequence}`,
+  }).changeSets.createChangeSet(
+    RPC_STASH,
+    {
+      entries: [
+        {
+          op: "put",
+          path: "docs/rpc-change-set.txt",
+          baseVersion: null,
+          body: "seeded change set\n",
+        },
+      ],
+      author: "rpc-fixture",
+      message: "Seed RPC change set",
+    },
+    { createdBy: "test-admin", idempotencyKey: "rpc-seeded-change-set" },
+  );
+  return { changeSetId: result.value.id };
 }
 
 async function seedExpiredTokenAtBoundary(): Promise<void> {
@@ -300,6 +351,172 @@ const scenarios: ParityScenario[] = [
     expectedBodyIncludes: '"path":"docs/rpc.txt"',
     seed: seedFile,
     init: { method: "GET", path: `/v1/stashes/${RPC_STASH}/files`, token: RPC_READ_TOKEN },
+  },
+  {
+    name: "create commit",
+    expectedStatus: 201,
+    expectedBodyIncludes: '"entryCount":1',
+    init: jsonRequest(
+      "POST",
+      `/v1/stashes/${RPC_STASH}/commits`,
+      {
+        entries: [
+          {
+            op: "put",
+            path: "docs/rpc-created-commit.txt",
+            expectedVersion: null,
+            body: "created through commit RPC\n",
+          },
+        ],
+        author: "rpc-parity",
+        message: "Create commit over transport",
+      },
+      RPC_WRITE_TOKEN,
+      { "Idempotency-Key": "rpc-create-commit" },
+    ),
+  },
+  {
+    name: "get commit",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"message":"Seed RPC commit"',
+    seed: seedCommitFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/commits/${state.commitId ?? "missing"}`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "list commits",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"commits":[',
+    seed: seedCommitFixture,
+    init: {
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/commits`,
+      query: { limit: "10" },
+      token: RPC_READ_TOKEN,
+    },
+  },
+  {
+    name: "commit diff",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"entries":[',
+    seed: seedCommitFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/commits/${state.commitId ?? "missing"}/diff`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "revert commit",
+    expectedStatus: 201,
+    expectedBodyIncludes: '"revertsCommitId":"',
+    seed: seedCommitFixture,
+    init: (state) =>
+      jsonRequest(
+        "POST",
+        `/v1/stashes/${RPC_STASH}/commits/${state.commitId ?? "missing"}/revert`,
+        { author: "rpc-parity", message: "Revert seeded commit" },
+        RPC_WRITE_TOKEN,
+        { "Idempotency-Key": "rpc-revert-commit" },
+      ),
+  },
+  {
+    name: "snapshot at commit",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"files":[',
+    seed: seedCommitFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/snapshot`,
+      query: { at: `commit:${state.commitId ?? "missing"}`, prefix: "docs" },
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "create change set",
+    expectedStatus: 201,
+    expectedBodyIncludes: '"status":"open"',
+    init: jsonRequest(
+      "POST",
+      `/v1/stashes/${RPC_STASH}/change-sets`,
+      {
+        entries: [
+          {
+            op: "put",
+            path: "docs/rpc-created-change-set.txt",
+            baseVersion: null,
+            body: "created through change-set RPC\n",
+          },
+        ],
+        author: "rpc-parity",
+        message: "Create change set over transport",
+      },
+      RPC_WRITE_TOKEN,
+      { "Idempotency-Key": "rpc-create-change-set" },
+    ),
+  },
+  {
+    name: "list change sets",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"changeSets":[',
+    seed: seedChangeSetFixture,
+    init: {
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/change-sets`,
+      query: { status: "all", limit: "10" },
+      token: RPC_READ_TOKEN,
+    },
+  },
+  {
+    name: "get change set",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"message":"Seed RPC change set"',
+    seed: seedChangeSetFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "change-set diff",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"status":"open"',
+    seed: seedChangeSetFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}/diff`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "approve change set",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"status":"applied"',
+    seed: seedChangeSetFixture,
+    init: (state) =>
+      jsonRequest(
+        "POST",
+        `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}/approve`,
+        { author: "rpc-parity", message: "Approve seeded change set" },
+        RPC_WRITE_TOKEN,
+      ),
+  },
+  {
+    name: "reject change set",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"status":"rejected"',
+    seed: seedChangeSetFixture,
+    init: (state) =>
+      jsonRequest(
+        "POST",
+        `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}/reject`,
+        { reason: "Not ready" },
+        RPC_WRITE_TOKEN,
+      ),
   },
   {
     name: "get file",
@@ -475,6 +692,7 @@ function fixedRandomValues<T extends ArrayBufferView | null>(value: T): T {
 }
 
 beforeEach(() => {
+  rpcCommitSequence = 0;
   vi.spyOn(Date, "now").mockReturnValue(RPC_FIXED_NOW);
   vi.spyOn(crypto, "getRandomValues").mockImplementation(fixedRandomValues);
   vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
@@ -557,6 +775,7 @@ describe("HTTP and RPC parity", () => {
   it.each(scenarios)("matches $name byte-for-byte", async (scenario) => {
     const results: Partial<Record<"http" | "rpc", ResponseSnapshot>> = {};
     for (const transport of ["http", "rpc"] as const) {
+      rpcCommitSequence = 0;
       await resetDatabase();
       await seedRpcFixture();
       const state = (await scenario.seed?.()) ?? {};
@@ -794,196 +1013,6 @@ describe("named-entrypoint RPC boundary", () => {
   });
 });
 
-interface ProposalLifecycleProjection {
-  created: {
-    id: string;
-    status: string;
-    hash: string;
-    meta: Record<string, unknown>;
-  };
-  approved: {
-    status: string;
-    appliedVersion: number;
-    appliedChangeId: number;
-    hash: string;
-  };
-  history: {
-    headVersion: number;
-    total: number;
-    applied: {
-      version: number;
-      kind: string;
-      rollbackOf: number | null;
-      hash: string | null;
-      author: string;
-      message: string;
-      meta: Record<string, unknown>;
-    };
-  };
-  rpcRequests: RpcRequest[];
-}
-
-async function proposalLifecycleThroughClient(
-  transport: "fetch" | "rpc",
-): Promise<ProposalLifecycleProjection> {
-  await resetDatabase();
-  await seedRpcFixture();
-  await putFixture("generic proposal base\n", null);
-  const bindings = createTestEnv().env;
-  const rpc = new StashRpc(createExecutionContext(), bindings);
-  const requestSpy = vi.spyOn(rpc, "request");
-  const client =
-    transport === "rpc"
-      ? createStashClient({
-          transport: { kind: "rpc", binding: rpc, token: RPC_WRITE_TOKEN },
-          clientId: "rpc A!~",
-        })
-      : createStashClient({
-          baseUrl: "https://stash.internal",
-          token: RPC_WRITE_TOKEN,
-          clientId: "rpc A!~",
-          fetch: async (input, init) => {
-            const ctx = createExecutionContext();
-            const response = await app.fetch(new Request(input, init), bindings, ctx);
-            await waitOnExecutionContext(ctx);
-            return response;
-          },
-        });
-  const proposals = client.proposals(RPC_STASH);
-  const created = await proposals.create(
-    {
-      path: "docs/rpc.txt",
-      body: "generic proposal candidate\n",
-      baseVersion: 1,
-      author: "rpc-client-bot",
-      message: "Review generic RPC proposal",
-      meta: { lane: "generic-client-parity" },
-    },
-    { idempotencyKey: "generic-rpc-proposal-create" },
-  );
-  if (!created.ok) {
-    throw new Error(
-      `proposal create failed over ${transport} (${created.error.status} ${created.error.code}): ${created.error.message}`,
-    );
-  }
-  const approved = await proposals.approve(created.value.id, {
-    author: "rpc-client-approver",
-    message: "Approve generic RPC proposal",
-  });
-  if (!approved.ok) {
-    throw new Error(
-      `proposal approval failed over ${transport} (${approved.error.status} ${approved.error.code}): ${approved.error.message}`,
-    );
-  }
-  const history = await client.files(RPC_STASH).history("docs/rpc.txt", { limit: 200 });
-  if (!history.ok) {
-    throw new Error(
-      `proposal history failed over ${transport} (${history.error.status} ${history.error.code}): ${history.error.message}`,
-    );
-  }
-  const applied = history.value.versions.find(({ version }) => version === 2);
-  if (applied === undefined) throw new Error(`applied proposal version missing over ${transport}`);
-
-  return {
-    created: {
-      id: created.value.id,
-      status: created.value.status,
-      hash: created.value.hash,
-      meta: created.value.meta,
-    },
-    approved: {
-      status: approved.value.status,
-      appliedVersion: approved.value.appliedVersion,
-      appliedChangeId: approved.value.appliedChangeId,
-      hash: approved.value.hash,
-    },
-    history: {
-      headVersion: history.value.headVersion,
-      total: history.value.total,
-      applied: {
-        version: applied.version,
-        kind: applied.kind,
-        rollbackOf: applied.rollbackOf,
-        hash: applied.hash,
-        author: applied.author,
-        message: applied.message,
-        meta: applied.meta,
-      },
-    },
-    rpcRequests: requestSpy.mock.calls.map(([init]) => init),
-  };
-}
-
-describe.sequential("generic RPC proposal client parity", () => {
-  it("matches fetch for create, approve, and stamped ordinary history", async () => {
-    const fetched = await proposalLifecycleThroughClient("fetch");
-    const rpc = await proposalLifecycleThroughClient("rpc");
-
-    expect(rpc).toMatchObject({
-      created: {
-        id: expect.stringMatching(/^prp_\d{13}[0-9a-f]{8}$/u),
-        status: "open",
-        hash: expect.stringMatching(/^sha256-[0-9a-f]{64}$/u),
-        meta: {
-          lane: "generic-client-parity",
-          proposalId: rpc.created.id,
-        },
-      },
-      approved: {
-        status: "applied",
-        appliedVersion: 2,
-        appliedChangeId: expect.any(Number),
-        hash: rpc.created.hash,
-      },
-      history: {
-        headVersion: 2,
-        total: 2,
-        applied: {
-          version: 2,
-          kind: "put",
-          rollbackOf: null,
-          hash: rpc.created.hash,
-          author: "rpc-client-approver",
-          message: "Approve generic RPC proposal",
-          meta: {
-            lane: "generic-client-parity",
-            proposalId: rpc.created.id,
-          },
-        },
-      },
-    });
-    expect({ ...rpc, rpcRequests: [] }).toEqual(fetched);
-    expect(rpc.rpcRequests).toEqual([
-      expect.objectContaining({
-        method: "POST",
-        path: `/v1/stashes/${RPC_STASH}/proposals`,
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": "generic-rpc-proposal-create",
-          "X-Stash-Client-Id": "rpc A!~",
-        },
-        token: RPC_WRITE_TOKEN,
-      }),
-      expect.objectContaining({
-        method: "POST",
-        path: `/v1/stashes/${RPC_STASH}/proposals/${rpc.created.id}/approve`,
-        headers: {
-          "Content-Type": "application/json",
-          "X-Stash-Client-Id": "rpc A!~",
-        },
-        token: RPC_WRITE_TOKEN,
-      }),
-      expect.objectContaining({
-        method: "GET",
-        path: `/v1/stashes/${RPC_STASH}/history/docs/rpc.txt`,
-        query: { limit: "200" },
-        token: RPC_WRITE_TOKEN,
-      }),
-    ]);
-    expect(rpc.rpcRequests[2]?.headers?.["X-Stash-Client-Id"]).toBeUndefined();
-  });
-});
-
 async function typedParity<T>(
   seed: (() => Promise<unknown>) | undefined,
   direct: (rpc: StashRpc) => Promise<T>,
@@ -1177,5 +1206,16 @@ describe("typed StashRpc methods", () => {
         message: "History Stash request failed",
       },
     });
+  });
+
+  it("preserves local stash validation before the raw list request", async () => {
+    const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
+    const request = vi.spyOn(rpc, "request");
+
+    await expect(rpc.listFiles(RPC_READ_TOKEN, "INVALID_STASH")).resolves.toEqual({
+      ok: false,
+      error: { code: "validation", status: 400, message: "Invalid stash name" },
+    });
+    expect(request).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,12 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { MAX_BODY_BYTES } from "./limits.js";
-import type { LiveStatus, StashEvent } from "./types.js";
 import {
   ChangesQuery,
-  ApproveProposalBody,
-  CreateProposalBody,
+  ApproveChangeSetBody,
+  ChangeSetDiffQuery,
+  CommitDiffQuery,
+  CreateChangeSetBody,
+  CreateCommitBody,
   CreateStashBody,
   CreateTokenBody,
   DiffCandidateBody,
@@ -14,21 +16,18 @@ import {
   ImportBody,
   ListFilesQuery,
   ListGcRunsQuery,
-  ListProposalsQuery,
+  ListChangeSetsQuery,
+  ListCommitsQuery,
   ListQuery,
   ListStashesQuery,
   PutFileBody,
-  ProposalDiffQuery,
-  RejectProposalBody,
+  RejectChangeSetBody,
+  SnapshotQuery,
   RunGcBody,
   RotateTokenBody,
   STASH_CLIENT_ID_HEADER,
-  StashChangeEventSchema,
   StashClientIdSchema,
   StashEventSchema,
-  StashProposalEventSchema,
-  StashReadyEventSchema,
-  StashReconnectEventSchema,
 } from "./schemas.js";
 
 const importPut = (createdAt: number) => ({ kind: "put" as const, body: "x", createdAt });
@@ -84,61 +83,6 @@ describe("strict request and query schemas", () => {
     }
     expect(RunGcBody.safeParse({ kind: "ledger", unknown: true }).success).toBe(false);
     expect(RunGcBody.safeParse({ kind: "unknown" }).success).toBe(false);
-  });
-  it("validates strict proposal creation inputs and platform-owned metadata", () => {
-    const valid = {
-      path: "docs/proposal.md",
-      body: "candidate",
-      baseVersion: null,
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    };
-    expect(CreateProposalBody.parse(valid)).toEqual(valid);
-    expect(CreateProposalBody.safeParse({ ...valid, baseVersion: 1 }).success).toBe(true);
-    expect(CreateProposalBody.safeParse({ ...valid, baseVersion: 0 }).success).toBe(false);
-    expect(CreateProposalBody.safeParse({ ...valid, path: "../bad" }).success).toBe(false);
-    expect(CreateProposalBody.safeParse({ ...valid, body: "\uD800" }).success).toBe(false);
-    expect(
-      CreateProposalBody.safeParse({ ...valid, expiresAt: "2000-01-01T00:00:00.000Z" }).success,
-    ).toBe(false);
-    expect(
-      CreateProposalBody.safeParse({ ...valid, meta: { proposalId: "caller-owned" } }).success,
-    ).toBe(false);
-    expect(CreateProposalBody.safeParse({ ...valid, unknown: true }).success).toBe(false);
-  });
-  it("parses proposal list and diff queries with exact defaults and enums", () => {
-    expect(ListProposalsQuery.parse({})).toEqual({ status: "open", limit: 50 });
-    expect(
-      ListProposalsQuery.parse({
-        status: "all",
-        path: "docs/proposal.md",
-        limit: "200",
-        after: "opaque",
-      }),
-    ).toEqual({
-      status: "all",
-      path: "docs/proposal.md",
-      limit: 200,
-      after: "opaque",
-    });
-    for (const input of [
-      { status: "unknown" },
-      { path: "../bad" },
-      { limit: "201" },
-      { unknown: true },
-    ]) {
-      expect(ListProposalsQuery.safeParse(input).success).toBe(false);
-    }
-    expect(ProposalDiffQuery.parse({ context: "0" })).toEqual({ context: 0 });
-    expect(ProposalDiffQuery.safeParse({ context: "-1" }).success).toBe(false);
-  });
-  it("bounds strict proposal decision bodies", () => {
-    expect(ApproveProposalBody.parse({})).toEqual({});
-    expect(ApproveProposalBody.safeParse({ author: "bot", message: "ship" }).success).toBe(true);
-    expect(ApproveProposalBody.safeParse({ decidedBy: "caller" }).success).toBe(false);
-    expect(RejectProposalBody.parse({})).toEqual({});
-    expect(RejectProposalBody.safeParse({ reason: "superseded" }).success).toBe(true);
-    expect(RejectProposalBody.safeParse({ reason: "x".repeat(2_001) }).success).toBe(false);
-    expect(RejectProposalBody.safeParse({ reason: "\uD800" }).success).toBe(false);
   });
   it("rejects unknown keys in bodies and queries", () => {
     expect(PutFileBody.safeParse({ body: "", expectedVersion: null, extra: true }).success).toBe(
@@ -256,60 +200,6 @@ describe("StashClientIdSchema", () => {
   });
 });
 
-describe("StashEventSchema", () => {
-  const ready = { type: "ready", head: 7, checkpoint: 6 } as const;
-  const change = {
-    type: "change",
-    changeId: 7,
-    stash: "demo",
-    path: "docs/guide.md",
-    version: 3,
-    kind: "put",
-    origin: "viewer-1",
-    createdAt: "2026-08-28T00:00:00.000Z",
-  } as const;
-  const proposal = {
-    type: "proposal",
-    proposalId: "prp_1787875200000deadbeef",
-    stash: "demo",
-    path: "docs/guide.md",
-    status: "open",
-    origin: null,
-  } as const;
-  const reconnect = { type: "reconnect", reason: "lifetime" } as const;
-
-  it("parses every strict discriminated member and the public union", () => {
-    for (const [schema, value] of [
-      [StashReadyEventSchema, ready],
-      [StashChangeEventSchema, change],
-      [StashProposalEventSchema, proposal],
-      [StashReconnectEventSchema, reconnect],
-    ] as const) {
-      expect(schema.parse(value)).toEqual(value);
-      expect(StashEventSchema.parse(value)).toEqual(value);
-    }
-    expectTypeOf(StashEventSchema.parse(change)).toEqualTypeOf<StashEvent>();
-
-    const failed: LiveStatus<{ status: number }> = { failed: { status: 401 } };
-    expectTypeOf(failed.failed).toEqualTypeOf<{ status: number }>();
-    const lifecycle: LiveStatus = "reconnecting";
-    expect(lifecycle).toBe("reconnecting");
-  });
-
-  it("rejects cross-member fields, extra fields, and unknown discriminants", () => {
-    for (const value of [
-      { ...ready, changeId: 7 },
-      { ...change, checkpoint: 6 },
-      { ...proposal, reason: "shutdown" },
-      { ...reconnect, origin: null },
-      { ...change, origin: "emoji🙂" },
-      { type: "heartbeat" },
-    ]) {
-      expect(StashEventSchema.safeParse(value).success).toBe(false);
-    }
-  });
-});
-
 describe("ImportBody", () => {
   it("accepts null expectedVersion and valid discriminated entries", () => {
     expect(
@@ -356,5 +246,263 @@ describe("ImportBody", () => {
         false,
       );
     }
+  });
+});
+
+const put = { op: "put", path: "docs/a.md", expectedVersion: null, body: "a" } as const;
+
+describe("commit and change-set request schemas", () => {
+  it("accepts every commit entry shape with strict integer versions", () => {
+    const entries = [
+      put,
+      {
+        op: "put",
+        path: "bin/a",
+        expectedVersion: 1,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        bytesBase64: "AA==",
+      },
+      { op: "copy", path: "copy/a", expectedVersion: null, from: { path: "source/a", version: 1 } },
+      { op: "delete", path: "delete/a", expectedVersion: 1 },
+      { op: "rollback", path: "rollback/a", expectedVersion: 2, toVersion: 1 },
+    ];
+    expect(CreateCommitBody.safeParse({ entries }).success).toBe(true);
+    expect(
+      CreateCommitBody.safeParse({ entries: [{ ...put, expectedVersion: 1.5 }] }).success,
+    ).toBe(false);
+  });
+  it("requires positive file versions and a non-negative whole-stash fence", () => {
+    const commitEntries = [
+      { ...put, expectedVersion: 1 },
+      { op: "copy", path: "copy/a", expectedVersion: null, from: { path: "source/a", version: 1 } },
+      { op: "delete", path: "delete/a", expectedVersion: 1 },
+      { op: "rollback", path: "rollback/a", expectedVersion: 2, toVersion: 1 },
+    ] as const;
+    const changeSetEntries = [
+      { op: "put", path: "docs/a.md", baseVersion: 1, body: "a" },
+      { op: "copy", path: "copy/a", baseVersion: null, from: { path: "source/a", version: 1 } },
+      { op: "delete", path: "delete/a", baseVersion: 1 },
+      { op: "rollback", path: "rollback/a", baseVersion: 2, toVersion: 1 },
+    ] as const;
+
+    for (const invalidVersion of [0, -1]) {
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[0], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [
+            { ...commitEntries[1], from: { ...commitEntries[1].from, version: invalidVersion } },
+          ],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[1], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[2], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[3], toVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateCommitBody.safeParse({
+          entries: [{ ...commitEntries[3], expectedVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[0], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [
+            {
+              ...changeSetEntries[1],
+              from: { ...changeSetEntries[1].from, version: invalidVersion },
+            },
+          ],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[1], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[2], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[3], toVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [{ ...changeSetEntries[3], baseVersion: invalidVersion }],
+        }).success,
+      ).toBe(false);
+    }
+
+    expect(CreateCommitBody.safeParse({ entries: [put], expectedLastChangeId: 0 }).success).toBe(
+      true,
+    );
+    expect(CreateCommitBody.safeParse({ entries: [put], expectedLastChangeId: -1 }).success).toBe(
+      false,
+    );
+    expect(
+      CreateChangeSetBody.safeParse({
+        entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
+        expectedLastChangeId: 0,
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateChangeSetBody.safeParse({
+        entries: [{ op: "put", path: "docs/a.md", baseVersion: null, body: "a" }],
+        expectedLastChangeId: -1,
+      }).success,
+    ).toBe(false);
+  });
+  it.each(["AB==", "AA=", "AA==\n", "_A=="])(
+    "rejects non-canonical binary input %j",
+    (bytesBase64) => {
+      const binary = {
+        op: "put" as const,
+        path: "bin/a",
+        expectedVersion: null,
+        representation: "binary" as const,
+        contentType: "application/octet-stream",
+        bytesBase64,
+      };
+      expect(CreateCommitBody.safeParse({ entries: [binary] }).success).toBe(false);
+      expect(
+        CreateChangeSetBody.safeParse({
+          entries: [
+            {
+              op: binary.op,
+              path: binary.path,
+              baseVersion: null,
+              representation: binary.representation,
+              contentType: binary.contentType,
+              bytesBase64: binary.bytesBase64,
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    },
+  );
+  it("enforces entry count, unique paths, copy isolation, and platform metadata", () => {
+    expect(CreateCommitBody.safeParse({ entries: [] }).success).toBe(false);
+    expect(
+      CreateCommitBody.safeParse({
+        entries: Array.from({ length: 21 }, (_, index) => ({ ...put, path: `p/${index}` })),
+      }).success,
+    ).toBe(false);
+    expect(CreateCommitBody.safeParse({ entries: [put, put] }).success).toBe(false);
+    expect(
+      CreateCommitBody.safeParse({
+        entries: [
+          put,
+          { op: "copy", path: "copy", expectedVersion: null, from: { path: put.path, version: 1 } },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      CreateCommitBody.safeParse({ entries: [put], meta: { commitId: "caller" } }).success,
+    ).toBe(false);
+    expect(
+      CreateCommitBody.safeParse({ entries: [put], meta: { changeSetId: "caller" } }).success,
+    ).toBe(false);
+  });
+  it("uses baseVersion for change-set entries", () => {
+    const entry = { op: "put", path: "docs/a.md", baseVersion: null, body: "a" };
+    expect(CreateChangeSetBody.safeParse({ entries: [entry] }).success).toBe(true);
+    expect(
+      CreateChangeSetBody.safeParse({ entries: [{ ...entry, expectedVersion: null }] }).success,
+    ).toBe(false);
+    expect(ApproveChangeSetBody.parse({})).toEqual({});
+    expect(RejectChangeSetBody.safeParse({ reason: "x".repeat(2_001) }).success).toBe(false);
+  });
+  it("parses list, diff, snapshot, and hierarchical file filters", () => {
+    expect(ListCommitsQuery.parse({})).toEqual({ limit: 50 });
+    expect(ListChangeSetsQuery.parse({})).toEqual({ status: "open", limit: 50 });
+    expect(CommitDiffQuery.parse({ context: "0" })).toEqual({ context: 0 });
+    expect(ChangeSetDiffQuery.safeParse({ path: "../bad" }).success).toBe(false);
+    expect(SnapshotQuery.parse({ at: "commit:cmt_1" })).toMatchObject({
+      at: "commit:cmt_1",
+      includeDeleted: false,
+      limit: 50,
+    });
+    expect(ListFilesQuery.parse({ prefix: "docs/", delimiter: "/" })).toMatchObject({
+      prefix: "docs/",
+      delimiter: "/",
+    });
+  });
+});
+
+describe("stash event schemas", () => {
+  it("requires commit grouping and accepts advisory frames", () => {
+    const change = {
+      type: "change",
+      changeId: 1,
+      commitId: "cmt_1",
+      stash: "demo",
+      path: "a",
+      version: 1,
+      kind: "put",
+      origin: null,
+      createdAt: "2026-08-29T00:00:00.000Z",
+    };
+    expect(StashEventSchema.safeParse(change).success).toBe(true);
+    expect(StashEventSchema.safeParse({ ...change, commitId: undefined }).success).toBe(false);
+    expect(
+      StashEventSchema.safeParse({
+        type: "commit",
+        commitId: "cmt_1",
+        stash: "demo",
+        entryCount: 1,
+        firstChangeId: 1,
+        lastChangeId: 1,
+        origin: null,
+      }).success,
+    ).toBe(true);
+    for (const field of ["entryCount", "firstChangeId", "lastChangeId"] as const) {
+      for (const invalid of [0, -1]) {
+        expect(
+          StashEventSchema.safeParse({
+            type: "commit",
+            commitId: "cmt_1",
+            stash: "demo",
+            entryCount: 1,
+            firstChangeId: 1,
+            lastChangeId: 1,
+            origin: null,
+            [field]: invalid,
+          }).success,
+        ).toBe(false);
+      }
+    }
+    expect(
+      StashEventSchema.safeParse({
+        type: "change-set",
+        changeSetId: "chs_1",
+        stash: "demo",
+        status: "open",
+        paths: ["a"],
+        origin: null,
+      }).success,
+    ).toBe(true);
   });
 });

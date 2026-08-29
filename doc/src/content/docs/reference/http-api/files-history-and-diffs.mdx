@@ -10,7 +10,26 @@ category: reference
 **Contract:** operation `listFiles`; principal `read`; transport `any`.
 
 Lists ascending file summaries with optional tombstones, bounded `limit`, and a path-keyset `after`
-cursor. Each summary reports head version, hash, size, deletion state, and update time.
+cursor. Each summary reports head version, hash, size, deletion state, and update time. `prefix` and
+`delimiter` provide directory-like browsing without making directories stored resources.
+
+## Prefix listing and commit snapshots
+
+`prefix=site` and `prefix=site/` both select descendants under `site/`; a similarly named path such
+as `site-old/index.html` is outside that range. With no delimiter, every matching file is returned in
+path order. The only supported delimiter is `/`. With it, direct files remain in `files` while
+deeper descendants collapse into unique trailing-slash values in `commonPrefixes`, for example
+`site/assets/`. Files and common prefixes share one sorted page and one `limit`, so pass `nextAfter`
+back unchanged even when the last item was a common prefix. `includeDeleted` defaults to `false`.
+
+`GET /v1/stashes/{stash}/snapshot?at=commit:{id}` accepts the same `prefix`, `delimiter`,
+`includeDeleted`, `limit`, and `after` fields. It returns the last version of each path whose change
+cursor is at or before the selected commit's sealed `lastChangeId`, plus
+`at: { commitId, changeId }`. Later writes do not affect this derived view. Unknown or unsealed
+commit IDs are concealed as `404 not-found`; the selector cannot name an arbitrary change cursor.
+
+The current list and historical snapshot return metadata, not a directory archive or file bodies.
+Follow the returned path/version with the file or raw-version routes when content is needed.
 
 ### `GET /v1/stashes/{stash}/files/{path}`
 
@@ -145,7 +164,8 @@ to a tombstone.
 **Contract:** operation `getHistory`; principal `read`; transport `any`.
 
 Returns newest-first metadata-only versions with the current head, deletion state, total, and
-`before` cursor. Version bodies remain on the file read route.
+`before` cursor. Every history item has the required commit ID that appended it. Version bodies
+remain on the file read route.
 
 ### `GET /v1/stashes/{stash}/diff/{path}`
 

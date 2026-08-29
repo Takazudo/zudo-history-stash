@@ -278,6 +278,50 @@ remote-dev RPC trigger/token/binding were available in the verification environm
 command above only after confirming those values are safe, deterministic, and disposable; remove
 any resulting fixture through the documented cleanup behavior and do not commit credentials.
 
+### Commit-batch D1 proofs and opt-in live probe
+
+`workers/stash/test/store/commit-gate-proofs.test.ts` is the permanent L3 workerd/D1 suite for the
+aggregate commit gate and batch premises. It uses the normal Worker test migrations plus file-local
+scratch commit tables. Run it verbosely to see the local-only 62-statement timing and exact
+5,000,000-byte bound-body count:
+
+```bash
+pnpm --filter zudo-history-stash exec vitest run \
+  --config vitest.config.ts test/store/commit-gate-proofs.test.ts --reporter=verbose
+```
+
+`pnpm --filter zudo-history-stash probe:commit-batch` is an explicit, mutating L5 probe. It starts a
+short-lived probe Worker with the selected Wrangler config, runs the same 62-statement batch through
+the `DB` binding, prints the number of per-statement results and `meta.changes` values, drops its
+three `commit_batch_live_probe_*` tables, and stops the Worker. Local mode uses workerd D1 and needs
+no credentials:
+
+```bash
+pnpm --filter zudo-history-stash probe:commit-batch
+```
+
+Remote mode must target a disposable D1 database. Point at a gitignored Wrangler config containing
+that database's real ID; never use the production database. Cloudflare's
+[D1 limits](https://developers.cloudflare.com/d1/platform/limits/) currently document 50 D1 queries
+per invocation on Workers Free and 1,000 on Workers Paid, and apply individual query limits to each
+statement in a batch. Supplying the applicable value lets the probe explain whether the observed
+62-statement result distinguishes per-call from per-statement limit accounting:
+
+```bash
+CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" \
+CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
+COMMIT_BATCH_PROBE_REMOTE=1 \
+COMMIT_BATCH_PROBE_WRANGLER_CONFIG=wrangler.preview.local.toml \
+COMMIT_BATCH_PROBE_QUERY_LIMIT=1000 \
+pnpm --filter zudo-history-stash probe:commit-batch
+```
+
+The command never prints credentials or row bodies. Its scratch-table names are fixed, so do not
+run two probes concurrently against the same database. A failed or interrupted remote run may leave
+the scratch tables behind; the next run drops them before starting and again during normal cleanup.
+The documented query limit is deliberately an input rather than a repository constant: limit
+constants and their contract rows belong to the separate limits task.
+
 ## Playwright conventions
 
 Use Chromium and title tags: `@smoke`, `@live`, `@local-only`, and `@flaky` (a flaky tag requires a linked issue). Keep a console-error fixture enabled, use reduced motion, and do not use `waitForTimeout` or `networkidle`. Mock API calls with `page.route('**/api/**')` in the mock lane.

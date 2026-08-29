@@ -10,31 +10,6 @@ import { createTestEnv } from "./helpers/env.js";
 
 type RouteTuple = readonly [string, string];
 
-const proposalRouteProbes = [
-  { id: "createProposal", method: "POST", path: "/v1/stashes/route-pin/proposals" },
-  { id: "listProposals", method: "GET", path: "/v1/stashes/route-pin/proposals" },
-  {
-    id: "getProposal",
-    method: "GET",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef",
-  },
-  {
-    id: "getProposalDiff",
-    method: "GET",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/diff",
-  },
-  {
-    id: "approveProposal",
-    method: "POST",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/approve",
-  },
-  {
-    id: "rejectProposal",
-    method: "POST",
-    path: "/v1/stashes/route-pin/proposals/prp_0000000000000deadbeef/reject",
-  },
-] as const;
-
 beforeEach(resetDatabase);
 
 function sorted(routes: readonly RouteTuple[]): RouteTuple[] {
@@ -129,45 +104,37 @@ describe("route contract pin", () => {
     expect(concealed.status).toBe(404);
   });
 
-  it.each(proposalRouteProbes)("mounts the dedicated real handler for $id", async (route) => {
-    await seedStash("route-pin");
-    const hasBody = route.method === "POST";
-    const response = await request(app, `http://stash.test${route.path}`, {
-      method: route.method,
-      headers: {
-        ...bearer("test-admin"),
-        ...(hasBody ? { "Content-Type": "application/json" } : {}),
-      },
-      ...(hasBody ? { body: "{}" } : {}),
-    });
-
-    expect(response.status).not.toBe(501);
-    expect(response.status).toBe(
-      route.id === "listProposals" ? 200 : route.id === "createProposal" ? 400 : 404,
-    );
-  });
-
-  it("keeps all six raw proposal RPC methods on generic request transport", async () => {
+  it("uses real commit, snapshot, and change-set RPC routes", async () => {
     await seedStash("route-pin");
     const rpc = new StashRpc(createExecutionContext(), createTestEnv().env);
-    const createdResponse = await rpc.createProposal(
-      "test-admin",
-      "route-pin",
-      { path: "docs/proposal.md", body: "candidate", baseVersion: null },
-      "route-pin-create",
-    );
-    expect(createdResponse.status).toBe(201);
-    const proposalId = (await createdResponse.json<{ id: string }>()).id;
-
-    expect(
-      (await rpc.listProposals("test-admin", "route-pin", { status: "all", limit: 1 })).status,
-    ).toBe(200);
-    expect((await rpc.getProposal("test-admin", "route-pin", proposalId)).status).toBe(200);
-    expect(
-      (await rpc.getProposalDiff("test-admin", "route-pin", proposalId, { context: 1 })).status,
-    ).toBe(200);
-    expect((await rpc.approveProposal("test-admin", "route-pin", proposalId, {})).status).toBe(200);
-    expect((await rpc.rejectProposal("test-admin", "route-pin", proposalId, {})).status).toBe(409);
+    const entry = { op: "put" as const, path: "docs/a.md", expectedVersion: null, body: "a" };
+    const changeSetEntry = { op: "put" as const, path: "docs/a.md", baseVersion: null, body: "a" };
+    const responses = await Promise.all([
+      rpc.createCommit("test-admin", "route-pin", { entries: [entry] }, "route-pin-create"),
+      rpc.getCommit("test-admin", "route-pin", "cmt_1"),
+      rpc.listCommits("test-admin", "route-pin"),
+      rpc.getCommitDiff("test-admin", "route-pin", "cmt_1"),
+      rpc.revertCommit("test-admin", "route-pin", "cmt_1", {}, "route-pin-revert"),
+      rpc.getSnapshot("test-admin", "route-pin", {
+        at: "commit:cmt_1",
+        includeDeleted: false,
+        limit: 50,
+      }),
+      rpc.createChangeSet(
+        "test-admin",
+        "route-pin",
+        { entries: [changeSetEntry] },
+        "route-pin-change-set",
+      ),
+      rpc.listChangeSets("test-admin", "route-pin"),
+      rpc.getChangeSet("test-admin", "route-pin", "chs_1"),
+      rpc.getChangeSetDiff("test-admin", "route-pin", "chs_1"),
+      rpc.approveChangeSet("test-admin", "route-pin", "chs_1", {}),
+      rpc.rejectChangeSet("test-admin", "route-pin", "chs_1", {}),
+    ]);
+    expect(responses.map(({ status }) => status)).toEqual([
+      201, 404, 200, 404, 404, 404, 201, 200, 400, 400, 400, 400,
+    ]);
   });
 
   it("exports one parser and transport-error identity from the client package root", async () => {

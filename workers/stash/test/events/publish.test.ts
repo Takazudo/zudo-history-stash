@@ -5,8 +5,9 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../../src/app.js";
+import { createStashStore } from "../../src/d1/store.js";
 import type { Env } from "../../src/env.js";
-import { eventOrigin } from "../../src/events/publish.js";
+import { commitEvents, deliverEvents, eventOrigin } from "../../src/events/publish.js";
 import { bearer, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
 
@@ -22,10 +23,12 @@ function recordingEnv(
   bindings: Env;
   events: StashEvent[];
   names: string[];
+  batches: StashEvent[][];
 } {
   const base = createTestEnv().env;
   const events: StashEvent[] = [];
   const names: string[] = [];
+  const batches: StashEvent[][] = [];
   const namespace = new Proxy(base.STASH_EVENTS, {
     get(target, property, receiver) {
       if (property === "getByName") {
@@ -40,7 +43,9 @@ function recordingEnv(
                   if (options.failure === "throw") throw error;
                   if (options.failure === "reject") return Promise.reject(error);
                   return input.json().then((value) => {
-                    events.push(StashEventSchema.parse(value));
+                    const batch = StashEventSchema.array().parse(value);
+                    batches.push(batch);
+                    events.push(...batch);
                     return new Response(null, { status: 204 });
                   });
                 };
@@ -70,10 +75,10 @@ function recordingEnv(
                   }
                   return async (statements: D1PreparedStatement[]) => {
                     const results = await session.batch(statements);
-                    if (statements.length !== 5 || results.at(-1)?.meta.changes !== 1)
+                    if (statements.length !== 7 || results.at(-1)?.meta.changes !== 1)
                       return results;
                     const ids = options.importVersionIds ?? [];
-                    const versionIndexes = [1, 2, 3];
+                    const versionIndexes = [2, 3, 4];
                     return results.map((result, index) => {
                       const versionOffset = versionIndexes.indexOf(index);
                       if (versionOffset < 0 || ids[versionOffset] === undefined) return result;
@@ -88,7 +93,7 @@ function recordingEnv(
             };
           },
         });
-  return { bindings: { ...base, DB: database, STASH_EVENTS: namespace }, events, names };
+  return { bindings: { ...base, DB: database, STASH_EVENTS: namespace }, events, names, batches };
 }
 
 async function mutation(
@@ -114,6 +119,51 @@ beforeEach(async () => {
 });
 
 describe("event publication", () => {
+  it("delivers a 20-entry commit as one ordered Durable Object POST", async () => {
+    const { bindings, events, batches, names } = recordingEnv();
+    const result = await createStashStore(bindings, {
+      now: () => 1_800_000_000_000,
+      createId: () => "twenty-entry-commit",
+    }).commits.createCommit(
+      STASH,
+      {
+        entries: Array.from({ length: 20 }, (_, index) => ({
+          op: "put" as const,
+          path: `file-${index}.txt`,
+          expectedVersion: null,
+          body: String(index),
+        })),
+      },
+      {
+        principal: "test",
+        onCommitted: (committed) =>
+          deliverEvents(bindings, STASH, commitEvents(committed, "tab-twenty")),
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected 20-entry commit");
+
+    expect(names).toEqual([STASH]);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(21);
+    expect(events.slice(0, 20)).toSatisfy((value: StashEvent[]) =>
+      value.every(
+        (event, index) =>
+          event.type === "change" &&
+          event.commitId === result.value.id &&
+          event.changeId === result.value.entries[index]?.changeId,
+      ),
+    );
+    expect(events.at(-1)).toEqual({
+      type: "commit",
+      commitId: result.value.id,
+      stash: STASH,
+      entryCount: 20,
+      firstChangeId: result.value.firstChangeId,
+      lastChangeId: result.value.lastChangeId,
+      origin: "tab-twenty",
+    });
+  });
   it("accepts only canonical client origins after the actual Request boundary", () => {
     expect(
       eventOrigin(new Request("https://x", { headers: { [STASH_CLIENT_ID_HEADER]: "tab A!~" } })),
@@ -223,9 +273,9 @@ describe("event publication", () => {
     expect(events).toHaveLength(3);
   });
 
-  it("publishes import events in statement order with each exact inserted id", async () => {
-    const exactIds = [101, 303, 707];
-    const { bindings, events } = recordingEnv({ importVersionIds: exactIds });
+  it("publishes import events from commit-scoped rows despite poisoned last_row_id metadata", async () => {
+    const poisonedIds = [101, 303, 707];
+    const { bindings, events } = recordingEnv({ importVersionIds: poisonedIds });
     const response = await mutation(
       bindings,
       "/import",
@@ -247,9 +297,9 @@ describe("event publication", () => {
       .bind(STASH)
       .all<{ id: number; version: number; kind: string }>();
     expect(rows.results).toHaveLength(3);
-    expect(rows.results.map(({ id }) => id).every((id) => !exactIds.includes(id))).toBe(true);
+    expect(rows.results.map(({ id }) => id).every((id) => !poisonedIds.includes(id))).toBe(true);
     expect(events.map((event) => (event.type === "change" ? event.changeId : -1))).toEqual(
-      exactIds,
+      rows.results.map(({ id }) => id),
     );
     expect(events.map((event) => (event.type === "change" ? event.kind : ""))).toEqual([
       "put",
@@ -259,10 +309,16 @@ describe("event publication", () => {
     expect(events.every((event) => event.type === "change" && event.origin === "importer")).toBe(
       true,
     );
+    const firstCommit = await bindings.DB.prepare(
+      "SELECT commit_id FROM versions WHERE stash_name = ? AND id = ?",
+    )
+      .bind(STASH, rows.results[0]?.id)
+      .first<{ commit_id: string }>();
     await expect(response.json()).resolves.toEqual({
+      commitId: firstCommit?.commit_id,
       path: "history.txt",
       headVersion: 3,
-      firstChangeId: exactIds[0],
+      firstChangeId: rows.results[0]?.id,
     });
     const refused = await mutation(bindings, "/import", {
       path: "history.txt",
@@ -284,17 +340,18 @@ describe("event publication", () => {
     );
     expect(continued.status).toBe(201);
     const rollbackRow = await bindings.DB.prepare(
-      `SELECT id, size_bytes, created_at FROM versions
+      `SELECT id, commit_id, size_bytes, created_at FROM versions
        WHERE stash_name = ? AND path = ? AND version = 4`,
     )
       .bind(STASH, "history.txt")
-      .first<{ id: number; size_bytes: number; created_at: number }>();
+      .first<{ id: number; commit_id: string; size_bytes: number; created_at: number }>();
     if (rollbackRow === null) throw new Error("Expected committed continuation rollback");
     expect(rollbackRow.size_bytes).toBe(3);
     expect(events).toHaveLength(4);
     expect(events.at(-1)).toEqual({
       type: "change",
       changeId: rollbackRow.id,
+      commitId: rollbackRow.commit_id,
       stash: STASH,
       path: "history.txt",
       version: 4,
@@ -303,79 +360,11 @@ describe("event publication", () => {
       createdAt: new Date(rollbackRow.created_at).toISOString(),
     });
     await expect(continued.json()).resolves.toEqual({
+      commitId: rollbackRow.commit_id,
       path: "history.txt",
       headVersion: 4,
       firstChangeId: rollbackRow.id,
     });
-  });
-
-  it("publishes proposal transitions once, with approval change before status", async () => {
-    const { bindings, events } = recordingEnv();
-    const createdResponse = await mutation(
-      bindings,
-      "/proposals",
-      { path: "review.md", body: "candidate", baseVersion: null },
-      { key: "proposal-one", clientId: "reviewer" },
-    );
-    const created = await createdResponse.json<{ id: string }>();
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "proposal",
-        proposalId: created.id,
-        status: "open",
-        origin: "reviewer",
-      }),
-    ]);
-    await mutation(
-      bindings,
-      "/proposals",
-      { path: "review.md", body: "candidate", baseVersion: null },
-      { key: "proposal-one" },
-    );
-    expect(events).toHaveLength(1);
-    const mismatch = await mutation(
-      bindings,
-      "/proposals",
-      { path: "review.md", body: "different", baseVersion: null },
-      { key: "proposal-one" },
-    );
-    expect(mismatch.status).toBe(422);
-    expect(events).toHaveLength(1);
-
-    const approvedResponse = await mutation(bindings, `/proposals/${created.id}/approve`, {});
-    const approved = await approvedResponse.json<{
-      appliedChangeId: number;
-      appliedVersion: number;
-      createdAt: string;
-    }>();
-    expect(events.slice(1)).toEqual([
-      expect.objectContaining({
-        type: "change",
-        changeId: approved.appliedChangeId,
-        version: approved.appliedVersion,
-        createdAt: approved.createdAt,
-      }),
-      expect.objectContaining({ type: "proposal", proposalId: created.id, status: "applied" }),
-    ]);
-    await mutation(bindings, `/proposals/${created.id}/approve`, {});
-    expect(events).toHaveLength(3);
-
-    const rejectCreate = await mutation(bindings, "/proposals", {
-      path: "reject.md",
-      body: "candidate",
-      baseVersion: null,
-    });
-    const rejected = await rejectCreate.json<{ id: string }>();
-    expect(events.at(-1)).toMatchObject({ type: "proposal", status: "open" });
-    await mutation(bindings, `/proposals/${rejected.id}/reject`, { reason: "no" });
-    expect(events.at(-1)).toMatchObject({
-      type: "proposal",
-      proposalId: rejected.id,
-      status: "rejected",
-    });
-    const count = events.length;
-    await mutation(bindings, `/proposals/${rejected.id}/reject`, { reason: "again" });
-    expect(events).toHaveLength(count);
   });
 
   it.each(["reject", "throw"] as const)(

@@ -66,6 +66,7 @@ describe("POST stash import", () => {
     expect(response.status).toBe(201);
     const json = await response.json<Record<string, unknown>>();
     expect(json).toEqual({
+      commitId: expect.stringMatching(/^cmt_\d{13}[0-9a-f]{8}$/),
       path: "history.txt",
       headVersion: 1,
       firstChangeId: expect.any(Number),
@@ -104,6 +105,7 @@ describe("POST stash import", () => {
     expect(response.status).toBe(201);
     const json = await response.json<Record<string, unknown>>();
     expect(json).toEqual({
+      commitId: expect.stringMatching(/^cmt_\d{13}[0-9a-f]{8}$/),
       path: "history.txt",
       headVersion: 3,
       firstChangeId: expect.any(Number),

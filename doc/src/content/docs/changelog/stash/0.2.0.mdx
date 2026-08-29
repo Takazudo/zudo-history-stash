@@ -1,0 +1,15 @@
+---
+title: 0.2.0
+description: Atomic commit storage and change-set decisions.
+sidebar_position: 1
+category: changelog
+---
+
+Released: 2026-08-29
+
+- Make every successful write a sealed commit and require non-null `commitId` on every appended
+  version; unchanged outcomes append neither.
+- Add aggregate gate/entry fence/seal batches so multi-entry commit and approval failures leave no
+  partial versions or heads.
+- Add immutable change-set storage and decisions. `CHANGE_SET_TTL_DAYS` controls the default expiry
+  when creation omits `expiresAt`; the committed deployment value is 14.

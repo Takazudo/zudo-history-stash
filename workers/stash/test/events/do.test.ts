@@ -45,7 +45,7 @@ async function publish(instance: StashEvents, event: StashEvent): Promise<Respon
     request(STASH_EVENTS_PUBLISH_PATH, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event),
+      body: JSON.stringify([event]),
     }),
   );
 }
@@ -84,6 +84,7 @@ describe("StashEvents Durable Object", () => {
       const event: StashEvent = {
         type: "change",
         changeId: 41,
+        commitId: "cmt_test_41",
         stash: "docs",
         path: "guide.json",
         version: 3,
@@ -109,17 +110,72 @@ describe("StashEvents Durable Object", () => {
     });
   });
 
+  it("validates and publishes an ordered event array while commit frames remain live-only", async () => {
+    await runInDurableObject(stub(), async (instance: StashEvents) => {
+      const reader = readerFor(await subscribe(instance));
+      const change: StashEvent = {
+        type: "change",
+        changeId: 50,
+        commitId: "cmt_batch",
+        stash: "docs",
+        path: "one.txt",
+        version: 1,
+        kind: "put",
+        origin: null,
+        createdAt: "2026-08-28T00:00:00.000Z",
+      };
+      const secondChange: StashEvent = {
+        ...change,
+        changeId: 51,
+        path: "two.txt",
+      };
+      const commit: StashEvent = {
+        type: "commit",
+        commitId: "cmt_batch",
+        stash: "docs",
+        entryCount: 2,
+        firstChangeId: 50,
+        lastChangeId: 51,
+        origin: null,
+      };
+      try {
+        const response = await instance.fetch(
+          request(STASH_EVENTS_PUBLISH_PATH, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify([change, secondChange, commit]),
+          }),
+        );
+        expect(response.status).toBe(204);
+        expect(await readText(reader)).toEqual({ text: eventFrame(change), done: false });
+        expect(await readText(reader)).toEqual({ text: eventFrame(secondChange), done: false });
+        expect(await readText(reader)).toEqual({ text: eventFrame(commit), done: false });
+        expect(eventFrame(change)).toContain("id: 50\n");
+        expect(eventFrame(secondChange)).toContain("id: 51\n");
+        expect([change, secondChange].every((event) => event.commitId === commit.commitId)).toBe(
+          true,
+        );
+        expect(eventFrame(commit)).not.toContain("id:");
+      } finally {
+        await cancelReader(reader);
+      }
+    });
+  });
+
   it("drops only an unread subscriber when its queued bytes exceed 256 KiB", async () => {
     await runInDurableObject(stub(), async (instance: StashEvents) => {
       const slow = readerFor(await subscribe(instance));
       const fast = readerFor(await subscribe(instance));
       const event: StashEvent = {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change",
+        changeId: 42,
+        commitId: "cmt_test_42",
         stash: "docs",
         path: "x".repeat(70_000),
-        status: "open",
+        version: 1,
+        kind: "put",
         origin: null,
+        createdAt: "2026-08-28T00:00:00.000Z",
       };
       expect(encoder.encode(eventFrame(event)).byteLength * 4).toBeGreaterThan(256 * 1024);
 
@@ -223,12 +279,15 @@ describe("StashEvents Durable Object", () => {
         eventFrame({ type: "reconnect", reason: "lifetime" }),
       ).byteLength;
       const baseEvent: StashEvent = {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change",
+        changeId: 42,
+        commitId: "cmt_test_42",
         stash: "docs",
         path: "",
-        status: "open",
+        version: 1,
+        kind: "put",
         origin: null,
+        createdAt: "2026-08-28T00:00:00.000Z",
       };
       const baseBytes = encoder.encode(eventFrame(baseEvent)).byteLength;
       const targetBytes = 256 * 1024 - lifetimeFrameBytes + 1;
@@ -308,6 +367,14 @@ describe("StashEvents Durable Object", () => {
           request(STASH_EVENTS_PUBLISH_PATH, { method: "POST", body: "{" }),
         );
         expect(malformed.status).toBe(400);
+        const singleton = await instance.fetch(
+          request(STASH_EVENTS_PUBLISH_PATH, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(event),
+          }),
+        );
+        expect(singleton.status).toBe(400);
         expect((await instance.fetch(request("/unknown"))).status).toBe(404);
         expect(inspect(instance).activeSubscriberCount).toBe(1);
 

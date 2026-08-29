@@ -23,11 +23,12 @@ JSON の失敗は、機械可読な `error.code` が以下のいずれかの値�
 | `stale` | `409` | 期待した head が一致しなくなりました。 | 正本の head を再読み込みして照合し、その version で再試行してください。 |
 | `exists` | `409` | 作成専用の操作で既存リソースが見つかりました。 | 既存リソースを読むか、更新用のフェンスを使用してください。 |
 | `already-deleted` | `409` | ライフサイクルまたはファイルの削除が既存の tombstone を対象にしました。 | 削除済みとして扱うか、状態を更新してください。 |
+| `commit-conflict` | `409` | atomic commit の entry が fence に失敗しました。 | `conflicts` を確認し、対象 path を更新して新しい commit として再試行してください。 |
 | `gc-busy` | `409` | 別の世代がガベージコレクションのリースを所有しています。 | アクティブなリース期間の後で再試行してください。 |
 | `already-rotated` | `409` | 前の token にはすでに後継があります。 | 後継 ID を確認してください。シークレットを失った場合は後継を失効させ、新しく作成してください。 |
 | `token-expired` | `409` | ローテーション対象の前の token は期限切れです。 | admin 認証情報を使って新しい token を作成してください。 |
-| `proposal-expired` | `409` | open proposal が承認期限を過ぎました。 | 現在の head に対して新しい proposal を作成してください。 |
-| `proposal-closed` | `409` | proposal の判断が終端状態と競合しています。 | proposal を更新し、記録済みの判断に従ってください。 |
+| `change-set-expired` | `409` | open change set が承認期限を過ぎました。 | 現在の head に対して新しい change set を作成してください。 |
+| `change-set-closed` | `409` | change set の判断が終端状態と競合しています。 | change set を更新し、記録済みの判断に従ってください。 |
 | `payload-too-large` | `413` | encode 済みリクエストまたは保存内容が上限を超えています。 | ドキュメント化された上限と単位に従ってリクエストを減らしてください。 |
 | `idempotency-key-reused` | `422` | 一つのキーが別の正規リクエストに再利用されました。 | 新しいキーを生成してください。古いキーで再試行するリクエストを決して変更しないでください。 |
 | `rollback-target-tombstone` | `422` | ロールバックで削除済みの履歴 version が選ばれました。 | live version を選ぶか、明示的な delete/create workflow を実行してください。 |
@@ -39,6 +40,13 @@ JSON の失敗は、機械可読な `error.code` が以下のいずれかの値�
 | `upload-session-expired` | `410` | upload session の lease と recovery window が期限切れです。 | 新しい session を開始し、期限切れ session への write を再試行しないでください。 |
 | `rate-limited` | `429` | principal がリクエスト分類の予算を超えました。 | `Retry-After` に従い、backoff してください。 |
 | `internal` | `500` | サーバーは操作を安全に完了できませんでした。 | リクエストの文脈を記録し、操作プロトコルで許可されている場合だけ再試行してください。 |
+
+atomic entry fence の失敗は、ルートの `conflicts[]` を維持したまま二つの status branch を使います。commit の
+作成と revert では、`404 not-found` を返すのは失敗した entry が一つだけで `current: null` の場合です。それ以外の
+entry fence 失敗は `409 commit-conflict` です。change set の承認では、`404 not-found` を返すのは存在しない
+`delete` 対象一つだけの場合で、それ以外の entry conflict では `409 commit-conflict` を返します。typed client の
+`isCommitConflict` guard は `409 commit-conflict` branch だけを narrow します。両 branch をまとめて処理する
+場合は、存在する `conflicts[]` array を確認してください。
 
 転送の失敗や不正なレスポンスでは、型付きエラー結果が存在する前に reject されることがあります。これらの
 業務コードがないことから、成功を推測しないでください。

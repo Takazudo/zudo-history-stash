@@ -8,7 +8,7 @@ pnpm add @takazudo/zudo-history-stash
 ```
 
 ```ts
-import { createStashClient } from "@takazudo/zudo-history-stash";
+import { createStashClient, isCommitConflict } from "@takazudo/zudo-history-stash";
 
 const client = createStashClient({
   baseUrl: "https://stash.example.com",
@@ -59,6 +59,43 @@ const client = createStashClient({
 `files.put`, `files.delete`, and `files.rollback` mint an `Idempotency-Key` by default. Pass
 `{ idempotencyKey: "…" }` to make a retry use a stable key. A replayed response has
 `replayed: true`; a representation cache hit is `{ ok: true, notModified: true }`.
+
+## Commits, change sets, and snapshots
+
+Atomic commits and reviewable change sets are available through the same client on both fetch and
+generic RPC transports. Commit mutations accept an optional stable idempotency key and never retry
+a stale fence automatically:
+
+```ts
+const commits = client.commits("docs");
+const created = await commits.create(
+  {
+    entries: [
+      { op: "put", path: "README.md", expectedVersion: null, body: "Hello\n" },
+      {
+        op: "put",
+        path: "logo.bin",
+        expectedVersion: null,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        bytesBase64: "AP8=",
+      },
+    ],
+    author: "reviewer",
+    message: "Add the first docs revision",
+  },
+  { idempotencyKey: "docs-revision-1" },
+);
+
+if (!created.ok && isCommitConflict(created)) {
+  for (const conflict of created.conflicts) console.log(conflict.path, conflict.current);
+}
+```
+
+Import `isCommitConflict` from the package to narrow a commit or change-set conflict to its typed
+`conflicts` array. The SDK exposes `commits.get/list/diff/revert` and
+`changeSets.create/list/get/diff/approve/reject`; business failures remain result values. A
+historical tree is read with `client.files("docs").snapshot({ at: \`commit:${commitId}\`, prefix: "docs" })`.
 
 ## Binary and large objects
 
@@ -154,9 +191,10 @@ direct fixture setup and assertions. `fake.reset()` clears those tables without 
 state object. Pass `now` to control timestamps and token expiry; pass `rateLimit` to inject
 Cloudflare-shaped capability/key verdicts (rejections fail open, matching the Worker).
 
-The fake implements the SDK route surface, including exact binary bytes, upload sessions, raw ranges, proposals, and the authenticated fetch-only
-stash event stream, except for health, import, and cross-stash changes. Those unsupported routes
-and unknown routes return `501 not-implemented`.
+The fake implements the SDK route surface, including atomic commits, change-set decisions, commit
+and change-set reads/diffs, snapshots, exact binary bytes, upload sessions, raw ranges, and the
+authenticated fetch-only stash event stream, except for health, import, and cross-stash changes.
+Those unsupported routes and unknown routes return `501 not-implemented`.
 `await fake.mintToken()` remains available for direct fixture setup, accepts `expiresAt` or
 `ttlSeconds`, and uses the same hash-only storage path as the token-management routes.
 
@@ -168,14 +206,14 @@ const iterator = stream[Symbol.asyncIterator]();
 await iterator.next(); // authoritative ready event
 
 fake.events.emit({
-  type: "proposal",
-  proposalId: "prp_1787875200000deadbeef",
+  type: "change-set",
+  changeSetId: "chs_1787875200000deadbeef",
   stash: "docs",
-  path: "README.md",
+  paths: ["README.md"],
   status: "open",
   origin: null,
 });
-const proposal = await iterator.next();
+const changeSet = await iterator.next();
 
 fake.events.rotate("docs", "lifetime");
 stream.close();

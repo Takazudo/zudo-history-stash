@@ -1,6 +1,6 @@
 ---
 title: Operate the Viewer
-description: Use the hosted Viewer safely for browsing, editing, proposals, tokens, and live updates.
+description: Use the hosted Viewer safely for browsing, editing, tokens, and live updates.
 sidebar_position: 100
 category: guides
 ---
@@ -27,8 +27,8 @@ loading or changing:
 
 | Capability | Viewer operations |
 | --- | --- |
-| read | Browse stashes and files, inspect history and diffs, and list or review proposals. |
-| write | Create, edit, delete, restore, or roll back files, and create or decide proposals. |
+| read | Browse stashes and files; inspect history, commits, change sets, and diffs. |
+| write | Create, edit, delete, restore, or roll back files; approve, reject, or revert review units. |
 | admin | Create, delete, or restore stashes; manage tokens; and run garbage collection. |
 
 ## Viewer routes
@@ -43,10 +43,23 @@ Viewer URLs are navigation state, not proof of access.
 | `/s/:stash/f/*` | Show a file; `?version=N` selects a historical version. |
 | `/s/:stash/diff/*` | Compare `?from=N&to=M&context=N`, or set `to=head` for the current head. |
 | `/s/:stash/edit/*` | Edit a file; optional `?from=N` pins the loaded source version. |
-| `/s/:stash/proposals` | List `?status=open` or `?status=all`, optionally filtered by exact `?path=...`. |
-| `/s/:stash/proposals/:id` | Review one proposal and its immutable base/candidate diff. |
 | `/s/:stash/new` | Create a file. |
+| `/s/:stash/commits` | List commits, optionally filtering to a path. |
+| `/s/:stash/commits/:id` | Inspect one commit and its per-entry diffs; write capability enables revert. |
+| `/s/:stash/change-sets` | List review candidates by status or path. |
+| `/s/:stash/change-sets/:id` | Review candidate diffs and staleness; write capability enables approve/reject. |
 | `/s/:stash/tokens` | Admin-only token management. |
+
+Commit and change-set pages keep a multi-path operation together. A commit detail expands bounded
+per-entry diffs and links each path back to its file history. Revert creates another atomic commit;
+it never removes the displayed record. If any affected head has moved, the Viewer shows the
+server's per-entry conflicts and does not retry the partial remainder.
+
+A change-set review compares each captured base with its immutable candidate and marks stale entries.
+The aggregate stale notice is advisory until the decision request runs: approval repeats every fence
+and may still lose a race. On conflict, refresh the authoritative record and create a new change set
+after resolving the current heads. Applied, rejected, and expired records remain available as
+immutable decision history; they cannot be edited or reopened.
 
 ## Binary uploads and raw downloads
 
@@ -74,10 +87,6 @@ A save uses the head loaded with the draft as its compare-and-set fence. If anot
 the head, the Viewer marks the draft stale while preserving dirty text and the pinned comparison.
 Reload and compare the authoritative version, then deliberately reapply the change. Do not blindly
 retry, silently merge, or silently rebase a stale draft.
-
-Proposal base and candidate state are similarly immutable. Review the exact diff before deciding.
-Open/all and exact-path filters help triage, but approval and rejection remain write-gated. A stale
-approval is refused; it is never automatically rebased onto a newer head.
 
 Token plaintext is shown only once after minting. Move it directly to the intended secret store,
 then leave the page. A later list can show metadata but cannot recover the credential.

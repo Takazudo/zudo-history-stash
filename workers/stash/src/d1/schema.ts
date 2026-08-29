@@ -66,6 +66,66 @@ export interface VersionRow {
   representation: "text" | "binary";
   application_etag: string | null;
   content_storage: "legacy" | "bytes";
+  commit_id: string;
+  copied_from_path: string | null;
+  copied_from_version: number | null;
+}
+
+export interface CommitRow {
+  id: string;
+  stash_name: string;
+  source: "put" | "delete" | "rollback" | "import" | "upload" | "change-set" | "revert" | "commit";
+  source_id: string | null;
+  author: string;
+  message: string;
+  meta_json: string;
+  entry_count: number;
+  change_count: number;
+  sealed: 0 | 1;
+  first_change_id: number | null;
+  last_change_id: number | null;
+  reverts_commit_id: string | null;
+  idempotency_key: string | null;
+  request_hash: string | null;
+  created_by: string;
+  created_at: number;
+}
+
+export interface ChangeSetRow {
+  id: string;
+  stash_name: string;
+  status: "open" | "applied" | "rejected";
+  author: string;
+  message: string;
+  meta_json: string;
+  expires_at: number;
+  created_by: string;
+  created_at: number;
+  idempotency_key: string | null;
+  request_hash: string | null;
+  expected_last_change_id: number | null;
+  decision_attempt: string | null;
+  decided_at: number | null;
+  decided_by: string | null;
+  decision_reason: string | null;
+  commit_id: string | null;
+}
+
+export interface ChangeSetEntryRow {
+  change_set_id: string;
+  stash_name: string;
+  path: string;
+  op: "put" | "copy" | "delete" | "rollback";
+  base_version: number | null;
+  blob_hash: string | null;
+  content_storage: "legacy" | "bytes" | null;
+  representation: "text" | "binary" | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  rollback_to: number | null;
+  copied_from_path: string | null;
+  copied_from_version: number | null;
+  application_etag: string | null;
 }
 
 export type UploadSessionState =
@@ -183,39 +243,18 @@ export interface GcRunRow {
   finished_at: number | null;
 }
 
-export interface ProposalRow {
-  id: string;
-  stash_name: string;
-  path: string;
-  base_version: number | null;
-  blob_hash: string;
-  size_bytes: number;
-  author: string;
-  message: string;
-  meta_json: string;
-  status: "open" | "applied" | "rejected";
-  expires_at: number;
-  created_at: number;
-  idempotency_key: string | null;
-  request_hash: string | null;
-  decision_attempt: string | null;
-  decided_at: number | null;
-  decided_by: string | null;
-  decision_reason: string | null;
-  applied_version: number | null;
-  applied_change_id: number | null;
-}
-
 export const TABLE_NAMES = [
   "stashes",
   "tokens",
   "blobs",
   "files",
   "versions",
+  "change_set_entries",
+  "change_sets",
+  "commits",
   "idempotency",
   "gc_jobs",
   "gc_runs",
-  "proposals",
   "byte_blobs",
   "upload_sessions",
   "upload_staged_bytes",
@@ -258,6 +297,63 @@ export const TABLE_COLUMNS = {
     "representation",
     "application_etag",
     "content_storage",
+    "commit_id",
+    "copied_from_path",
+    "copied_from_version",
+  ],
+  change_set_entries: [
+    "change_set_id",
+    "stash_name",
+    "path",
+    "op",
+    "base_version",
+    "blob_hash",
+    "content_storage",
+    "representation",
+    "content_type",
+    "size_bytes",
+    "rollback_to",
+    "copied_from_path",
+    "copied_from_version",
+    "application_etag",
+  ],
+  change_sets: [
+    "id",
+    "stash_name",
+    "status",
+    "author",
+    "message",
+    "meta_json",
+    "expires_at",
+    "created_by",
+    "created_at",
+    "idempotency_key",
+    "request_hash",
+    "expected_last_change_id",
+    "decision_attempt",
+    "decided_at",
+    "decided_by",
+    "decision_reason",
+    "commit_id",
+  ],
+  commits: [
+    "id",
+    "stash_name",
+    "source",
+    "source_id",
+    "author",
+    "message",
+    "meta_json",
+    "entry_count",
+    "change_count",
+    "sealed",
+    "first_change_id",
+    "last_change_id",
+    "reverts_commit_id",
+    "idempotency_key",
+    "request_hash",
+    "created_by",
+    "created_at",
   ],
   idempotency: [
     "stash_name",
@@ -282,28 +378,6 @@ export const TABLE_COLUMNS = {
     "error",
     "started_at",
     "finished_at",
-  ],
-  proposals: [
-    "id",
-    "stash_name",
-    "path",
-    "base_version",
-    "blob_hash",
-    "size_bytes",
-    "author",
-    "message",
-    "meta_json",
-    "status",
-    "expires_at",
-    "created_at",
-    "idempotency_key",
-    "request_hash",
-    "decision_attempt",
-    "decided_at",
-    "decided_by",
-    "decision_reason",
-    "applied_version",
-    "applied_change_id",
   ],
   byte_blobs: [
     "stash_name",
@@ -380,10 +454,11 @@ export interface DatabaseSchema {
   blobs: BlobRow;
   files: FileRow;
   versions: VersionRow;
+  change_sets: ChangeSetRow;
+  change_set_entries: ChangeSetEntryRow;
   idempotency: IdempotencyRow;
   gc_jobs: GcJobRow;
   gc_runs: GcRunRow;
-  proposals: ProposalRow;
   byte_blobs: ByteBlobRow;
   upload_sessions: UploadSessionRow;
   upload_staged_bytes: UploadStagedBytesRow;

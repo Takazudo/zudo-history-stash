@@ -2,24 +2,23 @@ import type { ChangeItem, FileSummary } from "@takazudo/zudo-history-stash";
 import {
   Bytes,
   Button,
-  ChangeRow,
+  ChangesList,
   DeleteStashDialog,
   LoadMore,
   PathCell,
   RelativeTime,
   useCanWrite,
   useIsAdmin,
+  useOpenChangeSetCount,
   useStashHref,
 } from "@takazudo/zudo-history-stash-ui";
 import { useCallback, useState, type ChangeEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { useViewerLiveRefresh } from "../app/live-updates.js";
-import { proposalListHref } from "../app/proposal-routes.js";
 import { Page } from "../app/shell/page.js";
 import { Table } from "../app/shell/table.js";
 import { ErrorBanner, clientValue } from "../components/error-banner.js";
-import { useOpenProposalCount } from "../hooks/use-open-proposal-count.js";
 import { usePagedData } from "./use-paged-data.js";
 
 const fileKey = (file: FileSummary) => file.path;
@@ -76,9 +75,9 @@ export default function StashPage() {
   const write = useCanWrite(stash ?? "");
   const admin = useIsAdmin();
   const hrefFor = useStashHref();
+  const openChangeSets = useOpenChangeSetCount(stash ?? "");
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const openProposals = useOpenProposalCount(client, stash);
   const files = usePagedData<FileSummary, string>(
     async (signal, after) => {
       if (!client || !stash) return { items: [], nextCursor: null };
@@ -112,21 +111,16 @@ export default function StashPage() {
   );
   const resetFiles = files.reset;
   const resetChanges = changes.reset;
-  const reloadOpenProposals = openProposals.reload;
   useViewerLiveRefresh(
     useCallback(
       async ({ signal }) => {
-        const results = await Promise.allSettled([
-          resetFiles(signal),
-          resetChanges(signal),
-          reloadOpenProposals(signal),
-        ]);
+        const results = await Promise.allSettled([resetFiles(signal), resetChanges(signal)]);
         const failed = results.find(
           (result): result is PromiseRejectedResult => result.status === "rejected",
         );
         if (failed !== undefined) throw failed.reason;
       },
-      [reloadOpenProposals, resetChanges, resetFiles],
+      [resetChanges, resetFiles],
     ),
   );
 
@@ -142,11 +136,6 @@ export default function StashPage() {
       actions={
         stash ? (
           <div className="page-actions">
-            <Link className="zhs-button zhs-button--secondary" to={proposalListHref(stash)}>
-              {openProposals.state === "ready" && openProposals.value !== null
-                ? `Proposals (${openProposals.value} open)`
-                : "Proposals"}
-            </Link>
             {write.ready && write.canWrite ? (
               <Link
                 className="zhs-button zhs-button--primary"
@@ -218,6 +207,13 @@ export default function StashPage() {
                   <h2 id="stash-changes-title">Recent changes</h2>
                   <p>Newest activity in {stash}.</p>
                 </div>
+                <nav aria-label="Stash history" className="page-actions">
+                  <Link to={hrefFor({ kind: "commits", stash })}>Commits</Link>
+                  <Link to={hrefFor({ kind: "change-sets", stash })}>
+                    Change sets
+                    {openChangeSets.state === "ready" ? ` (${openChangeSets.value} open)` : ""}
+                  </Link>
+                </nav>
               </div>
               {changes.initialLoading ? <p className="loading-copy">Loading changes…</p> : null}
               {changes.error ? (
@@ -229,13 +225,7 @@ export default function StashPage() {
               {!changes.initialLoading && !changes.error && newestChanges.length === 0 ? (
                 <p className="empty-copy">No changes have been recorded.</p>
               ) : null}
-              {newestChanges.length > 0 ? (
-                <ul className="changes-list">
-                  {newestChanges.map((change) => (
-                    <ChangeRow key={change.changeId} change={change} />
-                  ))}
-                </ul>
-              ) : null}
+              {newestChanges.length > 0 ? <ChangesList changes={newestChanges} /> : null}
               <div className="section-card__footer">
                 <LoadMore
                   hasMore={changes.hasMore}

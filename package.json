@@ -45,6 +45,7 @@
     "dev:full:seeded": "bash -c 'set -euo pipefail; pnpm dev:full & server_pid=$!; trap \"kill $server_pid 2>/dev/null || true\" EXIT INT TERM; pnpm wait:full; pnpm seed:dev; wait $server_pid'",
     "wait:full": "HEALTH_URL=http://localhost:8787/api/v1/health node scripts/wait-for.mjs",
     "seed:dev": "API_BASE_URL=http://localhost:8787/api node scripts/seed-dev.mjs",
+    "commit:dir": "node scripts/commit-dir.mjs",
     "// ── Lifecycle ────────────────────────": "",
     "prepare": "lefthook install && bash scripts/install-git-hooks.sh",
     "init-worktree": "bash scripts/install-git-hooks.sh"

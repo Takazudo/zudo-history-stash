@@ -141,6 +141,7 @@ function change(changeId: number): StashChangeEvent {
   return {
     type: "change",
     changeId,
+    commitId: `cmt_${changeId}`,
     stash: "notes",
     path: `${changeId}.md`,
     version: changeId,
@@ -436,6 +437,47 @@ describe("createStashEventStream", () => {
     delay.release();
     const second = await connector.next();
     expect(second.since).toBe(4);
+    stream.close();
+  });
+
+  it("keeps commit and change-set control frames outside the change checkpoint", async () => {
+    const connector = testConnector();
+    const timing = testTiming();
+    const stream = createStashEventStream(connector, {}, timing);
+    const iterator = stream[Symbol.asyncIterator]();
+    const first = await connector.next();
+    const commit = {
+      type: "commit" as const,
+      commitId: "cmt_1787952000000deadbeef",
+      stash: "notes",
+      entryCount: 1,
+      firstChangeId: 2,
+      lastChangeId: 2,
+      origin: null,
+    };
+    const changeSet = {
+      type: "change-set" as const,
+      changeSetId: "chs_1787952000000deadbeef",
+      stash: "notes",
+      status: "applied" as const,
+      paths: ["2.md"],
+      origin: null,
+    };
+    first.respond(
+      closedEventResponse({ type: "ready", head: 1, checkpoint: 1 }, commit, changeSet, change(2)),
+    );
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: "ready", head: 1, checkpoint: 1 },
+    });
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: commit });
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: changeSet });
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: change(2) });
+    const rotation = await timing.next();
+    rotation.release();
+    const second = await connector.next();
+    expect(second.since).toBe(1);
     stream.close();
   });
 

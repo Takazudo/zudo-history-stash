@@ -30,10 +30,10 @@ const DOCUMENT_DESCRIPTION = [
   "Credentials for one stash cannot reveal another stash: foreign stashes are concealed as 404 responses.",
   "Lists and change feeds use keyset cursors (after, before, or since); limit defaults to 50 and has a maximum of 200.",
   "File reads use ETags, If-None-Match, and 304 responses for conditional requests.",
-  "File-mutation idempotency keys are retained in a 7-day ledger. Proposal-creation keys are stored on the proposal row instead; either kind returns 422 idempotency-key-reused when reused for a different canonical request.",
+  "File-mutation idempotency keys are retained in a 7-day ledger. Commit idempotency keys are permanent; reusing any key for a different canonical request returns 422 idempotency-key-reused.",
   "Stash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.",
   "GC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.",
-  "Proposals are expiring candidate writes against an immutable base. Approval never rebases: a moved head returns 409 stale with current, while repeated creation and approval have explicit replay semantics.",
+  "Change sets are expiring multi-file candidates against immutable base versions. Approval never rebases and applies all entries atomically or returns commit-conflict details.",
   "The per-stash live stream uses bearer-authenticated fetch and Server-Sent Events. It is fetch-only because browser EventSource cannot send the Authorization header and streaming responses are not exposed as named RPC methods.",
 ].join("\n\n");
 

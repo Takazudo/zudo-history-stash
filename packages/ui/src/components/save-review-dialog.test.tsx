@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   createStashClient,
+  type ChangeSetRecord,
   type FileRecord,
   type FileRecordWithEtag,
   type StashClient,
@@ -9,18 +10,17 @@ import {
 } from "@takazudo/zudo-history-stash";
 import { createFakeStash } from "@takazudo/zudo-history-stash/testing";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { StashUiProvider } from "../provider/stash-ui-provider.js";
 import {
   useSaveMachine,
   type LineEnding,
   type SaveMachine,
   type SaveMachineState,
 } from "../hooks/use-save-machine.js";
-import { useCanWrite } from "../provider/hooks.js";
-import { StashUiProvider } from "../provider/stash-ui-provider.js";
 import {
   SaveReviewDialog,
   type SaveReviewCompletion,
@@ -36,12 +36,20 @@ interface RecordedPut {
   idempotencyKey: string | null;
 }
 
+interface RecordedChangeSet {
+  serializedBody: string;
+  idempotencyKey: string | null;
+}
+
 interface Fixture {
   client: StashClient;
   head: FileRecordWithEtag;
   puts: RecordedPut[];
+  changeSetRequests: RecordedChangeSet[];
   deferNextPut: () => () => void;
+  deferNextChangeSet: () => () => void;
   failNextPutBeforeSend: () => void;
+  failNextChangeSetBeforeSend: () => void;
   failNextPutResponse: () => void;
 }
 
@@ -55,6 +63,8 @@ interface FakeBackedHostProps {
   onClose?: () => void;
   onDiscard?: () => void;
   onSaved?: (completion: SaveReviewCompletion) => void;
+  stash?: string;
+  onChangeSetCreated?: (changeSet: ChangeSetRecord) => void;
 }
 
 async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
@@ -62,11 +72,19 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
   const fake = createFakeStash({ adminToken });
   fake.createStash(STASH);
   const puts: RecordedPut[] = [];
+  const changeSetRequests: RecordedChangeSet[] = [];
   let putGate: Promise<void> | null = null;
+  let changeSetGate: Promise<void> | null = null;
   let rejectedBeforeSend = 0;
+  let rejectedChangeSetBeforeSend = 0;
   let lostResponses = 0;
   const fetch: StashFetch = async (input, init) => {
     const isPut = init?.method === "PUT";
+    const isChangeSetRequest =
+      init?.method === "POST" &&
+      new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith(
+        "/change-sets",
+      );
     if (isPut) {
       if (typeof init.body !== "string") throw new Error("Expected a JSON request body");
       puts.push({
@@ -80,6 +98,22 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
       if (putGate !== null) {
         const gate = putGate;
         putGate = null;
+        await gate;
+      }
+    }
+    if (isChangeSetRequest) {
+      if (typeof init.body !== "string") throw new Error("Expected a JSON change-set body");
+      changeSetRequests.push({
+        serializedBody: init.body,
+        idempotencyKey: new Headers(init.headers).get("Idempotency-Key"),
+      });
+      if (rejectedChangeSetBeforeSend > 0) {
+        rejectedChangeSetBeforeSend -= 1;
+        throw new TypeError("change-set request not sent");
+      }
+      if (changeSetGate !== null) {
+        const gate = changeSetGate;
+        changeSetGate = null;
         await gate;
       }
     }
@@ -117,6 +151,7 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
     client,
     head: loaded.value,
     puts,
+    changeSetRequests,
     deferNextPut() {
       let release: () => void = () => {};
       putGate = new Promise<void>((resolveGate) => {
@@ -124,8 +159,18 @@ async function makeFixture(seedBody = "base\n"): Promise<Fixture> {
       });
       return release;
     },
+    deferNextChangeSet() {
+      let release: () => void = () => {};
+      changeSetGate = new Promise<void>((resolveGate) => {
+        release = resolveGate;
+      });
+      return release;
+    },
     failNextPutBeforeSend() {
       rejectedBeforeSend += 1;
+    },
+    failNextChangeSetBeforeSend() {
+      rejectedChangeSetBeforeSend += 1;
     },
     failNextPutResponse() {
       lostResponses += 1;
@@ -143,6 +188,8 @@ function FakeBackedHost({
   onClose = vi.fn(),
   onDiscard = vi.fn(),
   onSaved = vi.fn(),
+  stash,
+  onChangeSetCreated,
 }: FakeBackedHostProps) {
   const machine = useSaveMachine({
     client: fixture.client,
@@ -162,53 +209,9 @@ function FakeBackedHost({
       onClose={onClose}
       onDiscard={onDiscard}
       onSaved={onSaved}
+      stash={stash}
+      onChangeSetCreated={onChangeSetCreated}
     />
-  );
-}
-
-function ProposalFakeBackedHost({
-  fixture,
-  draft,
-  lineEnding = "lf",
-  onProposed,
-}: {
-  fixture: Fixture;
-  draft: string;
-  lineEnding?: LineEnding;
-  onProposed: NonNullable<SaveReviewDialogProps["onProposed"]>;
-}) {
-  const machine = useSaveMachine({
-    client: fixture.client,
-    stash: STASH,
-    path: fixture.head.path,
-    head: fixture.head,
-    draft,
-    lineEnding,
-  });
-  return (
-    <StashUiProvider client={fixture.client}>
-      <SaveReviewDialog
-        draft={draft}
-        head={fixture.head}
-        lineEnding={lineEnding}
-        machine={machine}
-        open={true}
-        stash={STASH}
-        onClose={vi.fn()}
-        onDiscard={vi.fn()}
-        onProposed={onProposed}
-        onSaved={vi.fn()}
-      />
-    </StashUiProvider>
-  );
-}
-
-function CapabilityProbe() {
-  const capability = useCanWrite(STASH);
-  return (
-    <span>
-      {capability.ready ? `capability:${String(capability.canWrite)}` : "capability:pending"}
-    </span>
   );
 }
 
@@ -339,6 +342,79 @@ beforeEach(() => {
 });
 
 describe("SaveReviewDialog", () => {
+  it("creates the exact draft as a one-entry change set without saving head", async () => {
+    const fixture = await makeFixture("base\n");
+    render(
+      <StashUiProvider client={fixture.client}>
+        <FakeBackedHost draft={"candidate\n"} fixture={fixture} stash={STASH} />
+      </StashUiProvider>,
+    );
+    const createChangeSet = screen.getByRole("button", { name: "Create change set" });
+    await waitFor(() => expect(createChangeSet.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(createChangeSet);
+    const reviewLink = await screen.findByRole("link", { name: "Open change set" });
+    const submitted = JSON.parse(fixture.changeSetRequests[0]?.serializedBody ?? "null") as Record<
+      string,
+      unknown
+    >;
+    expect(submitted.entries).toEqual([
+      expect.objectContaining({ path: PATH, op: "put", baseVersion: fixture.head.version }),
+    ]);
+    expect(fixture.puts).toHaveLength(0);
+    expect(reviewLink.getAttribute("href")).toMatch(new RegExp(`^/s/${STASH}/change-sets/chs_`));
+    expect(screen.getByRole("button", { name: "Created" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("locks change-set creation synchronously against same-tick double activation", async () => {
+    const fixture = await makeFixture("base\n");
+    const release = fixture.deferNextChangeSet();
+    const onChangeSetCreated = vi.fn();
+    render(
+      <StashUiProvider client={fixture.client}>
+        <FakeBackedHost
+          draft={"candidate\n"}
+          fixture={fixture}
+          stash={STASH}
+          onChangeSetCreated={onChangeSetCreated}
+        />
+      </StashUiProvider>,
+    );
+    const createChangeSet = screen.getByRole("button", { name: "Create change set" });
+    await waitFor(() => expect(createChangeSet.hasAttribute("disabled")).toBe(false));
+    act(() => {
+      fireEvent.click(createChangeSet);
+      fireEvent.click(createChangeSet);
+    });
+    await waitFor(() => expect(fixture.changeSetRequests).toHaveLength(1));
+    release();
+    await waitFor(() => expect(onChangeSetCreated).toHaveBeenCalledTimes(1));
+    expect(fixture.changeSetRequests).toHaveLength(1);
+  });
+
+  it("retries an ambiguous change-set failure with the exact frozen body and key", async () => {
+    const fixture = await makeFixture("base\n");
+    fixture.failNextChangeSetBeforeSend();
+    const onChangeSetCreated = vi.fn();
+    render(
+      <StashUiProvider client={fixture.client}>
+        <FakeBackedHost
+          draft={"candidate\n"}
+          fixture={fixture}
+          stash={STASH}
+          onChangeSetCreated={onChangeSetCreated}
+        />
+      </StashUiProvider>,
+    );
+    const createChangeSet = screen.getByRole("button", { name: "Create change set" });
+    await waitFor(() => expect(createChangeSet.hasAttribute("disabled")).toBe(false));
+    await userEvent.click(createChangeSet);
+    await screen.findByRole("alert");
+    const first = fixture.changeSetRequests[0];
+    await userEvent.click(screen.getByRole("button", { name: "Retry change set" }));
+    await waitFor(() => expect(onChangeSetCreated).toHaveBeenCalledTimes(1));
+    expect(fixture.changeSetRequests).toHaveLength(2);
+    expect(fixture.changeSetRequests[1]).toEqual(first);
+  });
   it("reviews and saves exact CRLF bytes through the fake backend with exact-once completion", async () => {
     const fixture = await makeFixture("base\r\n");
     const releasePut = fixture.deferNextPut();
@@ -907,178 +983,6 @@ describe("SaveReviewDialog", () => {
     expect(split.getAttribute("aria-describedby")).toBeTruthy();
     expect(screen.getByRole("table", { name: "Unified diff" })).toBeTruthy();
     expect(screen.queryByRole("table", { name: "Split diff" })).toBeNull();
-  });
-
-  it("saves the exact reviewed draft as a proposal without changing the file head", async () => {
-    const fixture = await makeFixture("base\n");
-    const onProposed = vi.fn<NonNullable<SaveReviewDialogProps["onProposed"]>>();
-    render(
-      <ProposalFakeBackedHost
-        draft={"proposal\nbody\n"}
-        fixture={fixture}
-        lineEnding="crlf"
-        onProposed={onProposed}
-      />,
-    );
-    const user = userEvent.setup();
-    const dialog = await screen.findByRole("dialog", { name: "Review save against head v1" });
-    await user.type(within(dialog).getByRole("textbox", { name: /Author/ }), "Ada");
-    await user.type(within(dialog).getByRole("textbox", { name: /Message/ }), "Review this draft");
-    await user.click(await within(dialog).findByRole("button", { name: "Save as proposal" }));
-
-    await waitFor(() => expect(onProposed).toHaveBeenCalledTimes(1));
-    const record = onProposed.mock.calls[0]?.[0];
-    expect(record).toMatchObject({
-      stash: STASH,
-      path: PATH,
-      baseVersion: 1,
-      author: "Ada",
-      message: "Review this draft",
-      status: "open",
-    });
-    if (record === undefined) throw new Error("Proposal callback was not delivered");
-    const loaded = await fixture.client.proposals(STASH).get(record.id);
-    expect(loaded.ok && loaded.value.body).toBe("proposal\r\nbody\r\n");
-    const history = await fixture.client.files(STASH).history(PATH);
-    expect(history.ok && history.value.headVersion).toBe(1);
-    expect(fixture.puts).toHaveLength(0);
-    expect(within(screen.getByRole("status")).getByText("Proposal saved")).toBeTruthy();
-  });
-
-  it("keeps proposal success terminal when the consumer callback throws", async () => {
-    const fixture = await makeFixture("base\n");
-    const consumerError = new Error("consumer callback failed");
-    const callbackFailure = deferred<unknown>();
-    const onUnhandled = (reason: unknown) => {
-      if (reason === consumerError) callbackFailure.resolve(reason);
-    };
-    process.on("unhandledRejection", onUnhandled);
-    const onProposed = vi.fn(() => {
-      throw consumerError;
-    });
-
-    try {
-      render(
-        <ProposalFakeBackedHost
-          draft="proposal body\n"
-          fixture={fixture}
-          onProposed={onProposed}
-        />,
-      );
-      await userEvent.click(await screen.findByRole("button", { name: "Save as proposal" }));
-      await callbackFailure.promise;
-
-      expect(onProposed).toHaveBeenCalledTimes(1);
-      expect(await screen.findByRole("button", { name: "Proposal saved" })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Retry proposal" })).toBeNull();
-      expect(screen.queryByText("The proposal response was interrupted")).toBeNull();
-      const proposals = await fixture.client.proposals(STASH).list({ status: "all" });
-      expect(proposals.ok && proposals.value.total).toBe(1);
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
-  it("does not render Save as proposal after a read principal resolves", async () => {
-    const adminToken = "save-proposal-read-admin";
-    const fake = createFakeStash({ adminToken });
-    fake.createStash(STASH);
-    const readToken = await fake.mintToken(STASH, "read");
-    const client = createStashClient({ baseUrl: BASE_URL, token: readToken, fetch: fake.fetch });
-    render(
-      <StashUiProvider client={client}>
-        <CapabilityProbe />
-        <SaveReviewDialog
-          draft="draft\n"
-          head={fileRecord("head\n", { version: 1 })}
-          lineEnding="lf"
-          machine={stubMachine({ state: "idle" })}
-          open={true}
-          stash={STASH}
-          onClose={vi.fn()}
-          onDiscard={vi.fn()}
-          onProposed={vi.fn()}
-          onSaved={vi.fn()}
-        />
-      </StashUiProvider>,
-    );
-
-    expect(await screen.findByText("capability:false")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save as proposal" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry proposal" })).toBeNull();
-  });
-
-  it("suppresses an old write-client proposal completion after the credential boundary changes", async () => {
-    const adminToken = "save-proposal-switch-admin";
-    const fake = createFakeStash({ adminToken });
-    fake.createStash(STASH);
-    const directAdmin = createStashClient({
-      baseUrl: BASE_URL,
-      token: adminToken,
-      fetch: fake.fetch,
-    });
-    const seeded = await directAdmin.files(STASH).put(PATH, {
-      body: "head\n",
-      expectedVersion: null,
-      author: "Fixture",
-      message: "Seed",
-    });
-    if (!seeded.ok) throw new Error(seeded.error.message);
-    const loaded = await directAdmin.files(STASH).get(PATH);
-    if (!loaded.ok || "notModified" in loaded) throw new Error("Fixture head did not load");
-
-    const requestStarted = deferred<void>();
-    const requestRelease = deferred<void>();
-    const delayedFetch: StashFetch = async (input, init) => {
-      const request = new Request(input, init);
-      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/proposals")) {
-        requestStarted.resolve();
-        await requestRelease.promise;
-      }
-      return fake.fetch(input, init);
-    };
-    const writeClient = createStashClient({
-      baseUrl: BASE_URL,
-      token: adminToken,
-      fetch: delayedFetch,
-    });
-    const readToken = await fake.mintToken(STASH, "read");
-    const readClient = createStashClient({
-      baseUrl: BASE_URL,
-      token: readToken,
-      fetch: fake.fetch,
-    });
-    const machine = stubMachine({ state: "idle" });
-    const onProposed = vi.fn();
-    const dialog = (client: StashClient, clientForSignal: (signal: AbortSignal) => StashClient) => (
-      <StashUiProvider client={client} clientForSignal={clientForSignal}>
-        <CapabilityProbe />
-        <SaveReviewDialog
-          draft="candidate\n"
-          head={loaded.value}
-          lineEnding="lf"
-          machine={machine}
-          open={true}
-          stash={STASH}
-          onClose={vi.fn()}
-          onDiscard={vi.fn()}
-          onProposed={onProposed}
-          onSaved={vi.fn()}
-        />
-      </StashUiProvider>
-    );
-    const rendered = render(dialog(writeClient, () => writeClient));
-    await userEvent.click(await screen.findByRole("button", { name: "Save as proposal" }));
-    await requestStarted.promise;
-
-    rendered.rerender(dialog(readClient, () => readClient));
-    expect(screen.queryByRole("button", { name: "Save as proposal" })).toBeNull();
-    requestRelease.resolve();
-    await waitFor(async () => {
-      const proposals = await directAdmin.proposals(STASH).list({ status: "all" });
-      expect(proposals.ok && proposals.value.total).toBe(1);
-    });
-    expect(onProposed).not.toHaveBeenCalled();
   });
 
   it("keeps its leaf CSS namespaced, tokenized, responsive, and scroll-contained", () => {

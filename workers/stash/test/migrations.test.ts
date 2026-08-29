@@ -70,31 +70,43 @@ describe("D1 migrations", () => {
       { name: "id", desc: 1 },
     ]);
 
-    const proposalIndexes = await env.DB.prepare("PRAGMA index_list(proposals)").all<{
+    const commitIndexes = await env.DB.prepare("PRAGMA index_list(commits)").all<{
       name: string;
       partial: number;
-      unique: number;
     }>();
-    expect(proposalIndexes.results).toEqual(
+    expect(commitIndexes.results).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "proposals_stash_status_created", partial: 0, unique: 0 }),
-        expect.objectContaining({ name: "proposals_stash_path", partial: 0, unique: 0 }),
-        expect.objectContaining({ name: "proposals_stash_idempotency", partial: 1, unique: 1 }),
+        expect.objectContaining({ name: "commits_stash_created", partial: 0 }),
+        expect.objectContaining({ name: "commits_stash_idempotency", partial: 1 }),
+        expect.objectContaining({ name: "commits_stash_last_change", partial: 0 }),
       ]),
     );
-    const proposalOrder = await env.DB.prepare(
-      "PRAGMA index_xinfo(proposals_stash_status_created)",
-    ).all<{ name: string | null; desc: number; key: number }>();
-    expect(
-      proposalOrder.results
-        .filter((column) => column.key === 1)
-        .map(({ name, desc }) => ({ name, desc })),
-    ).toEqual([
-      { name: "stash_name", desc: 0 },
-      { name: "status", desc: 0 },
-      { name: "created_at", desc: 0 },
-      { name: "id", desc: 0 },
-    ]);
+    const versionIndexes = await env.DB.prepare("PRAGMA index_list(versions)").all<{
+      name: string;
+    }>();
+    expect(versionIndexes.results.map(({ name }) => name)).toContain("versions_stash_commit");
+    const versionColumns = await env.DB.prepare("PRAGMA table_info(versions)").all<{
+      name: string;
+      notnull: number;
+    }>();
+    expect(versionColumns.results.find(({ name }) => name === "commit_id")?.notnull).toBe(1);
+
+    const changeSetIndexes = await env.DB.prepare("PRAGMA index_list(change_sets)").all<{
+      name: string;
+      partial: number;
+    }>();
+    expect(changeSetIndexes.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "change_sets_stash_status_created", partial: 0 }),
+        expect.objectContaining({ name: "change_sets_stash_idempotency", partial: 1 }),
+      ]),
+    );
+    const entryIndexes = await env.DB.prepare("PRAGMA index_list(change_set_entries)").all<{
+      name: string;
+    }>();
+    expect(entryIndexes.results.map(({ name }) => name)).toContain("change_set_entries_stash_path");
+
+    await expect(env.DB.prepare("SELECT 1 FROM proposals").first()).rejects.toThrow();
 
     const jobs = await env.DB.prepare(
       "SELECT kind, next_cursor, lease_owner, lease_generation, lease_until, updated_at FROM gc_jobs ORDER BY kind",
@@ -124,6 +136,55 @@ describe("D1 migrations", () => {
       await expect(env.DB.exec(query)).rejects.toThrow();
       break;
     }
+  });
+
+  it("defers the change-set commit reference through a batch and rolls back unresolved claims", async () => {
+    await resetDatabase();
+    await env.DB.prepare(
+      "INSERT INTO stashes (name, description, meta_json, created_at) VALUES (?, '', '{}', 1)",
+    )
+      .bind("deferred-change-set")
+      .run();
+    for (const id of ["chs_0000000000001aaaaaaaa", "chs_0000000000002bbbbbbbb"]) {
+      await env.DB.prepare(
+        `INSERT INTO change_sets
+          (id, stash_name, status, author, message, meta_json, expires_at, created_by, created_at)
+         VALUES (?, 'deferred-change-set', 'open', '', '', '{}', 100, 'test', 1)`,
+      )
+        .bind(id)
+        .run();
+    }
+    const commitId = "cmt_0000000000001aaaaaaaa";
+    await expect(
+      env.DB.batch([
+        env.DB.prepare(
+          "UPDATE change_sets SET status = 'applied', commit_id = ? WHERE id = ?",
+        ).bind(commitId, "chs_0000000000001aaaaaaaa"),
+        env.DB.prepare(
+          `INSERT INTO commits
+            (id, stash_name, source, source_id, entry_count, created_by, created_at)
+           VALUES (?, 'deferred-change-set', 'change-set', ?, 1, 'test', 1)`,
+        ).bind(commitId, "chs_0000000000001aaaaaaaa"),
+      ]),
+    ).resolves.toHaveLength(2);
+    await expect(
+      env.DB.prepare("SELECT status, commit_id FROM change_sets WHERE id = ?")
+        .bind("chs_0000000000001aaaaaaaa")
+        .first(),
+    ).resolves.toEqual({ status: "applied", commit_id: commitId });
+
+    await expect(
+      env.DB.batch([
+        env.DB.prepare(
+          "UPDATE change_sets SET status = 'applied', commit_id = ? WHERE id = ?",
+        ).bind("cmt_missing", "chs_0000000000002bbbbbbbb"),
+      ]),
+    ).rejects.toThrow(/FOREIGN KEY constraint failed/);
+    await expect(
+      env.DB.prepare("SELECT status, commit_id FROM change_sets WHERE id = ?")
+        .bind("chs_0000000000002bbbbbbbb")
+        .first(),
+    ).resolves.toEqual({ status: "open", commit_id: null });
   });
 
   it("uses block comments and unique migration numbers", () => {
@@ -200,6 +261,25 @@ describe("D1 migrations", () => {
       "SELECT deleted_at FROM stashes WHERE name = 'upgrade'",
     ).first<{ deleted_at: number | null }>();
     expect(upgradedStash).toEqual({ deleted_at: null });
+    const legacyCommit = await env.UPGRADE_DB.prepare(
+      `SELECT id, stash_name, source, entry_count, change_count, sealed,
+         first_change_id, last_change_id, created_by
+       FROM commits WHERE id = 'cmt_legacy_1'`,
+    ).first();
+    expect(legacyCommit).toEqual({
+      id: "cmt_legacy_1",
+      stash_name: "upgrade",
+      source: "put",
+      entry_count: 1,
+      change_count: 1,
+      sealed: 1,
+      first_change_id: 1,
+      last_change_id: 1,
+      created_by: "legacy",
+    });
+    await expect(
+      env.UPGRADE_DB.prepare("SELECT commit_id FROM versions WHERE id = 1").first(),
+    ).resolves.toEqual({ commit_id: "cmt_legacy_1" });
     await expect(
       env.UPGRADE_DB.prepare(
         `SELECT b.body, b.size_bytes, v.representation, v.application_etag, v.content_storage, f.head_hash
@@ -237,10 +317,14 @@ describe("D1 migrations", () => {
       0, 255, 1, 2,
     ]);
     await env.UPGRADE_DB.prepare(
+      `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+       VALUES ('cmt_upgrade_bytes', 'upgrade', 'put', 1, 'test', 2)`,
+    ).run();
+    await env.UPGRADE_DB.prepare(
       `INSERT INTO versions
          (stash_name, path, version, kind, blob_hash, size_bytes, representation,
-          application_etag, content_storage, created_at)
-       VALUES ('upgrade', 'raw.bin', 1, 'put', ?, 4, 'binary', ?, 'bytes', 2)`,
+          application_etag, content_storage, created_at, commit_id)
+       VALUES ('upgrade', 'raw.bin', 1, 'put', ?, 4, 'binary', ?, 'bytes', 2, 'cmt_upgrade_bytes')`,
     )
       .bind(byteHash, byteHash)
       .run();
@@ -333,21 +417,19 @@ describe("D1 migrations", () => {
     await env.DB.prepare(
       "INSERT INTO stashes (name, description, meta_json, created_at) VALUES ('alpha', '', '{}', 1)",
     ).run();
+    await env.DB.prepare(
+      `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+       VALUES ('cmt_constraint_a', 'alpha', 'delete', 1, 'test', 1),
+              ('cmt_constraint_b', 'alpha', 'rollback', 1, 'test', 1)`,
+    ).run();
     await expect(
       env.DB.prepare(
-        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at) VALUES ('alpha','a',1,'delete','sha256-x',1)",
+        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at,commit_id) VALUES ('alpha','a',1,'delete','sha256-x',1,'cmt_constraint_a')",
       ).run(),
     ).rejects.toThrow();
     await expect(
       env.DB.prepare(
-        `INSERT INTO proposals
-           (id, stash_name, path, blob_hash, size_bytes, status, expires_at, created_at)
-         VALUES ('prp_000000000000100000001', 'alpha', 'p', 'sha256-x', 1, 'expired', 2, 1)`,
-      ).run(),
-    ).rejects.toThrow();
-    await expect(
-      env.DB.prepare(
-        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at) VALUES ('alpha','b',1,'rollback','sha256-x',1)",
+        "INSERT INTO versions (stash_name,path,version,kind,blob_hash,created_at,commit_id) VALUES ('alpha','b',1,'rollback','sha256-x',1,'cmt_constraint_b')",
       ).run(),
     ).rejects.toThrow();
     await expect(

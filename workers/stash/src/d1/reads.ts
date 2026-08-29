@@ -10,6 +10,7 @@ import {
   type JsonValue,
   type Representation,
   type VersionKind,
+  validatePath,
 } from "@takazudo/zudo-history-stash-core";
 import { parseBinarySettings } from "../binary-config.js";
 import type { Env } from "../env.js";
@@ -19,11 +20,15 @@ import {
   SELECT_CHANGES_ASC,
   SELECT_CHANGES_BEFORE,
   SELECT_CHANGES_NEWEST,
+  SELECT_FILE_COMMON_PREFIXES,
   SELECT_FILE_HEAD,
   SELECT_FILE_VERSION,
   SELECT_FILES,
   SELECT_HISTORY_HEAD,
   SELECT_HISTORY_VERSIONS,
+  SELECT_SNAPSHOT_COMMON_PREFIXES,
+  SELECT_SNAPSHOT_COMMIT,
+  SELECT_SNAPSHOT_FILES,
   type ChangeRow,
   type FileReadRow,
   type FileSummaryRow,
@@ -62,6 +67,7 @@ export interface ReadFileSource {
 }
 
 export interface ReadVersionRecord {
+  commitId: string;
   version: number;
   kind: VersionKind;
   hash: string | null;
@@ -94,6 +100,14 @@ export interface ReadFileSummary {
 
 export interface ReadFileList {
   files: ReadFileSummary[];
+  commonPrefixes?: string[];
+  nextAfter: string | null;
+}
+
+export interface ReadSnapshot {
+  at: { commitId: string; changeId: number };
+  files: ReadFileSummary[];
+  commonPrefixes?: string[];
   nextAfter: string | null;
 }
 
@@ -108,6 +122,7 @@ export interface ReadHistoryPage {
 
 export interface ReadChangeItem {
   changeId: number;
+  commitId: string;
   stash: string;
   path: string;
   version: number;
@@ -135,6 +150,8 @@ export interface ListFilesOptions {
   includeDeleted?: boolean;
   limit?: number;
   after?: string;
+  prefix?: string;
+  delimiter?: string;
 }
 
 export interface ListHistoryOptions {
@@ -159,6 +176,11 @@ export interface StashReads {
   getByteObject(source: ReadFileSource, range?: ByteRange): Promise<ByteObject>;
   getFile(stash: string, path: string, options?: GetFileOptions): Promise<ReadFileRecord | null>;
   listFiles(stash: string, options?: ListFilesOptions): Promise<ReadFileList>;
+  getSnapshot(
+    stash: string,
+    commitId: string,
+    options?: ListFilesOptions,
+  ): Promise<ReadSnapshot | null>;
   listHistory(
     stash: string,
     path: string,
@@ -203,6 +225,49 @@ function validateSince(value: number | undefined): number | undefined {
 function validateString(value: string, name: string): string {
   if (typeof value !== "string") return validation(`${name} must be a string.`);
   return value;
+}
+
+interface PathRange {
+  lo: string | null;
+  hi: string | null;
+}
+
+interface NormalizedListOptions {
+  includeDeleted: boolean;
+  limit: number;
+  after: string | undefined;
+  delimiter: "/" | undefined;
+  range: PathRange;
+}
+
+function normalizePrefix(value: string | undefined): PathRange {
+  if (value === undefined) return { lo: null, hi: null };
+  const prefix = validateString(value, "prefix");
+  const path = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+  const result = validatePath(path);
+  if (!result.ok) throw new StashError(result.error, result.message);
+  return { lo: `${path}/`, hi: `${path}0` };
+}
+
+function normalizeListOptions(options: ListFilesOptions): NormalizedListOptions {
+  const includeDeleted = options.includeDeleted ?? false;
+  if (typeof includeDeleted !== "boolean") {
+    return validation("includeDeleted must be a boolean.");
+  }
+  const delimiter = options.delimiter;
+  if (delimiter !== undefined && delimiter !== "/") {
+    return validation("delimiter must be '/'.");
+  }
+  const limit = validateLimit(options.limit);
+  const after = options.after;
+  if (after !== undefined) validateString(after, "after");
+  return {
+    includeDeleted,
+    limit,
+    after,
+    delimiter,
+    range: normalizePrefix(options.prefix),
+  };
 }
 
 function isJsonValue(value: unknown): value is JsonValue {
@@ -338,6 +403,7 @@ function mapFileSource(
 
 function mapVersion(row: HistoryVersionRow, jsonInlineMaxBytes: number): ReadVersionRecord {
   return {
+    commitId: row.commit_id,
     version: row.version,
     kind: row.kind,
     hash: row.hash,
@@ -363,9 +429,44 @@ function mapFileSummary(row: FileSummaryRow, jsonInlineMaxBytes: number): ReadFi
   };
 }
 
+interface CommonPrefixRow {
+  common_prefix: string;
+}
+
+interface ListedRows {
+  files: FileSummaryRow[];
+  commonPrefixes: string[];
+  nextAfter: string | null;
+}
+
+function pageListedRows(
+  fileRows: FileSummaryRow[],
+  prefixRows: CommonPrefixRow[],
+  limit: number,
+): ListedRows {
+  const entries = [
+    ...fileRows.map((row) => ({ path: row.path, row, commonPrefix: undefined })),
+    ...prefixRows.map((row) => ({
+      path: row.common_prefix,
+      row: undefined,
+      commonPrefix: row.common_prefix,
+    })),
+  ].sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  const hasMore = entries.length > limit;
+  const page = hasMore ? entries.slice(0, limit) : entries;
+  return {
+    files: page.flatMap((entry) => (entry.row === undefined ? [] : [entry.row])),
+    commonPrefixes: page.flatMap((entry) =>
+      entry.commonPrefix === undefined ? [] : [entry.commonPrefix],
+    ),
+    nextAfter: hasMore ? (page.at(-1)?.path ?? null) : null,
+  };
+}
+
 function mapChange(row: ChangeRow, jsonInlineMaxBytes: number): ReadChangeItem {
   return {
     changeId: row.change_id,
+    commitId: row.commit_id,
     stash: row.stash,
     path: row.path,
     version: row.version,
@@ -458,24 +559,125 @@ export function createReads(env: Env, _deps?: StoreDependencies): StashReads {
 
     async listFiles(stash, options = {}) {
       const stashName = validateString(stash, "stash");
-      const includeDeleted = options.includeDeleted ?? false;
-      if (typeof includeDeleted !== "boolean")
-        return validation("includeDeleted must be a boolean.");
-      const limit = validateLimit(options.limit);
-      const after = options.after;
-      if (after !== undefined) validateString(after, "after");
+      const normalized = normalizeListOptions(options);
 
       const session = env.DB.withSession("first-primary");
-      const result = await session
+      const fileResult = await session
         .prepare(SELECT_FILES)
-        .bind(stashName, includeDeleted ? 1 : 0, after ?? null, after ?? null, limit + 1)
+        .bind(
+          stashName,
+          normalized.includeDeleted ? 1 : 0,
+          normalized.range.lo,
+          normalized.range.lo,
+          normalized.range.hi,
+          normalized.after ?? null,
+          normalized.after ?? null,
+          normalized.delimiter ?? null,
+          normalized.range.lo,
+          normalized.limit + 1,
+        )
         .all<FileSummaryRow>();
-      const rows = result.results;
-      const hasMore = rows.length > limit;
-      if (hasMore) rows.pop();
+      const rows = fileResult.results;
+      if (normalized.delimiter === undefined) {
+        const hasMore = rows.length > normalized.limit;
+        if (hasMore) rows.pop();
+        return {
+          files: rows.map((row) => mapFileSummary(row, jsonInlineMaxBytes)),
+          nextAfter: hasMore ? (rows.at(-1)?.path ?? null) : null,
+        };
+      }
+
+      const prefixResult = await session
+        .prepare(SELECT_FILE_COMMON_PREFIXES)
+        .bind(
+          normalized.range.lo,
+          normalized.range.lo,
+          stashName,
+          normalized.includeDeleted ? 1 : 0,
+          normalized.range.lo,
+          normalized.range.lo,
+          normalized.range.hi,
+          normalized.after ?? null,
+          normalized.range.lo,
+          normalized.range.lo,
+          normalized.after ?? null,
+          normalized.delimiter,
+          normalized.range.lo,
+          normalized.limit + 1,
+        )
+        .all<CommonPrefixRow>();
+      const page = pageListedRows(rows, prefixResult.results, normalized.limit);
       return {
-        files: rows.map((row) => mapFileSummary(row, jsonInlineMaxBytes)),
-        nextAfter: hasMore ? (rows.at(-1)?.path ?? null) : null,
+        files: page.files.map((row) => mapFileSummary(row, jsonInlineMaxBytes)),
+        commonPrefixes: page.commonPrefixes,
+        nextAfter: page.nextAfter,
+      };
+    },
+
+    async getSnapshot(stash, commitId, options = {}) {
+      const stashName = validateString(stash, "stash");
+      const id = validateString(commitId, "commitId");
+      const normalized = normalizeListOptions(options);
+      const session = env.DB.withSession("first-primary");
+      const commit = await session
+        .prepare(SELECT_SNAPSHOT_COMMIT)
+        .bind(stashName, id)
+        .first<{ commit_id: string; last_change_id: number }>();
+      if (commit === null) return null;
+
+      const fileResult = await session
+        .prepare(SELECT_SNAPSHOT_FILES)
+        .bind(
+          commit.last_change_id,
+          stashName,
+          normalized.includeDeleted ? 1 : 0,
+          normalized.range.lo,
+          normalized.range.lo,
+          normalized.range.hi,
+          normalized.after ?? null,
+          normalized.after ?? null,
+          normalized.delimiter ?? null,
+          normalized.range.lo,
+          normalized.limit + 1,
+        )
+        .all<FileSummaryRow>();
+      const rows = fileResult.results;
+      if (normalized.delimiter === undefined) {
+        const hasMore = rows.length > normalized.limit;
+        if (hasMore) rows.pop();
+        return {
+          at: { commitId: commit.commit_id, changeId: commit.last_change_id },
+          files: rows.map((row) => mapFileSummary(row, jsonInlineMaxBytes)),
+          nextAfter: hasMore ? (rows.at(-1)?.path ?? null) : null,
+        };
+      }
+
+      const prefixResult = await session
+        .prepare(SELECT_SNAPSHOT_COMMON_PREFIXES)
+        .bind(
+          normalized.range.lo,
+          normalized.range.lo,
+          commit.last_change_id,
+          stashName,
+          normalized.includeDeleted ? 1 : 0,
+          normalized.range.lo,
+          normalized.range.lo,
+          normalized.range.hi,
+          normalized.after ?? null,
+          normalized.range.lo,
+          normalized.range.lo,
+          normalized.after ?? null,
+          normalized.delimiter,
+          normalized.range.lo,
+          normalized.limit + 1,
+        )
+        .all<CommonPrefixRow>();
+      const page = pageListedRows(rows, prefixResult.results, normalized.limit);
+      return {
+        at: { commitId: commit.commit_id, changeId: commit.last_change_id },
+        files: page.files.map((row) => mapFileSummary(row, jsonInlineMaxBytes)),
+        commonPrefixes: page.commonPrefixes,
+        nextAfter: page.nextAfter,
       };
     },
 

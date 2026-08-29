@@ -54,6 +54,24 @@ function successfulFixture({ existing = false } = {}) {
         },
       };
     },
+    commits(stash) {
+      record("commits", stash);
+      return {
+        async create(input, options) {
+          record("commits.create", { input, options });
+          return { ok: true, value: { id: "cmt_seed" } };
+        },
+      };
+    },
+    changeSets(stash) {
+      record("changeSets", stash);
+      return {
+        async create(input, options) {
+          record("changeSets.create", { input, options });
+          return { ok: true, value: { id: "chs_seed" } };
+        },
+      };
+    },
   };
   const createClient = (options) => {
     record("createClient", options);
@@ -103,6 +121,39 @@ describe("seed-dev --ci", () => {
       ci.fixture.transcript.map(({ operation }) => operation),
       ["createClient", "stashes.get"],
     );
+  });
+
+  it("seeds the viewer site as one commit and leaves a site review open", async () => {
+    const { fixture } = await exercise([]);
+    const siteCommit = fixture.transcript.find(
+      ({ operation, payload }) =>
+        operation === "commits.create" && payload.input.meta?.fixture === "seed-dev-site-commit",
+    );
+    assert.ok(siteCommit);
+    assert.deepEqual(
+      siteCommit.payload.input.entries.map(({ path }) => path),
+      ["site/about.html", "site/assets/mark.svg", "site/index.html", "site/styles.css"],
+    );
+    assert.deepEqual(
+      Object.fromEntries(
+        siteCommit.payload.input.entries.map(({ path, contentType }) => [path, contentType]),
+      ),
+      {
+        "site/about.html": "text/html; charset=utf-8",
+        "site/assets/mark.svg": "image/svg+xml; charset=utf-8",
+        "site/index.html": "text/html; charset=utf-8",
+        "site/styles.css": "text/css; charset=utf-8",
+      },
+    );
+    const siteChangeSet = fixture.transcript.find(
+      ({ operation, payload }) =>
+        operation === "changeSets.create" &&
+        payload.input.meta?.fixture === "seed-dev-site-change-set",
+    );
+    assert.ok(siteChangeSet);
+    assert.equal(siteChangeSet.payload.input.entries[0].baseVersion, 1);
+    assert.equal(siteChangeSet.payload.input.entries[0].contentType, "text/html; charset=utf-8");
+    assert.equal(siteChangeSet.payload.input.entries[1].contentType, "text/css; charset=utf-8");
   });
 
   it("retains failure behavior and never emits a token", async () => {

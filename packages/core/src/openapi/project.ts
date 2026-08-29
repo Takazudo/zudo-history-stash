@@ -3,19 +3,22 @@ import type { core, ZodType } from "zod";
 import { MAX_BODY_BYTES } from "../limits.js";
 import {
   ChangesQuery,
-  ApproveProposalBody,
-  CreateProposalBody,
+  ApproveChangeSetBody,
+  ChangeSetDiffQuery,
+  CommitDiffQuery,
+  CreateChangeSetBody,
+  CreateCommitBody,
   CreateStashBody,
   CreateTokenBody,
   DeleteFileBody,
   DiffCandidateBody,
   ImportBody,
   ListGcRunsQuery,
-  ListProposalsQuery,
+  ListChangeSetsQuery,
   ListStashesQuery,
   PutFileBody,
-  ProposalDiffQuery,
-  RejectProposalBody,
+  RejectChangeSetBody,
+  RevertCommitBody,
   RollbackBody,
   RunGcBody,
   RotateTokenBody,
@@ -286,33 +289,24 @@ function describeRequestRefinements(source: ZodType, schema: JsonSchema): void {
   } else if (source === ListGcRunsQuery) {
     schema.description = "Results are newest first; limit defaults to 50 and has a maximum of 200.";
     appendDescription(schema, "kind", "Optional garbage-collection job-kind filter.");
-  } else if (source === CreateProposalBody) {
-    appendDescription(
-      schema,
-      "path",
-      "Must satisfy the file-path rules: a non-empty slash-separated path whose segments contain only ASCII letters, digits, dots, underscores, or hyphens and are neither dot nor dot-dot; maximum 512 UTF-8 bytes.",
-    );
-    appendDescription(schema, "body", body);
+  } else if (source === CreateCommitBody || source === CreateChangeSetBody) {
+    schema.description =
+      "Entry paths must be unique and copy.from.path cannot name another entry path.";
     appendDescription(schema, "author", author);
     appendDescription(schema, "message", message);
     appendDescription(
       schema,
       "meta",
-      `${meta} proposalId is platform-owned and must be absent; the server validates the final stamped metadata size.`,
+      `${meta} commitId and changeSetId are platform-owned and must be absent.`,
     );
-    appendDescription(schema, "expiresAt", "Must be a future ISO-8601 timestamp when supplied.");
-  } else if (source === ListProposalsQuery) {
-    schema.description =
-      "Results are newest first; status defaults to open, limit defaults to 50, and limit has a maximum of 200.";
+  } else if (source === ListChangeSetsQuery) {
     appendDescription(schema, "status", "Use all to disable the status filter.");
-    appendDescription(schema, "path", "Optional exact-path filter.");
-    appendDescription(schema, "after", "Opaque keyset cursor returned by the preceding page.");
-  } else if (source === ApproveProposalBody) {
+  } else if (source === ApproveChangeSetBody || source === RevertCommitBody) {
     appendDescription(schema, "author", author);
     appendDescription(schema, "message", message);
-  } else if (source === RejectProposalBody) {
+  } else if (source === RejectChangeSetBody) {
     appendDescription(schema, "reason", message);
-  } else if (source === ProposalDiffQuery) {
+  } else if (source === CommitDiffQuery || source === ChangeSetDiffQuery) {
     appendDescription(schema, "context", "Optional non-negative diff context line count.");
   }
 }

@@ -1,6 +1,6 @@
 # zudo-history-stash
 
-`zudo-history-stash` is a small, git-shaped versioned text and binary store on Cloudflare Workers with rollback, diff, idempotent writes, and a standalone viewer. Its first consumer is a Slack-bot project that keeps an AI-updated, skill-like text layer: this service replaces the GitHub PR diff/approval/revert loop with an HTTP history and rollback API while leaving approval in the consumer.
+`zudo-history-stash` is a small, git-shaped versioned text and binary store on Cloudflare Workers with rollback, diff, idempotent writes, and a standalone viewer. Its first consumer is a Slack-bot project that keeps an AI-updated, skill-like text layer: this service replaces the GitHub PR diff/approval/revert loop with HTTP history, reviewable change sets, and rollback while leaving approval policy to the consumer.
 
 ## Architecture
 
@@ -64,6 +64,71 @@ const rollback = await files.rollback("docs/guide.md", {
   expectedVersion: put.value.version,
 });
 if (!rollback.ok) throw new Error(rollback.error.message);
+```
+
+Use `commits.create` when multiple paths must move together. Every entry carries its own head fence;
+the server either applies all entries or returns a failure with the fenced paths in root-level
+`conflicts[]` and applies none. Exactly one failure whose current head is absent is `404 not-found`;
+all other entry-fence failures are `409 commit-conflict`:
+
+```ts
+const commit = await client.commits("demo").create({
+  entries: [
+    {
+      op: "put",
+      path: "site/index.html",
+      expectedVersion: null,
+      body: "<!doctype html><link rel=\"stylesheet\" href=\"styles.css\">\n",
+      contentType: "text/html",
+    },
+    {
+      op: "put",
+      path: "site/styles.css",
+      expectedVersion: null,
+      body: "body { font-family: system-ui; }\n",
+      contentType: "text/css",
+    },
+  ],
+  author: "site-builder",
+  message: "Publish site shell",
+});
+if (!commit.ok) {
+  if (commit.conflicts !== undefined) console.error(commit.conflicts);
+  throw new Error(commit.error.message);
+}
+```
+
+For review before publication, create an immutable change set, inspect its candidate diffs, then
+approve or reject it. Approval rechecks every captured base and creates exactly one commit; it never
+silently rebases a stale candidate:
+
+```ts
+const changeSets = client.changeSets("demo");
+const created = await changeSets.create({
+  entries: [
+    {
+      op: "put",
+      path: "docs/guide.md",
+      baseVersion: rollback.value.version,
+      body: "Reviewed guide\n",
+      contentType: "text/markdown",
+    },
+  ],
+  author: "docs-bot",
+  message: "Review guide refresh",
+});
+if (!created.ok) throw new Error(created.error.message);
+
+const review = await changeSets.diff(created.value.id, { context: 3 });
+if (!review.ok) throw new Error(review.error.message);
+if (review.value.stale) throw new Error("Change set is stale; create a new review candidate");
+
+const approved = await changeSets.approve(created.value.id, {
+  author: "reviewer",
+  message: "Approve guide refresh",
+});
+if (!approved.ok) throw new Error(approved.error.message);
+console.log(approved.value.commit.id);
 ```
 
 Raw uploads keep bytes unchanged and choose a transport from the server capabilities. This example
@@ -133,8 +198,10 @@ Bots and other consumers can post stable viewer links without knowing the viewer
 - `/s/:stash/f/*path` opens a file and its history.
 - `/s/:stash/diff/*path?from=N&to=M|head` opens a stored-version diff.
 - `/s/:stash/edit/*path?from=N` opens the write-gated editor, optionally from an older version.
-- `/s/:stash/proposals?status=open|all&path=...` lists proposals, optionally filtered by path.
-- `/s/:stash/proposals/:id` opens the immutable proposal review and decision record.
+- `/s/:stash/commits` lists atomic commits, optionally filtered by `path`.
+- `/s/:stash/commits/:id` opens one commit and its per-entry diff.
+- `/s/:stash/change-sets` lists staged change sets with status and path filters.
+- `/s/:stash/change-sets/:id` opens one change-set review and its decision controls.
 - `/s/:stash/new` opens the write-gated new-file form.
 - `/s/:stash/tokens` opens admin-only token management for a stash.
 
@@ -180,6 +247,25 @@ admin token and never depend on that printed value. A second run skips the exist
 To preserve the fixture while exercising a reset,
 `node scripts/seed-dev.mjs --base-url http://localhost:8787/api --reset` uses a fresh
 `demo-reset-...` stash because stash deletion is deferred.
+
+### Commit a directory
+
+`commit:dir` compares a local directory with the remote heads under a portable prefix, then sends
+changed files as deterministic, idempotent commits. Set a write token in the environment; the tool
+never prints it:
+
+```bash
+STASH_WRITE_TOKEN=... pnpm commit:dir -- ./site site demo \
+  --base-url http://localhost:8787/api --job-id site-demo-1
+```
+
+Use `--dry-run` to inspect the plan, `--prune` to delete remote files missing locally, or
+`--change-set` to leave the result open for review. A directory larger than the 20-entry commit
+limit is split into separately atomic chunks, so the whole directory is not one transaction; keep
+the same `--job-id` to replay the exact recorded chunks safely after an interrupted run. The replay
+plan is kept outside the walked tree under `~/.cache/zudo-history-stash/commit-dir/` (or the
+`COMMIT_DIR_STATE_DIR` override); changing local bytes or options under an existing job id is
+rejected, so choose a new id for a new job.
 
 ## Lifecycle and GC confirmation
 

@@ -2,15 +2,15 @@ import type {
   GcKind,
   GcRunResult,
   CapabilitiesResponse,
+  ChangeSetStatus,
+  CommitEntryRecord,
+  CommitRecord,
   ContentAccess,
   Current,
   JsonValue,
-  ProposalStatus,
   ReconnectReason,
   RouteId,
-  StashChangeEvent,
   StashEvent,
-  StashProposalEvent,
   TokenScope,
   VersionKind,
   Representation,
@@ -47,8 +47,6 @@ export interface FakeStashOptions {
   deleteGraceDays?: number;
   /** Minimum age used by the fake orphan collector. Defaults to fifteen minutes. */
   gcOrphanMinAgeMs?: number;
-  /** Number of days before a proposal expires. Defaults to the Worker value of fourteen. */
-  proposalTtlDays?: number;
   /** Binary settings advertised by the fake; useful for deterministic mode-selection tests. */
   capabilities?: CapabilitiesResponse;
 }
@@ -115,6 +113,8 @@ export interface FakeFileRow {
 
 export interface FakeVersionRow {
   changeId: number;
+  /** The immutable commit which appended this version. */
+  commitId: string;
   stash: string;
   path: string;
   version: number;
@@ -125,10 +125,55 @@ export interface FakeVersionRow {
   representation?: Representation;
   contentAccess?: ContentAccess;
   rollbackOf: number | null;
+  copiedFrom?: { path: string; version: number };
   author: string;
   message: string;
   meta: Record<string, JsonValue>;
   createdAt: number;
+}
+
+export interface FakeCommitRow extends CommitRecord {
+  /** Request fingerprint used to make create/revert replay deterministic. */
+  requestHash: string | null;
+  idempotencyKey: string | null;
+  /** Preserve the original request operation for replay and skipped entries. */
+  requestedEntries: Array<CommitEntryRecord["op"]>;
+}
+
+export interface FakeChangeSetEntryRow {
+  path: string;
+  op: CommitEntryRecord["op"];
+  baseVersion: number | null;
+  /** Candidate content is kept immutable and may be binary. */
+  body?: string;
+  bytes?: Uint8Array;
+  contentType?: string;
+  hash?: string | null;
+  size?: number;
+  representation?: Representation;
+  contentAccess?: ContentAccess;
+  copiedFrom?: { path: string; version: number };
+  toVersion?: number;
+}
+
+export interface FakeChangeSetRow {
+  id: string;
+  stash: string;
+  status: ChangeSetStatus;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  expiresAt: number;
+  createdBy: string;
+  createdAt: number;
+  decidedAt: number | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  commitId: string | null;
+  expectedLastChangeId: number | null;
+  idempotencyKey: string | null;
+  requestHash: string | null;
+  entries: FakeChangeSetEntryRow[];
 }
 
 export interface FakeUploadSessionRow {
@@ -159,29 +204,6 @@ export interface FakeUploadSessionRow {
   skipIfUnchanged: boolean;
 }
 
-/** Stored proposal state. Expiry is projected at read time and is never persisted as a status. */
-export interface FakeProposalRow {
-  id: string;
-  stash: string;
-  path: string;
-  baseVersion: number | null;
-  blobHash: string;
-  size: number;
-  author: string;
-  message: string;
-  meta: Record<string, JsonValue>;
-  status: Exclude<ProposalStatus, "expired">;
-  expiresAt: number;
-  createdAt: number;
-  idempotencyKey: string | null;
-  requestHash: string | null;
-  decidedAt: number | null;
-  decidedBy: string | null;
-  decisionReason: string | null;
-  appliedVersion: number | null;
-  appliedChangeId: number | null;
-}
-
 export interface FakeGcJobRow {
   kind: GcKind;
   nextCursor: string | null;
@@ -209,7 +231,8 @@ export interface FakeStashState {
   r2Objects: Map<string, FakeR2ObjectRow>;
   files: Map<string, Map<string, FakeFileRow>>;
   versions: FakeVersionRow[];
-  proposals: Map<string, Map<string, FakeProposalRow>>;
+  commits: Map<string, FakeCommitRow>;
+  changeSets: Map<string, FakeChangeSetRow>;
   idempotency: Map<string, Map<string, FakeIdempotencyRow>>;
   gcJobs: Map<GcKind, FakeGcJobRow>;
   gcRuns: GcRunResult[];
@@ -218,8 +241,8 @@ export interface FakeStashState {
 
 /** Controllable in-memory source backing the fake's authenticated SSE route. */
 export interface FakeStashEvents {
-  /** Broadcasts a change or proposal using the stash carried by that event. */
-  emit(event: StashChangeEvent | StashProposalEvent): void;
+  /** Broadcasts an advisory event using the stash carried by that event. */
+  emit(event: Extract<StashEvent, { stash: string }>): void;
   /** Broadcasts any valid event to one stash, including ready/reconnect test fixtures. */
   emit(stash: string, event: StashEvent): void;
   /** Emits a reconnect frame and closes every current subscriber for the stash. */

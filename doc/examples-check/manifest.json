@@ -16,9 +16,6 @@
     "consumer-path-validation": {
       "source": "consumer-path-validation.ts"
     },
-    "consumer-proposals": {
-      "source": "consumer-proposals.ts"
-    },
     "consumer-quickstart": {
       "source": "consumer-quickstart.ts"
     },

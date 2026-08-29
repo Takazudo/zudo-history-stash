@@ -12,7 +12,7 @@ import type { ReadVersionRecord, StashReads } from "../../src/d1/reads.js";
 import { createDiffRoutes } from "../../src/routes/diff.js";
 import { bearer, mintToken, request, resetDatabase } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
-import { READ_FIXTURE_STASH, seedReadRows } from "../helpers/seed-rows.js";
+import { READ_FIXTURE_STASH, seedCommit, seedReadRows } from "../helpers/seed-rows.js";
 
 const encoder = new TextEncoder();
 const baseUrl = `http://example.test/v1/stashes/${READ_FIXTURE_STASH}/diff`;
@@ -47,14 +47,23 @@ async function seedLiveFile(path: string, bodies: readonly string[]): Promise<st
       )
       .bind(READ_FIXTURE_STASH, hash, body, encoder.encode(body).byteLength, createdAt)
       .run();
+    const commitId = await seedCommit(READ_FIXTURE_STASH, `cmt_diff_${path}_${version}`, createdAt);
     await db
       .prepare(
         `INSERT INTO versions (
           stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-          rollback_of, author, message, meta_json, created_at
-        ) VALUES (?, ?, ?, 'put', ?, ?, 'text/plain; charset=utf-8', NULL, '', '', '{}', ?)`,
+          rollback_of, author, message, meta_json, created_at, commit_id
+        ) VALUES (?, ?, ?, 'put', ?, ?, 'text/plain; charset=utf-8', NULL, '', '', '{}', ?, ?)`,
       )
-      .bind(READ_FIXTURE_STASH, path, version, hash, encoder.encode(body).byteLength, createdAt)
+      .bind(
+        READ_FIXTURE_STASH,
+        path,
+        version,
+        hash,
+        encoder.encode(body).byteLength,
+        createdAt,
+        commitId,
+      )
       .run();
   }
   const headVersion = bodies.length;
@@ -78,6 +87,7 @@ async function seedLiveFile(path: string, bodies: readonly string[]): Promise<st
 
 function version(versionNumber: number, hash: string): ReadVersionRecord {
   return {
+    commitId: "cmt_fixture_1",
     version: versionNumber,
     kind: "put",
     hash,

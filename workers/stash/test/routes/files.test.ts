@@ -117,6 +117,49 @@ describe("file route reads", () => {
     await expectCode(await api("/files?unexpected=true"), 400, "validation");
   });
 
+  it("bounds prefix ranges, paginates within them, and emits delimiter prefixes", async () => {
+    for (const [path, body] of [
+      ["site/a.css", "a"],
+      ["site/nested/b.css", "b"],
+      ["site/nested/deep/c.css", "c"],
+      ["site-old/x.css", "old"],
+    ] as const) {
+      expect((await put(path, body, null)).status).toBe(201);
+    }
+
+    const bounded = await api("/files?prefix=site%2F");
+    expect(bounded.status).toBe(200);
+    await expect(bounded.json()).resolves.toMatchObject({
+      files: [
+        { path: "site/a.css" },
+        { path: "site/nested/b.css" },
+        { path: "site/nested/deep/c.css" },
+      ],
+      nextAfter: null,
+    });
+
+    const first = await api("/files?prefix=site%2F&limit=1");
+    const firstPage = await first.json<{ files: { path: string }[]; nextAfter: string | null }>();
+    expect(firstPage).toMatchObject({ files: [{ path: "site/a.css" }], nextAfter: "site/a.css" });
+    const second = await api(
+      `/files?prefix=site%2F&limit=1&after=${encodeURIComponent(firstPage.nextAfter ?? "")}`,
+    );
+    await expect(second.json()).resolves.toMatchObject({
+      files: [{ path: "site/nested/b.css" }],
+      nextAfter: "site/nested/b.css",
+    });
+
+    const delimited = await api("/files?prefix=site%2F&delimiter=%2F");
+    await expect(delimited.json()).resolves.toMatchObject({
+      files: [{ path: "site/a.css" }],
+      commonPrefixes: ["site/nested/"],
+      nextAfter: null,
+    });
+
+    await expectCode(await api("/files?prefix=site%2F%2F"), 400, "invalid-path");
+    await expectCode(await api("/files?delimiter=."), 400, "validation");
+  });
+
   it("round-trips exact bodies and returns only the public file representation", async () => {
     const bodies = ["日本語", "line1\r\nline2", ""];
     for (const [index, body] of bodies.entries()) {
@@ -267,6 +310,7 @@ describe("file route writes", () => {
     const deletion = await jsonApi("POST", "/delete/cas.txt", { expectedVersion: 1 });
     expect(deletion.status).toBe(200);
     await expect(deletion.json()).resolves.toEqual({
+      commitId: expect.stringMatching(/^cmt_\d{13}[0-9a-f]{8}$/),
       version: 2,
       changeId: expect.any(Number),
       createdAt: expect.stringMatching(/Z$/),

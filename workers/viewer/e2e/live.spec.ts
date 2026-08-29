@@ -79,6 +79,17 @@ interface StashLifecycleRecord {
   restorable: boolean;
 }
 
+interface LiveChangeSetRecord {
+  id: string;
+  status: "open" | "applied" | "rejected" | "expired";
+  commitId: string | null;
+}
+
+interface LiveApprovalResult {
+  status: "applied";
+  commit: { id: string };
+}
+
 function authorization(token: string): { Authorization: string } {
   return { Authorization: `Bearer ${token}` };
 }
@@ -511,20 +522,12 @@ test("@live a foreign mutation refreshes the stash through SSE before polling", 
 
     let fileListResponses = 0;
     let recentChangesResponses = 0;
-    let proposalCountResponses = 0;
     page.on("response", (response) => {
       if (response.request().method() !== "GET" || response.status() !== 200) return;
       const url = new URL(response.url());
       if (url.pathname === "/api/v1/stashes/demo/files") fileListResponses += 1;
       if (url.pathname === "/api/v1/stashes/demo/changes" && !url.searchParams.has("since")) {
         recentChangesResponses += 1;
-      }
-      if (
-        url.pathname === "/api/v1/stashes/demo/proposals" &&
-        url.searchParams.get("status") === "open" &&
-        url.searchParams.get("limit") === "1"
-      ) {
-        proposalCountResponses += 1;
       }
     });
 
@@ -557,7 +560,6 @@ test("@live a foreign mutation refreshes the stash through SSE before polling", 
     expect(initialFeed.hasMore).toBe(false);
     await expect.poll(() => fileListResponses).toBeGreaterThanOrEqual(2);
     await expect.poll(() => recentChangesResponses).toBeGreaterThanOrEqual(2);
-    await expect.poll(() => proposalCountResponses).toBeGreaterThanOrEqual(2);
     expect(
       await page.evaluate((key) => sessionStorage.getItem(key), VIEWER_CLIENT_ID_STORAGE_KEY),
     ).toBe(browserClientId);
@@ -854,7 +856,7 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
     await expect(savedRailRow).toContainText("head");
 
     const fileRoute = `/s/demo/f/${path}`;
-    const reconciledLoads = { file: 0, history: 0, proposals: 0 };
+    const reconciledLoads = { file: 0, history: 0 };
     page.on("response", (response) => {
       if (response.request().method() !== "GET" || response.status() !== 200) return;
       const referer = response.request().headers().referer;
@@ -863,14 +865,6 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
       let kind: keyof typeof reconciledLoads | undefined;
       if (url.pathname === liveFileUrl(path) && url.search === "") kind = "file";
       if (url.pathname === liveHistoryUrl(path) && url.search === "") kind = "history";
-      if (
-        url.pathname === "/api/v1/stashes/demo/proposals" &&
-        url.searchParams.get("status") === "open" &&
-        url.searchParams.get("path") === path &&
-        url.searchParams.get("limit") === "1"
-      ) {
-        kind = "proposals";
-      }
       if (kind === undefined) return;
       void response.finished().then((failure) => {
         if (failure === null) reconciledLoads[kind] += 1;
@@ -939,166 +933,6 @@ test("@live viewer saves and rolls back an isolated file with a minted write tok
   }
 });
 
-test("@live workbench proposes, approves, and exposes the stamped history link", async ({
-  page,
-  request,
-}) => {
-  // 30s seeded-fixture readiness + 20s browser lifecycle + 10s verified cleanup.
-  test.setTimeout(60_000);
-  const pageErrors = capturePageErrors(page);
-  await waitForDemo(request);
-  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
-  const path = `e2e/proposal-${runId}.md`;
-  const label = `viewer-live-proposal-${runId}`;
-  const initialBody = `# Proposal ${runId}\n\nSeeded v1.\n`;
-  const candidateBody = `# Proposal ${runId}\n\nApproved candidate v2.\n`;
-  const proposalAuthor = "viewer-live-proposer";
-  const proposalMessage = "Approve isolated browser proposal";
-  const resources: LiveResources = {
-    path,
-    tokenLabel: label,
-    tokenId: null,
-    tokenSecret: null,
-  };
-  const browserMutations: string[] = [];
-  page.on("request", (browserRequest) => {
-    if (!["POST", "PUT", "PATCH", "DELETE"].includes(browserRequest.method())) return;
-    browserMutations.push(`${browserRequest.method()} ${new URL(browserRequest.url()).pathname}`);
-  });
-
-  let primaryFailure: unknown = null;
-  const cleanupFailures: Error[] = [];
-  try {
-    const mintResponse = await request.post("/api/v1/stashes/demo/tokens", {
-      headers: ADMIN_AUTHORIZATION,
-      data: { label, scope: "write" },
-    });
-    await requireStatus(mintResponse, 201, "mint proposal write token");
-    const minted = (await mintResponse.json()) as MintedToken;
-    if (typeof minted.id === "string") resources.tokenId = minted.id;
-    if (typeof minted.token === "string") resources.tokenSecret = minted.token;
-    expect(minted).toEqual({
-      id: expect.stringMatching(/^tok_/u),
-      token: expect.stringMatching(/^zhs_/u),
-      label,
-      scope: "write",
-      createdAt: expect.any(String),
-      expiresAt: null,
-      rotatedFrom: null,
-    });
-
-    const seeded = await request.put(liveFileUrl(path), {
-      headers: {
-        ...authorization(minted.token),
-        "Idempotency-Key": idempotencyKey("proposal-seed"),
-      },
-      data: {
-        body: initialBody,
-        expectedVersion: null,
-        author: "viewer-live-proposal-seed",
-        message: "Create isolated proposal fixture",
-      },
-    });
-    await requireStatus(seeded, 201, `create ${path} with proposal credential`);
-    expect(await seeded.json()).toMatchObject({
-      version: 1,
-      hash: expect.stringMatching(/^sha256-[0-9a-f]{64}$/u),
-      size: new TextEncoder().encode(initialBody).byteLength,
-      changeId: expect.any(Number),
-      createdAt: expect.any(String),
-    });
-
-    await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
-      token: minted.token,
-    });
-    await page.goto(`/s/demo/edit/${path}`);
-    const editor = page.getByRole("textbox", { name: "Draft body" });
-    await expect(editor).toHaveValue(initialBody);
-    await editor.fill(candidateBody);
-    await page.getByRole("button", { name: "Save…" }).click();
-
-    const saveDialog = page.getByRole("dialog", { name: "Review save against head v1" });
-    await saveDialog.getByRole("textbox", { name: "Author" }).fill(proposalAuthor);
-    await saveDialog.getByRole("textbox", { name: "Message" }).fill(proposalMessage);
-    await saveDialog.getByRole("button", { name: "Save as proposal" }).click();
-
-    const proposalUrl = /^\/s\/demo\/proposals\/(prp_\d{13}[0-9a-f]{8})$/u;
-    await expect(page).toHaveURL((url) => proposalUrl.test(url.pathname));
-    const match = proposalUrl.exec(new URL(page.url()).pathname);
-    if (match?.[1] === undefined) throw new Error("proposal navigation did not expose its id");
-    const proposalId = match[1];
-    await expect(
-      page.getByRole("status", { name: "Proposal creation confirmation" }),
-    ).toContainText("Proposal saved and ready for review.");
-    await expect(page.getByRole("heading", { level: 1, name: path })).toBeVisible();
-    const immutableDiff = page.getByRole("table", { name: "Unified diff" });
-    await expect(immutableDiff).toBeVisible();
-    await expect(immutableDiff).toContainText("Seeded v1.");
-    await expect(immutableDiff).toContainText("Approved candidate v2.");
-
-    await page.getByRole("button", { name: "Approve…" }).click();
-    const approveDialog = page.getByRole("dialog", { name: `Approve ${path}` });
-    await approveDialog.getByRole("button", { name: "Approve proposal", exact: true }).click();
-
-    await expect(page.getByLabel("Proposal status: applied")).toHaveCount(2);
-    const decision = page.getByRole("region", { name: "Decision record" });
-    await expect(decision).toBeVisible();
-    await expect(decision.getByText(minted.id, { exact: true })).toBeVisible();
-    const appliedVersion = decision.getByRole("link", { name: "v2" });
-    await expect(appliedVersion).toHaveAttribute("href", `/s/demo/f/${path}?version=2`);
-    await appliedVersion.click();
-
-    await expect(page).toHaveURL(
-      (url) => url.pathname === `/s/demo/f/${path}` && url.searchParams.get("version") === "2",
-    );
-    await expect(page.locator(".file-body-pane")).toHaveText(candidateBody.trim());
-    const appliedRow = page
-      .getByRole("region", { name: "History" })
-      .locator('[data-history-version="2"]');
-    await expect(appliedRow).toContainText(proposalAuthor);
-    await expect(appliedRow).toContainText(proposalMessage);
-
-    const persistedResponse = await request.get(`${liveHistoryUrl(path)}?limit=200`, {
-      headers: authorization(minted.token),
-    });
-    await requireStatus(persistedResponse, 200, `read proposal history for ${path}`);
-    const persisted = (await persistedResponse.json()) as HistoryResponse;
-    expect(persisted).toMatchObject({ headVersion: 2, total: 2 });
-    expect(persisted.versions.map(({ version }) => version)).toEqual([2, 1]);
-    expect(persisted.versions.filter(({ version }) => version === 2)).toHaveLength(1);
-    expect(persisted.versions[0]).toMatchObject({
-      version: 2,
-      kind: "put",
-      rollbackOf: null,
-      author: proposalAuthor,
-      message: proposalMessage,
-      meta: { proposalId },
-    });
-    expect(browserMutations).toEqual([
-      "POST /api/v1/stashes/demo/proposals",
-      `POST /api/v1/stashes/demo/proposals/${proposalId}/approve`,
-    ]);
-    expect(browserMutations.some((requestPath) => requestPath.includes(GUIDE_PATH))).toBe(false);
-    expect(pageErrors).toEqual([]);
-  } catch (error: unknown) {
-    primaryFailure = error;
-  } finally {
-    try {
-      await page.close();
-    } catch (error: unknown) {
-      cleanupFailures.push(errorFrom(error));
-    }
-    cleanupFailures.push(...(await cleanupUniqueResources(request, resources)));
-  }
-
-  if (primaryFailure !== null || cleanupFailures.length > 0) {
-    throw new AggregateError(
-      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
-      "proposal live viewer flow or its verified logical cleanup failed",
-    );
-  }
-});
-
 test("@live admin deletes and restores a unique stash through the viewer", async ({
   page,
   request,
@@ -1130,7 +964,7 @@ test("@live admin deletes and restores a unique stash through the viewer", async
       token: ADMIN_TOKEN,
     });
     const stashRoute = `/s/${stash}`;
-    const reconciledLoads = { files: 0, changes: 0, proposals: 0 };
+    const reconciledLoads = { files: 0, changes: 0 };
     page.on("response", (response) => {
       if (response.request().method() !== "GET" || response.status() !== 200) return;
       const referer = response.request().headers().referer;
@@ -1147,14 +981,6 @@ test("@live admin deletes and restores a unique stash through the viewer", async
       if (url.pathname === `/api/v1/stashes/${stash}/changes` && url.search === "") {
         kind = "changes";
       }
-      if (
-        url.pathname === `/api/v1/stashes/${stash}/proposals` &&
-        url.searchParams.get("status") === "open" &&
-        url.searchParams.get("limit") === "1" &&
-        !url.searchParams.has("path")
-      ) {
-        kind = "proposals";
-      }
       if (kind === undefined) return;
       void response.finished().then((failure) => {
         if (failure === null) reconciledLoads[kind] += 1;
@@ -1164,8 +990,7 @@ test("@live admin deletes and restores a unique stash through the viewer", async
     await expect(page.getByRole("heading", { name: stash, exact: true })).toBeVisible();
     await expect
       .poll(() => Math.min(...Object.values(reconciledLoads)), {
-        message:
-          "the lifecycle page's initial and ready-triggered files, changes, and proposal loads should finish",
+        message: "the lifecycle page's initial and ready-triggered files and changes should finish",
         timeout: 10_000,
       })
       .toBeGreaterThanOrEqual(2);
@@ -1272,4 +1097,184 @@ test("@live admin runs an R2 garbage-collection dry page through the viewer", as
   await expect(currentRun).toContainText("r2-orphans");
   await expect(currentRun).toContainText("none");
   expect(pageErrors).toEqual([]);
+});
+
+test("@live creates, approves, and lists a change set through the viewer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const pageErrors = capturePageErrors(page);
+  await waitForDemo(request);
+  const runId = globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const path = `e2e/change-set-${runId}.md`;
+  const reviewMessage = `Browser review ${runId}`;
+  const approvalMessage = `Approve browser review ${runId}`;
+  let changeSetId: string | null = null;
+  let commitId: string | null = null;
+  let primaryFailure: unknown = null;
+  const cleanupFailures: Error[] = [];
+
+  try {
+    const createdResponse = await request.post("/api/v1/stashes/demo/change-sets", {
+      headers: {
+        ...ADMIN_AUTHORIZATION,
+        "Idempotency-Key": idempotencyKey("change-set-create"),
+      },
+      data: {
+        entries: [
+          {
+            op: "put",
+            path,
+            baseVersion: null,
+            body: `# Browser change-set ${runId}\n\nCreated through the API.\n`,
+            contentType: "text/markdown",
+          },
+        ],
+        author: "viewer-live-change-set",
+        message: reviewMessage,
+        meta: { fixture: "viewer-live-change-set" },
+      },
+    });
+    await requireStatus(createdResponse, 201, "create live change set");
+    const created = (await createdResponse.json()) as LiveChangeSetRecord & {
+      entries?: unknown[];
+    };
+    expect(created).toMatchObject({
+      id: expect.stringMatching(/^chs_/u),
+      status: "open",
+      commitId: null,
+      entries: [expect.objectContaining({ path, op: "put", stale: false })],
+    });
+    changeSetId = created.id;
+
+    await page.addInitScript(({ token }) => sessionStorage.setItem("zhs.token", token), {
+      token: ADMIN_TOKEN,
+    });
+    await page.goto(`/s/demo/change-sets/${changeSetId}`);
+    await expect(page.getByRole("heading", { name: reviewMessage })).toBeVisible();
+    await expect(page.locator(`[data-diff-path="${path}"]`)).toBeVisible();
+
+    await page.getByRole("button", { name: "Approve" }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve change set" });
+    await dialog.getByRole("textbox", { name: "Author" }).fill("viewer-live-browser");
+    await dialog.getByRole("textbox", { name: "Commit message" }).fill(approvalMessage);
+    const approvalResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "POST" &&
+        url.pathname === `/api/v1/stashes/demo/change-sets/${changeSetId}/approve`
+      );
+    });
+    await dialog.getByRole("button", { name: "Approve and apply" }).click();
+    const approvalResponse = await approvalResponsePromise;
+    await requireStatus(approvalResponse, 200, "approve live change set");
+    const approval = (await approvalResponse.json()) as LiveApprovalResult;
+    expect(approval).toMatchObject({
+      status: "applied",
+      commit: { id: expect.stringMatching(/^cmt_/u) },
+    });
+    commitId = approval.commit.id;
+
+    await expect(page).toHaveURL((url) => url.pathname === `/s/demo/commits/${commitId}`);
+    await expect(page.getByRole("heading", { name: approvalMessage })).toBeVisible();
+    await expect(page.locator(`[data-diff-path="${path}"]`)).toBeVisible();
+
+    await page.goto("/s/demo");
+    const recent = page.getByRole("region", { name: "Recent changes" });
+    await expect(recent.getByRole("link", { name: `Commit ${commitId}` })).toBeVisible();
+    await expect(recent.getByRole("link", { name: path, exact: true })).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  } catch (error: unknown) {
+    primaryFailure = error;
+  } finally {
+    try {
+      await page.close();
+    } catch (error: unknown) {
+      cleanupFailures.push(errorFrom(error));
+    }
+
+    if (commitId === null && changeSetId !== null) {
+      try {
+        const currentResponse = await request.get(
+          `/api/v1/stashes/demo/change-sets/${changeSetId}`,
+          { headers: ADMIN_AUTHORIZATION },
+        );
+        await requireStatus(currentResponse, 200, "read live change set for cleanup");
+        const current = (await currentResponse.json()) as LiveChangeSetRecord;
+        commitId = current.commitId;
+        if (current.status === "open") {
+          const rejected = await request.post(
+            `/api/v1/stashes/demo/change-sets/${changeSetId}/reject`,
+            {
+              headers: {
+                ...ADMIN_AUTHORIZATION,
+                "Idempotency-Key": idempotencyKey("change-set-cleanup-reject"),
+              },
+              data: { reason: "Cleanup for viewer live e2e" },
+            },
+          );
+          await requireStatus(rejected, 200, "reject live change set during cleanup");
+        }
+      } catch (error: unknown) {
+        cleanupFailures.push(errorFrom(error));
+      }
+    }
+
+    if (commitId !== null) {
+      try {
+        const reverted = await request.post(`/api/v1/stashes/demo/commits/${commitId}/revert`, {
+          headers: {
+            ...ADMIN_AUTHORIZATION,
+            "Idempotency-Key": idempotencyKey("change-set-cleanup-revert"),
+          },
+          data: {
+            author: "viewer-live-cleanup",
+            message: "Remove the live change-set fixture",
+            meta: { fixture: "viewer-live-change-set-cleanup" },
+          },
+        });
+        await requireStatus(reverted, 201, "revert live change-set commit during cleanup");
+        const revertResult = (await reverted.json()) as {
+          entries?: Array<{ path?: unknown; version?: unknown }>;
+        };
+        const revertedEntry = revertResult.entries?.find((entry) => entry.path === path);
+        const tombstoneVersion = revertedEntry?.version;
+        if (
+          typeof tombstoneVersion !== "number" ||
+          !Number.isSafeInteger(tombstoneVersion) ||
+          tombstoneVersion < 1
+        ) {
+          cleanupFailures.push(
+            new Error("change-set cleanup revert did not return a valid version"),
+          );
+        } else {
+          const proof = await request.get(`/api/v1/stashes/demo/files/${path}`, {
+            headers: ADMIN_AUTHORIZATION,
+          });
+          await requireStatus(proof, 404, `verify tombstone ${path}`);
+          const proofBody = (await proof.json()) as {
+            error?: { code?: unknown };
+            current?: { version?: unknown; deleted?: unknown };
+          };
+          if (
+            proofBody.error?.code !== "file-deleted" ||
+            proofBody.current?.version !== tombstoneVersion ||
+            proofBody.current.deleted !== true
+          ) {
+            cleanupFailures.push(new Error(`cleanup tombstone proof was malformed for ${path}`));
+          }
+        }
+      } catch (error: unknown) {
+        cleanupFailures.push(errorFrom(error));
+      }
+    }
+  }
+
+  if (primaryFailure !== null || cleanupFailures.length > 0) {
+    throw new AggregateError(
+      [...(primaryFailure === null ? [] : [errorFrom(primaryFailure)]), ...cleanupFailures],
+      "live change-set browser flow or its verified cleanup failed",
+    );
+  }
 });

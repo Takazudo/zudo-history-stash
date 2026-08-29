@@ -162,6 +162,7 @@ const UPDATE_ROTATION_PREDECESSOR = `
 const CHANGES_ASC = `
   SELECT
     v.id AS change_id,
+    v.commit_id AS commit_id,
     v.stash_name AS stash,
     v.path,
     v.version,
@@ -184,6 +185,7 @@ const CHANGES_ASC = `
 const CHANGES_BEFORE = `
   SELECT
     v.id AS change_id,
+    v.commit_id AS commit_id,
     v.stash_name AS stash,
     v.path,
     v.version,
@@ -206,6 +208,7 @@ const CHANGES_BEFORE = `
 const CHANGES_NEWEST = `
   SELECT
     v.id AS change_id,
+    v.commit_id AS commit_id,
     v.stash_name AS stash,
     v.path,
     v.version,
@@ -258,6 +261,7 @@ interface TokenListRow {
 
 interface ChangeRow {
   change_id: number;
+  commit_id: string;
   stash: string;
   path: string;
   version: number;
@@ -448,6 +452,7 @@ function mapChange(row: ChangeRow, jsonInlineMaxBytes: number): ChangeItem {
   }
   return {
     changeId: row.change_id,
+    commitId: row.commit_id,
     stash: row.stash,
     path: row.path,
     version: row.version,

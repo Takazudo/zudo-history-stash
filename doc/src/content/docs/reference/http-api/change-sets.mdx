@@ -1,0 +1,111 @@
+---
+title: Change sets
+description: Reviewable multi-path changes and their decisions.
+sidebar_position: 185
+category: reference
+---
+
+A change set stores 1–20 immutable candidate entries for review without moving file heads. Its
+status is `open`, `applied`, `rejected`, or `expired`. Creation captures each path's `baseVersion`
+and stages candidate content; approval later applies the same entries as exactly one atomic commit.
+Approval never rebases, merges, or substitutes newer heads.
+
+Entries have the same `put`, binary `put`, `copy`, `delete`, and `rollback` shapes as commit entries,
+except their fence is named `baseVersion`. Paths must be unique, and a `copy` source must be an
+already stored version outside the destination set. Binary content is decoded and staged at
+creation, so review and approval do not depend on a caller retaining the original bytes.
+
+An open record can become stale whenever a current head differs from its captured base. `stale` on
+the record/diff is an observation at read time, not a lock. Approval repeats the aggregate fence
+inside the decision batch, so a fresh, non-stale read does not guarantee approval. Fence failures
+include the failed entries in root-level `conflicts[]`: exactly one missing `delete` target is
+`404 not-found`, while other entry conflicts are `409 commit-conflict`. Create a new change set after
+resolving conflicts. Closed records are immutable and cannot be reopened.
+
+### `POST /v1/stashes/{stash}/change-sets`
+
+**Contract:** operation `createChangeSet`; principal `write`; transport `any`.
+
+Creates an expiring review candidate. `entries` is required. Optional fields are `author`,
+`message`, JSON `meta`, `expiresAt`, and whole-stash `expectedLastChangeId`. When `expiresAt` is
+omitted, the Worker derives it from `CHANGE_SET_TTL_DAYS`; the committed deployment default is 14
+days. Creation requires an absent head for a null base and an existing path/version for an integer
+base. The version may already be behind the current head, in which case the new record is stale.
+Creation writes no versions and moves no file heads.
+
+```json
+{
+  "entries": [
+    {
+      "op": "put",
+      "path": "site/index.html",
+      "baseVersion": 4,
+      "body": "<!doctype html><title>Reviewed</title>\n",
+      "contentType": "text/html"
+    },
+    {
+      "op": "delete",
+      "path": "site/old.css",
+      "baseVersion": 2
+    }
+  ],
+  "author": "site-builder",
+  "message": "Review the next site release"
+}
+```
+
+Success is `201 ChangeSetRecord`. `Idempotency-Key` safely replays the same canonical create
+request; an exact replay sets `Idempotent-Replayed: true`, while changed input under the same key is
+`422 idempotency-key-reused`. The response includes decision fields, `commitId`, and per-entry
+`current`/`stale` observations. All decision fields and `commitId` are `null` while open.
+
+### `GET /v1/stashes/{stash}/change-sets`
+
+**Contract:** operation `listChangeSets`; principal `read`; transport `any`.
+
+Lists records newest first. `status` defaults to `open`; use `applied`, `rejected`, `expired`, or
+`all` explicitly. `path` selects records containing one exact path. `limit` defaults to 50 and is at
+most 200. Pass the opaque `after` cursor unchanged; the response includes `changeSets`, `nextAfter`,
+and the full filtered `total`. Expiry is reflected as `expired` when records are read.
+
+### `GET /v1/stashes/{stash}/change-sets/{id}`
+
+**Contract:** operation `getChangeSet`; principal `read`; transport `any`.
+
+Returns `200 ChangeSetRecord` with immutable candidate-entry metadata and current staleness. Applied
+records name their resulting commit in `commitId`; rejected and expired records do not. Decision
+metadata records when, by whom, and why a terminal decision was made. Review content is represented
+by bounded diff results; there is no route for editing or replacing a stored candidate.
+
+### `GET /v1/stashes/{stash}/change-sets/{id}/diff`
+
+**Contract:** operation `getChangeSetDiff`; principal `read`; transport `any`.
+
+Compares each captured base with its candidate and also reports the current head used for the stale
+verdict. `context` controls non-negative context lines and `path` selects one exact entry. Without
+`path`, only the inline entry cap is expanded and response-level `truncated` identifies omitted
+entries. Text uses the normal `ready`, `same`, or `oversized` result. Binary uses base/candidate
+hashes and sizes; it is never decoded into a text patch.
+
+### `POST /v1/stashes/{stash}/change-sets/{id}/approve`
+
+**Contract:** operation `approveChangeSet`; principal `write`; transport `any`.
+
+Claims an open, unexpired record and applies every candidate as one commit. The body accepts optional
+`author` and `message` overrides for that commit. Success is `200 { status: "applied", commit }`;
+the stored change set then has `status: "applied"` and points to `commit.id`.
+
+Approval is idempotent by terminal state: repeating approval of an already applied record returns
+its stored result. A stale base returns root-level `conflicts[]`. Exactly one missing `delete` target
+is `404 not-found`; other entry conflicts are `409 commit-conflict`. Expiry is
+`409 change-set-expired`; a competing terminal decision is `409 change-set-closed`. A stale
+whole-stash fence is also `409 commit-conflict`, without per-entry conflicts. No partial commit is
+visible for any failure.
+
+### `POST /v1/stashes/{stash}/change-sets/{id}/reject`
+
+**Contract:** operation `rejectChangeSet`; principal `write`; transport `any`.
+
+Closes an open change set without appending versions or moving heads. The optional `reason` is stored
+with decision metadata. Success is the `200 ChangeSetRecord` with `status: "rejected"`. Any later
+decision attempt, including another rejection, returns `409 change-set-closed` and changes nothing.

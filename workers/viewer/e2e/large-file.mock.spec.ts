@@ -1,6 +1,5 @@
 import { sha256Hex } from "@takazudo/zudo-history-stash-core";
 import { expect, test } from "./fixtures/console-errors.js";
-import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 const LARGE_FILE_BYTES = 1_500_000;
 const LARGE_FILE_PATH = "fixtures/r2-large.txt";
@@ -50,8 +49,6 @@ test("@smoke 1.5 MB file keeps long-line overflow inside the body pane", async (
   await page.setViewportSize({ width: 360, height: 900 });
   await page.addInitScript(() => sessionStorage.setItem("zhs.token", "zhs_test"));
   await page.route("**/api/v1/**", async (route) => {
-    if (await fulfillEmptyOpenProposalCount(route, [{ stash: "demo", path: LARGE_FILE_PATH }]))
-      return;
     const url = new URL(route.request().url());
     let value: object;
     if (url.pathname === "/api/v1/me") {

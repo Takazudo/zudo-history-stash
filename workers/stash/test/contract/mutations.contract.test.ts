@@ -1,4 +1,4 @@
-import { createStashClient } from "@takazudo/zudo-history-stash";
+import { createStashClient, isCommitConflict } from "@takazudo/zudo-history-stash";
 import { describe, expect, it } from "vitest";
 import { API_BASE_URL, MUTATION_ALLOWED } from "./env.js";
 import { createAdminClient, uniqueStash, unwrap } from "./helpers.js";
@@ -17,10 +17,6 @@ function largeFileBody(): string {
   )}${"x".repeat(fillBytes % LARGE_FILE_LINE.length)}${LARGE_FILE_SUFFIX}`;
   if (body.length !== LARGE_FILE_BYTES) throw new Error("Large-file fixture size drifted");
   return body;
-}
-
-function errorFrom(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
 }
 
 async function waitUntilAfter(expiresAt: string): Promise<void> {
@@ -548,214 +544,6 @@ describe("local-only HTTP mutation contract", () => {
   );
 
   it.runIf(MUTATION_ALLOWED)(
-    "replays, reviews, applies, and stale-fences proposals over loopback HTTP",
-    async () => {
-      const admin = createAdminClient();
-      const stash = uniqueStash("proposals");
-      const path = `contract/proposal-${crypto.randomUUID()}.md`;
-      let createdStash = false;
-      let tokenId: string | null = null;
-      let primaryFailure: unknown = null;
-      const cleanupFailures: Error[] = [];
-
-      try {
-        unwrap(
-          await admin.stashes.create({ name: stash, description: "Proposal HTTP contract" }),
-          "create proposal fixture stash",
-        );
-        createdStash = true;
-        const writeToken = unwrap(
-          await admin.stashes.tokens(stash).create({
-            label: `contract-proposals-${crypto.randomUUID()}`,
-            scope: "write",
-          }),
-          "mint proposal fixture token",
-        );
-        tokenId = writeToken.id;
-        const writer = createStashClient({ baseUrl: API_BASE_URL, token: writeToken.token });
-        const files = writer.files(stash);
-        const proposals = writer.proposals(stash);
-
-        const base = unwrap(
-          await files.put(path, {
-            body: "base line\n",
-            expectedVersion: null,
-            author: "contract-seed",
-            message: "Seed proposal base",
-          }),
-          "seed proposal base",
-        );
-        if ("unchanged" in base) throw new Error("proposal base unexpectedly skipped its write");
-        expect(base).toMatchObject({ version: 1, size: 10 });
-
-        const createInput = Object.freeze({
-          path,
-          body: "candidate line\n",
-          baseVersion: 1,
-          author: "contract-bot",
-          message: "Review candidate",
-          meta: { lane: "http-contract" },
-        });
-        const createOptions = Object.freeze({
-          idempotencyKey: `contract-proposal-${crypto.randomUUID()}`,
-        });
-        const created = await proposals.create(createInput, createOptions);
-        const proposalA = unwrap(created, "create proposal A");
-        expect(created.ok && created.replayed).toBeFalsy();
-        expect(proposalA).toMatchObject({
-          stash,
-          path,
-          baseVersion: 1,
-          author: "contract-bot",
-          message: "Review candidate",
-          meta: { lane: "http-contract", proposalId: proposalA.id },
-          status: "open",
-          decidedAt: null,
-          decidedBy: null,
-          appliedVersion: null,
-          appliedChangeId: null,
-        });
-
-        const replay = await proposals.create(createInput, createOptions);
-        expect(replay.ok && replay.replayed).toBe(true);
-        expect(unwrap(replay, "replay proposal A")).toEqual(proposalA);
-
-        const immutableDiff = unwrap(await proposals.diff(proposalA.id), "diff proposal A");
-        expect(immutableDiff).toMatchObject({
-          state: "ready",
-          base: { version: 1, hash: base.hash, deleted: false },
-          candidate: { hash: proposalA.hash, size: proposalA.size },
-          current: { version: 1, hash: base.hash, deleted: false },
-          stale: false,
-        });
-
-        const approved = unwrap(
-          await proposals.approve(proposalA.id, {
-            author: "contract-approver",
-            message: "Approve candidate",
-          }),
-          "approve proposal A",
-        );
-        expect(approved).toMatchObject({
-          status: "applied",
-          appliedVersion: 2,
-          appliedChangeId: expect.any(Number),
-          hash: proposalA.hash,
-          createdAt: expect.any(String),
-        });
-
-        const appliedHistory = unwrap(
-          await files.history(path, { limit: 200 }),
-          "history after proposal approval",
-        );
-        expect(appliedHistory).toMatchObject({ headVersion: 2, total: 2 });
-        expect(appliedHistory.versions).toHaveLength(2);
-        expect(appliedHistory.versions[0]).toMatchObject({
-          version: 2,
-          kind: "put",
-          rollbackOf: null,
-          hash: proposalA.hash,
-          author: "contract-approver",
-          message: "Approve candidate",
-          meta: { lane: "http-contract", proposalId: proposalA.id },
-        });
-
-        const proposalB = unwrap(
-          await proposals.create(
-            {
-              path,
-              body: "candidate from v2\n",
-              baseVersion: 2,
-              author: "contract-bot",
-              message: "Candidate that will go stale",
-            },
-            { idempotencyKey: `contract-proposal-stale-${crypto.randomUUID()}` },
-          ),
-          "create proposal B",
-        );
-        const moved = unwrap(
-          await files.put(path, {
-            body: "direct v3\n",
-            expectedVersion: 2,
-            author: "contract-direct",
-            message: "Move head before approval",
-          }),
-          "move head before stale approval",
-        );
-        if ("unchanged" in moved)
-          throw new Error("direct head move unexpectedly skipped its write");
-        expect(moved.version).toBe(3);
-
-        const stale = await proposals.approve(proposalB.id);
-        expect(stale).toMatchObject({
-          ok: false,
-          error: { status: 409, code: "stale" },
-          current: { version: 3, hash: moved.hash, deleted: false },
-        });
-
-        const refusedHistory = unwrap(
-          await files.history(path, { limit: 200 }),
-          "history after stale approval",
-        );
-        expect(refusedHistory).toMatchObject({ headVersion: 3, total: 3 });
-        expect(refusedHistory.versions.map(({ version }) => version)).toEqual([3, 2, 1]);
-        expect(
-          unwrap(await proposals.get(proposalB.id), "proposal B after stale approval"),
-        ).toMatchObject({
-          id: proposalB.id,
-          status: "open",
-          decidedAt: null,
-          appliedVersion: null,
-          appliedChangeId: null,
-        });
-      } catch (error: unknown) {
-        primaryFailure = error;
-      } finally {
-        if (tokenId !== null) {
-          try {
-            const revoked = await admin.stashes.tokens(stash).revoke(tokenId);
-            if (!revoked.ok && revoked.error.code !== "not-found") {
-              cleanupFailures.push(
-                new Error(
-                  `revoke proposal fixture token failed (${revoked.error.status} ${revoked.error.code})`,
-                ),
-              );
-            }
-          } catch (error: unknown) {
-            cleanupFailures.push(errorFrom(error));
-          }
-        }
-        if (createdStash) {
-          try {
-            const deleted = await admin.stashes.delete(stash);
-            if (!deleted.ok && deleted.error.code !== "not-found") {
-              cleanupFailures.push(
-                new Error(
-                  `delete proposal fixture stash failed (${deleted.error.status} ${deleted.error.code})`,
-                ),
-              );
-            }
-          } catch (error: unknown) {
-            cleanupFailures.push(errorFrom(error));
-          }
-        }
-      }
-
-      if (primaryFailure !== null || cleanupFailures.length > 0) {
-        throw new AggregateError(
-          [
-            ...(primaryFailure === null
-              ? []
-              : [primaryFailure instanceof Error ? primaryFailure : errorFrom(primaryFailure)]),
-            ...cleanupFailures,
-          ],
-          "proposal HTTP lifecycle or its logical cleanup failed",
-        );
-      }
-    },
-  );
-
-  it.runIf(MUTATION_ALLOWED)(
     "imports bounded history and chains with expectedVersion",
     async () => {
       const admin = createAdminClient();
@@ -814,6 +602,174 @@ describe("local-only HTTP mutation contract", () => {
         [3, "delete"],
         [2, "put"],
         [1, "put"],
+      ]);
+    },
+  );
+
+  it.runIf(MUTATION_ALLOWED)(
+    "commits atomically, exposes conflicts, reverts, and approves binary change sets",
+    async () => {
+      const admin = createAdminClient();
+      const stash = uniqueStash("commits");
+      unwrap(await admin.stashes.create({ name: stash }), "create commit fixture stash");
+      const commits = admin.commits(stash);
+      const commitInput = {
+        entries: [
+          {
+            op: "put" as const,
+            path: "commit/summary.md",
+            expectedVersion: null,
+            body: "atomic commit\n",
+          },
+          {
+            op: "put" as const,
+            path: "commit/payload.bin",
+            expectedVersion: null,
+            representation: "binary" as const,
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        author: "contract-suite",
+        message: "Create atomic fixture",
+        meta: { fixture: "commit-contract" },
+      };
+      const idempotencyKey = `commit-${crypto.randomUUID()}`;
+      const created = unwrap(
+        await commits.create(commitInput, { idempotencyKey }),
+        "create atomic commit",
+      );
+      expect(created.entryCount).toBe(2);
+      expect(created.entries.map(({ path }) => path)).toEqual([
+        "commit/summary.md",
+        "commit/payload.bin",
+      ]);
+      expect(created.entries[1]).toMatchObject({
+        representation: "binary",
+        hash: expect.any(String),
+      });
+
+      const replay = await commits.create(commitInput, { idempotencyKey });
+      expect(unwrap(replay, "replay atomic commit")).toEqual(created);
+      expect(replay.ok && replay.replayed).toBe(true);
+
+      const conflict = await commits.create(
+        {
+          entries: [
+            { op: "put", path: "commit/summary.md", expectedVersion: null, body: "stale\n" },
+            { op: "put", path: "commit/new.txt", expectedVersion: 1, body: "also stale\n" },
+          ],
+          message: "Must not partially apply",
+        },
+        { idempotencyKey: `conflict-${crypto.randomUUID()}` },
+      );
+      expect(isCommitConflict(conflict)).toBe(true);
+      if (!isCommitConflict(conflict)) throw new Error("commit conflict was not typed");
+      expect(conflict.conflicts).toHaveLength(2);
+      expect(conflict.conflicts.map(({ path }) => path)).toEqual([
+        "commit/summary.md",
+        "commit/new.txt",
+      ]);
+      const conflictProbe = await admin.files(stash).get("commit/new.txt");
+      expect(conflictProbe.ok).toBe(false);
+      if (conflictProbe.ok) throw new Error("atomic conflict partially created a file");
+      expect(conflictProbe.error.code).toBe("not-found");
+
+      const fetched = unwrap(await commits.get(created.id), "get atomic commit");
+      expect(fetched.entries).toHaveLength(2);
+      expect(unwrap(await commits.list({ path: "commit/summary.md" }), "list commits").total).toBe(
+        1,
+      );
+      const diff = unwrap(await commits.diff(created.id), "diff atomic commit");
+      expect(diff.entries).toHaveLength(2);
+      expect(diff.entries.find(({ path }) => path === "commit/payload.bin")?.diff).toEqual({
+        state: "binary",
+      });
+
+      const reverted = unwrap(
+        await commits.revert(
+          created.id,
+          { author: "contract-suite", message: "Revert fixture" },
+          {
+            idempotencyKey: `revert-${crypto.randomUUID()}`,
+          },
+        ),
+        "revert atomic commit",
+      );
+      expect(reverted.revertsCommitId).toBe(created.id);
+      expect(reverted.entries.every(({ kind }) => kind === "delete")).toBe(true);
+
+      const changeSets = admin.changeSets(stash);
+      const changeSet = unwrap(
+        await changeSets.create(
+          {
+            entries: [
+              {
+                op: "put",
+                path: "review/files/readme.md",
+                baseVersion: null,
+                body: "pending review\n",
+              },
+              {
+                op: "put",
+                path: "review/files/data.bin",
+                baseVersion: null,
+                representation: "binary",
+                contentType: "application/octet-stream",
+                bytesBase64: "AP8B",
+              },
+            ],
+            author: "contract-suite",
+            message: "Open binary review",
+            meta: { fixture: "change-set-contract" },
+          },
+          { idempotencyKey: `change-set-${crypto.randomUUID()}` },
+        ),
+        "create binary change set",
+      );
+      expect(changeSet.status).toBe("open");
+      expect(unwrap(await changeSets.list({ status: "open" }), "list open change sets").total).toBe(
+        1,
+      );
+      const changeSetDiff = unwrap(await changeSets.diff(changeSet.id), "diff binary change set");
+      expect(changeSetDiff.stale).toBe(false);
+      expect(
+        changeSetDiff.entries.find(({ path }) => path.endsWith("data.bin"))?.diff,
+      ).toMatchObject({
+        state: "binary",
+      });
+
+      const approved = unwrap(
+        await changeSets.approve(changeSet.id, {
+          author: "contract-suite",
+          message: "Approve binary review",
+        }),
+        "approve binary change set",
+      );
+      expect(approved.status).toBe("applied");
+      expect(approved.commit.source).toBe("change-set");
+      expect(approved.commit.entries).toHaveLength(2);
+      const approvedCommit = unwrap(
+        await commits.get(approved.commit.id),
+        "read applied change-set commit",
+      );
+      const history = unwrap(
+        await admin.files(stash).history("review/files/readme.md"),
+        "read applied history",
+      );
+      expect(history.versions[0]?.commitId).toBe(approvedCommit.id);
+      const changes = unwrap(await admin.files(stash).changes(), "read applied changes");
+      expect(changes.changes.filter(({ commitId }) => commitId === approvedCommit.id)).toHaveLength(
+        2,
+      );
+      const snapshot = unwrap(
+        await admin.files(stash).snapshot({ at: `commit:${approvedCommit.id}`, prefix: "review" }),
+        "snapshot at applied commit",
+      );
+      expect(snapshot.at.commitId).toBe(approvedCommit.id);
+      expect(snapshot.files.map(({ path }) => path)).toEqual([
+        "review/files/data.bin",
+        "review/files/readme.md",
       ]);
     },
   );

@@ -28,8 +28,13 @@ describe("defaultStashHref", () => {
     );
     expect(defaultStashHref({ kind: "new-file", stash: "notes" })).toBe("/s/notes/new");
     expect(defaultStashHref({ kind: "tokens", stash: "notes" })).toBe("/s/notes/tokens");
-    expect(defaultStashHref({ kind: "proposal", stash: "team notes", id: "prp_1/unsafe" })).toBe(
-      "/s/team%20notes/proposals/prp_1%2Funsafe",
+    expect(defaultStashHref({ kind: "commits", stash: "notes" })).toBe("/s/notes/commits");
+    expect(defaultStashHref({ kind: "commit", stash: "notes", id: "cmt /1" })).toBe(
+      "/s/notes/commits/cmt%20%2F1",
+    );
+    expect(defaultStashHref({ kind: "change-sets", stash: "notes" })).toBe("/s/notes/change-sets");
+    expect(defaultStashHref({ kind: "change-set", stash: "notes", id: "chs/1" })).toBe(
+      "/s/notes/change-sets/chs%2F1",
     );
   });
 });

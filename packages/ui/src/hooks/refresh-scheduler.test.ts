@@ -31,14 +31,14 @@ describe("createRefreshScheduler", () => {
     scheduler.schedule("files", () => {
       calls.push("files:trailing");
     });
-    scheduler.schedule("proposals", () => {
-      calls.push("proposals:first");
+    scheduler.schedule("history", () => {
+      calls.push("history:first");
     });
 
-    await vi.waitFor(() => expect(calls).toEqual(["files:first", "proposals:first"]));
+    await vi.waitFor(() => expect(calls).toEqual(["files:first", "history:first"]));
     first.resolve();
     await vi.waitFor(() =>
-      expect(calls).toEqual(["files:first", "proposals:first", "files:trailing"]),
+      expect(calls).toEqual(["files:first", "history:first", "files:trailing"]),
     );
   });
 

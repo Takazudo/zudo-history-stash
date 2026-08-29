@@ -3,6 +3,7 @@
 @import "./stateful.css";
 @import "./tokens-panel.css";
 @import "../components/create-stash-dialog.css";
+@import "../components/commit-change-set.css";
 @import "../components/binary-upload-form.css";
 @import "../components/delete-file-dialog.css";
 @import "../components/delete-stash-dialog.css";
@@ -12,6 +13,5 @@
 @import "../components/live-indicator.css";
 @import "../components/gc-panel.css";
 @import "../components/new-file-form.css";
-@import "../components/proposal.css";
 @import "../components/save-review-dialog.css";
 @import "../components/tombstone-restore.css";

@@ -146,6 +146,7 @@ function version(overrides: Partial<VersionRecord> = {}): VersionRecord {
     meta: {},
     createdAt: "2026-08-26T00:00:00.000Z",
     ...overrides,
+    commitId: overrides.commitId ?? "legacy:1",
   };
 }
 

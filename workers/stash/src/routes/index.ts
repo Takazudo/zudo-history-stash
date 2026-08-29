@@ -4,6 +4,8 @@ import { requireRoute } from "../auth.js";
 import type { AppEnv } from "../context.js";
 import { rateLimit } from "../rate-limit.js";
 import admin from "./admin.js";
+import changeSets from "./change-sets.js";
+import commits from "./commits.js";
 import diff from "./diff.js";
 import events from "./events.js";
 import files from "./files.js";
@@ -12,8 +14,8 @@ import history from "./history.js";
 import importRoutes from "./import.js";
 import lifecycle from "./lifecycle.js";
 import meta from "./meta.js";
-import proposals from "./proposals.js";
 import rawContent from "./raw-content.js";
+import snapshot from "./snapshot.js";
 import uploads from "./uploads.js";
 
 function middlewarePath(route: (typeof ROUTES)[number]): string {
@@ -30,21 +32,24 @@ for (const route of ROUTES) {
 }
 routes.route("/", meta);
 routes.route("/", admin);
+routes.route("/", changeSets);
+routes.route("/", commits);
 routes.route("/", files);
 routes.route("/", gc);
 routes.route("/", history);
 routes.route("/", diff);
 routes.route("/", importRoutes);
 routes.route("/", lifecycle);
-routes.route("/", proposals);
 routes.route("/", events);
 routes.route("/", rawContent);
+routes.route("/", snapshot);
 routes.route("/", uploads);
-routes.all("/v1/*", (c) =>
-  c.json(
+routes.all("/v1/*", (c) => {
+  void c.env.CHANGE_SET_TTL_DAYS;
+  return c.json(
     { error: { code: "not-implemented", message: "This route is not implemented yet." } },
     501,
-  ),
-);
+  );
+});
 
 export default routes;

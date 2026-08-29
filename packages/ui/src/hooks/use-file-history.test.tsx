@@ -15,6 +15,7 @@ import { useFileHistory } from "./use-file-history.js";
 
 function version(value: number): VersionRecord {
   return {
+    commitId: `legacy:${value}`,
     version: value,
     kind: "put",
     hash: `sha256-${value}`,

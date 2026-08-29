@@ -26,12 +26,18 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "getStashChanges",
   "runGc",
   "listGcRuns",
-  "createProposal",
-  "listProposals",
-  "getProposal",
-  "getProposalDiff",
-  "approveProposal",
-  "rejectProposal",
+  "createCommit",
+  "getCommit",
+  "listCommits",
+  "getCommitDiff",
+  "revertCommit",
+  "getSnapshot",
+  "createChangeSet",
+  "listChangeSets",
+  "getChangeSet",
+  "getChangeSetDiff",
+  "approveChangeSet",
+  "rejectChangeSet",
   "stashEvents",
   "getCapabilities",
   "getRawFile",
@@ -232,7 +238,6 @@ const oversizedPath = "docs/oversized.txt";
 const alpha = "alpha\n";
 const beta = "beta\n";
 const gamma = "gamma\n";
-const proposalCandidate = "proposal candidate\n";
 
 const TRACE: readonly TraceStep[] = [
   responseStep(
@@ -1356,6 +1361,391 @@ const TRACE: readonly TraceStep[] = [
     200,
     { files: [{ path, headVersion: 6 }], nextAfter: path },
   ),
+  {
+    name: "multi-entry commit creates atomically",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-commit" },
+      body: {
+        entries: [
+          { op: "put", path: "sdk/alpha.txt", expectedVersion: null, body: "alpha\n" },
+          {
+            op: "put",
+            path: "sdk/beta.bin",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        author: "conformance",
+        message: "multi-entry",
+        meta: { suite: "sdk" },
+      },
+    }),
+    verify(response, body, context) {
+      const step = "multi-entry commit creates atomically";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, { entryCount: 2, source: "commit" });
+      const firstChangeId = value.firstChangeId;
+      if (
+        typeof firstChangeId !== "number" ||
+        !Number.isSafeInteger(firstChangeId) ||
+        firstChangeId < 1
+      ) {
+        traceFailure(step, "firstChangeId must be a positive safe integer");
+      }
+      if (typeof value.id !== "string") traceFailure(step, "missing commit id");
+      remember(context, "sdkCommitId", value.id);
+      const entries = array(value.entries, step);
+      assertEqual(step, entries.length, 2, "entries.length");
+      const firstEntry = record(entries[0], step);
+      assertEqual(step, firstEntry.changeId, firstChangeId, "firstChangeId");
+      assertSubset(step, entries[1], { path: "sdk/beta.bin", representation: "binary", size: 3 });
+    },
+  },
+  {
+    name: "commit replay preserves the atomic result",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-commit" },
+      body: {
+        entries: [
+          { op: "put", path: "sdk/alpha.txt", expectedVersion: null, body: "alpha\n" },
+          {
+            op: "put",
+            path: "sdk/beta.bin",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        author: "conformance",
+        message: "multi-entry",
+        meta: { suite: "sdk" },
+      },
+    }),
+    verify(response, body, context) {
+      const step = "commit replay preserves the atomic result";
+      assertStatus(step, response, 201);
+      assertEqual(step, response.headers.get("Idempotent-Replayed"), "true", "replay header");
+      assertEqual(
+        step,
+        record(body, step).id,
+        stringValue(context, "sdkCommitId", step),
+        "commit id",
+      );
+    },
+  },
+  {
+    name: "commit conflict exposes per-entry conflicts",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-commit-conflict" },
+      body: { entries: [{ op: "put", path: "sdk/alpha.txt", expectedVersion: null, body: "new" }] },
+    }),
+    verify(response, body) {
+      const step = "commit conflict exposes per-entry conflicts";
+      assertStatus(step, response, 409);
+      errorCode(step, body, "commit-conflict");
+      const conflicts = array(record(body, step).conflicts, step);
+      assertEqual(step, conflicts.length, 1, "conflicts.length");
+      assertSubset(step, conflicts[0], {
+        path: "sdk/alpha.txt",
+        expectedVersion: null,
+        current: { version: 1 },
+      });
+    },
+  },
+  responseStep(
+    "commit get returns the sealed record",
+    "getCommit",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkCommitId", "commit get")}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({ id: stringValue(context, "sdkCommitId", "commit get"), entryCount: 2 }),
+  ),
+  responseStep(
+    "commit list includes the multi-entry commit",
+    "listCommits",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits?limit=1`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      commits: [{ id: stringValue(context, "sdkCommitId", "commit list") }],
+      total: 8,
+    }),
+  ),
+  responseStep(
+    "commit diff reports binary and text entries",
+    "getCommitDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkCommitId", "commit diff")}/diff`,
+      token: "read",
+    }),
+    200,
+    {
+      entries: [{ path: "sdk/alpha.txt" }, { path: "sdk/beta.bin", diff: { state: "binary" } }],
+      truncated: false,
+    },
+  ),
+  responseStep(
+    "revert creates a compensating commit",
+    "revertCommit",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkCommitId", "revert")}/revert`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-revert" },
+      body: { message: "undo sdk", meta: {} },
+    }),
+    201,
+    (context) => ({
+      source: "revert",
+      revertsCommitId: stringValue(context, "sdkCommitId", "revert"),
+    }),
+    (body, _response, context) => remember(context, "sdkRevertId", record(body, "revert").id),
+  ),
+  responseStep(
+    "open change set includes binary candidate",
+    "createChangeSet",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-change-set" },
+      body: {
+        entries: [
+          { op: "put", path: "sdk/review.txt", baseVersion: null, body: "review\n" },
+          {
+            op: "put",
+            path: "sdk/review.bin",
+            baseVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        message: "review",
+        meta: { suite: "sdk" },
+      },
+    }),
+    201,
+    () => ({ status: "open", entries: [{ path: "sdk/review.bin" }, { path: "sdk/review.txt" }] }),
+    (body, _response, context) =>
+      remember(context, "sdkChangeSetId", record(body, "change set").id),
+  ),
+  responseStep(
+    "change set diff reports candidate state",
+    "getChangeSetDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "change set diff")}/diff`,
+      token: "read",
+    }),
+    200,
+    {
+      stale: false,
+      status: "open",
+      entries: [{ path: "sdk/review.bin", diff: { state: "binary" } }, { path: "sdk/review.txt" }],
+    },
+  ),
+  responseStep(
+    "change set list includes the open review",
+    "listChangeSets",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets?limit=1`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      changeSets: [{ id: stringValue(context, "sdkChangeSetId", "change set list") }],
+      total: 1,
+    }),
+  ),
+  responseStep(
+    "change set get returns the open review",
+    "getChangeSet",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "change set get")}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({ id: stringValue(context, "sdkChangeSetId", "change set get"), status: "open" }),
+  ),
+  responseStep(
+    "external write makes the change set stale",
+    "putFile",
+    (context) => ({
+      method: "PUT",
+      path: `/v1/stashes/${context.stash}/files/sdk/review.txt`,
+      token: "write",
+      body: { body: "external\n", expectedVersion: null },
+    }),
+    201,
+    { version: 1 },
+  ),
+  responseStep(
+    "stale change set diff reports staleness",
+    "getChangeSetDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "stale diff")}/diff`,
+      token: "read",
+    }),
+    200,
+    { stale: true, status: "open" },
+  ),
+  {
+    name: "stale change set can be rejected",
+    routeId: "rejectChangeSet",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "reject stale")}/reject`,
+      token: "write",
+      body: { reason: "stale fixture" },
+    }),
+    verify(response, body) {
+      const step = "stale change set can be rejected";
+      assertStatus(step, response, 200);
+      assertSubset(step, body, { status: "rejected" });
+    },
+  },
+  responseStep(
+    "fresh binary change set is approved",
+    "createChangeSet",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets`,
+      token: "write",
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "sdk/final.bin",
+            baseVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        meta: { suite: "sdk-final" },
+      },
+    }),
+    201,
+    { status: "open" },
+    (body, _response, context) =>
+      remember(context, "sdkFinalChangeSetId", record(body, "fresh change set").id),
+  ),
+  responseStep(
+    "approved change set returns its commit",
+    "approveChangeSet",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkFinalChangeSetId", "approve")}/approve`,
+      token: "write",
+      body: { author: "reviewer", message: "approved" },
+    }),
+    200,
+    {
+      status: "applied",
+      commit: {
+        source: "change-set",
+        entryCount: 1,
+        entries: [{ path: "sdk/final.bin", representation: "binary" }],
+      },
+    },
+    (body, _response, context) => {
+      const commit = record(record(body, "approve").commit, "approve commit");
+      remember(context, "sdkFinalCommitId", commit.id);
+      const entries = array(commit.entries, "approve commit");
+      remember(context, "sdkFinalChangeId", record(entries[0], "approve entry").changeId);
+    },
+  ),
+  responseStep(
+    "approved commit is readable",
+    "getCommit",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkFinalCommitId", "approved commit")}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      id: stringValue(context, "sdkFinalCommitId", "approved commit"),
+      source: "change-set",
+    }),
+  ),
+  responseStep(
+    "history and changes carry commit ids",
+    "getHistory",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/history/sdk/final.bin`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      versions: [{ commitId: stringValue(context, "sdkFinalCommitId", "history commit") }],
+    }),
+  ),
+  responseStep(
+    "change feed carries approved commit id",
+    "getStashChanges",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/changes?since=${numberValue(context, "sdkFinalChangeId", "change cursor") - 1}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      changes: [{ commitId: stringValue(context, "sdkFinalCommitId", "change commit") }],
+    }),
+  ),
+  {
+    name: "snapshot resolves the approved commit under a prefix",
+    routeId: "getSnapshot",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/snapshot?at=commit%3A${encodeURIComponent(stringValue(context, "sdkFinalCommitId", "snapshot"))}&prefix=sdk`,
+      token: "read",
+    }),
+    verify(response, body, context) {
+      const step = "snapshot resolves the approved commit under a prefix";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      assertSubset(step, value.at, { commitId: stringValue(context, "sdkFinalCommitId", step) });
+      const files = array(value.files, step).map((entry) => record(entry, step));
+      if (
+        !files.some(
+          (entry) =>
+            entry.path === "sdk/final.bin" && entry.headVersion === 1 && entry.deleted === false,
+        )
+      ) {
+        traceFailure(step, "approved commit snapshot omitted sdk/final.bin");
+      }
+    },
+  },
   errorStep(
     "file list rejects an excessive limit",
     "listFiles",
@@ -1395,307 +1785,6 @@ const TRACE: readonly TraceStep[] = [
     }),
     400,
     "validation",
-  ),
-  {
-    name: "create proposal against the exact head",
-    routeId: "createProposal",
-    request: (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals`,
-      token: "write",
-      headers: { "Idempotency-Key": "proposal-create" },
-      body: {
-        path,
-        body: proposalCandidate,
-        baseVersion: 6,
-        author: "proposal-bot",
-        message: "candidate",
-        meta: { source: "conformance" },
-      },
-    }),
-    verify(response, body, context) {
-      const step = "create proposal against the exact head";
-      assertStatus(step, response, 201);
-      const value = record(body, step);
-      assertSubset(step, value, {
-        stash: context.stash,
-        path,
-        baseVersion: 6,
-        author: "proposal-bot",
-        message: "candidate",
-        meta: { source: "conformance" },
-        size: proposalCandidate.length,
-        status: "open",
-        decidedAt: null,
-        decidedBy: null,
-        decisionReason: null,
-        appliedVersion: null,
-        appliedChangeId: null,
-      });
-      if (typeof value.id !== "string" || !/^prp_\d{13}[0-9a-f]{8}$/.test(value.id)) {
-        traceFailure(step, "proposal id is not time sortable");
-      }
-      assertSubset(step, value, {
-        meta: { source: "conformance", proposalId: value.id },
-      });
-      if (typeof value.hash !== "string" || typeof value.expiresAt !== "string") {
-        traceFailure(step, "proposal hash or expiry is missing");
-      }
-      remember(context, "proposalId", value.id);
-      remember(context, "proposalHash", value.hash);
-      remember(context, "proposalCreateResponse", body);
-    },
-  },
-  {
-    name: "proposal create replays the same record",
-    routeId: "createProposal",
-    request: (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals`,
-      token: "write",
-      headers: { "Idempotency-Key": "proposal-create" },
-      body: {
-        path,
-        body: proposalCandidate,
-        baseVersion: 6,
-        author: "proposal-bot",
-        message: "candidate",
-        meta: { source: "conformance" },
-      },
-    }),
-    verify(response, body, context) {
-      const step = "proposal create replays the same record";
-      assertStatus(step, response, 201);
-      assertEqual(step, response.headers.get("Idempotent-Replayed"), "true", "Idempotent-Replayed");
-      assertJsonEqual(step, body, context.values.get("proposalCreateResponse"));
-    },
-  },
-  responseStep(
-    "proposal list defaults to open and preserves totals",
-    "listProposals",
-    (context) => ({
-      method: "GET",
-      path: `/v1/stashes/${context.stash}/proposals?limit=1`,
-      token: "read",
-    }),
-    200,
-    (context) => ({
-      proposals: [
-        {
-          id: stringValue(context, "proposalId", "proposal list"),
-          status: "open",
-          path,
-          meta: {
-            source: "conformance",
-            proposalId: stringValue(context, "proposalId", "proposal list"),
-          },
-        },
-      ],
-      nextAfter: null,
-      total: 1,
-    }),
-  ),
-  responseStep(
-    "proposal detail returns the immutable candidate body",
-    "getProposal",
-    (context) => ({
-      method: "GET",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "proposalId", "proposal detail")}`,
-      token: "read",
-    }),
-    200,
-    (context) => ({
-      id: stringValue(context, "proposalId", "proposal detail"),
-      body: proposalCandidate,
-      status: "open",
-      meta: {
-        source: "conformance",
-        proposalId: stringValue(context, "proposalId", "proposal detail"),
-      },
-    }),
-  ),
-  {
-    name: "proposal diff is base to candidate before approval",
-    routeId: "getProposalDiff",
-    request: (context) => ({
-      method: "GET",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "proposalId", "proposal diff")}/diff?context=0`,
-      token: "read",
-    }),
-    verify(response, body, context) {
-      const step = "proposal diff is base to candidate before approval";
-      assertStatus(step, response, 200);
-      assertSubset(step, body, {
-        state: "ready",
-        base: { version: 6, hash: stringValue(context, "firstHash", step), deleted: false },
-        candidate: {
-          hash: stringValue(context, "proposalHash", step),
-          size: proposalCandidate.length,
-        },
-        current: { version: 6 },
-        stale: false,
-      });
-      remember(context, "proposalDiffResponse", body);
-    },
-  },
-  {
-    name: "proposal approval appends a normal audited version",
-    routeId: "approveProposal",
-    request: (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "proposalId", "proposal approve")}/approve`,
-      token: "write",
-      body: { author: "proposal-approver", message: "approved candidate" },
-    }),
-    verify(response, body, context) {
-      const step = "proposal approval appends a normal audited version";
-      assertStatus(step, response, 200);
-      assertSubset(step, body, {
-        status: "applied",
-        appliedVersion: 7,
-        hash: stringValue(context, "proposalHash", step),
-      });
-      const value = record(body, step);
-      if (typeof value.appliedChangeId !== "number" || typeof value.createdAt !== "string") {
-        traceFailure(step, "applied change identity is missing");
-      }
-      remember(context, "proposalApprovalResponse", body);
-    },
-  },
-  {
-    name: "proposal reapproval reconstructs the first winner",
-    routeId: "approveProposal",
-    request: (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "proposalId", "proposal reapproval")}/approve`,
-      token: "write",
-      body: {},
-    }),
-    verify(response, body, context) {
-      const step = "proposal reapproval reconstructs the first winner";
-      assertStatus(step, response, 200);
-      assertJsonEqual(step, body, context.values.get("proposalApprovalResponse"));
-    },
-  },
-  responseStep(
-    "approved proposal is ordinary stamped file history",
-    "getFile",
-    (context) => ({
-      method: "GET",
-      path: `/v1/stashes/${context.stash}/files/${path}`,
-      token: "read",
-    }),
-    200,
-    (context) => ({
-      version: 7,
-      kind: "put",
-      hash: stringValue(context, "proposalHash", "approved file"),
-      author: "proposal-approver",
-      message: "approved candidate",
-      meta: {
-        source: "conformance",
-        proposalId: stringValue(context, "proposalId", "approved file"),
-      },
-      body: proposalCandidate,
-    }),
-  ),
-  {
-    name: "applied proposal diff stays immutable while current moves",
-    routeId: "getProposalDiff",
-    request: (context) => ({
-      method: "GET",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "proposalId", "applied proposal diff")}/diff?context=0`,
-      token: "read",
-    }),
-    verify(response, body, context) {
-      const step = "applied proposal diff stays immutable while current moves";
-      assertStatus(step, response, 200);
-      const original = record(context.values.get("proposalDiffResponse"), step);
-      const value = record(body, step);
-      assertEqual(step, value.state, original.state, "state");
-      assertEqual(step, value.unified, original.unified, "unified");
-      assertSubset(step, value, { current: { version: 7 }, stale: true });
-    },
-  },
-  {
-    name: "create proposal on the former head for stale refusal",
-    routeId: "createProposal",
-    request: (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals`,
-      token: "write",
-      body: { path, body: "stale candidate\n", baseVersion: 6 },
-    }),
-    verify(response, body, context) {
-      const step = "create proposal on the former head for stale refusal";
-      assertStatus(step, response, 201);
-      const value = record(body, step);
-      if (typeof value.id !== "string") traceFailure(step, "stale proposal id is missing");
-      remember(context, "staleProposalId", value.id);
-    },
-  },
-  errorStep(
-    "stale proposal approval refuses without appending",
-    "approveProposal",
-    (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "staleProposalId", "stale approval")}/approve`,
-      token: "write",
-      body: {},
-    }),
-    409,
-    "stale",
-    () => ({ current: { version: 7 } }),
-  ),
-  {
-    name: "stale open proposal can be rejected",
-    routeId: "rejectProposal",
-    request: (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "staleProposalId", "proposal reject")}/reject`,
-      token: "write",
-      body: { reason: "head moved" },
-    }),
-    verify(response, body, context) {
-      const step = "stale open proposal can be rejected";
-      assertStatus(step, response, 200);
-      assertSubset(step, body, {
-        id: stringValue(context, "staleProposalId", step),
-        status: "rejected",
-        decidedBy: stringValue(context, "writeTokenId", step),
-        decisionReason: "head moved",
-        appliedVersion: null,
-        appliedChangeId: null,
-      });
-      remember(context, "proposalRejectResponse", body);
-    },
-  },
-  {
-    name: "proposal rerejection is idempotent",
-    routeId: "rejectProposal",
-    request: (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "staleProposalId", "proposal rereject")}/reject`,
-      token: "write",
-      body: { reason: "ignored retry reason" },
-    }),
-    verify(response, body, context) {
-      const step = "proposal rerejection is idempotent";
-      assertStatus(step, response, 200);
-      assertJsonEqual(step, body, context.values.get("proposalRejectResponse"));
-    },
-  },
-  errorStep(
-    "rejected proposal is closed to approval",
-    "approveProposal",
-    (context) => ({
-      method: "POST",
-      path: `/v1/stashes/${context.stash}/proposals/${stringValue(context, "staleProposalId", "closed proposal")}/approve`,
-      token: "write",
-      body: {},
-    }),
-    409,
-    "proposal-closed",
   ),
   errorStep(
     "put rejects lone surrogate bodies",

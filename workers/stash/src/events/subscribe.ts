@@ -20,6 +20,7 @@ function encodeEvent(event: StashEvent): Uint8Array {
 
 function replayEvent(change: {
   changeId: number;
+  commitId: string;
   stash: string;
   path: string;
   version: number;
@@ -29,6 +30,7 @@ function replayEvent(change: {
   return {
     type: "change",
     changeId: change.changeId,
+    commitId: change.commitId,
     stash: change.stash,
     path: change.path,
     version: change.version,

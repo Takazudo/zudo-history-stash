@@ -234,6 +234,12 @@ function HistoryRow({
             View this version
           </Anchor>
           <Anchor
+            className="zhs-commit-badge"
+            href={hrefFor({ kind: "commit", stash, id: version.commitId })}
+          >
+            Commit {version.commitId}
+          </Anchor>
+          <Anchor
             href={hrefFor({
               kind: "diff",
               stash,
@@ -316,6 +322,7 @@ function HistoryListForTarget({
     const { result, message } = success;
     const effectiveMessage = message || `Rollback to v${target.version}`;
     const created: VersionRecord = {
+      commitId: result.commitId,
       version: result.version,
       kind: "rollback",
       hash: result.hash,

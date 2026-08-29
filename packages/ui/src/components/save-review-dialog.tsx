@@ -1,19 +1,11 @@
 import type {
-  CreateProposalBody,
+  ChangeSetRecord,
   FileRecord,
   FileRecordWithEtag,
-  ProposalRecord,
+  StashChangeSetsClient,
 } from "@takazudo/zudo-history-stash";
 import { sha256Hex, utf8ByteLength } from "@takazudo/zudo-history-stash-core";
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type FormEvent,
-} from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useCandidateDiff } from "../hooks/use-candidate-diff.js";
 import { useDiffViewPreferences } from "../hooks/use-diff-view-preferences.js";
 import {
@@ -22,15 +14,14 @@ import {
   type SaveMachine,
   type SaveMachineState,
 } from "../hooks/use-save-machine.js";
-import { useCanWrite, useStashClientForSignal } from "../provider/hooks.js";
 import { Button } from "../primitives/button.js";
+import { Anchor, useStashClient, useStashHref } from "../provider/hooks.js";
 import { Dialog } from "../primitives/dialog.js";
 import { Input } from "../primitives/input.js";
 import { Notice } from "../primitives/notice.js";
 import { Textarea } from "../primitives/textarea.js";
 import { DiffControls } from "./diff-controls.js";
 import { DiffPane } from "./diff-pane.js";
-import { ErrorBanner } from "./error-banner.js";
 
 const AUTHOR_STORAGE_KEY = "zhs.author";
 const MAX_AUTHOR_BYTES = 200;
@@ -52,7 +43,8 @@ export interface SaveReviewDialogProps {
   onClose: () => void;
   onDiscard: () => void;
   onSaved: (completion: SaveReviewCompletion) => void;
-  onProposed?: (record: ProposalRecord) => void;
+  /** When supplied with stash, offers a one-entry change set instead of writing head. */
+  onChangeSetCreated?: (changeSet: ChangeSetRecord) => void;
 }
 
 interface SameAsHeadSnapshot {
@@ -62,136 +54,125 @@ interface SameAsHeadSnapshot {
   same: boolean;
 }
 
-interface FrozenProposalAttempt {
-  readonly input: Readonly<CreateProposalBody>;
+interface ChangeSetAttempt {
+  readonly input: Parameters<StashChangeSetsClient["create"]>[0];
   readonly options: Readonly<{ idempotencyKey: string }>;
 }
 
-type ProposalSaveState =
-  | { state: "idle" }
-  | { state: "error"; error: unknown; transport: boolean }
-  | { state: "created"; record: ProposalRecord };
-
-interface SaveAsProposalButtonProps {
-  stash: string;
+function freezeChangeSetAttempt({
+  path,
+  baseVersion,
+  body,
+  contentType,
+  author,
+  message,
+}: {
   path: string;
-  body: string;
   baseVersion: number;
+  body: string;
+  contentType?: string;
   author: string;
   message: string;
-  disabled: boolean;
-  state: ProposalSaveState;
-  onBegin: () => boolean;
-  onEnd: () => void;
-  onFailure: (error: unknown, transport: boolean) => void;
-  onProposed: (record: ProposalRecord) => void;
+}): ChangeSetAttempt {
+  const input: Parameters<StashChangeSetsClient["create"]>[0] = {
+    entries: [{ op: "put", path, baseVersion, body, ...(contentType ? { contentType } : {}) }],
+    author,
+    message,
+    meta: {},
+  };
+  Object.freeze(input.entries[0]);
+  Object.freeze(input.entries);
+  Object.freeze(input.meta);
+  Object.freeze(input);
+  return Object.freeze({ input, options: Object.freeze({ idempotencyKey: crypto.randomUUID() }) });
 }
 
-function SaveAsProposalButtonAllowed({
+function CreateChangeSetButton({
   stash,
   path,
-  body,
   baseVersion,
+  body,
+  contentType,
   author,
   message,
   disabled,
-  state,
-  onBegin,
-  onEnd,
-  onFailure,
-  onProposed,
-}: SaveAsProposalButtonProps) {
-  const clientForSignal = useStashClientForSignal();
-  const pendingRef = useRef(false);
-  const attemptRef = useRef<FrozenProposalAttempt | null>(null);
-  const lifecycleRef = useRef(0);
-  const controllerRef = useRef<AbortController | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  useEffect(
-    () => () => {
-      lifecycleRef.current += 1;
-      pendingRef.current = false;
-      attemptRef.current = null;
-      controllerRef.current?.abort();
-      controllerRef.current = null;
-      onEnd();
-    },
-    [onEnd],
-  );
-
-  async function createProposal() {
-    if (pendingRef.current || disabled || state.state === "created") {
-      return;
-    }
-    const retryingTransport = state.state === "error" && state.transport;
+  onChangeSetCreated,
+}: {
+  stash: string;
+  path: string;
+  baseVersion: number;
+  body: string;
+  contentType?: string;
+  author: string;
+  message: string;
+  disabled: boolean;
+  onChangeSetCreated?: (changeSet: ChangeSetRecord) => void;
+}) {
+  const client = useStashClient();
+  const hrefFor = useStashHref();
+  const [creating, setCreating] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [created, setCreated] = useState<ChangeSetRecord | null>(null);
+  const creatingRef = useRef(false);
+  const attemptRef = useRef<ChangeSetAttempt | null>(null);
+  async function createChangeSet() {
+    if (disabled || creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    setFailed(false);
+    setCreated(null);
     const attempt =
-      retryingTransport && attemptRef.current !== null
-        ? attemptRef.current
-        : Object.freeze({
-            input: Object.freeze({ path, body, baseVersion, author, message }),
-            options: Object.freeze({ idempotencyKey: globalThis.crypto.randomUUID() }),
-          });
-    if (!onBegin()) return;
+      attemptRef.current ??
+      freezeChangeSetAttempt({ path, baseVersion, body, contentType, author, message });
     attemptRef.current = attempt;
-    pendingRef.current = true;
-    setSubmitting(true);
-    const lifecycle = lifecycleRef.current;
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    const isCurrent = () => lifecycleRef.current === lifecycle && !controller.signal.aborted;
-    let created: ProposalRecord | null = null;
-
     try {
-      const result = await clientForSignal(controller.signal)
-        .proposals(stash)
-        .create(attempt.input, attempt.options);
-      if (!isCurrent()) return;
-      if (result.ok) {
+      const result = await client.changeSets(stash).create(attempt.input, attempt.options);
+      if (!result.ok) {
         attemptRef.current = null;
-        created = result.value;
+        setFailed(true);
       } else {
         attemptRef.current = null;
-        onFailure(result, false);
+        setCreated(result.value);
+        onChangeSetCreated?.(result.value);
       }
-    } catch (error: unknown) {
-      if (isCurrent()) onFailure(error, true);
+    } catch {
+      // An ambiguous transport failure retains the exact frozen request for safe replay.
+      setFailed(true);
     } finally {
-      if (isCurrent()) {
-        pendingRef.current = false;
-        setSubmitting(false);
-        onEnd();
-      }
-      if (controllerRef.current === controller) controllerRef.current = null;
+      creatingRef.current = false;
+      setCreating(false);
     }
-
-    if (created !== null && isCurrent()) onProposed(created);
   }
-
-  const retrying = state.state === "error" && state.transport;
-
   return (
-    <Button
-      disabled={disabled || submitting || state.state === "created"}
-      onClick={() => void createProposal()}
-    >
-      {submitting
-        ? retrying
-          ? "Retrying proposal…"
-          : "Saving proposal…"
-        : state.state === "created"
-          ? "Proposal saved"
-          : retrying
-            ? "Retry proposal"
-            : "Save as proposal"}
-    </Button>
+    <>
+      {failed ? (
+        <span role="alert">
+          Could not create this change set. Retry replays the exact previous request when delivery
+          is unknown.
+        </span>
+      ) : null}
+      {created ? (
+        <span role="status">
+          Created for review:{" "}
+          <Anchor href={hrefFor({ kind: "change-set", stash, id: created.id })}>
+            Open change set
+          </Anchor>
+        </span>
+      ) : null}
+      <Button
+        disabled={disabled || creating || created !== null}
+        onClick={() => void createChangeSet()}
+      >
+        {creating
+          ? "Creating…"
+          : created
+            ? "Created"
+            : failed
+              ? "Retry change set"
+              : "Create change set"}
+      </Button>
+    </>
   );
-}
-
-function SaveAsProposalButton(props: SaveAsProposalButtonProps) {
-  const capability = useCanWrite(props.stash);
-  if (!capability.ready || !capability.canWrite) return null;
-  return <SaveAsProposalButtonAllowed {...props} />;
 }
 
 function readRememberedAuthor(): string {
@@ -250,15 +231,15 @@ function keyForTargetIdentity(identity: object): number {
 }
 
 function SaveReviewDialogOpen({
-  stash,
   head,
+  stash,
   draft,
   lineEnding,
   machine,
   onClose,
   onDiscard,
   onSaved,
-  onProposed,
+  onChangeSetCreated,
 }: Omit<SaveReviewDialogProps, "open">) {
   const titleId = useId();
   const descriptionId = useId();
@@ -273,13 +254,10 @@ function SaveReviewDialogOpen({
   const [reconciling, setReconciling] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const [proposing, setProposing] = useState(false);
-  const [proposalSave, setProposalSave] = useState<ProposalSaveState>({ state: "idle" });
   const lifecycleRef = useRef(0);
   const renderEpochRef = useRef(0);
   const hashSequenceRef = useRef(0);
   const pendingOperationRef = useRef<PendingOperation | null>(null);
-  const proposalPendingRef = useRef(false);
   const completionArmedRef = useRef(false);
   const reportedCompletionRef = useRef<SaveReviewCompletion | null>(null);
   const machineStateRef = useRef(machine.state);
@@ -300,32 +278,9 @@ function SaveReviewDialogOpen({
   const authorBytes = utf8ByteLength(author);
   const messageBytes = utf8ByteLength(message);
   const machineSaving = machine.state === "saving";
-  const busy = machineSaving || reconciling || reloading || retrying || proposing;
-  const proposalFrozen = proposalSave.state === "error" && proposalSave.transport;
+  const busy = machineSaving || reconciling || reloading || retrying;
   const fieldsDisabled =
-    busy ||
-    proposalFrozen ||
-    machine.state === "error" ||
-    machine.state === "saved" ||
-    machine.state === "unchanged";
-
-  const beginProposal = useCallback(() => {
-    if (
-      pendingOperationRef.current !== null ||
-      proposalPendingRef.current ||
-      machineStateRef.current !== "idle"
-    ) {
-      return false;
-    }
-    proposalPendingRef.current = true;
-    setProposing(true);
-    return true;
-  }, []);
-
-  const endProposal = useCallback(() => {
-    proposalPendingRef.current = false;
-    setProposing(false);
-  }, []);
+    busy || machine.state === "error" || machine.state === "saved" || machine.state === "unchanged";
 
   useLayoutEffect(() => {
     renderEpochRef.current += 1;
@@ -340,7 +295,6 @@ function SaveReviewDialogOpen({
       lifecycleRef.current += 1;
       hashSequenceRef.current += 1;
       pendingOperationRef.current = null;
-      proposalPendingRef.current = false;
       completionArmedRef.current = false;
     },
     [],
@@ -390,11 +344,7 @@ function SaveReviewDialogOpen({
   }, [machine.state]);
 
   function requestClose() {
-    if (
-      pendingOperationRef.current !== null ||
-      proposalPendingRef.current ||
-      machine.state === "saving"
-    ) {
+    if (pendingOperationRef.current !== null || machine.state === "saving") {
       return;
     }
     if (!machine.resetSession()) return;
@@ -402,11 +352,7 @@ function SaveReviewDialogOpen({
   }
 
   function requestDiscard() {
-    if (
-      pendingOperationRef.current !== null ||
-      proposalPendingRef.current ||
-      machine.state === "saving"
-    ) {
+    if (pendingOperationRef.current !== null || machine.state === "saving") {
       return;
     }
     if (!machine.resetSession()) return;
@@ -418,10 +364,8 @@ function SaveReviewDialogOpen({
     if (
       machine.state !== "idle" ||
       sameAsHead !== false ||
-      proposalFrozen ||
       busy ||
       pendingOperationRef.current !== null ||
-      proposalPendingRef.current ||
       authorBytes > MAX_AUTHOR_BYTES ||
       messageBytes > MAX_MESSAGE_BYTES
     ) {
@@ -460,12 +404,7 @@ function SaveReviewDialogOpen({
   }
 
   async function reloadAndCompare() {
-    if (
-      machine.state !== "stale" ||
-      busy ||
-      pendingOperationRef.current !== null ||
-      proposalPendingRef.current
-    ) {
+    if (machine.state !== "stale" || busy || pendingOperationRef.current !== null) {
       return;
     }
     const lifecycle = lifecycleRef.current;
@@ -489,8 +428,7 @@ function SaveReviewDialogOpen({
       machine.state !== "error" ||
       !machine.canRetry ||
       busy ||
-      pendingOperationRef.current !== null ||
-      proposalPendingRef.current
+      pendingOperationRef.current !== null
     ) {
       return;
     }
@@ -581,26 +519,6 @@ function SaveReviewDialogOpen({
             <Notice className="zhs-save-review-dialog__notice" variant="success">
               <strong>Saved v{machine.version}</strong>
             </Notice>
-          ) : null}
-
-          {proposalSave.state === "created" ? (
-            <Notice className="zhs-save-review-dialog__notice" variant="success">
-              <strong>Proposal saved</strong>
-              <p>
-                {proposalSave.record.id} is fenced to v{proposalSave.record.baseVersion}.
-              </p>
-            </Notice>
-          ) : null}
-
-          {proposalSave.state === "error" ? (
-            <ErrorBanner
-              error={proposalSave.error}
-              title={
-                proposalSave.transport
-                  ? "The proposal response was interrupted"
-                  : "Could not save this proposal"
-              }
-            />
           ) : null}
 
           <section className="zhs-save-review-dialog__review" aria-label="Save diff">
@@ -717,38 +635,26 @@ function SaveReviewDialogOpen({
               <Button disabled={busy} onClick={requestClose}>
                 Cancel
               </Button>
-              {stash === undefined ? null : (
-                <SaveAsProposalButton
-                  author={author}
-                  baseVersion={displayHead.version}
-                  body={exactDraft}
-                  disabled={busy}
-                  message={message}
-                  path={displayHead.path}
-                  stash={stash}
-                  state={proposalSave}
-                  onBegin={beginProposal}
-                  onEnd={endProposal}
-                  onFailure={(error, transport) =>
-                    setProposalSave({ state: "error", error, transport })
-                  }
-                  onProposed={(record) => {
-                    setProposalSave({ state: "created", record });
-                    onProposed?.(record);
-                  }}
-                />
-              )}
-              <Button
-                disabled={busy || proposalFrozen || sameAsHead !== false}
-                type="submit"
-                variant="primary"
-              >
+              <Button disabled={busy || sameAsHead !== false} type="submit" variant="primary">
                 {machineSaving
                   ? `Saving v${nextVersion}…`
                   : reconciling
                     ? "Re-checking head…"
                     : primaryLabel}
               </Button>
+              {stash ? (
+                <CreateChangeSetButton
+                  author={author}
+                  baseVersion={displayHead.version}
+                  body={exactDraft}
+                  contentType={displayHead.contentType}
+                  disabled={busy || sameAsHead !== false}
+                  message={message}
+                  path={displayHead.path}
+                  stash={stash}
+                  onChangeSetCreated={onChangeSetCreated}
+                />
+              ) : null}
             </>
           )}
         </footer>

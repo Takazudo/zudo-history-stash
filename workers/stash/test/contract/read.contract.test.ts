@@ -67,6 +67,55 @@ describe(`read-only HTTP contract (${TEST_TIER}: ${API_BASE_URL})`, () => {
     }
   });
 
+  it("reads seeded commits, change sets, and a commit snapshot", async () => {
+    const client = createAdminClient();
+    const commits = client.commits(SEEDED_STASH);
+    const commitPage = unwrap(await commits.list({ limit: 200 }), "seeded commit list");
+    expect(commitPage.commits.length).toBeGreaterThan(0);
+    const summary = commitPage.commits[0];
+    if (summary === undefined) throw new Error("seeded commit list was empty");
+
+    const commit = unwrap(await commits.get(summary.id), "seeded commit get");
+    expect(commit.id).toBe(summary.id);
+    expect(commit.entries).toHaveLength(commit.entryCount);
+    expect(commit.entries.every(({ changeId }) => Number.isSafeInteger(changeId))).toBe(true);
+
+    const commitDiff = unwrap(await commits.diff(summary.id), "seeded commit diff");
+    expect(commitDiff.entries.length).toBeGreaterThan(0);
+    expect(commitDiff.entries.every(({ path }) => typeof path === "string")).toBe(true);
+
+    const snapshot = unwrap(
+      await client.files(SEEDED_STASH).snapshot({ at: `commit:${summary.id}`, prefix: "docs" }),
+      "seeded commit snapshot",
+    );
+    expect(snapshot.at).toEqual({ commitId: summary.id, changeId: commit.lastChangeId });
+    expect(snapshot.files.some(({ path }) => path === SEEDED_PATH)).toBe(true);
+
+    const listed = unwrap(
+      await client.files(SEEDED_STASH).list({ prefix: "docs", delimiter: "/" }),
+      "seeded prefix list",
+    );
+    expect(listed.files.some(({ path }) => path === SEEDED_PATH)).toBe(true);
+
+    const changeSets = unwrap(
+      await client.changeSets(SEEDED_STASH).list({ status: "all", limit: 200 }),
+      "seeded change-set list",
+    );
+    expect(changeSets.changeSets.length).toBeGreaterThan(0);
+    const changeSetSummary = changeSets.changeSets[0];
+    if (changeSetSummary === undefined) throw new Error("seeded change-set list was empty");
+    const changeSet = unwrap(
+      await client.changeSets(SEEDED_STASH).get(changeSetSummary.id),
+      "seeded change-set get",
+    );
+    expect(changeSet.id).toBe(changeSetSummary.id);
+    const changeSetDiff = unwrap(
+      await client.changeSets(SEEDED_STASH).diff(changeSetSummary.id),
+      "seeded change-set diff",
+    );
+    expect(changeSetDiff.status).toBe(changeSet.status);
+  });
+
   it("computes a read-capability candidate diff without persisting", async () => {
     const files = createAdminClient().files(SEEDED_STASH);
     const head = await files.get(SEEDED_PATH);

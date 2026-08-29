@@ -17,15 +17,16 @@ category: reference
 | `/s/:stash/f/*` | 任意の正の `version`。 | Read。 |
 | `/s/:stash/diff/*` | 正の `from`（デフォルト 1）、正の `to` または `head`、受け入れ可能な `context`。 | Read。 |
 | `/s/:stash/edit/*` | 任意の正の `from` source version。 | Write。 |
-| `/s/:stash/proposals` | `status=open` または `status=all`（デフォルト `open`）、任意の `path`。 | Read。判断はケイパビリティで制限されます。 |
-| `/s/:stash/proposals/:id` | 不変の proposal ID。 | Read。判断操作には write が必要です。 |
 | `/s/:stash/new` | Query なし。 | Write。 |
+| `/s/:stash/commits` | 任意の path filter。 | Read。 |
+| `/s/:stash/commits/:id` | commit detail と entry ごとの diff。revert control には write が必要。 | Read。 |
+| `/s/:stash/change-sets` | 任意の status/path filter。 | Read。 |
+| `/s/:stash/change-sets/:id` | review detail。approve/reject control には write が必要。 | Read。 |
 | `/s/:stash/tokens` | Query なし。 | Admin。 |
 
-stash ID と proposal ID は `encodeURIComponent` で encode します。ファイルパスは segment ごとに encode し、
+stash ID は `encodeURIComponent` で encode します。ファイルパスは segment ごとに encode し、
 slash を区切りとして残します。履歴や diff のリンクを共有するときは、query string 全体を保持してください。
-`defaultStashHref` は中心的な destination を扱います。proposal filter は `proposalListHref` を使うため、
-一つの helper がすべての安定 URL を扱うと主張することはありません。
+`defaultStashHref` は安定した destination を扱います。
 
 未認証の deep link は `/login?next=<encoded path+query+hash>` へ redirect します。ログインから戻るときに
 受け入れるのは、安全な同一 origin の application path だけです。認証情報はタブに限定した session storage

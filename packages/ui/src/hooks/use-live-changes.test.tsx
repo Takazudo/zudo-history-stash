@@ -48,6 +48,7 @@ function change(
   return {
     type: "change",
     changeId,
+    commitId: `legacy:${changeId}`,
     stash: "notes",
     path,
     version: changeId,
@@ -111,33 +112,26 @@ describe("useLiveChanges", () => {
     await flushMicrotasks();
     expect(refresh).not.toHaveBeenCalled();
 
-    const ownProposal = await client.proposals("notes").create(
-      {
-        path: "docs/own-proposal.txt",
-        body: "own proposal",
-        baseVersion: null,
-      },
-      { idempotencyKey: "own-proposal" },
-    );
-    expect(ownProposal.ok).toBe(true);
-    await flushMicrotasks();
-    expect(refresh).not.toHaveBeenCalled();
-
     act(() =>
       fake.events.emit({
-        type: "proposal",
-        proposalId: "prp_1787875200000deadbeef",
+        type: "change-set",
+        changeSetId: "cst_1787875200000deadbeef",
         stash: "notes",
-        path: "docs/proposed.txt",
+        paths: ["docs/candidate.txt", "docs/second.txt"],
         status: "open",
         origin: "tab-b",
       }),
     );
-    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
     expect(refresh.mock.calls[0]?.[0]).toMatchObject({
-      reason: "proposal",
+      reason: "change-set",
       checkpoint: 1,
-      path: "docs/proposed.txt",
+      path: "docs/candidate.txt",
+    });
+    expect(refresh.mock.calls[1]?.[0]).toMatchObject({
+      reason: "change-set",
+      checkpoint: 1,
+      path: "docs/second.txt",
     });
 
     await flushMicrotasks();

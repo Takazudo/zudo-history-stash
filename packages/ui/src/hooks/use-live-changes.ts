@@ -6,7 +6,8 @@ import { createRefreshScheduler } from "./refresh-scheduler.js";
 
 export type LiveChangesStatus = "live" | "reconnecting" | "polling" | "off";
 
-export type LiveRefreshReason = "ready" | "change" | "proposal" | "focus" | "visibility";
+export type LiveRefreshReason =
+  "ready" | "change" | "commit" | "change-set" | "focus" | "visibility";
 
 /** Advisory input for a host refresh. The host's `since=` feed remains the correctness source. */
 export interface LiveRefreshRequest {
@@ -144,23 +145,26 @@ export function useLiveChanges(
 
     const lifecycle = new AbortController();
     const scheduler = createRefreshScheduler<string>();
-    const refreshKey = stash;
     const schedule = (
       reason: LiveRefreshReason,
       path?: string,
       reconciledCheckpoint?: number | null,
+      paths?: readonly string[],
     ) => {
-      const request: LiveRefreshRequest = {
-        reason,
-        checkpoint: consumerCheckpoint,
-        ...(path === undefined ? {} : { path }),
-        signal: lifecycle.signal,
-      };
-      scheduler.schedule(refreshKey, async () => {
+      scheduler.schedule(stash, async () => {
         if (lifecycle.signal.aborted || targetRef.current !== target) return;
         const reconcile = refreshRef.current;
         if (reconcile === undefined) return;
-        await reconcile(request);
+        const scheduledPaths = paths ?? [path];
+        for (const scheduledPath of scheduledPaths) {
+          const request: LiveRefreshRequest = {
+            reason,
+            checkpoint: consumerCheckpoint,
+            ...(scheduledPath === undefined ? {} : { path: scheduledPath }),
+            signal: lifecycle.signal,
+          };
+          await reconcile(request);
+        }
         if (
           reconciledCheckpoint === undefined ||
           lifecycle.signal.aborted ||
@@ -252,11 +256,19 @@ export function useLiveChanges(
           continue;
         }
         if (clientId !== undefined && event.origin === clientId) continue;
+        const eventPaths =
+          event.type === "change" ? [event.path] : event.type === "change-set" ? event.paths : [];
         if (awaitingReady) {
-          bufferPath(event.path);
+          if (eventPaths.length === 0) mixedBufferedPaths = true;
+          else for (const eventPath of eventPaths) bufferPath(eventPath);
           continue;
         }
-        schedule(event.type, event.path);
+        if (eventPaths.length === 0) schedule(event.type);
+        else if (event.type === "change-set") {
+          schedule(event.type, undefined, undefined, [...new Set(eventPaths)]);
+        } else {
+          schedule(event.type, eventPaths[0]);
+        }
       }
     };
     void consume().catch(() => {

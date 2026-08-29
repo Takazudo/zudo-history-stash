@@ -51,8 +51,15 @@ Viewer プロキシが `authorization` を受け取ったことを確認し、�
 
 読み込んだ compare-and-set の head が一致しなくなっています。未保存のドラフトテキストと固定された
 比較対象を保持し、正本の head を取得して比較したうえで、変更を意図的に適用し直してください。変更操作を
-自動的にマージまたはリベースしたり、闇雲に再試行したりしてはなりません。同じフェンスにより、ベースが
-最新でなくなった提案の承認も拒否されます。
+自動的にマージまたはリベースしたり、闇雲に再試行したりしてはなりません。
+
+### アトミックな entry fence
+
+atomic commit と change set の承認失敗では、ルートの `conflicts[]` が含まれることがあります。commit の作成と
+revert では、`404 not-found` を返すのは失敗した entry が一つだけで `current: null` の場合です。それ以外の entry
+fence 失敗は `409 commit-conflict` です。承認では、存在しない `delete` 対象一つだけの場合は `404 not-found`、
+それ以外の entry conflict は `409 commit-conflict` です。存在する `conflicts[]` を確認し、列挙された全 path を
+再取得して操作全体を組み立て直してください。一部だけが適用されることはありません。
 
 そのほかの `409` 操作状態には、それぞれに応じた復旧が必要です。
 
@@ -61,7 +68,7 @@ Viewer プロキシが `authorization` を受け取ったことを確認し、�
 - `already-rotated`: 記録された後継のワークフローを使い、前のトークンを再びローテーションしないでください。
 - `token-expired`: 要求したトークン管理操作が状態の境界を越えています。Bearer プリンシパル自体が期限切れで、
   `401 unauthorized` として認証されない場合とは異なります。
-- `proposal-expired` と `proposal-closed`: 変更されない提案レコードを再読み込みします。期限切れ、却下済み、
+- `change-set-expired` と `change-set-closed`: 変更されない提案レコードを再読み込みします。期限切れ、却下済み、
   適用済みの提案は、再び open にしたり自動的にリベースしたりできません。
 
 ### `422 idempotency-key-reused`

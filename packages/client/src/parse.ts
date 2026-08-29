@@ -1,6 +1,7 @@
 import { formatEtag } from "@takazudo/zudo-history-stash-core";
 import type {
   ApiError,
+  CommitConflict,
   Current,
   ErrorCode,
   FileRecord,
@@ -16,6 +17,7 @@ import type {
 type ErrorBody = {
   error?: { code?: unknown; message?: unknown; successorId?: unknown };
   current?: unknown;
+  conflicts?: unknown;
 };
 
 /** A request or transport failure that is not a business outcome. */
@@ -76,6 +78,11 @@ function getSuccessorId(body: unknown): string | undefined {
   return typeof successorId === "string" ? successorId : undefined;
 }
 
+function getConflicts(body: unknown): CommitConflict[] | undefined {
+  const conflicts = getErrorBody(body).conflicts;
+  return Array.isArray(conflicts) ? (conflicts as CommitConflict[]) : undefined;
+}
+
 function parseRetryAfter(value: string | null): number | undefined {
   if (value === null) return undefined;
   const trimmed = value.trim();
@@ -93,6 +100,9 @@ function mapFailure<T>(response: Response, body: unknown): ClientResult<T> {
   const fallback = status >= 400 && status < 500 ? "validation" : "internal";
   const code = getErrorCode(body, fallback) as ApiError["code"];
   const current = getCurrent(body);
+  // The atomic fence may return a single missing-path `not-found` with conflicts as well as the
+  // multi-path `commit-conflict` form; preserve the advisory array for both branches.
+  const conflicts = getConflicts(body);
   const successorId = code === "already-rotated" ? getSuccessorId(body) : undefined;
   const retryAfter =
     code === "rate-limited" ? parseRetryAfter(response.headers.get("Retry-After")) : undefined;
@@ -105,6 +115,7 @@ function mapFailure<T>(response: Response, body: unknown): ClientResult<T> {
       ...(successorId === undefined ? {} : { successorId }),
     },
     ...(current === undefined ? {} : { current }),
+    ...(conflicts === undefined ? {} : { conflicts }),
     ...(retryAfter === undefined ? {} : { retryAfter }),
   };
 }

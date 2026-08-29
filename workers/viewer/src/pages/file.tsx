@@ -24,12 +24,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useStashClient } from "../app/auth/stash-client-provider.js";
 import { useViewerLiveRefresh } from "../app/live-updates.js";
-import { proposalListHref } from "../app/proposal-routes.js";
-import { Badge } from "../app/shell/badge.js";
 import { Page } from "../app/shell/page.js";
 import { ErrorBanner } from "../components/error-banner.js";
 import { useAsync } from "../hooks/use-async.js";
-import { useOpenProposalCount } from "../hooks/use-open-proposal-count.js";
 
 function isVersionKind(value: unknown): value is FileRecordWithEtag["kind"] {
   return value === "put" || value === "delete" || value === "rollback";
@@ -375,7 +372,6 @@ function FileRouteContent({
   const { client } = useStashClient();
   const navigate = useNavigate();
   const hrefFor = useStashHref();
-  const openProposals = useOpenProposalCount(client, stash, path);
   const file = useAsync(
     async (signal) => {
       if (!client) throw new Error("Sign in to inspect this file.");
@@ -386,21 +382,16 @@ function FileRouteContent({
   const history = useFileHistory(stash, path);
   const reloadFile = file.reload;
   const reloadHistory = history.reload;
-  const reloadOpenProposals = openProposals.reload;
   useViewerLiveRefresh(
     useCallback(
       async ({ signal }) => {
-        const results = await Promise.allSettled([
-          reloadFile(signal),
-          reloadHistory(signal),
-          reloadOpenProposals(signal),
-        ]);
+        const results = await Promise.allSettled([reloadFile(signal), reloadHistory(signal)]);
         const failed = results.find(
           (result): result is PromiseRejectedResult => result.status === "rejected",
         );
         if (failed !== undefined) throw failed.reason;
       },
-      [reloadFile, reloadHistory, reloadOpenProposals],
+      [reloadFile, reloadHistory],
     ),
   );
   const historyPage = history.state === "ready" ? history.page : null;
@@ -428,20 +419,6 @@ function FileRouteContent({
 
   return (
     <div className="file-detail-layout">
-      {openProposals.state === "ready" &&
-      openProposals.value !== null &&
-      openProposals.value > 0 ? (
-        <div>
-          <Link
-            aria-label={`${openProposals.value} open ${openProposals.value === 1 ? "proposal" : "proposals"} for ${path}`}
-            to={proposalListHref(stash, { path })}
-          >
-            <Badge>
-              {openProposals.value} open {openProposals.value === 1 ? "proposal" : "proposals"}
-            </Badge>
-          </Link>
-        </div>
-      ) : null}
       {file.state === "loading" ? <p className="loading-copy">Loading file…</p> : null}
       {file.state === "error" ? (
         <ErrorBanner

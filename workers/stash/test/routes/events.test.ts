@@ -122,7 +122,7 @@ async function publish(bindings: Env, stash: string, event: StashEvent): Promise
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event),
+      body: JSON.stringify([event]),
     },
   );
   expect(response.status).toBe(204);
@@ -467,15 +467,23 @@ function delayedAscendingSnapshot(db: D1Database): {
 }
 
 async function seedChanges(bindings: Env, stash: string, count: number): Promise<void> {
-  for (let offset = 0; offset < count; offset += 100) {
-    const statements = Array.from({ length: Math.min(100, count - offset) }, (_, index) => {
+  for (let offset = 0; offset < count; offset += 50) {
+    const statements: D1PreparedStatement[] = [];
+    for (const index of Array.from({ length: Math.min(50, count - offset) }, (_, i) => i)) {
       const change = offset + index + 1;
-      return bindings.DB.prepare(
-        `INSERT INTO versions
-           (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at)
-         VALUES (?, ?, 1, 'put', ?, 1, '', '', ?)`,
-      ).bind(stash, `bulk/${change}.txt`, `hash-${change}`, change);
-    });
+      const commitId = `cmt_events_${change}`;
+      statements.push(
+        bindings.DB.prepare(
+          `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+           VALUES (?, ?, 'put', 1, 'test-fixture', ?)`,
+        ).bind(commitId, stash, change),
+        bindings.DB.prepare(
+          `INSERT INTO versions
+           (stash_name, path, version, kind, blob_hash, size_bytes, author, message, created_at, commit_id)
+         VALUES (?, ?, 1, 'put', ?, 1, '', '', ?, ?)`,
+        ).bind(stash, `bulk/${change}.txt`, `hash-${change}`, change, commitId),
+      );
+    }
     await bindings.DB.batch(statements);
   }
 }
@@ -668,10 +676,10 @@ describe("stash events route", () => {
       await reader.expectDone();
       await expect.poll(() => subscriberCount(baseBindings, stash)).toBe(0);
       await publish(baseBindings, stash, {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change-set",
+        changeSetId: "cst_1756339200000deadbeef",
         stash,
-        path: "after-revocation.txt",
+        paths: ["after-revocation.txt"],
         status: "open",
         origin: "peer-after-revocation",
       });
@@ -869,6 +877,7 @@ describe("stash events route", () => {
         event: {
           type: "change",
           changeId: second.changeId,
+          commitId: second.commitId,
           stash,
           path: "second.txt",
           version: 1,
@@ -911,6 +920,7 @@ describe("stash events route", () => {
       await publish(baseBindings, stash, {
         type: "change",
         changeId: created.changeId,
+        commitId: created.commitId,
         stash,
         path: "gap.txt",
         version: created.version,
@@ -935,10 +945,10 @@ describe("stash events route", () => {
       });
 
       const sentinel: StashEvent = {
-        type: "proposal",
-        proposalId: "prp_1756339200000deadbeef",
+        type: "change-set",
+        changeSetId: "cst_1756339200000deadbeef",
         stash,
-        path: "gap.txt",
+        paths: ["gap.txt"],
         status: "open",
         origin: null,
       };
@@ -964,6 +974,7 @@ describe("stash events route", () => {
       await publish(baseBindings, stash, {
         type: "change",
         changeId: created.changeId,
+        commitId: created.commitId,
         stash,
         path: "duplicate.txt",
         version: created.version,

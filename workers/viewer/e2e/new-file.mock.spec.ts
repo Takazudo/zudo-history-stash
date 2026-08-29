@@ -1,7 +1,6 @@
 import type { Page, Request } from "@playwright/test";
 import type { CapabilitiesResponse } from "@takazudo/zudo-history-stash";
 import { expect, test } from "./fixtures/console-errors.js";
-import { fulfillEmptyOpenProposalCount } from "./fixtures/proposal-count.js";
 
 const STASH = "notes";
 const PATH = "drafts/launch-note.md";
@@ -14,6 +13,7 @@ const CAPABILITIES: CapabilitiesResponse = {
   contentAccess: ["inline", "raw", "deleted"],
   transferModes: ["json", "single", "multipart"],
   storageTiers: ["d1", "r2"],
+  commitEntryKinds: ["put", "copy", "delete", "rollback"],
   limits: {
     jsonInlineMaxBytes: 5_000_000,
     d1InlineMaxBytes: 524_288,
@@ -57,8 +57,6 @@ async function installFixture(page: Page) {
     const request = route.request();
     const url = new URL(request.url());
     const signature = `${request.method()} ${url.pathname}${url.search}`;
-
-    if (await fulfillEmptyOpenProposalCount(route, [{ stash: STASH, path: PATH }])) return;
 
     if (request.method() === "GET" && url.pathname === "/api/v1/me" && url.search === "") {
       await route.fulfill({ status: 200, json: { principal: "admin" } });

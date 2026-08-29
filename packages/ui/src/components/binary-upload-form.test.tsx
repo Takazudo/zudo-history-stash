@@ -20,6 +20,7 @@ function capabilities(
     contentAccess: ["inline", "raw", "deleted"],
     transferModes: ["json", "single", "multipart"],
     storageTiers: ["d1", "r2"],
+    commitEntryKinds: ["put", "copy", "delete", "rollback"],
     limits: {
       jsonInlineMaxBytes: 16,
       d1InlineMaxBytes: 16,
@@ -66,6 +67,12 @@ describe("BinaryUploadForm", () => {
       token: readToken,
       fetch: fake.fetch,
     });
+    const principal = await client.me();
+    expect(principal).toMatchObject({
+      ok: true,
+      value: { principal: "stash", stash: "notes", scope: "read" },
+    });
+    vi.spyOn(client, "me").mockResolvedValue(principal);
     render(
       <StashUiProvider client={client}>
         <BinaryUploadForm onUploaded={vi.fn()} stash="notes" />

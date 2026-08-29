@@ -1,0 +1,16 @@
+---
+title: 0.2.0
+description: Atomic commits and immutable change-set protocol.
+sidebar_position: 1
+category: changelog
+---
+
+Released: 2026-08-29
+
+- Add atomic multi-path commits, commit-boundary snapshots, immutable change sets, commit reverts,
+  binary candidates, and stored-version copy entries.
+- Proposals were removed; use a one-entry change set for the equivalent review workflow.
+- Make `commitId` required on every version and change-feed item, including writes made through
+  single-path routes.
+- Add `commit-conflict`, `change-set-expired`, and `change-set-closed` outcomes and the shared commit
+  and change-set limits.

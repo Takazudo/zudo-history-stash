@@ -6,10 +6,10 @@ category: guides
 ---
 
 `files(stash).events()` は、認証済みの Fetch 専用 SSE ストリームを開きます。そのイベントは助言的な
-ヒントであり、ファイルや提案の正本の状態ではありません。ファイル一覧、ファイル履歴、変更フィード、
-提案リソースは、通常の読み取りを通じて調整してください。
+ヒントであり、ファイルやチェンジセットの正本の状態ではありません。ファイル一覧、ファイル履歴、変更フィード、
+チェンジセットリソースは、通常の読み取りを通じて調整してください。
 
-`ready` の到着時と、`change` または `proposal` の各ヒントの後に、正本の状態を更新します。クライアントは、
+`ready` の到着時と、`change`、`commit`、または `change-set` の各ヒントの後に、正本の状態を更新します。クライアントは、
 再生チェックポイントを順不同になり得る live の変更 ID から分離し、再生と live の重複を排除し、
 保留イベントキューを一つのヒントに制限します。これらの規則は、バッファされたイベントのパスや
 ペイロードを正しい状態として扱うより、新しい読み取りを意図的に優先します。
@@ -47,11 +47,16 @@ export function openAdvisoryUpdates(input: {
   const done = (async () => {
     try {
       for await (const event of stream) {
-        if (event.type === "ready" || event.type === "change" || event.type === "proposal") {
+        if (
+          event.type === "ready" ||
+          event.type === "change" ||
+          event.type === "commit" ||
+          event.type === "change-set"
+        ) {
           await input.refreshAuthoritativeState(event);
         }
         if (
-          (event.type === "change" || event.type === "proposal") &&
+          (event.type === "change" || event.type === "commit" || event.type === "change-set") &&
           event.origin !== input.clientId
         ) {
           input.onRemoteHint(event);

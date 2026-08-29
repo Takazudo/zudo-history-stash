@@ -16,9 +16,11 @@ const clientIdentityRouteIds = [
   "revokeToken",
   "importHistory",
   "runGc",
-  "createProposal",
-  "approveProposal",
-  "rejectProposal",
+  "createCommit",
+  "revertCommit",
+  "createChangeSet",
+  "approveChangeSet",
+  "rejectChangeSet",
   "putFile",
   "deleteFile",
   "rollbackFile",
@@ -38,11 +40,11 @@ describe("route contract coverage", () => {
 
   it("preserves literal per-route types on the public contract registry", () => {
     expectTypeOf(ROUTE_CONTRACTS.stashEvents.transport).toEqualTypeOf<"fetch-only">();
-    expectTypeOf<keyof typeof ROUTE_CONTRACTS.createProposal.responses>().toEqualTypeOf<201>();
-    expectTypeOf(ROUTE_CONTRACTS.createProposal.responses[201].schema).toEqualTypeOf<
+    expectTypeOf<keyof typeof ROUTE_CONTRACTS.createCommit.responses>().toEqualTypeOf<201>();
+    expectTypeOf(ROUTE_CONTRACTS.createCommit.responses[201].schema).toEqualTypeOf<
       keyof typeof RESPONSE_SCHEMAS | undefined
     >();
-    expectTypeOf(ROUTE_CONTRACTS.createProposal.requestHeaders).toEqualTypeOf<
+    expectTypeOf(ROUTE_CONTRACTS.createCommit.requestHeaders).toEqualTypeOf<
       ["Idempotency-Key", "X-Stash-Client-Id"]
     >();
   });
@@ -112,12 +114,18 @@ describe("route contract coverage", () => {
       listChanges: [],
       runGc: [],
       listGcRuns: [],
-      createProposal: [],
-      listProposals: [],
-      getProposal: [],
-      getProposalDiff: [],
-      approveProposal: ["stale"],
-      rejectProposal: [],
+      createCommit: [],
+      getCommit: [],
+      listCommits: [],
+      getCommitDiff: [],
+      revertCommit: [],
+      getSnapshot: [],
+      createChangeSet: [],
+      listChangeSets: [],
+      getChangeSet: [],
+      getChangeSetDiff: [],
+      approveChangeSet: [],
+      rejectChangeSet: [],
       stashEvents: [],
       listFiles: [],
       getFile: ["file-deleted"],
@@ -178,35 +186,34 @@ describe("route contract coverage", () => {
     );
   });
 
-  it("declares proposal-create replay metadata and stale approval current metadata", () => {
-    expect(ROUTE_CONTRACTS.createProposal.requestHeaders).toEqual([
-      "Idempotency-Key",
-      STASH_CLIENT_ID_HEADER,
-    ]);
-    expect(ROUTE_CONTRACTS.createProposal.responses[201]?.headers).toEqual(["Idempotent-Replayed"]);
-    expect(
-      ROUTE_CONTRACTS.approveProposal.errors.find(({ code }) => code === "stale"),
-    ).toMatchObject({ current: true });
-  });
-
-  it("pins decision payload limits and the rejected route sample", () => {
-    for (const routeId of ["approveProposal", "rejectProposal"] as const) {
+  it("pins commit and change-set write semantics", () => {
+    for (const routeId of ["createCommit", "revertCommit", "createChangeSet"] as const) {
+      expect(ROUTE_CONTRACTS[routeId].requestHeaders).toEqual([
+        "Idempotency-Key",
+        STASH_CLIENT_ID_HEADER,
+      ]);
+      expect(ROUTE_CONTRACTS[routeId].responses[201]?.headers).toEqual(["Idempotent-Replayed"]);
+    }
+    expect(ROUTE_CONTRACTS.createCommit.errors.map(({ code }) => code)).toContain(
+      "commit-conflict",
+    );
+    expect(ROUTE_CONTRACTS.approveChangeSet.errors.map(({ code }) => code)).toEqual(
+      expect.arrayContaining(["commit-conflict", "change-set-expired", "change-set-closed"]),
+    );
+    for (const routeId of ["approveChangeSet", "rejectChangeSet"] as const) {
       expect(
         ROUTE_CONTRACTS[routeId].errors.map(({ code }) => code),
         routeId,
       ).toContain("payload-too-large");
     }
-    expect(ROUTE_CONTRACTS.rejectProposal.responses[200]).toMatchObject({
-      schema: "ProposalRecord",
-      example: "RejectedProposalRecord",
+    expect(ROUTE_CONTRACTS.rejectChangeSet.responses[200]).toMatchObject({
+      schema: "ChangeSetRecord",
+      example: "RejectedChangeSetRecord",
     });
-    expect(ROUTE_CONTRACTS.createProposal.responses[201]?.example).toBe("ProposalRecord");
-    expect(SAMPLES.ProposalRecord.status).toBe("open");
-    expect(SAMPLES.RejectedProposalRecord).toMatchObject({
+    expect(SAMPLES.RejectedChangeSetRecord).toMatchObject({
       status: "rejected",
       decidedAt: "2026-08-26T01:00:00.000Z",
       decidedBy: "admin",
-      decisionReason: "Superseded by a newer proposal",
     });
   });
 
@@ -272,12 +279,18 @@ describe("route contract coverage", () => {
     const expected = new Set([
       "me",
       "getStash",
-      "createProposal",
-      "listProposals",
-      "getProposal",
-      "getProposalDiff",
-      "approveProposal",
-      "rejectProposal",
+      "createCommit",
+      "getCommit",
+      "listCommits",
+      "getCommitDiff",
+      "revertCommit",
+      "getSnapshot",
+      "createChangeSet",
+      "listChangeSets",
+      "getChangeSet",
+      "getChangeSetDiff",
+      "approveChangeSet",
+      "rejectChangeSet",
       "stashEvents",
       "listFiles",
       "getFile",

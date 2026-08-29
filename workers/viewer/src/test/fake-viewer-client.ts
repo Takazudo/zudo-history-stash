@@ -1,15 +1,21 @@
 import {
   createStashClient,
+  type ChangeSetDiffResult,
+  type ChangeSetListResponse,
+  type ChangeSetRecord,
   type ChangeItem,
   type ClientResult,
+  type CommitDiffResult,
+  type CommitListResponse,
+  type CommitRecord,
   type FileListResponse,
   type ListChangesResult,
   type ListStashesResult,
   type MeResponse,
-  type ProposalListResponse,
+  type StashChangeSetsClient,
+  type StashCommitsClient,
   type StashClient,
   type StashFilesClient,
-  type StashProposalsClient,
 } from "@takazudo/zudo-history-stash";
 import type { FakeStash } from "@takazudo/zudo-history-stash/testing";
 import type { ViewerStashClient } from "../app/auth/stash-client-provider.js";
@@ -19,13 +25,26 @@ export interface FakeViewerClientOverrides {
   stashes?: Partial<StashClient["stashes"]>;
   changes?: StashClient["changes"];
   files?: (stash: string) => StashFilesClient;
-  proposals?: (stash: string) => StashProposalsClient;
+  commits?: (stash: string) => StashCommitsClient;
+  changeSets?: (stash: string) => StashChangeSetsClient;
 }
 
 const emptyChanges: ListChangesResult = {
   changes: [],
   hasMore: false,
   nextBefore: null,
+};
+
+const missingRecord = {
+  ok: false as const,
+  error: { status: 404, code: "not-found" as const, message: "Record not found." },
+};
+const emptyCommitDiff: CommitDiffResult = { entries: [], truncated: false };
+const emptyChangeSetDiff: ChangeSetDiffResult = {
+  entries: [],
+  stale: false,
+  status: "open",
+  truncated: false,
 };
 
 export const adminMe: ClientResult<MeResponse> = {
@@ -36,6 +55,7 @@ export const adminMe: ClientResult<MeResponse> = {
 export function change(overrides: Partial<ChangeItem> = {}): ChangeItem {
   return {
     changeId: 1,
+    commitId: "legacy:1",
     stash: "notes",
     path: "docs/readme.txt",
     version: 2,
@@ -76,14 +96,30 @@ export function createFakeViewerClient(
       value: { stashes: [], nextAfter: null },
     }),
   };
-  const defaultProposals = (stash: string): StashProposalsClient => ({
-    ...unreachable.proposals(stash),
-    list: async (): Promise<ClientResult<ProposalListResponse>> => ({
+  const defaultCommits = (stash: string): StashCommitsClient => ({
+    ...unreachable.commits(stash),
+    list: async (): Promise<ClientResult<CommitListResponse>> => ({
       ok: true,
-      value: { proposals: [], nextAfter: null, total: 0 },
+      value: { commits: [], nextAfter: null, total: 0 },
+    }),
+    get: async (): Promise<ClientResult<CommitRecord>> => missingRecord,
+    diff: async (): Promise<ClientResult<CommitDiffResult>> => ({
+      ok: true,
+      value: emptyCommitDiff,
     }),
   });
-
+  const defaultChangeSets = (stash: string): StashChangeSetsClient => ({
+    ...unreachable.changeSets(stash),
+    list: async (): Promise<ClientResult<ChangeSetListResponse>> => ({
+      ok: true,
+      value: { changeSets: [], nextAfter: null, total: 0 },
+    }),
+    get: async (): Promise<ClientResult<ChangeSetRecord>> => missingRecord,
+    diff: async (): Promise<ClientResult<ChangeSetDiffResult>> => ({
+      ok: true,
+      value: emptyChangeSetDiff,
+    }),
+  });
   const client = {
     ...unreachable,
     me: overrides.me ?? (async () => adminMe),
@@ -95,7 +131,8 @@ export function createFakeViewerClient(
         value: emptyChanges,
       })),
     files: overrides.files ?? defaultFiles,
-    proposals: overrides.proposals ?? defaultProposals,
+    commits: overrides.commits ?? defaultCommits,
+    changeSets: overrides.changeSets ?? defaultChangeSets,
   } as ViewerStashClient;
   client.withSignal = () => client;
   return client;

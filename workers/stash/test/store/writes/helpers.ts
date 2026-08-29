@@ -10,6 +10,7 @@ export async function setup(overrides: Partial<WriteDependencies> = {}) {
   const stash = `writes-${sequence}`;
   const now = overrides.now ?? (() => 1_700_000_000_000 + sequence);
   let generationSequence = sequence * 1_000;
+  let idSequence = 0;
   await env.DB.prepare(
     "INSERT INTO stashes (name, description, meta_json, created_at) VALUES (?, '', '{}', ?)",
   )
@@ -18,7 +19,7 @@ export async function setup(overrides: Partial<WriteDependencies> = {}) {
   const workerEnv = env as Env;
   const deps: WriteDependencies = {
     now,
-    createId: overrides.createId ?? (() => `id-${sequence}`),
+    createId: overrides.createId ?? (() => `id-${sequence}-${++idSequence}`),
     createBlobGeneration:
       overrides.createBlobGeneration ?? (() => generation((generationSequence += 1))),
     ...(overrides.onBeforeCommit ? { onBeforeCommit: overrides.onBeforeCommit } : {}),

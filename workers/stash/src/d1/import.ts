@@ -14,6 +14,7 @@ import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./bl
 import { importBatch, type PreparedImportVersion } from "./sql/import.js";
 import { selectHeadForWrite } from "./sql/writes.js";
 import type { StoreDependencies } from "./store.js";
+import { mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
 
 interface HeadForImportRow {
   head_version: number;
@@ -86,6 +87,7 @@ export interface StashImport {
 }
 
 export interface ImportDependencies extends StoreDependencies {
+  createdBy?: string;
   onBeforeCommit?: () => void | Promise<void>;
   createBlobGeneration?: BlobGenerationFactory;
 }
@@ -285,7 +287,12 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
     });
 
     await deps.onBeforeCommit?.();
+    const commitCreatedAt = deps.now();
+    const commitId = mintCommitId(commitCreatedAt, deps.createId);
     const batch = importBatch(db, {
+      commitId,
+      createdBy: deps.createdBy ?? "system",
+      createdAt: commitCreatedAt,
       stash,
       path: value.path,
       expectedVersion: value.expectedVersion,
@@ -294,13 +301,23 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
     try {
       const results = await db.batch(batch.statements);
       if (results.at(-1)?.meta.changes === 1) {
+        const committedRows = await db.prepare(SELECT_COMMIT_VERSIONS).bind(stash, commitId).all<{
+          id: number;
+          path: string;
+          version: number;
+          kind: "put" | "delete" | "rollback";
+        }>();
         const createdVersions = logical.map((entry, index): ImportedVersionFact | null => {
-          const statementIndex = batch.versionStatementIndexes[index];
-          const changeId =
-            statementIndex === undefined ? undefined : results[statementIndex]?.meta.last_row_id;
-          if (typeof changeId !== "number" || changeId < 1) return null;
+          const committed = committedRows.results[index];
+          if (
+            committed === undefined ||
+            committed.path !== value.path ||
+            committed.version !== entry.version ||
+            committed.kind !== entry.kind
+          )
+            return null;
           return {
-            changeId,
+            changeId: committed.id,
             version: entry.version,
             kind: entry.kind,
             author: entry.author,
@@ -323,6 +340,7 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
           statusCode: 201,
           createdVersions: exactCreatedVersions,
           value: {
+            commitId,
             path: value.path,
             headVersion: prepared.at(-1)?.version ?? baseVersion,
             firstChangeId,

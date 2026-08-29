@@ -2,6 +2,23 @@ import { createTestEnv } from "./env.js";
 
 export const READ_FIXTURE_STASH = "reads-fixture";
 
+export async function seedCommit(
+  stash: string,
+  id: string,
+  createdAt = 1,
+  source: "put" | "delete" | "rollback" | "import" | "upload" = "put",
+): Promise<string> {
+  await createTestEnv()
+    .env.DB.prepare(
+      `INSERT INTO commits
+         (id, stash_name, source, entry_count, created_by, created_at)
+       VALUES (?, ?, ?, 1, 'test-fixture', ?)`,
+    )
+    .bind(id, stash, source, createdAt)
+    .run();
+  return id;
+}
+
 const HASH_ALPHA_ONE = "sha256-alpha-one";
 const HASH_ALPHA_TWO = "sha256-alpha-two";
 const HASH_BETA_ONE = "sha256-beta-one";
@@ -144,14 +161,20 @@ export async function seedReadRows(): Promise<void> {
     ],
   ] as const;
   for (const version of versions) {
+    const commitId = await seedCommit(
+      READ_FIXTURE_STASH,
+      `cmt_fixture_${version[0]}`,
+      version[12],
+      version[4],
+    );
     await db
       .prepare(
         `INSERT INTO versions (
           id, stash_name, path, version, kind, blob_hash, size_bytes, content_type,
-          rollback_of, author, message, meta_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          rollback_of, author, message, meta_json, created_at, commit_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(...version)
+      .bind(...version, commitId)
       .run();
   }
 

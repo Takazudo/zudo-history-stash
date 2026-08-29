@@ -16,6 +16,7 @@ export { useDiffViewPreferences } from "./hooks/use-diff-view-preferences.js";
 export { useFileHistory } from "./hooks/use-file-history.js";
 export { useIdempotencyKey } from "./hooks/use-idempotency-key.js";
 export { useLiveChanges } from "./hooks/use-live-changes.js";
+export { useOpenChangeSetCount } from "./hooks/use-open-change-set-count.js";
 export { useMediaQuery } from "./hooks/use-media-query.js";
 export { createRefreshScheduler } from "./hooks/refresh-scheduler.js";
 export { useSaveMachine } from "./hooks/use-save-machine.js";
@@ -23,7 +24,11 @@ export { clearWorkbenchDraftsForCredentialChange, useWorkbench } from "./hooks/u
 
 export { Bytes } from "./components/bytes.js";
 export { BinaryUploadForm, defaultUploadRepresentation } from "./components/binary-upload-form.js";
-export { ChangeRow } from "./components/change-row.js";
+export { ChangeRow, ChangesList } from "./components/change-row.js";
+export { ChangeSetList } from "./components/change-set-list.js";
+export { ChangeSetReview } from "./components/change-set-review.js";
+export { CommitDetail } from "./components/commit-detail.js";
+export { CommitList } from "./components/commit-list.js";
 export { CreateStashDialog } from "./components/create-stash-dialog.js";
 export { DeleteFileDialog } from "./components/delete-file-dialog.js";
 export { DeleteStashDialog } from "./components/delete-stash-dialog.js";
@@ -40,12 +45,9 @@ export { LoadMore } from "./components/load-more.js";
 export { LiveIndicator } from "./components/live-indicator.js";
 export { NewFileForm } from "./components/new-file-form.js";
 export { PathCell } from "./components/path-cell.js";
-export { ProposalList } from "./components/proposal-list.js";
-export { ProposalReview } from "./components/proposal-review.js";
-export { ApproveProposalDialog } from "./components/approve-proposal-dialog.js";
-export { RejectProposalDialog } from "./components/reject-proposal-dialog.js";
 export { RelativeTime } from "./components/relative-time.js";
 export { RollbackDialog } from "./components/rollback-dialog.js";
+export { RevertCommitDialog } from "./components/revert-commit-dialog.js";
 export { SaveReviewDialog } from "./components/save-review-dialog.js";
 export { SplitDiffTable } from "./components/split-diff-table.js";
 export { TokensPanel } from "./components/tokens-panel.js";
@@ -82,6 +84,7 @@ export type {
 export type { CandidateDiff, CandidateDiffOptions } from "./hooks/use-candidate-diff.js";
 export type { DiffViewLayout, DiffViewPreferences } from "./hooks/use-diff-view-preferences.js";
 export type { FileHistoryState, UseFileHistoryOptions } from "./hooks/use-file-history.js";
+export type { OpenChangeSetCountState } from "./hooks/use-open-change-set-count.js";
 export type {
   LiveChangesStatus,
   LiveRefreshReason,
@@ -110,7 +113,11 @@ export type {
   BinaryUploadCreated,
   BinaryUploadFormProps,
 } from "./components/binary-upload-form.js";
-export type { ChangeRowProps } from "./components/change-row.js";
+export type { ChangeRowProps, ChangesListProps } from "./components/change-row.js";
+export type { ChangeSetListProps, ChangeSetStatusFilter } from "./components/change-set-list.js";
+export type { ChangeSetReviewProps } from "./components/change-set-review.js";
+export type { CommitDetailProps } from "./components/commit-detail.js";
+export type { CommitListProps } from "./components/commit-list.js";
 export type { CreateStashDialogProps } from "./components/create-stash-dialog.js";
 export type { DeleteFileDialogProps } from "./components/delete-file-dialog.js";
 export type { DeleteStashDialogProps } from "./components/delete-stash-dialog.js";
@@ -136,12 +143,9 @@ export type { LoadMoreProps } from "./components/load-more.js";
 export type { LiveIndicatorProps } from "./components/live-indicator.js";
 export type { NewFileCreated, NewFileFormProps } from "./components/new-file-form.js";
 export type { PathCellProps } from "./components/path-cell.js";
-export type { ProposalListProps } from "./components/proposal-list.js";
-export type { ProposalReviewProps } from "./components/proposal-review.js";
-export type { ApproveProposalDialogProps } from "./components/approve-proposal-dialog.js";
-export type { RejectProposalDialogProps } from "./components/reject-proposal-dialog.js";
 export type { RelativeTimeProps } from "./components/relative-time.js";
 export type { RollbackDialogProps, RollbackSuccess } from "./components/rollback-dialog.js";
+export type { RevertCommitDialogProps } from "./components/revert-commit-dialog.js";
 export type {
   SaveReviewCompletion,
   SaveReviewDialogProps,

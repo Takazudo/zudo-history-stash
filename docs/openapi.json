@@ -15,34 +15,18 @@
         "required": ["id", "state"],
         "type": "object"
       },
-      "ApproveProposalResult": {
+      "ApproveChangeSetResult": {
         "additionalProperties": false,
         "properties": {
-          "appliedChangeId": {
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "type": "integer"
-          },
-          "appliedVersion": {
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "type": "integer"
-          },
-          "createdAt": {
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-            "type": "string"
-          },
-          "hash": {
-            "pattern": "^sha256-[0-9a-f]{64}$",
-            "type": "string"
+          "commit": {
+            "$ref": "#/components/schemas/CommitResult"
           },
           "status": {
             "const": "applied",
             "type": "string"
           }
         },
-        "required": ["status", "appliedVersion", "appliedChangeId", "hash", "createdAt"],
+        "required": ["status", "commit"],
         "type": "object"
       },
       "CandidateDiffResult": {
@@ -115,6 +99,27 @@
       "CapabilitiesResponse": {
         "additionalProperties": false,
         "properties": {
+          "commitEntryKinds": {
+            "prefixItems": [
+              {
+                "const": "put",
+                "type": "string"
+              },
+              {
+                "const": "copy",
+                "type": "string"
+              },
+              {
+                "const": "delete",
+                "type": "string"
+              },
+              {
+                "const": "rollback",
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
           "contentAccess": {
             "prefixItems": [
               {
@@ -249,7 +254,14 @@
             "type": "array"
           }
         },
-        "required": ["representations", "contentAccess", "transferModes", "storageTiers", "limits"],
+        "required": [
+          "representations",
+          "contentAccess",
+          "transferModes",
+          "storageTiers",
+          "commitEntryKinds",
+          "limits"
+        ],
         "type": "object"
       },
       "ChangeItem": {
@@ -267,6 +279,9 @@
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
+          },
+          "commitId": {
+            "type": "string"
           },
           "contentAccess": {
             "enum": ["inline", "raw", "deleted"],
@@ -320,6 +335,7 @@
           }
         },
         "required": [
+          "commitId",
           "changeId",
           "stash",
           "path",
@@ -329,6 +345,358 @@
           "message",
           "size",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "ChangeSetDiffResult": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "base": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Current"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "candidate": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Current"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "current": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Current"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "diff": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "state": {
+                          "const": "same",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state"],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "reason": {
+                          "enum": ["bytes", "complexity"],
+                          "type": "string"
+                        },
+                        "state": {
+                          "const": "oversized",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state"],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "hunks": {
+                          "items": {
+                            "$ref": "#/components/schemas/DiffHunk"
+                          },
+                          "type": "array"
+                        },
+                        "state": {
+                          "const": "ready",
+                          "type": "string"
+                        },
+                        "stats": {
+                          "$ref": "#/components/schemas/DiffStats"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        },
+                        "unified": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state", "unified", "truncated", "hunks", "stats"],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "base": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hash": {
+                                  "pattern": "^sha256-[0-9a-f]{64}$",
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": ["hash", "size"],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "candidate": {
+                          "oneOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hash": {
+                                  "pattern": "^sha256-[0-9a-f]{64}$",
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": ["hash", "size"],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "state": {
+                          "const": "binary",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state", "base", "candidate"],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "op": {
+                  "enum": ["put", "copy", "delete", "rollback"],
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "stale": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["path", "op", "base", "candidate", "current", "stale", "diff"],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": ["open", "applied", "rejected", "expired"],
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": ["entries", "stale", "status", "truncated"],
+        "type": "object"
+      },
+      "ChangeSetListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changeSets": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeSetRecord"
+            },
+            "type": "array"
+          },
+          "nextAfter": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["changeSets", "nextAfter", "total"],
+        "type": "object"
+      },
+      "ChangeSetRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "commitId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "decidedAt": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decidedBy": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decisionReason": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entries": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "baseVersion": {
+                  "oneOf": [
+                    {
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "current": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Current"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "op": {
+                  "enum": ["put", "copy", "delete", "rollback"],
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "stale": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["path", "op", "baseVersion", "current", "stale"],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": {
+              "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "stash": {
+            "type": "string"
+          },
+          "status": {
+            "enum": ["open", "applied", "rejected", "expired"],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "stash",
+          "status",
+          "author",
+          "message",
+          "meta",
+          "expiresAt",
+          "createdBy",
+          "createdAt",
+          "decidedAt",
+          "decidedBy",
+          "decisionReason",
+          "commitId",
+          "entries"
         ],
         "type": "object"
       },
@@ -392,6 +760,518 @@
           }
         ]
       },
+      "CommitDiffResult": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "diff": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/CandidateDiffResult"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "state": {
+                          "enum": ["binary", "oversized"],
+                          "type": "string"
+                        }
+                      },
+                      "required": ["state"],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "from": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "hash": {
+                          "oneOf": [
+                            {
+                              "pattern": "^sha256-[0-9a-f]{64}$",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "version": {
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991,
+                          "type": "integer"
+                        }
+                      },
+                      "required": ["version", "hash"],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "op": {
+                  "enum": ["put", "copy", "delete", "rollback"],
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "to": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "hash": {
+                      "oneOf": [
+                        {
+                          "pattern": "^sha256-[0-9a-f]{64}$",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "version": {
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991,
+                      "type": "integer"
+                    }
+                  },
+                  "required": ["version", "hash"],
+                  "type": "object"
+                }
+              },
+              "required": ["path", "op", "from", "to", "diff"],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": ["entries", "truncated"],
+        "type": "object"
+      },
+      "CommitEntryRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "changeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "contentType": {
+            "type": "string"
+          },
+          "copiedFrom": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "version": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": ["path", "version"],
+            "type": "object"
+          },
+          "hash": {
+            "oneOf": [
+              {
+                "pattern": "^sha256-[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "identicalToHead": {
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": ["put", "delete", "rollback"],
+            "type": "string"
+          },
+          "op": {
+            "enum": ["put", "copy", "delete", "rollback"],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "representation": {
+            "enum": ["text", "binary"],
+            "type": "string"
+          },
+          "rollbackOf": {
+            "oneOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "op",
+          "version",
+          "kind",
+          "changeId",
+          "hash",
+          "size",
+          "contentType",
+          "representation",
+          "rollbackOf"
+        ],
+        "type": "object"
+      },
+      "CommitListResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "commits": {
+            "items": {
+              "$ref": "#/components/schemas/CommitSummary"
+            },
+            "type": "array"
+          },
+          "nextAfter": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["commits", "nextAfter", "total"],
+        "type": "object"
+      },
+      "CommitRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/CommitEntryRecord"
+            },
+            "type": "array"
+          },
+          "entryCount": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "firstChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": {
+              "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "revertsCommitId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "sourceId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "stash",
+          "source",
+          "sourceId",
+          "author",
+          "message",
+          "meta",
+          "entryCount",
+          "firstChangeId",
+          "lastChangeId",
+          "revertsCommitId",
+          "createdBy",
+          "createdAt",
+          "entries"
+        ],
+        "type": "object"
+      },
+      "CommitResult": {
+        "additionalProperties": false,
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/CommitEntryRecord"
+            },
+            "type": "array"
+          },
+          "entryCount": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "firstChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": {
+              "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "revertsCommitId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skipped": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": ["path", "reason"],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          },
+          "sourceId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "stash",
+          "source",
+          "sourceId",
+          "author",
+          "message",
+          "meta",
+          "entryCount",
+          "firstChangeId",
+          "lastChangeId",
+          "revertsCommitId",
+          "createdBy",
+          "createdAt",
+          "entries"
+        ],
+        "type": "object"
+      },
+      "CommitSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "entryCount": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "firstChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": {
+              "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "revertsCommitId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "sourceId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "stash",
+          "source",
+          "sourceId",
+          "author",
+          "message",
+          "meta",
+          "entryCount",
+          "firstChangeId",
+          "lastChangeId",
+          "revertsCommitId",
+          "createdBy",
+          "createdAt"
+        ],
+        "type": "object"
+      },
       "CompleteUploadResult": {
         "oneOf": [
           {
@@ -401,6 +1281,9 @@
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991,
                 "type": "integer"
+              },
+              "commitId": {
+                "type": "string"
               },
               "contentType": {
                 "type": "string"
@@ -423,6 +1306,10 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "storageTier": {
+                "enum": ["d1", "r2"],
+                "type": "string"
+              },
               "version": {
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991,
@@ -430,6 +1317,7 @@
               }
             },
             "required": [
+              "commitId",
               "version",
               "hash",
               "size",
@@ -913,6 +1801,9 @@
             "minimum": 0,
             "type": "integer"
           },
+          "commitId": {
+            "type": "string"
+          },
           "createdAt": {
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
@@ -924,7 +1815,7 @@
             "type": "integer"
           }
         },
-        "required": ["version", "changeId", "createdAt"],
+        "required": ["commitId", "version", "changeId", "createdAt"],
         "type": "object"
       },
       "DeleteStashResult": {
@@ -1141,8 +2032,9 @@
               "gc-busy",
               "already-rotated",
               "token-expired",
-              "proposal-expired",
-              "proposal-closed",
+              "commit-conflict",
+              "change-set-expired",
+              "change-set-closed",
               "rate-limited",
               "payload-too-large",
               "idempotency-key-reused",
@@ -1170,6 +2062,41 @@
       "ErrorResponse": {
         "additionalProperties": false,
         "properties": {
+          "conflicts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "current": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Current"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "expectedVersion": {
+                  "oneOf": [
+                    {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": ["path", "expectedVersion", "current"],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "current": {
             "$ref": "#/components/schemas/Current"
           },
@@ -1274,6 +2201,12 @@
       "FileListResponse": {
         "additionalProperties": false,
         "properties": {
+          "commonPrefixes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "files": {
             "items": {
               "$ref": "#/components/schemas/FileSummary"
@@ -2197,6 +3130,9 @@
       "ImportResult": {
         "additionalProperties": false,
         "properties": {
+          "commitId": {
+            "type": "string"
+          },
           "firstChangeId": {
             "maximum": 9007199254740991,
             "minimum": 0,
@@ -2211,7 +3147,7 @@
             "type": "string"
           }
         },
-        "required": ["path", "headVersion", "firstChangeId"],
+        "required": ["commitId", "path", "headVersion", "firstChangeId"],
         "type": "object"
       },
       "ListChangesResult": {
@@ -2277,6 +3213,12 @@
       "ListFilesResult": {
         "additionalProperties": false,
         "properties": {
+          "commonPrefixes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "files": {
             "items": {
               "$ref": "#/components/schemas/FileSummary"
@@ -2381,645 +3323,6 @@
           }
         ]
       },
-      "ProposalDiffResult": {
-        "oneOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "additionalProperties": false,
-                "properties": {
-                  "deleted": {
-                    "type": "boolean"
-                  },
-                  "hash": {
-                    "oneOf": [
-                      {
-                        "pattern": "^sha256-[0-9a-f]{64}$",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "version": {
-                    "oneOf": [
-                      {
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991,
-                        "type": "integer"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": ["version", "hash", "deleted"],
-                "type": "object"
-              },
-              "candidate": {
-                "additionalProperties": false,
-                "properties": {
-                  "hash": {
-                    "pattern": "^sha256-[0-9a-f]{64}$",
-                    "type": "string"
-                  },
-                  "size": {
-                    "maximum": 9007199254740991,
-                    "minimum": 0,
-                    "type": "integer"
-                  }
-                },
-                "required": ["hash", "size"],
-                "type": "object"
-              },
-              "current": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/Current"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "stale": {
-                "type": "boolean"
-              },
-              "state": {
-                "const": "same",
-                "type": "string"
-              }
-            },
-            "required": ["state", "base", "candidate", "current", "stale"],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "additionalProperties": false,
-                "properties": {
-                  "deleted": {
-                    "type": "boolean"
-                  },
-                  "hash": {
-                    "oneOf": [
-                      {
-                        "pattern": "^sha256-[0-9a-f]{64}$",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "version": {
-                    "oneOf": [
-                      {
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991,
-                        "type": "integer"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": ["version", "hash", "deleted"],
-                "type": "object"
-              },
-              "candidate": {
-                "additionalProperties": false,
-                "properties": {
-                  "hash": {
-                    "pattern": "^sha256-[0-9a-f]{64}$",
-                    "type": "string"
-                  },
-                  "size": {
-                    "maximum": 9007199254740991,
-                    "minimum": 0,
-                    "type": "integer"
-                  }
-                },
-                "required": ["hash", "size"],
-                "type": "object"
-              },
-              "current": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/Current"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "stale": {
-                "type": "boolean"
-              },
-              "state": {
-                "const": "binary",
-                "type": "string"
-              }
-            },
-            "required": ["state", "base", "candidate", "current", "stale"],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "additionalProperties": false,
-                "properties": {
-                  "deleted": {
-                    "type": "boolean"
-                  },
-                  "hash": {
-                    "oneOf": [
-                      {
-                        "pattern": "^sha256-[0-9a-f]{64}$",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "version": {
-                    "oneOf": [
-                      {
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991,
-                        "type": "integer"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": ["version", "hash", "deleted"],
-                "type": "object"
-              },
-              "candidate": {
-                "additionalProperties": false,
-                "properties": {
-                  "hash": {
-                    "pattern": "^sha256-[0-9a-f]{64}$",
-                    "type": "string"
-                  },
-                  "size": {
-                    "maximum": 9007199254740991,
-                    "minimum": 0,
-                    "type": "integer"
-                  }
-                },
-                "required": ["hash", "size"],
-                "type": "object"
-              },
-              "current": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/Current"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "reason": {
-                "enum": ["bytes", "complexity"],
-                "type": "string"
-              },
-              "stale": {
-                "type": "boolean"
-              },
-              "state": {
-                "const": "oversized",
-                "type": "string"
-              }
-            },
-            "required": ["state", "reason", "base", "candidate", "current", "stale"],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "additionalProperties": false,
-                "properties": {
-                  "deleted": {
-                    "type": "boolean"
-                  },
-                  "hash": {
-                    "oneOf": [
-                      {
-                        "pattern": "^sha256-[0-9a-f]{64}$",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "version": {
-                    "oneOf": [
-                      {
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991,
-                        "type": "integer"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": ["version", "hash", "deleted"],
-                "type": "object"
-              },
-              "candidate": {
-                "additionalProperties": false,
-                "properties": {
-                  "hash": {
-                    "pattern": "^sha256-[0-9a-f]{64}$",
-                    "type": "string"
-                  },
-                  "size": {
-                    "maximum": 9007199254740991,
-                    "minimum": 0,
-                    "type": "integer"
-                  }
-                },
-                "required": ["hash", "size"],
-                "type": "object"
-              },
-              "current": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/Current"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "hunks": {
-                "items": {
-                  "$ref": "#/components/schemas/DiffHunk"
-                },
-                "type": "array"
-              },
-              "stale": {
-                "type": "boolean"
-              },
-              "state": {
-                "const": "ready",
-                "type": "string"
-              },
-              "stats": {
-                "$ref": "#/components/schemas/DiffStats"
-              },
-              "truncated": {
-                "type": "boolean"
-              },
-              "unified": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "state",
-              "unified",
-              "truncated",
-              "hunks",
-              "stats",
-              "base",
-              "candidate",
-              "current",
-              "stale"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "ProposalListResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "nextAfter": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "proposals": {
-            "items": {
-              "$ref": "#/components/schemas/ProposalRecord"
-            },
-            "type": "array"
-          },
-          "total": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": ["proposals", "nextAfter", "total"],
-        "type": "object"
-      },
-      "ProposalRecord": {
-        "additionalProperties": false,
-        "properties": {
-          "appliedChangeId": {
-            "oneOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "appliedVersion": {
-            "oneOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "author": {
-            "type": "string"
-          },
-          "baseVersion": {
-            "oneOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "createdAt": {
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-            "type": "string"
-          },
-          "decidedAt": {
-            "oneOf": [
-              {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "decidedBy": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "decisionReason": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "expiresAt": {
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-            "type": "string"
-          },
-          "hash": {
-            "pattern": "^sha256-[0-9a-f]{64}$",
-            "type": "string"
-          },
-          "id": {
-            "pattern": "^prp_\\d{13}[0-9a-f]{8}$",
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "meta": {
-            "additionalProperties": {
-              "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "path": {
-            "type": "string"
-          },
-          "size": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "stash": {
-            "type": "string"
-          },
-          "status": {
-            "enum": ["open", "applied", "rejected", "expired"],
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "stash",
-          "path",
-          "baseVersion",
-          "author",
-          "message",
-          "meta",
-          "size",
-          "hash",
-          "createdAt",
-          "expiresAt",
-          "status",
-          "decidedAt",
-          "decidedBy",
-          "decisionReason",
-          "appliedVersion",
-          "appliedChangeId"
-        ],
-        "type": "object"
-      },
-      "ProposalWithBody": {
-        "additionalProperties": false,
-        "properties": {
-          "appliedChangeId": {
-            "oneOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "appliedVersion": {
-            "oneOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "author": {
-            "type": "string"
-          },
-          "baseVersion": {
-            "oneOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "body": {
-            "type": "string"
-          },
-          "createdAt": {
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-            "type": "string"
-          },
-          "decidedAt": {
-            "oneOf": [
-              {
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "decidedBy": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "decisionReason": {
-            "oneOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "expiresAt": {
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-            "type": "string"
-          },
-          "hash": {
-            "pattern": "^sha256-[0-9a-f]{64}$",
-            "type": "string"
-          },
-          "id": {
-            "pattern": "^prp_\\d{13}[0-9a-f]{8}$",
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "meta": {
-            "additionalProperties": {
-              "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "path": {
-            "type": "string"
-          },
-          "size": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "stash": {
-            "type": "string"
-          },
-          "status": {
-            "enum": ["open", "applied", "rejected", "expired"],
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "stash",
-          "path",
-          "baseVersion",
-          "author",
-          "message",
-          "meta",
-          "size",
-          "hash",
-          "createdAt",
-          "expiresAt",
-          "status",
-          "decidedAt",
-          "decidedBy",
-          "decisionReason",
-          "appliedVersion",
-          "appliedChangeId",
-          "body"
-        ],
-        "type": "object"
-      },
       "PutCreatedResult": {
         "additionalProperties": false,
         "properties": {
@@ -3027,6 +3330,9 @@
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
+          },
+          "commitId": {
+            "type": "string"
           },
           "createdAt": {
             "format": "date-time",
@@ -3048,7 +3354,7 @@
             "type": "integer"
           }
         },
-        "required": ["version", "hash", "size", "changeId", "createdAt"],
+        "required": ["commitId", "version", "hash", "size", "changeId", "createdAt"],
         "type": "object"
       },
       "PutUnchangedResult": {
@@ -3180,6 +3486,9 @@
             "minimum": 0,
             "type": "integer"
           },
+          "commitId": {
+            "type": "string"
+          },
           "contentType": {
             "type": "string"
           },
@@ -3214,7 +3523,15 @@
             "type": "integer"
           }
         },
-        "required": ["version", "hash", "rollbackOf", "identicalToHead", "changeId", "createdAt"],
+        "required": [
+          "commitId",
+          "version",
+          "hash",
+          "rollbackOf",
+          "identicalToHead",
+          "changeId",
+          "createdAt"
+        ],
         "type": "object"
       },
       "RotateTokenResult": {
@@ -3295,6 +3612,50 @@
         ],
         "type": "object"
       },
+      "SnapshotResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "additionalProperties": false,
+            "properties": {
+              "changeId": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "commitId": {
+                "type": "string"
+              }
+            },
+            "required": ["commitId", "changeId"],
+            "type": "object"
+          },
+          "commonPrefixes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/FileSummary"
+            },
+            "type": "array"
+          },
+          "nextAfter": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["at", "files", "nextAfter"],
+        "type": "object"
+      },
       "StashChangeEvent": {
         "additionalProperties": false,
         "properties": {
@@ -3302,6 +3663,9 @@
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
+          },
+          "commitId": {
+            "type": "string"
           },
           "createdAt": {
             "format": "date-time",
@@ -3339,7 +3703,106 @@
             "type": "integer"
           }
         },
-        "required": ["type", "changeId", "stash", "path", "version", "kind", "origin", "createdAt"],
+        "required": [
+          "type",
+          "changeId",
+          "commitId",
+          "stash",
+          "path",
+          "version",
+          "kind",
+          "origin",
+          "createdAt"
+        ],
+        "type": "object"
+      },
+      "StashChangeSetEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "changeSetId": {
+            "type": "string"
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "string"
+          },
+          "status": {
+            "enum": ["open", "applied", "rejected", "expired"],
+            "type": "string"
+          },
+          "type": {
+            "const": "change-set",
+            "type": "string"
+          }
+        },
+        "required": ["type", "changeSetId", "stash", "status", "paths", "origin"],
+        "type": "object"
+      },
+      "StashCommitEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "commitId": {
+            "type": "string"
+          },
+          "entryCount": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "firstChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "lastChangeId": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stash": {
+            "type": "string"
+          },
+          "type": {
+            "const": "commit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "commitId",
+          "stash",
+          "entryCount",
+          "firstChangeId",
+          "lastChangeId",
+          "origin"
+        ],
         "type": "object"
       },
       "StashEvent": {
@@ -3351,7 +3814,10 @@
             "$ref": "#/components/schemas/StashChangeEvent"
           },
           {
-            "$ref": "#/components/schemas/StashProposalEvent"
+            "$ref": "#/components/schemas/StashCommitEvent"
+          },
+          {
+            "$ref": "#/components/schemas/StashChangeSetEvent"
           },
           {
             "$ref": "#/components/schemas/StashReconnectEvent"
@@ -3379,42 +3845,6 @@
           }
         },
         "required": ["stashes", "nextAfter"],
-        "type": "object"
-      },
-      "StashProposalEvent": {
-        "additionalProperties": false,
-        "properties": {
-          "origin": {
-            "oneOf": [
-              {
-                "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "path": {
-            "type": "string"
-          },
-          "proposalId": {
-            "pattern": "^prp_\\d{13}[0-9a-f]{8}$",
-            "type": "string"
-          },
-          "stash": {
-            "type": "string"
-          },
-          "status": {
-            "enum": ["open", "applied", "rejected", "expired"],
-            "type": "string"
-          },
-          "type": {
-            "const": "proposal",
-            "type": "string"
-          }
-        },
-        "required": ["type", "proposalId", "stash", "path", "status", "origin"],
         "type": "object"
       },
       "StashReadyEvent": {
@@ -3769,6 +4199,9 @@
             "minimum": 0,
             "type": "integer"
           },
+          "commitId": {
+            "type": "string"
+          },
           "contentAccess": {
             "enum": ["inline", "raw", "deleted"],
             "type": "string"
@@ -3847,6 +4280,7 @@
           }
         },
         "required": [
+          "commitId",
           "version",
           "kind",
           "hash",
@@ -3868,7 +4302,7 @@
     }
   },
   "info": {
-    "description": "Credentials for one stash cannot reveal another stash: foreign stashes are concealed as 404 responses.\n\nLists and change feeds use keyset cursors (after, before, or since); limit defaults to 50 and has a maximum of 200.\n\nFile reads use ETags, If-None-Match, and 304 responses for conditional requests.\n\nFile-mutation idempotency keys are retained in a 7-day ledger. Proposal-creation keys are stored on the proposal row instead; either kind returns 422 idempotency-key-reused when reused for a different canonical request.\n\nStash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.\n\nGC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.\n\nProposals are expiring candidate writes against an immutable base. Approval never rebases: a moved head returns 409 stale with current, while repeated creation and approval have explicit replay semantics.\n\nThe per-stash live stream uses bearer-authenticated fetch and Server-Sent Events. It is fetch-only because browser EventSource cannot send the Authorization header and streaming responses are not exposed as named RPC methods.",
+    "description": "Credentials for one stash cannot reveal another stash: foreign stashes are concealed as 404 responses.\n\nLists and change feeds use keyset cursors (after, before, or since); limit defaults to 50 and has a maximum of 200.\n\nFile reads use ETags, If-None-Match, and 304 responses for conditional requests.\n\nFile-mutation idempotency keys are retained in a 7-day ledger. Commit idempotency keys are permanent; reusing any key for a different canonical request returns 422 idempotency-key-reused.\n\nStash deletion is soft, names are never recycled, and restoration never reactivates revoked tokens.\n\nGC runs are synchronously bounded pages with stable jobId equal to kind, UUID runId values, opaque v1 kind-bound cursors, and a five-minute fenced lease; dry runs never delete or persist progress. A null cursor completes a pass and a later invocation starts a fresh pass; run history retains at most 500 entries per kind, and private R2 object keys never appear in responses or logs.\n\nChange sets are expiring multi-file candidates against immutable base versions. Approval never rebases and applies all entries atomically or returns commit-conflict details.\n\nThe per-stash live stream uses bearer-authenticated fetch and Server-Sent Events. It is fetch-only because browser EventSource cannot send the Authorization header and streaming responses are not exposed as named RPC methods.",
     "title": "zudo-history-stash",
     "version": "0.0.0"
   },
@@ -4080,6 +4514,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "commitEntryKinds": ["put", "copy", "delete", "rollback"],
                   "contentAccess": ["inline", "raw", "deleted"],
                   "limits": {
                     "d1InlineMaxBytes": 524288,
@@ -4176,6 +4611,7 @@
                     {
                       "author": "docs-bot",
                       "changeId": 7,
+                      "commitId": "cmt_1787702400000deadbeef",
                       "createdAt": "2026-08-26T01:00:00.000Z",
                       "kind": "put",
                       "message": "Update guide",
@@ -4729,6 +5165,1230 @@
         "x-principal": "admin-or-stash"
       }
     },
+    "/v1/stashes/{stash}/change-sets": {
+      "get": {
+        "description": "Returns filtered change sets newest first.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "listChangeSets",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "open",
+              "description": "Use all to disable the status filter.",
+              "enum": ["open", "applied", "rejected", "expired", "all"],
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "changeSets": [
+                    {
+                      "author": "review-bot",
+                      "commitId": null,
+                      "createdAt": "2026-08-26T00:00:00.000Z",
+                      "createdBy": "tok_example",
+                      "decidedAt": null,
+                      "decidedBy": null,
+                      "decisionReason": null,
+                      "entries": [
+                        {
+                          "baseVersion": 2,
+                          "current": {
+                            "author": "docs-bot",
+                            "createdAt": "2026-08-26T01:00:00.000Z",
+                            "deleted": false,
+                            "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "kind": "put",
+                            "version": 3
+                          },
+                          "op": "put",
+                          "path": "docs/guide.md",
+                          "stale": true
+                        }
+                      ],
+                      "expiresAt": "2026-09-25T00:00:00.000Z",
+                      "id": "chs_1787702400000deadbeef",
+                      "message": "Review guide",
+                      "meta": {},
+                      "stash": "demo",
+                      "status": "open"
+                    }
+                  ],
+                  "nextAfter": null,
+                  "total": 1
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeSetListResponse"
+                }
+              }
+            },
+            "description": "A page of change sets."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List change sets",
+        "x-principal": "read"
+      },
+      "post": {
+        "description": "Stores an expiring multi-file candidate.\n\nwrite; administrator or a matching write stash token.",
+        "operationId": "createChangeSet",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Entry paths must be unique and copy.from.path cannot name another entry path.",
+                "properties": {
+                  "author": {
+                    "description": "Must be a well-formed Unicode string. Maximum 200 UTF-8 bytes.",
+                    "type": "string"
+                  },
+                  "entries": {
+                    "items": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "baseVersion": {
+                              "oneOf": [
+                                {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "contentType": {
+                              "type": "string"
+                            },
+                            "op": {
+                              "const": "put",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["op", "path", "baseVersion", "body"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "baseVersion": {
+                              "oneOf": [
+                                {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "bytesBase64": {
+                              "type": "string"
+                            },
+                            "contentType": {
+                              "type": "string"
+                            },
+                            "op": {
+                              "const": "put",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "representation": {
+                              "const": "binary",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "op",
+                            "path",
+                            "baseVersion",
+                            "representation",
+                            "contentType",
+                            "bytesBase64"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "baseVersion": {
+                              "oneOf": [
+                                {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "from": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "path": {
+                                  "type": "string"
+                                },
+                                "version": {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": ["path", "version"],
+                              "type": "object"
+                            },
+                            "op": {
+                              "const": "copy",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["op", "path", "baseVersion", "from"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "baseVersion": {
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "type": "integer"
+                            },
+                            "op": {
+                              "const": "delete",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["op", "path", "baseVersion"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "baseVersion": {
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "type": "integer"
+                            },
+                            "op": {
+                              "const": "rollback",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "toVersion": {
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "type": "integer"
+                            }
+                          },
+                          "required": ["op", "path", "baseVersion", "toVersion"],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "maxItems": 20,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "expectedLastChangeId": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "expiresAt": {
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
+                    "type": "string"
+                  },
+                  "meta": {
+                    "additionalProperties": {
+                      "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+                    },
+                    "description": "Serialized JSON must be at most 4096 UTF-8 bytes. commitId and changeSetId are platform-owned and must be absent.",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": ["entries"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "author": "review-bot",
+                  "commitId": null,
+                  "createdAt": "2026-08-26T00:00:00.000Z",
+                  "createdBy": "tok_example",
+                  "decidedAt": null,
+                  "decidedBy": null,
+                  "decisionReason": null,
+                  "entries": [
+                    {
+                      "baseVersion": 2,
+                      "current": {
+                        "author": "docs-bot",
+                        "createdAt": "2026-08-26T01:00:00.000Z",
+                        "deleted": false,
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "put",
+                        "version": 3
+                      },
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "stale": true
+                    }
+                  ],
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "id": "chs_1787702400000deadbeef",
+                  "message": "Review guide",
+                  "meta": {},
+                  "stash": "demo",
+                  "status": "open"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeSetRecord"
+                }
+              }
+            },
+            "description": "The change set.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`, `body-not-well-formed`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Create a change set",
+        "x-principal": "write"
+      }
+    },
+    "/v1/stashes/{stash}/change-sets/{id}": {
+      "get": {
+        "description": "Returns a change set and current staleness.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "getChangeSet",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "author": "review-bot",
+                  "commitId": null,
+                  "createdAt": "2026-08-26T00:00:00.000Z",
+                  "createdBy": "tok_example",
+                  "decidedAt": null,
+                  "decidedBy": null,
+                  "decisionReason": null,
+                  "entries": [
+                    {
+                      "baseVersion": 2,
+                      "current": {
+                        "author": "docs-bot",
+                        "createdAt": "2026-08-26T01:00:00.000Z",
+                        "deleted": false,
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "put",
+                        "version": 3
+                      },
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "stale": true
+                    }
+                  ],
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "id": "chs_1787702400000deadbeef",
+                  "message": "Review guide",
+                  "meta": {},
+                  "stash": "demo",
+                  "status": "open"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeSetRecord"
+                }
+              }
+            },
+            "description": "The change set."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get a change set",
+        "x-principal": "read"
+      }
+    },
+    "/v1/stashes/{stash}/change-sets/{id}/approve": {
+      "post": {
+        "description": "Atomically applies an open, current change set.\n\nwrite; administrator or a matching write stash token.",
+        "operationId": "approveChangeSet",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "author": {
+                    "description": "Must be a well-formed Unicode string. Maximum 200 UTF-8 bytes.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "commit": {
+                    "author": "docs-bot",
+                    "createdAt": "2026-08-26T01:00:00.000Z",
+                    "createdBy": "tok_example",
+                    "entries": [
+                      {
+                        "changeId": 7,
+                        "contentType": "text/markdown",
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "put",
+                        "op": "put",
+                        "path": "docs/guide.md",
+                        "representation": "text",
+                        "rollbackOf": null,
+                        "size": 13,
+                        "version": 3
+                      }
+                    ],
+                    "entryCount": 1,
+                    "firstChangeId": 7,
+                    "id": "cmt_1787702400000deadbeef",
+                    "lastChangeId": 7,
+                    "message": "Update guide",
+                    "meta": {
+                      "source": "example"
+                    },
+                    "revertsCommitId": null,
+                    "source": "api",
+                    "sourceId": null,
+                    "stash": "demo"
+                  },
+                  "status": "applied"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ApproveChangeSetResult"
+                }
+              }
+            },
+            "description": "The applied commit."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `commit-conflict`, `change-set-expired`, `change-set-closed`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Approve a change set",
+        "x-principal": "write"
+      }
+    },
+    "/v1/stashes/{stash}/change-sets/{id}/diff": {
+      "get": {
+        "description": "Returns candidate and current diffs.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "getChangeSetDiff",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "context",
+            "required": false,
+            "schema": {
+              "description": "Optional non-negative diff context line count.",
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "entries": [
+                    {
+                      "base": {
+                        "author": "docs-bot",
+                        "createdAt": "2026-08-26T01:00:00.000Z",
+                        "deleted": false,
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "put",
+                        "version": 3
+                      },
+                      "candidate": {
+                        "author": "docs-bot",
+                        "createdAt": "2026-08-26T01:00:00.000Z",
+                        "deleted": false,
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "put",
+                        "version": 3
+                      },
+                      "current": {
+                        "author": "docs-bot",
+                        "createdAt": "2026-08-26T01:00:00.000Z",
+                        "deleted": false,
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "put",
+                        "version": 3
+                      },
+                      "diff": {
+                        "hunks": [
+                          {
+                            "lines": ["-Hello, stash!", "+Hello, history stash!"],
+                            "newLines": 1,
+                            "newStart": 1,
+                            "oldLines": 1,
+                            "oldStart": 1
+                          }
+                        ],
+                        "state": "ready",
+                        "stats": {
+                          "added": 1,
+                          "removed": 1
+                        },
+                        "truncated": false,
+                        "unified": "@@ -1 +1 @@\n-Hello, stash!\n+Hello, history stash!\n"
+                      },
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "stale": false
+                    }
+                  ],
+                  "stale": false,
+                  "status": "open",
+                  "truncated": false
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeSetDiffResult"
+                }
+              }
+            },
+            "description": "The change-set diff."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Get a change-set diff",
+        "x-principal": "read"
+      }
+    },
+    "/v1/stashes/{stash}/change-sets/{id}/reject": {
+      "post": {
+        "description": "Rejects an open change set.\n\nwrite; administrator or a matching write stash token.",
+        "operationId": "rejectChangeSet",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "author": "review-bot",
+                  "commitId": null,
+                  "createdAt": "2026-08-26T00:00:00.000Z",
+                  "createdBy": "tok_example",
+                  "decidedAt": "2026-08-26T01:00:00.000Z",
+                  "decidedBy": "admin",
+                  "decisionReason": "Superseded",
+                  "entries": [
+                    {
+                      "baseVersion": 2,
+                      "current": {
+                        "author": "docs-bot",
+                        "createdAt": "2026-08-26T01:00:00.000Z",
+                        "deleted": false,
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "put",
+                        "version": 3
+                      },
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "stale": true
+                    }
+                  ],
+                  "expiresAt": "2026-09-25T00:00:00.000Z",
+                  "id": "chs_1787702400000deadbeef",
+                  "message": "Review guide",
+                  "meta": {},
+                  "stash": "demo",
+                  "status": "rejected"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeSetRecord"
+                }
+              }
+            },
+            "description": "The rejected change set."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `change-set-closed`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Reject a change set",
+        "x-principal": "write"
+      }
+    },
     "/v1/stashes/{stash}/changes": {
       "get": {
         "description": "Returns a paginated change feed restricted to one stash.\n\nread; administrator or a matching read/write stash token.",
@@ -4792,6 +6452,7 @@
                     {
                       "author": "docs-bot",
                       "changeId": 7,
+                      "commitId": "cmt_1787702400000deadbeef",
                       "createdAt": "2026-08-26T01:00:00.000Z",
                       "kind": "put",
                       "message": "Update guide",
@@ -4863,6 +6524,1044 @@
         },
         "summary": "List stash changes",
         "x-principal": "read"
+      }
+    },
+    "/v1/stashes/{stash}/commits": {
+      "get": {
+        "description": "Returns commits newest first.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "listCommits",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "commits": [
+                    {
+                      "author": "docs-bot",
+                      "createdAt": "2026-08-26T01:00:00.000Z",
+                      "createdBy": "tok_example",
+                      "entryCount": 1,
+                      "firstChangeId": 7,
+                      "id": "cmt_1787702400000deadbeef",
+                      "lastChangeId": 7,
+                      "message": "Update guide",
+                      "meta": {
+                        "source": "example"
+                      },
+                      "revertsCommitId": null,
+                      "source": "api",
+                      "sourceId": null,
+                      "stash": "demo"
+                    }
+                  ],
+                  "nextAfter": null,
+                  "total": 1
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CommitListResponse"
+                }
+              }
+            },
+            "description": "A page of commits."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "List commits",
+        "x-principal": "read"
+      },
+      "post": {
+        "description": "Atomically applies one or more file entries.\n\nwrite; administrator or a matching write stash token.",
+        "operationId": "createCommit",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Entry paths must be unique and copy.from.path cannot name another entry path.",
+                "properties": {
+                  "author": {
+                    "description": "Must be a well-formed Unicode string. Maximum 200 UTF-8 bytes.",
+                    "type": "string"
+                  },
+                  "entries": {
+                    "items": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "body": {
+                              "type": "string"
+                            },
+                            "contentType": {
+                              "type": "string"
+                            },
+                            "expectedVersion": {
+                              "oneOf": [
+                                {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "op": {
+                              "const": "put",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["op", "path", "expectedVersion", "body"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bytesBase64": {
+                              "type": "string"
+                            },
+                            "contentType": {
+                              "type": "string"
+                            },
+                            "expectedVersion": {
+                              "oneOf": [
+                                {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "op": {
+                              "const": "put",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "representation": {
+                              "const": "binary",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "op",
+                            "path",
+                            "expectedVersion",
+                            "representation",
+                            "contentType",
+                            "bytesBase64"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expectedVersion": {
+                              "oneOf": [
+                                {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "from": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "path": {
+                                  "type": "string"
+                                },
+                                "version": {
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": ["path", "version"],
+                              "type": "object"
+                            },
+                            "op": {
+                              "const": "copy",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["op", "path", "expectedVersion", "from"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expectedVersion": {
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "type": "integer"
+                            },
+                            "op": {
+                              "const": "delete",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["op", "path", "expectedVersion"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expectedVersion": {
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "type": "integer"
+                            },
+                            "op": {
+                              "const": "rollback",
+                              "type": "string"
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "toVersion": {
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991,
+                              "type": "integer"
+                            }
+                          },
+                          "required": ["op", "path", "expectedVersion", "toVersion"],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "maxItems": 20,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "expectedLastChangeId": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "message": {
+                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
+                    "type": "string"
+                  },
+                  "meta": {
+                    "additionalProperties": {
+                      "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+                    },
+                    "description": "Serialized JSON must be at most 4096 UTF-8 bytes. commitId and changeSetId are platform-owned and must be absent.",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": ["entries"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "author": "docs-bot",
+                  "createdAt": "2026-08-26T01:00:00.000Z",
+                  "createdBy": "tok_example",
+                  "entries": [
+                    {
+                      "changeId": 7,
+                      "contentType": "text/markdown",
+                      "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "kind": "put",
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "representation": "text",
+                      "rollbackOf": null,
+                      "size": 13,
+                      "version": 3
+                    }
+                  ],
+                  "entryCount": 1,
+                  "firstChangeId": 7,
+                  "id": "cmt_1787702400000deadbeef",
+                  "lastChangeId": 7,
+                  "message": "Update guide",
+                  "meta": {
+                    "source": "example"
+                  },
+                  "revertsCommitId": null,
+                  "source": "api",
+                  "sourceId": null,
+                  "stash": "demo"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResult"
+                }
+              }
+            },
+            "description": "The committed entries.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`, `body-not-well-formed`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `commit-conflict`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Create a commit",
+        "x-principal": "write"
+      }
+    },
+    "/v1/stashes/{stash}/commits/{id}": {
+      "get": {
+        "description": "Returns a commit and its entries.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "getCommit",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "author": "docs-bot",
+                  "createdAt": "2026-08-26T01:00:00.000Z",
+                  "createdBy": "tok_example",
+                  "entries": [
+                    {
+                      "changeId": 7,
+                      "contentType": "text/markdown",
+                      "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "kind": "put",
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "representation": "text",
+                      "rollbackOf": null,
+                      "size": 13,
+                      "version": 3
+                    }
+                  ],
+                  "entryCount": 1,
+                  "firstChangeId": 7,
+                  "id": "cmt_1787702400000deadbeef",
+                  "lastChangeId": 7,
+                  "message": "Update guide",
+                  "meta": {
+                    "source": "example"
+                  },
+                  "revertsCommitId": null,
+                  "source": "api",
+                  "sourceId": null,
+                  "stash": "demo"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CommitRecord"
+                }
+              }
+            },
+            "description": "The commit record."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get a commit",
+        "x-principal": "read"
+      }
+    },
+    "/v1/stashes/{stash}/commits/{id}/diff": {
+      "get": {
+        "description": "Returns per-entry diffs for a commit.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "getCommitDiff",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "context",
+            "required": false,
+            "schema": {
+              "description": "Optional non-negative diff context line count.",
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "entries": [
+                    {
+                      "diff": {
+                        "hunks": [
+                          {
+                            "lines": ["-Hello, stash!", "+Hello, history stash!"],
+                            "newLines": 1,
+                            "newStart": 1,
+                            "oldLines": 1,
+                            "oldStart": 1
+                          }
+                        ],
+                        "state": "ready",
+                        "stats": {
+                          "added": 1,
+                          "removed": 1
+                        },
+                        "truncated": false,
+                        "unified": "@@ -1 +1 @@\n-Hello, stash!\n+Hello, history stash!\n"
+                      },
+                      "from": {
+                        "hash": "sha256-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "version": 2
+                      },
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "to": {
+                        "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "version": 3
+                      }
+                    }
+                  ],
+                  "truncated": false
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CommitDiffResult"
+                }
+              }
+            },
+            "description": "The commit diff."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Get a commit diff",
+        "x-principal": "read"
+      }
+    },
+    "/v1/stashes/{stash}/commits/{id}/revert": {
+      "post": {
+        "description": "Creates a new commit that reverses the named commit.\n\nwrite; administrator or a matching write stash token.",
+        "operationId": "revertCommit",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resource identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
+            "in": "header",
+            "name": "X-Stash-Client-Id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "author": {
+                    "description": "Must be a well-formed Unicode string. Maximum 200 UTF-8 bytes.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
+                    "type": "string"
+                  },
+                  "meta": {
+                    "additionalProperties": {
+                      "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+                    },
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "author": "docs-bot",
+                  "createdAt": "2026-08-26T01:00:00.000Z",
+                  "createdBy": "tok_example",
+                  "entries": [
+                    {
+                      "changeId": 7,
+                      "contentType": "text/markdown",
+                      "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "kind": "put",
+                      "op": "put",
+                      "path": "docs/guide.md",
+                      "representation": "text",
+                      "rollbackOf": null,
+                      "size": 13,
+                      "version": 3
+                    }
+                  ],
+                  "entryCount": 1,
+                  "firstChangeId": 7,
+                  "id": "cmt_1787702400000deadbeef",
+                  "lastChangeId": 7,
+                  "message": "Update guide",
+                  "meta": {
+                    "source": "example"
+                  },
+                  "revertsCommitId": null,
+                  "source": "api",
+                  "sourceId": null,
+                  "stash": "demo"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResult"
+                }
+              }
+            },
+            "description": "The revert commit.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "Whether the server replayed an idempotent response.",
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `scope`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `commit-conflict`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `payload-too-large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `idempotency-key-reused`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `internal`."
+          }
+        },
+        "summary": "Revert a commit",
+        "x-principal": "write"
       }
     },
     "/v1/stashes/{stash}/delete/{path}": {
@@ -4945,6 +7644,7 @@
               "application/json": {
                 "example": {
                   "changeId": 8,
+                  "commitId": "cmt_1787702400000deadbeef",
                   "createdAt": "2026-08-26T01:00:00.000Z",
                   "version": 4
                 },
@@ -5462,7 +8162,7 @@
                 }
               }
             },
-            "description": "A Server-Sent Events stream of ready, change, proposal, and reconnect events.",
+            "description": "A Server-Sent Events stream of ready, change, commit, change-set, and reconnect events.",
             "headers": {
               "Cache-Control": {
                 "description": "Response cache policy.",
@@ -5577,6 +8277,26 @@
             "explode": false,
             "in": "query",
             "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "delimiter",
             "required": false,
             "schema": {
               "type": "string"
@@ -5957,6 +8677,7 @@
               "application/json": {
                 "example": {
                   "changeId": 7,
+                  "commitId": "cmt_1787702400000deadbeef",
                   "createdAt": "2026-08-26T01:00:00.000Z",
                   "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "size": 13,
@@ -6145,6 +8866,7 @@
                   "versions": [
                     {
                       "author": "docs-bot",
+                      "commitId": "cmt_1787702400000deadbeef",
                       "createdAt": "2026-08-26T01:00:00.000Z",
                       "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                       "kind": "put",
@@ -6409,6 +9131,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "commitId": "cmt_1787702400000deadbeef",
                   "firstChangeId": 7,
                   "headVersion": 3,
                   "path": "docs/guide.md"
@@ -6493,995 +9216,6 @@
         },
         "summary": "Import file history",
         "x-principal": "admin"
-      }
-    },
-    "/v1/stashes/{stash}/proposals": {
-      "get": {
-        "description": "Returns proposals newest first with an opaque keyset cursor and a total for the selected status and path filters.\n\nread; administrator or a matching read/write stash token.",
-        "operationId": "listProposals",
-        "parameters": [
-          {
-            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
-            "in": "path",
-            "name": "stash",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "explode": false,
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "default": "open",
-              "description": "Use all to disable the status filter.",
-              "enum": ["open", "applied", "rejected", "expired", "all"],
-              "type": "string"
-            },
-            "style": "form"
-          },
-          {
-            "explode": false,
-            "in": "query",
-            "name": "path",
-            "required": false,
-            "schema": {
-              "description": "Optional exact-path filter.",
-              "type": "string"
-            },
-            "style": "form"
-          },
-          {
-            "explode": false,
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 50,
-              "maximum": 200,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "style": "form"
-          },
-          {
-            "explode": false,
-            "in": "query",
-            "name": "after",
-            "required": false,
-            "schema": {
-              "description": "Opaque keyset cursor returned by the preceding page.",
-              "type": "string"
-            },
-            "style": "form"
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "nextAfter": null,
-                  "proposals": [
-                    {
-                      "appliedChangeId": null,
-                      "appliedVersion": null,
-                      "author": "review-bot",
-                      "baseVersion": 2,
-                      "createdAt": "2026-08-26T00:00:00.000Z",
-                      "decidedAt": null,
-                      "decidedBy": null,
-                      "decisionReason": null,
-                      "expiresAt": "2026-09-25T00:00:00.000Z",
-                      "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                      "id": "prp_1787702400000deadbeef",
-                      "message": "Propose documentation update",
-                      "meta": {
-                        "source": "automation"
-                      },
-                      "path": "docs/proposed.md",
-                      "size": 22,
-                      "stash": "demo",
-                      "status": "open"
-                    }
-                  ],
-                  "total": 1
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ProposalListResponse"
-                }
-              }
-            },
-            "description": "A filtered page of proposals."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `validation`."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `unauthorized`."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `not-found`."
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `rate-limited`.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait before retrying a rate-limited request.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          }
-        },
-        "summary": "List proposals",
-        "x-principal": "read"
-      },
-      "post": {
-        "description": "Stores an expiring candidate write against an exact base version. An Idempotency-Key can replay the same proposal creation safely.\n\nwrite; administrator or a matching write stash token.",
-        "operationId": "createProposal",
-        "parameters": [
-          {
-            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
-            "in": "path",
-            "name": "stash",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "maxLength": 200,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
-            "in": "header",
-            "name": "X-Stash-Client-Id",
-            "required": false,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "author": {
-                    "description": "Must be a well-formed Unicode string. Maximum 200 UTF-8 bytes.",
-                    "type": "string"
-                  },
-                  "baseVersion": {
-                    "oneOf": [
-                      {
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991,
-                        "type": "integer"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "body": {
-                    "description": "Must be a well-formed Unicode string. Maximum 5000000 UTF-8 bytes.",
-                    "type": "string"
-                  },
-                  "expiresAt": {
-                    "description": "Must be a future ISO-8601 timestamp when supplied.",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
-                    "type": "string"
-                  },
-                  "message": {
-                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
-                    "type": "string"
-                  },
-                  "meta": {
-                    "additionalProperties": {
-                      "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
-                    },
-                    "description": "Serialized JSON must be at most 4096 UTF-8 bytes. proposalId is platform-owned and must be absent; the server validates the final stamped metadata size.",
-                    "propertyNames": {
-                      "type": "string"
-                    },
-                    "type": "object"
-                  },
-                  "path": {
-                    "description": "Must satisfy the file-path rules: a non-empty slash-separated path whose segments contain only ASCII letters, digits, dots, underscores, or hyphens and are neither dot nor dot-dot; maximum 512 UTF-8 bytes.",
-                    "type": "string"
-                  }
-                },
-                "required": ["path", "body", "baseVersion"],
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "appliedChangeId": null,
-                  "appliedVersion": null,
-                  "author": "review-bot",
-                  "baseVersion": 2,
-                  "createdAt": "2026-08-26T00:00:00.000Z",
-                  "decidedAt": null,
-                  "decidedBy": null,
-                  "decisionReason": null,
-                  "expiresAt": "2026-09-25T00:00:00.000Z",
-                  "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                  "id": "prp_1787702400000deadbeef",
-                  "message": "Propose documentation update",
-                  "meta": {
-                    "source": "automation"
-                  },
-                  "path": "docs/proposed.md",
-                  "size": 22,
-                  "stash": "demo",
-                  "status": "open"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ProposalRecord"
-                }
-              }
-            },
-            "description": "The stored proposal record.",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "Whether the server replayed an idempotent response.",
-                "schema": {
-                  "type": "boolean"
-                }
-              }
-            }
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `validation`, `body-not-well-formed`."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `unauthorized`."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `scope`."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `not-found`."
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `payload-too-large`."
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `idempotency-key-reused`, `unsupported-representation`."
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `rate-limited`.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait before retrying a rate-limited request.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `internal`."
-          }
-        },
-        "summary": "Create a proposal",
-        "x-principal": "write"
-      }
-    },
-    "/v1/stashes/{stash}/proposals/{id}": {
-      "get": {
-        "description": "Returns one proposal and its immutable candidate body.\n\nread; administrator or a matching read/write stash token.",
-        "operationId": "getProposal",
-        "parameters": [
-          {
-            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
-            "in": "path",
-            "name": "stash",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Resource identifier.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "appliedChangeId": null,
-                  "appliedVersion": null,
-                  "author": "review-bot",
-                  "baseVersion": 2,
-                  "body": "Hello, proposed docs!\n",
-                  "createdAt": "2026-08-26T00:00:00.000Z",
-                  "decidedAt": null,
-                  "decidedBy": null,
-                  "decisionReason": null,
-                  "expiresAt": "2026-09-25T00:00:00.000Z",
-                  "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                  "id": "prp_1787702400000deadbeef",
-                  "message": "Propose documentation update",
-                  "meta": {
-                    "source": "automation"
-                  },
-                  "path": "docs/proposed.md",
-                  "size": 22,
-                  "stash": "demo",
-                  "status": "open"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ProposalWithBody"
-                }
-              }
-            },
-            "description": "The proposal record and candidate body."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `validation`."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `unauthorized`."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `not-found`."
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `rate-limited`.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait before retrying a rate-limited request.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `internal`."
-          }
-        },
-        "summary": "Get a proposal",
-        "x-principal": "read"
-      }
-    },
-    "/v1/stashes/{stash}/proposals/{id}/approve": {
-      "post": {
-        "description": "Applies an open, unexpired proposal only when the current head still equals its exact base. Re-approving an applied proposal returns its stored result.\n\nwrite; administrator or a matching write stash token.",
-        "operationId": "approveProposal",
-        "parameters": [
-          {
-            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
-            "in": "path",
-            "name": "stash",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Resource identifier.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
-            "in": "header",
-            "name": "X-Stash-Client-Id",
-            "required": false,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "author": {
-                    "description": "Must be a well-formed Unicode string. Maximum 200 UTF-8 bytes.",
-                    "type": "string"
-                  },
-                  "message": {
-                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
-                    "type": "string"
-                  }
-                },
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "appliedChangeId": 8,
-                  "appliedVersion": 3,
-                  "createdAt": "2026-08-26T01:00:00.000Z",
-                  "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                  "status": "applied"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ApproveProposalResult"
-                }
-              }
-            },
-            "description": "The applied proposal result."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `validation`."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `unauthorized`."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `scope`."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `not-found`."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `stale` (includes current), `proposal-expired`, `proposal-closed`."
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `payload-too-large`."
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `rate-limited`.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait before retrying a rate-limited request.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `internal`."
-          }
-        },
-        "summary": "Approve a proposal",
-        "x-principal": "write"
-      }
-    },
-    "/v1/stashes/{stash}/proposals/{id}/diff": {
-      "get": {
-        "description": "Computes the immutable base-to-candidate diff and separately reports the current head and whether it has moved.\n\nread; administrator or a matching read/write stash token.",
-        "operationId": "getProposalDiff",
-        "parameters": [
-          {
-            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
-            "in": "path",
-            "name": "stash",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Resource identifier.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "explode": false,
-            "in": "query",
-            "name": "context",
-            "required": false,
-            "schema": {
-              "description": "Optional non-negative diff context line count.",
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "style": "form"
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "base": {
-                    "deleted": false,
-                    "hash": "sha256-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    "version": 2
-                  },
-                  "candidate": {
-                    "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "size": 22
-                  },
-                  "current": {
-                    "author": "docs-bot",
-                    "createdAt": "2026-08-26T01:00:00.000Z",
-                    "deleted": false,
-                    "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "kind": "put",
-                    "version": 3
-                  },
-                  "hunks": [
-                    {
-                      "lines": ["-Hello, stash!", "+Hello, history stash!"],
-                      "newLines": 1,
-                      "newStart": 1,
-                      "oldLines": 1,
-                      "oldStart": 1
-                    }
-                  ],
-                  "stale": true,
-                  "state": "ready",
-                  "stats": {
-                    "added": 1,
-                    "removed": 1
-                  },
-                  "truncated": false,
-                  "unified": "@@ -1 +1 @@\n-Hello, stash!\n+Hello, history stash!\n"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ProposalDiffResult"
-                }
-              }
-            },
-            "description": "The immutable proposal diff and current-head state."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `validation`."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `unauthorized`."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `not-found`."
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `rate-limited`.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait before retrying a rate-limited request.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `internal`."
-          }
-        },
-        "summary": "Get a proposal diff",
-        "x-principal": "read"
-      }
-    },
-    "/v1/stashes/{stash}/proposals/{id}/reject": {
-      "post": {
-        "description": "Rejects an open proposal with an optional reason. Re-rejecting it is idempotent; applied proposals are closed.\n\nwrite; administrator or a matching write stash token.",
-        "operationId": "rejectProposal",
-        "parameters": [
-          {
-            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
-            "in": "path",
-            "name": "stash",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Resource identifier.",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Stable mutation origin identifier. Use 1-64 printable ASCII characters without leading or trailing whitespace.",
-            "in": "header",
-            "name": "X-Stash-Client-Id",
-            "required": false,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 1,
-              "pattern": "^[!-~](?:[ -~]{0,62}[!-~])?$",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "description": "Must be a well-formed Unicode string. Maximum 2000 UTF-8 bytes.",
-                    "type": "string"
-                  }
-                },
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "appliedChangeId": null,
-                  "appliedVersion": null,
-                  "author": "review-bot",
-                  "baseVersion": 2,
-                  "createdAt": "2026-08-26T00:00:00.000Z",
-                  "decidedAt": "2026-08-26T01:00:00.000Z",
-                  "decidedBy": "admin",
-                  "decisionReason": "Superseded by a newer proposal",
-                  "expiresAt": "2026-09-25T00:00:00.000Z",
-                  "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                  "id": "prp_1787702400000deadbeef",
-                  "message": "Propose documentation update",
-                  "meta": {
-                    "source": "automation"
-                  },
-                  "path": "docs/proposed.md",
-                  "size": 22,
-                  "stash": "demo",
-                  "status": "rejected"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/ProposalRecord"
-                }
-              }
-            },
-            "description": "The rejected proposal record."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `validation`."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `unauthorized`."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `scope`."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `not-found`."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `proposal-closed`."
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `payload-too-large`."
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Errors: `rate-limited`.",
-            "headers": {
-              "Retry-After": {
-                "description": "Seconds to wait before retrying a rate-limited request.",
-                "schema": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Reject a proposal",
-        "x-principal": "write"
       }
     },
     "/v1/stashes/{stash}/raw/{path}": {
@@ -8192,6 +9926,7 @@
               "application/json": {
                 "example": {
                   "changeId": 9,
+                  "commitId": "cmt_1787702400000deadbeef",
                   "createdAt": "2026-08-26T01:00:00.000Z",
                   "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "identicalToHead": false,
@@ -8316,6 +10051,168 @@
         "summary": "Roll back a file",
         "x-principal": "write",
         "x-wildcard": true
+      }
+    },
+    "/v1/stashes/{stash}/snapshot": {
+      "get": {
+        "description": "Lists files as of a commit.\n\nread; administrator or a matching read/write stash token.",
+        "operationId": "getSnapshot",
+        "parameters": [
+          {
+            "description": "A 1-63 character stash name containing lowercase ASCII letters, digits, or hyphens and beginning with a letter or digit.",
+            "in": "path",
+            "name": "stash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "at",
+            "required": true,
+            "schema": {
+              "pattern": "^commit:.+$",
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "delimiter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "includeDeleted",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "style": "form"
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "at": {
+                    "changeId": 7,
+                    "commitId": "cmt_1787702400000deadbeef"
+                  },
+                  "files": [
+                    {
+                      "deleted": false,
+                      "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "headVersion": 3,
+                      "path": "docs/guide.md",
+                      "size": 13,
+                      "updatedAt": "2026-08-26T01:00:00.000Z"
+                    }
+                  ],
+                  "nextAfter": null
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotResponse"
+                }
+              }
+            },
+            "description": "The snapshot page."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `validation`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `unauthorized`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `not-found`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Errors: `rate-limited`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying a rate-limited request.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get a snapshot",
+        "x-principal": "read"
       }
     },
     "/v1/stashes/{stash}/tokens": {
@@ -9371,6 +11268,7 @@
               "application/json": {
                 "example": {
                   "changeId": 8,
+                  "commitId": "cmt_1787702400000deadbeef",
                   "contentType": "application/octet-stream",
                   "createdAt": "2026-08-26T01:00:00.000Z",
                   "hash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

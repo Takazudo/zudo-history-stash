@@ -17,15 +17,16 @@ represents the file path; HTTP references use OpenAPI braces such as `{stash}` a
 | `/s/:stash/f/*` | Optional positive `version`. | Read. |
 | `/s/:stash/diff/*` | Positive `from` (default 1), positive `to` or `head`, and accepted `context`. | Read. |
 | `/s/:stash/edit/*` | Optional positive `from` source version. | Write. |
-| `/s/:stash/proposals` | `status=open` or `status=all` (default `open`), optional `path`. | Read; decisions are capability-gated. |
-| `/s/:stash/proposals/:id` | Immutable proposal ID. | Read; decision controls require write. |
 | `/s/:stash/new` | No query. | Write. |
+| `/s/:stash/commits` | Optional path filter. | Read. |
+| `/s/:stash/commits/:id` | Commit detail and per-entry diffs; revert controls require write. | Read. |
+| `/s/:stash/change-sets` | Optional status and path filters. | Read. |
+| `/s/:stash/change-sets/:id` | Review detail; approve/reject controls require write. | Read. |
 | `/s/:stash/tokens` | No query. | Admin. |
 
-Encode stash and proposal IDs with `encodeURIComponent`. Encode file paths one segment at a time so
+Encode stash IDs with `encodeURIComponent`. Encode file paths one segment at a time so
 slashes remain separators. Preserve the full query string when sharing historical and diff links.
-`defaultStashHref` covers the core destinations; proposal filters use `proposalListHref`, so no one
-helper claims every stable URL.
+`defaultStashHref` covers the stable destinations.
 
 An unauthenticated deep link redirects to `/login?next=<encoded path+query+hash>`. Login accepts
 only a safe same-origin application path on return. Credentials live in tab-scoped session storage,

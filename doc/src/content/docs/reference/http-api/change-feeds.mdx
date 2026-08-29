@@ -18,6 +18,7 @@ contains changes, a directional next cursor, and `hasMore`.
 **Contract:** operation `getStashChanges`; principal `read`; transport `any`.
 
 Uses the same cursor and ordering contract, restricted to one authorized stash. Each change carries
-its global `changeId`, path, version, kind, authorship, size, and timestamp. Treat this feed as the
-authoritative reconciliation source after live events; consume all `hasMore` pages before advancing
-the effective checkpoint.
+its required `commitId`, global `changeId`, path, version, kind, authorship, size, and timestamp.
+Consecutive rows with the same commit ID are the ordered versions of one atomic write. Treat this
+feed as the authoritative reconciliation source after live events; consume all `hasMore` pages
+before advancing the effective checkpoint.

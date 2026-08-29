@@ -1,6 +1,7 @@
 import {
   createStashClient,
   parseClientResponse,
+  StashHttpError,
   type ChangesOptions,
   type ClientResult,
   type DiffOptions,
@@ -13,12 +14,16 @@ import {
   type MutationOptions,
   type StashRpcMethods,
 } from "@takazudo/zudo-history-stash";
+import { statusForCode, validateStashName } from "@takazudo/zudo-history-stash-core";
 import type {
   CandidateDiffResult,
-  ApproveProposalBody,
+  ApproveChangeSetBody,
+  ChangeSetDiffQuery,
+  CommitDiffQuery,
   ChangesPage,
   CreateStashBody,
-  CreateProposalBody,
+  CreateChangeSetBody,
+  CreateCommitBody,
   CreateStashResult,
   CreateTokenBody,
   CreateTokenResult,
@@ -35,17 +40,19 @@ import type {
   GcRunResult,
   GcRunsResponse,
   ListChangesResult,
-  ParsedListProposalsQuery,
+  ListChangeSetsQuery,
+  ListCommitsQuery,
   ListStashesResult,
   ListTokensResult,
   MeResponse,
-  ProposalDiffQuery,
   PutFileBody,
   PutResult,
   RollbackBody,
   RollbackResult,
   RestoreStashResult,
-  RejectProposalBody,
+  RejectChangeSetBody,
+  RevertCommitBody,
+  SnapshotQuery,
   RunGcBody,
   RotateTokenBody,
   RotateTokenResult,
@@ -67,11 +74,11 @@ function requestUrl(init: RpcRequest): string {
 }
 
 function optionalQuery(
-  values: Record<string, string | number | undefined>,
+  values: Record<string, string | number | boolean | undefined>,
 ): Record<string, string> | undefined {
   const query = Object.fromEntries(
     Object.entries(values)
-      .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
+      .filter((entry): entry is [string, string | number | boolean] => entry[1] !== undefined)
       .map(([key, value]) => [key, String(value)]),
   );
   return Object.keys(query).length === 0 ? undefined : query;
@@ -194,15 +201,15 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     return noThrow(() => rpcClient(this, token).admin.gc.runs(options));
   }
 
-  async createProposal(
+  async createCommit(
     token: string,
     stash: string,
-    input: CreateProposalBody,
+    input: CreateCommitBody,
     idempotencyKey?: string,
   ): Promise<Response> {
     return this.request({
       method: "POST",
-      path: `/v1/stashes/${stash}/proposals`,
+      path: `/v1/stashes/${stash}/commits`,
       headers: {
         "Content-Type": "application/json",
         ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
@@ -211,66 +218,131 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
       token,
     });
   }
-
-  async listProposals(
+  async getCommit(token: string, stash: string, id: string): Promise<Response> {
+    return this.request({ method: "GET", path: `/v1/stashes/${stash}/commits/${id}`, token });
+  }
+  async listCommits(
     token: string,
     stash: string,
-    query: Partial<ParsedListProposalsQuery> = {},
+    query: Partial<ListCommitsQuery> = {},
   ): Promise<Response> {
     return this.request({
       method: "GET",
-      path: `/v1/stashes/${stash}/proposals`,
+      path: `/v1/stashes/${stash}/commits`,
       query: optionalQuery(query),
       token,
     });
   }
-
-  async getProposal(token: string, stash: string, id: string): Promise<Response> {
-    return this.request({
-      method: "GET",
-      path: `/v1/stashes/${stash}/proposals/${id}`,
-      token,
-    });
-  }
-
-  async getProposalDiff(
+  async getCommitDiff(
     token: string,
     stash: string,
     id: string,
-    query: ProposalDiffQuery = {},
+    query: CommitDiffQuery = {},
   ): Promise<Response> {
     return this.request({
       method: "GET",
-      path: `/v1/stashes/${stash}/proposals/${id}/diff`,
+      path: `/v1/stashes/${stash}/commits/${id}/diff`,
       query: optionalQuery(query),
       token,
     });
   }
-
-  async approveProposal(
+  async revertCommit(
     token: string,
     stash: string,
     id: string,
-    input: ApproveProposalBody,
+    input: RevertCommitBody,
+    idempotencyKey?: string,
   ): Promise<Response> {
     return this.request({
       method: "POST",
-      path: `/v1/stashes/${stash}/proposals/${id}/approve`,
+      path: `/v1/stashes/${stash}/commits/${id}/revert`,
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
+      },
+      body: JSON.stringify(input),
+      token,
+    });
+  }
+  async getSnapshot(token: string, stash: string, query: SnapshotQuery): Promise<Response> {
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/snapshot`,
+      query: optionalQuery(query),
+      token,
+    });
+  }
+  async createChangeSet(
+    token: string,
+    stash: string,
+    input: CreateChangeSetBody,
+    idempotencyKey?: string,
+  ): Promise<Response> {
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/change-sets`,
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey === undefined ? {} : { "Idempotency-Key": idempotencyKey }),
+      },
+      body: JSON.stringify(input),
+      token,
+    });
+  }
+  async listChangeSets(
+    token: string,
+    stash: string,
+    query: Partial<ListChangeSetsQuery> = {},
+  ): Promise<Response> {
+    const options = optionalQuery(query);
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/change-sets`,
+      query: options,
+      token,
+    });
+  }
+  async getChangeSet(token: string, stash: string, id: string): Promise<Response> {
+    const path = `/v1/stashes/${stash}/change-sets/${id}`;
+    return this.request({ method: "GET", path, token });
+  }
+  async getChangeSetDiff(
+    token: string,
+    stash: string,
+    id: string,
+    query: ChangeSetDiffQuery = {},
+  ): Promise<Response> {
+    const options = optionalQuery(query);
+    return this.request({
+      method: "GET",
+      path: `/v1/stashes/${stash}/change-sets/${id}/diff`,
+      query: options,
+      token,
+    });
+  }
+  async approveChangeSet(
+    token: string,
+    stash: string,
+    id: string,
+    input: ApproveChangeSetBody,
+  ): Promise<Response> {
+    return this.request({
+      method: "POST",
+      path: `/v1/stashes/${stash}/change-sets/${id}/approve`,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
       token,
     });
   }
-
-  async rejectProposal(
+  async rejectChangeSet(
     token: string,
     stash: string,
     id: string,
-    input: RejectProposalBody,
+    input: RejectChangeSetBody,
   ): Promise<Response> {
     return this.request({
       method: "POST",
-      path: `/v1/stashes/${stash}/proposals/${id}/reject`,
+      path: `/v1/stashes/${stash}/change-sets/${id}/reject`,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
       token,
@@ -282,7 +354,40 @@ export class StashRpc extends WorkerEntrypoint<Env> implements StashRpcMethods {
     stash: string,
     options?: ListFilesOptions,
   ): Promise<ClientResult<FileListResponse>> {
-    return noThrow(() => rpcClient(this, token).files(stash).list(options));
+    const stashValidation = validateStashName(stash);
+    if (!stashValidation.ok) {
+      return {
+        ok: false,
+        error: {
+          code: stashValidation.error,
+          status: statusForCode(stashValidation.error),
+          message: stashValidation.message,
+        },
+      };
+    }
+    return noThrow(async () => {
+      let response: Response;
+      try {
+        response = await this.request({
+          method: "GET",
+          path: `/v1/stashes/${stash}/files`,
+          query: optionalQuery({
+            includeDeleted: options?.includeDeleted,
+            limit: options?.limit,
+            after: options?.after,
+            prefix: options?.prefix,
+            delimiter: options?.delimiter,
+          }),
+          token,
+        });
+      } catch (error) {
+        throw new StashHttpError(0, undefined, undefined, error);
+      }
+      return (await parseClientResponse<FileListResponse>(
+        response,
+        "listFiles",
+      )) as ClientResult<FileListResponse>;
+    });
   }
 
   async getFile(
@@ -407,12 +512,18 @@ const rpcMethodsByRoute = {
   listChanges: "listChanges",
   runGc: "runGc",
   listGcRuns: "listGcRuns",
-  createProposal: "createProposal",
-  listProposals: "listProposals",
-  getProposal: "getProposal",
-  getProposalDiff: "getProposalDiff",
-  approveProposal: "approveProposal",
-  rejectProposal: "rejectProposal",
+  createCommit: "createCommit",
+  getCommit: "getCommit",
+  listCommits: "listCommits",
+  getCommitDiff: "getCommitDiff",
+  revertCommit: "revertCommit",
+  getSnapshot: "getSnapshot",
+  createChangeSet: "createChangeSet",
+  listChangeSets: "listChangeSets",
+  getChangeSet: "getChangeSet",
+  getChangeSetDiff: "getChangeSetDiff",
+  approveChangeSet: "approveChangeSet",
+  rejectChangeSet: "rejectChangeSet",
   listFiles: "listFiles",
   getFile: "getFile",
   putFile: "putFile",

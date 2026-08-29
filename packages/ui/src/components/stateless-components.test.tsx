@@ -19,6 +19,7 @@ import { clientValue, stashErrorMessage } from "./error-banner.js";
 
 const change: ChangeItem = {
   changeId: 1,
+  commitId: "legacy:1",
   stash: "notes",
   path: "docs/readme.txt",
   version: 2,
@@ -100,6 +101,7 @@ describe("stateless components", () => {
     );
     expect(hrefFor.mock.calls.map(([route]) => route)).toEqual([
       { kind: "file", stash: "notes", path: "docs/readme.txt" },
+      { kind: "commit", stash: "notes", id: "legacy:1" },
       { kind: "stash", stash: "notes" },
       { kind: "file", stash: "notes", path: "docs/readme.txt" },
       { kind: "diff", stash: "notes", path: "docs/readme.txt", from: 1, to: 2 },

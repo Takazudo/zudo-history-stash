@@ -1,6 +1,6 @@
 ---
 title: Viewer の操作
-description: ホストされた Viewer を使い、閲覧、編集、提案、トークン、ライブ更新を安全に操作します。
+description: ホストされた Viewer を使い、閲覧、編集、トークン、ライブ更新を安全に操作します。
 sidebar_position: 100
 category: guides
 ---
@@ -27,8 +27,8 @@ Cloudflare Access または同等の境界の内側に配置しつつ、API の 
 
 | ケイパビリティ | Viewer での操作 |
 | --- | --- |
-| 読み取り | stash とファイルの閲覧、履歴と差分の確認、提案の一覧表示またはレビュー。 |
-| 書き込み | ファイルの作成、編集、削除、復元、ロールバック、および提案の作成または判断。 |
+| 読み取り | stash とファイルの閲覧、履歴、commit、change set、差分の確認。 |
+| 書き込み | ファイルの作成、編集、削除、復元、rollback、レビュー単位の承認、却下、revert。 |
 | 管理者 | stash の作成、削除、復元、トークンの管理、およびガベージコレクションの実行。 |
 
 ## Viewer のルート
@@ -43,10 +43,23 @@ Viewer の URL はナビゲーション状態であり、アクセス権の証�
 | `/s/:stash/f/*` | ファイルを表示します。`?version=N` を指定すると履歴上のバージョンを選択します。 |
 | `/s/:stash/diff/*` | `?from=N&to=M&context=N` で指定したバージョンを比較します。現在の head を使う場合は `to=head` を指定します。 |
 | `/s/:stash/edit/*` | ファイルを編集します。任意の `?from=N` で読み込むソースバージョンを固定します。 |
-| `/s/:stash/proposals` | 提案を一覧表示します。`?status=open` または `?status=all` を指定し、必要に応じて完全一致の `?path=...` で絞り込めます。 |
-| `/s/:stash/proposals/:id` | 一つの提案と、変更されないベースと候補の差分をレビューします。 |
 | `/s/:stash/new` | ファイルを作成します。 |
+| `/s/:stash/commits` | commit を一覧表示し、任意で path により絞り込みます。 |
+| `/s/:stash/commits/:id` | 一つの commit と entry ごとの diff を確認します。書き込み権限があれば revert できます。 |
+| `/s/:stash/change-sets` | レビュー候補を status または path で一覧表示します。 |
+| `/s/:stash/change-sets/:id` | candidate の diff と staleness をレビューします。書き込み権限があれば approve/reject できます。 |
 | `/s/:stash/tokens` | 管理者専用のトークン管理です。 |
+
+commit と change-set のページは、複数パスの操作を一つのまとまりとして扱います。commit detail は上限付きの
+entry ごとの diff を展開し、各パスの file history へ link します。revert は別のアトミック commit を作成する
+ものであり、表示中の record を削除しません。対象 head が一つでも進んでいる場合、Viewer はサーバーから
+返された entry ごとの競合を表示し、残りだけを再試行することはありません。
+
+change-set review では、記録済み base と不変 candidate を entry ごとに比較し、stale entry を明示します。
+aggregate stale notice は decision request を実行するまで助言にすぎません。approve は全 fence を再検査するため、
+その間の競合で失敗することがあります。競合時は正本の record を再取得し、現在の head に対する解決後に新しい
+change set を作成してください。applied、rejected、expired の record は不変な decision history として残り、
+編集や reopen はできません。
 
 ## バイナリの upload と raw download
 
@@ -75,10 +88,6 @@ head を進めると、Viewer は未保存のテキストと固定された比�
 stale（古い状態または競合）としてマークします。正本のバージョンを再読み込みして比較し、変更を意図的に
 適用し直してください。stale なドラフトを闇雲に再試行したり、自動的にマージまたはリベースしたりしては
 なりません。
-
-提案のベースと候補の状態も同様に変更されません。判断する前に、その正確な差分をレビューしてください。
-open/all と完全一致のパスフィルターはトリアージに役立ちますが、承認と却下には引き続き書き込み権限が
-必要です。stale な承認は拒否され、新しい head へ自動的にリベースされることはありません。
 
 トークンの平文は発行直後に一度だけ表示されます。意図したシークレットストアへ直接移し、そのページから
 離れてください。後から一覧でメタデータを確認することはできますが、認証情報は復元できません。

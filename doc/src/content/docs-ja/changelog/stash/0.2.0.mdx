@@ -1,0 +1,15 @@
+---
+title: 0.2.0
+description: アトミック commit storage と change-set decision。
+sidebar_position: 1
+category: changelog
+---
+
+Released: 2026-08-29
+
+- 成功した全書き込みを seal 済み commit とし、追加する全 version で non-null の `commitId` を必須に
+  しました。unchanged outcome はどちらも追加しません。
+- aggregate gate、entry fence、seal の batch を追加し、複数 entry の commit または承認が失敗しても
+  partial version/head が残らないようにしました。
+- 不変な change-set storage と decision を追加しました。既定の期限は `CHANGE_SET_TTL_DAYS` で決まり、
+  作成時に `expiresAt` を省略すると適用されます。commit 済み deployment の値は 14 です。

@@ -95,6 +95,22 @@ const rollbackResult = {
   createdAt: GOLDEN_RESPONSES.file.createdAt,
 };
 
+const goldenCommitSummary = (() => {
+  const { entries: _entries, ...summary } = GOLDEN_RESPONSES.commit;
+  return summary;
+})();
+const appliedChangeSet = {
+  status: "applied" as const,
+  commit: GOLDEN_RESPONSES.commit,
+};
+const rejectedChangeSet = {
+  ...GOLDEN_RESPONSES.changeSet,
+  status: "rejected" as const,
+  decidedAt: GOLDEN_CREATED_AT,
+  decidedBy: "fixture",
+  decisionReason: "fixture rejection",
+};
+
 const transportMatrix: TransportMatrixCase[] = [
   {
     name: "get 200 with ETag",
@@ -129,6 +145,154 @@ const transportMatrix: TransportMatrixCase[] = [
       settled: "fulfilled",
       value: { ok: true, value: GOLDEN_RESPONSES.put },
     },
+  },
+  {
+    name: "commit create 201",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commit, 201),
+    invoke: (client) =>
+      client.commits("golden").create(
+        {
+          entries: [{ op: "put", path: "docs/readme.md", expectedVersion: null, body: "hello" }],
+          author: "fixture",
+          message: "golden commit",
+        },
+        { idempotencyKey: "commit" },
+      ),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commit } },
+    expectedFetchUrl: "https://stash.example/v1/stashes/golden/commits",
+  },
+  {
+    name: "commit get",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commit),
+    invoke: (client) => client.commits("golden").get(GOLDEN_RESPONSES.commit.id),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commit } },
+  },
+  {
+    name: "commit list",
+    dispatch: async () =>
+      jsonResponse({ commits: [goldenCommitSummary], nextAfter: null, total: 1 }),
+    invoke: (client) => client.commits("golden").list({ limit: 2, path: "docs/readme.md" }),
+    expected: {
+      settled: "fulfilled",
+      value: { ok: true, value: { commits: [goldenCommitSummary], nextAfter: null, total: 1 } },
+    },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/commits?limit=2&path=docs%2Freadme.md",
+    expectedRpcQuery: { limit: "2", path: "docs/readme.md" },
+  },
+  {
+    name: "commit diff",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commitDiff),
+    invoke: (client) => client.commits("golden").diff(GOLDEN_RESPONSES.commit.id, { context: 1 }),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commitDiff } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/commits/cmt_1787952000000deadbeef/diff?context=1",
+    expectedRpcQuery: { context: "1" },
+  },
+  {
+    name: "commit revert",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commit, 201),
+    invoke: (client) =>
+      client
+        .commits("golden")
+        .revert(
+          GOLDEN_RESPONSES.commit.id,
+          { author: "fixture", message: "revert" },
+          { idempotencyKey: "revert" },
+        ),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commit } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/commits/cmt_1787952000000deadbeef/revert",
+  },
+  {
+    name: "snapshot at commit",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.snapshot),
+    invoke: (client) =>
+      client.files("golden").snapshot({
+        at: `commit:${GOLDEN_RESPONSES.commit.id}`,
+        prefix: "docs",
+        delimiter: "/",
+      }),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.snapshot } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/snapshot?at=commit%3Acmt_1787952000000deadbeef&prefix=docs&delimiter=%2F",
+    expectedRpcQuery: {
+      at: "commit:cmt_1787952000000deadbeef",
+      prefix: "docs",
+      delimiter: "/",
+    },
+  },
+  {
+    name: "change-set create",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.changeSet, 201),
+    invoke: (client) =>
+      client.changeSets("golden").create(
+        {
+          entries: [{ op: "put", path: "docs/readme.md", baseVersion: null, body: "hello" }],
+          author: "fixture",
+          message: "golden change set",
+        },
+        { idempotencyKey: "change-set" },
+      ),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.changeSet } },
+    expectedFetchUrl: "https://stash.example/v1/stashes/golden/change-sets",
+  },
+  {
+    name: "change-set list",
+    dispatch: async () =>
+      jsonResponse({ changeSets: [GOLDEN_RESPONSES.changeSet], nextAfter: null, total: 1 }),
+    invoke: (client) => client.changeSets("golden").list({ status: "all", limit: 2 }),
+    expected: {
+      settled: "fulfilled",
+      value: {
+        ok: true,
+        value: { changeSets: [GOLDEN_RESPONSES.changeSet], nextAfter: null, total: 1 },
+      },
+    },
+    expectedFetchUrl: "https://stash.example/v1/stashes/golden/change-sets?status=all&limit=2",
+    expectedRpcQuery: { status: "all", limit: "2" },
+  },
+  {
+    name: "change-set get",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.changeSet),
+    invoke: (client) => client.changeSets("golden").get(GOLDEN_RESPONSES.changeSet.id),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.changeSet } },
+  },
+  {
+    name: "change-set diff",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.changeSetDiff),
+    invoke: (client) =>
+      client.changeSets("golden").diff(GOLDEN_RESPONSES.changeSet.id, { context: 1 }),
+    expected: {
+      settled: "fulfilled",
+      value: { ok: true, value: GOLDEN_RESPONSES.changeSetDiff },
+    },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/change-sets/chs_1787952000000deadbeef/diff?context=1",
+    expectedRpcQuery: { context: "1" },
+  },
+  {
+    name: "change-set approve",
+    dispatch: async () => jsonResponse(appliedChangeSet),
+    invoke: (client) =>
+      client.changeSets("golden").approve(GOLDEN_RESPONSES.changeSet.id, {
+        author: "fixture",
+        message: "approve",
+      }),
+    expected: { settled: "fulfilled", value: { ok: true, value: appliedChangeSet } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/change-sets/chs_1787952000000deadbeef/approve",
+  },
+  {
+    name: "change-set reject",
+    dispatch: async () => jsonResponse(rejectedChangeSet),
+    invoke: (client) =>
+      client.changeSets("golden").reject(GOLDEN_RESPONSES.changeSet.id, {
+        reason: "fixture rejection",
+      }),
+    expected: { settled: "fulfilled", value: { ok: true, value: rejectedChangeSet } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/change-sets/chs_1787952000000deadbeef/reject",
   },
   {
     name: "put 200 unchanged",
@@ -431,157 +595,6 @@ const transportMatrix: TransportMatrixCase[] = [
     expectedFetchUrl: "https://stash.example/v1/admin/gc/runs?kind=ledger",
   },
   {
-    name: "proposal create 201 replay exposes replay metadata",
-    dispatch: async () =>
-      jsonResponse(GOLDEN_RESPONSES.proposal, 201, { "Idempotent-Replayed": "true" }),
-    invoke: (client) =>
-      client.proposals("golden").create(
-        {
-          path: "docs/proposal.md",
-          body: "hello",
-          baseVersion: null,
-          author: "proposal-bot",
-          message: "golden candidate",
-          meta: { source: "golden" },
-        },
-        { idempotencyKey: "proposal-create" },
-      ),
-    expected: {
-      settled: "fulfilled",
-      value: { ok: true, value: GOLDEN_RESPONSES.proposal, replayed: true },
-    },
-    expectedFetchUrl: "https://stash.example/v1/stashes/golden/proposals",
-  },
-  {
-    name: "proposal list preserves filter and cursor query",
-    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.proposalList),
-    invoke: (client) =>
-      client.proposals("golden").list({
-        status: "open",
-        path: "docs/proposal.md",
-        limit: 1,
-        after: "opaque",
-      }),
-    expected: {
-      settled: "fulfilled",
-      value: { ok: true, value: GOLDEN_RESPONSES.proposalList },
-    },
-    expectedFetchUrl:
-      "https://stash.example/v1/stashes/golden/proposals?status=open&path=docs%2Fproposal.md&limit=1&after=opaque",
-    expectedRpcQuery: {
-      status: "open",
-      path: "docs/proposal.md",
-      limit: "1",
-      after: "opaque",
-    },
-  },
-  {
-    name: "proposal detail returns the candidate body",
-    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.proposalWithBody),
-    invoke: (client) => client.proposals("golden").get(GOLDEN_RESPONSES.proposal.id),
-    expected: {
-      settled: "fulfilled",
-      value: { ok: true, value: GOLDEN_RESPONSES.proposalWithBody },
-    },
-  },
-  {
-    name: "proposal diff preserves context and moving-head metadata",
-    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.proposalDiff),
-    invoke: (client) =>
-      client.proposals("golden").diff(GOLDEN_RESPONSES.proposal.id, { context: 2 }),
-    expected: {
-      settled: "fulfilled",
-      value: { ok: true, value: GOLDEN_RESPONSES.proposalDiff },
-    },
-    expectedRpcQuery: { context: "2" },
-  },
-  {
-    name: "proposal approval returns the applied version",
-    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.proposalApproval),
-    invoke: (client) =>
-      client
-        .proposals("golden")
-        .approve(GOLDEN_RESPONSES.proposal.id, { author: "approver", message: "ship" }),
-    expected: {
-      settled: "fulfilled",
-      value: { ok: true, value: GOLDEN_RESPONSES.proposalApproval },
-    },
-  },
-  {
-    name: "proposal stale approval includes current",
-    dispatch: async () =>
-      jsonResponse(
-        {
-          error: {
-            code: GOLDEN_RESPONSES.proposalStale.error.code,
-            message: GOLDEN_RESPONSES.proposalStale.error.message,
-          },
-          current: GOLDEN_RESPONSES.proposalStale.current,
-        },
-        409,
-      ),
-    invoke: (client) => client.proposals("golden").approve(GOLDEN_RESPONSES.proposal.id),
-    expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.proposalStale },
-  },
-  {
-    name: "proposal expired approval is a typed business result",
-    dispatch: async () =>
-      jsonResponse(
-        {
-          error: {
-            code: GOLDEN_RESPONSES.proposalExpired.error.code,
-            message: GOLDEN_RESPONSES.proposalExpired.error.message,
-          },
-        },
-        409,
-      ),
-    invoke: (client) => client.proposals("golden").approve(GOLDEN_RESPONSES.proposal.id),
-    expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.proposalExpired },
-  },
-  {
-    name: "proposal rejection returns the terminal record",
-    dispatch: async () =>
-      jsonResponse({
-        ...GOLDEN_RESPONSES.proposal,
-        status: "rejected",
-        decidedAt: GOLDEN_CREATED_AT,
-        decidedBy: "admin",
-        decisionReason: "superseded",
-      }),
-    invoke: (client) =>
-      client.proposals("golden").reject(GOLDEN_RESPONSES.proposal.id, {
-        reason: "superseded",
-      }),
-    expected: {
-      settled: "fulfilled",
-      value: {
-        ok: true,
-        value: {
-          ...GOLDEN_RESPONSES.proposal,
-          status: "rejected",
-          decidedAt: GOLDEN_CREATED_AT,
-          decidedBy: "admin",
-          decisionReason: "superseded",
-        },
-      },
-    },
-  },
-  {
-    name: "proposal closed rejection is a typed business result",
-    dispatch: async () =>
-      jsonResponse(
-        {
-          error: {
-            code: GOLDEN_RESPONSES.proposalClosed.error.code,
-            message: GOLDEN_RESPONSES.proposalClosed.error.message,
-          },
-        },
-        409,
-      ),
-    invoke: (client) => client.proposals("golden").reject(GOLDEN_RESPONSES.proposal.id),
-    expected: { settled: "fulfilled", value: GOLDEN_RESPONSES.proposalClosed },
-  },
-  {
     name: "500 throws StashHttpError",
     dispatch: async () => jsonResponse({ error: { code: "internal", message: "down" } }, 500),
     invoke: (client) => client.me(),
@@ -740,66 +753,6 @@ describe("client golden response parity", () => {
     await expect(files.get("docs/readme.md", { version: 2 })).resolves.toEqual({
       ok: true,
       value: GOLDEN_RESPONSES.tombstone,
-    });
-  });
-
-  it("returns deterministic proposal create, replay, diff, and approval shapes", async () => {
-    const fake = createFakeStash({ adminToken: "golden-admin", now: () => GOLDEN_NOW });
-    fake.createStash("golden");
-    const client = createStashClient({
-      baseUrl: "https://fake.invalid",
-      token: "golden-admin",
-      fetch: fake.fetch,
-    });
-    const proposals = client.proposals("golden");
-    const input = {
-      path: "docs/proposal.md",
-      body: "hello",
-      baseVersion: null,
-      author: "proposal-bot",
-      message: "golden candidate",
-      meta: { source: "golden" },
-    };
-
-    await expect(proposals.create(input, { idempotencyKey: "golden-proposal" })).resolves.toEqual({
-      ok: true,
-      value: GOLDEN_RESPONSES.proposal,
-    });
-    await expect(proposals.create(input, { idempotencyKey: "golden-proposal" })).resolves.toEqual({
-      ok: true,
-      value: GOLDEN_RESPONSES.proposal,
-      replayed: true,
-    });
-    await expect(proposals.list()).resolves.toEqual({
-      ok: true,
-      value: GOLDEN_RESPONSES.proposalList,
-    });
-    await expect(proposals.get(GOLDEN_RESPONSES.proposal.id)).resolves.toEqual({
-      ok: true,
-      value: GOLDEN_RESPONSES.proposalWithBody,
-    });
-    await expect(proposals.diff(GOLDEN_RESPONSES.proposal.id)).resolves.toMatchObject({
-      ok: true,
-      value: {
-        state: "ready",
-        base: { version: null, hash: null, deleted: false },
-        candidate: { hash: GOLDEN_RESPONSES.proposal.hash, size: 5 },
-        current: null,
-        stale: false,
-      },
-    });
-    await expect(proposals.approve(GOLDEN_RESPONSES.proposal.id)).resolves.toEqual({
-      ok: true,
-      value: GOLDEN_RESPONSES.proposalApproval,
-    });
-    await expect(client.files("golden").get("docs/proposal.md")).resolves.toMatchObject({
-      ok: true,
-      value: {
-        version: 1,
-        kind: "put",
-        meta: { source: "golden", proposalId: GOLDEN_RESPONSES.proposal.id },
-        body: "hello",
-      },
     });
   });
 
