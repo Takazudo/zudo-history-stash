@@ -298,6 +298,7 @@ describe("change-set decisions", () => {
     await expect(base.changeSets.getChangeSet(stash, created.value.id)).resolves.toMatchObject({
       status: "open",
     });
+    await expect(counts(stash)).resolves.toEqual({ commits: 2, versions: 2, files: 2 });
   });
 
   it("keeps whole-stash future cursors strict while prefix future cursors pass at approval", async () => {
