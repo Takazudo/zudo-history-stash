@@ -22,7 +22,7 @@ import {
 } from "../byte-writes.js";
 import type { AppEnv, Principal } from "../context.js";
 import { finalizeUnchanged, finalizeUpload } from "../d1/upload-finalize.js";
-import { D1UploadSessionStore } from "../d1/upload-sessions.js";
+import { D1UploadSessionStore, type FinalizationLease } from "../d1/upload-sessions.js";
 import type { UploadSessionRow } from "../d1/schema.js";
 import { deliverEvents, eventOrigin } from "../events/publish.js";
 
@@ -663,6 +663,85 @@ async function verifyR2Staging(c: Context<AppEnv>, row: UploadSessionRow): Promi
   );
 }
 
+function finalizationLeaseLost(): StashError {
+  return new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+}
+
+async function withFinalizationLeaseHeartbeat<T>(
+  c: Context<AppEnv>,
+  store: D1UploadSessionStore,
+  state: { current: FinalizationLease },
+  operation: () => Promise<T>,
+): Promise<T> {
+  const dependencies = c.get("deps");
+  const intervalMs = Math.max(1, Math.floor(dependencies.uploadLeaseMs / 3));
+  let stopped = false;
+  let wake: (() => void) | null = null;
+  let heartbeatError: unknown;
+
+  const waitForInterval = () =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        wake = null;
+        resolve();
+      }, intervalMs);
+      wake = () => {
+        clearTimeout(timer);
+        wake = null;
+        resolve();
+      };
+    });
+  const stopWaiting = () => {
+    if (wake !== null) wake();
+  };
+
+  const heartbeat = (async () => {
+    while (!stopped) {
+      await waitForInterval();
+      if (stopped) break;
+      try {
+        const heartbeatAt = dependencies.now();
+        const renewed = await store.renewFinalizationLease(
+          state.current,
+          heartbeatAt,
+          heartbeatAt + dependencies.uploadLeaseMs,
+        );
+        if (renewed === null) throw finalizationLeaseLost();
+        state.current = renewed;
+      } catch (error) {
+        heartbeatError = error;
+        stopped = true;
+      }
+    }
+  })();
+
+  let operationFailed = false;
+  let operationError: unknown;
+  let value!: T;
+  try {
+    value = await operation();
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  } finally {
+    stopped = true;
+    stopWaiting();
+    await heartbeat;
+  }
+
+  if (heartbeatError !== undefined) throw heartbeatError;
+  const renewalAt = dependencies.now();
+  const renewed = await store.renewFinalizationLease(
+    state.current,
+    renewalAt,
+    renewalAt + dependencies.uploadLeaseMs,
+  );
+  if (renewed === null) throw finalizationLeaseLost();
+  state.current = renewed;
+  if (operationFailed) throw operationError;
+  return value;
+}
+
 async function complete(c: Context<AppEnv>): Promise<Response> {
   const parsed = CompleteUploadSessionBody.safeParse(await json(c));
   if (!parsed.success) throw new StashError("validation", "Invalid upload completion input.");
@@ -723,7 +802,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     throw new StashError("upload-session-not-open", "Upload session is not ready to complete.");
   }
   const owner = c.get("deps").createId();
-  let lease = await store.acquireFinalizationLease({
+  const lease = await store.acquireFinalizationLease({
     sessionId: row.id,
     generation: parsed.data.generation,
     owner,
@@ -740,100 +819,84 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     }
     throw new StashError("upload-session-not-open", "Upload finalization is already in progress.");
   }
+  const leaseState = { current: lease };
   row = requireOwned(await store.get(row.id), c);
   await c.get("deps").uploadHooks.duringFinalizing?.();
   if (row.upload_mode === "multipart") {
-    const renewed = await store.renewFinalizationLease(
-      lease,
-      c.get("deps").now(),
-      c.get("deps").now() + c.get("deps").uploadLeaseMs,
-    );
-    if (renewed === null) {
-      throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
-    }
-    lease = renewed;
     row = requireOwned(await store.get(row.id), c);
     const key = row.staged_r2_key;
     if (key === null || row.r2_upload_id === null || multipartParts === null) {
-      await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
+      await store.finish({
+        lease: leaseState.current,
+        state: "failed",
+        errorCode: "staging-unavailable",
+        now,
+      });
       throw new StashError("internal", "Multipart staging is unavailable.");
     }
-    let completed = await c.env.BLOBS.head(key);
-    if (completed === null) {
-      try {
-        completed = await c.env.BLOBS.resumeMultipartUpload(key, row.r2_upload_id).complete(
-          multipartParts,
-        );
-      } catch {
-        completed = await c.env.BLOBS.head(key);
-        if (completed === null) {
-          await store.finish({
-            lease,
-            state: "failed",
-            errorCode: "multipart-complete-failed",
-            now,
-          });
-          throw new StashError("internal", "Multipart completion failed.");
+    const completed = await withFinalizationLeaseHeartbeat(c, store, leaseState, async () => {
+      let object = await c.env.BLOBS.head(key);
+      if (object === null) {
+        try {
+          object = await c.env.BLOBS.resumeMultipartUpload(key, row.r2_upload_id!).complete(
+            multipartParts,
+          );
+        } catch {
+          object = await c.env.BLOBS.head(key);
         }
+        if (object !== null) await c.get("deps").uploadHooks.afterMultipartComplete?.();
       }
-      await c.get("deps").uploadHooks.afterMultipartComplete?.();
+      return object;
+    });
+    if (completed === null) {
+      await store.finish({
+        lease: leaseState.current,
+        state: "failed",
+        errorCode: "multipart-complete-failed",
+        now: c.get("deps").now(),
+      });
+      throw new StashError("internal", "Multipart completion failed.");
     }
     if (
       completed.size !== row.declared_size ||
       completed.customMetadata?.session !== row.id ||
       completed.customMetadata.generation !== String(row.attempt_generation)
     ) {
-      await store.finish({ lease, state: "failed", errorCode: "staging-unavailable", now });
-      throw new StashError("internal", "Completed multipart staging is invalid.");
-    }
-    if (row.r2_completed_at === null) {
-      if (!(await store.markMultipartCompleted({ lease, now: c.get("deps").now() }))) {
-        throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
-      }
-    }
-    const verificationLease = await store.renewFinalizationLease(
-      lease,
-      c.get("deps").now(),
-      c.get("deps").now() + c.get("deps").uploadLeaseMs,
-    );
-    if (verificationLease === null) {
-      throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
-    }
-    lease = verificationLease;
-    const object = await c.env.BLOBS.get(key);
-    if (object === null) {
       await store.finish({
-        lease,
+        lease: leaseState.current,
         state: "failed",
         errorCode: "staging-unavailable",
         now: c.get("deps").now(),
       });
-      throw new StashError("internal", "Completed multipart staging is unavailable.");
+      throw new StashError("internal", "Completed multipart staging is invalid.");
     }
-    try {
-      const verified = await verifyByteStream({
-        stream: object.body,
-        declaredSize: row.declared_size,
-        maximumBytes: settings(c).maxFileBytes,
-        representation: row.representation,
-      });
-      if (row.declared_hash !== null && verified.hash !== row.declared_hash) {
-        throw new StashError("upload-hash-mismatch", "Upload hash does not match its declaration.");
-      }
+    if (row.r2_completed_at === null) {
       if (
-        !(await store.markMultipartVerified({
-          lease,
-          size: verified.size,
-          hash: verified.hash,
+        !(await store.markMultipartCompleted({
+          lease: leaseState.current,
           now: c.get("deps").now(),
         }))
       ) {
-        throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+        throw finalizationLeaseLost();
       }
+    }
+    let verified: Awaited<ReturnType<typeof verifyByteStream>> | null;
+    try {
+      verified = await withFinalizationLeaseHeartbeat(c, store, leaseState, async () => {
+        const object = await c.env.BLOBS.get(key);
+        return object === null
+          ? null
+          : verifyByteStream({
+              stream: object.body,
+              declaredSize: row.declared_size,
+              maximumBytes: settings(c).maxFileBytes,
+              representation: row.representation,
+            });
+      });
     } catch (error) {
       if (error instanceof StashError && error.code !== "upload-session-not-open") {
         await store.finish({
-          lease,
+          lease: leaseState.current,
           state: "failed",
           errorCode: error.code,
           now: c.get("deps").now(),
@@ -841,21 +904,51 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
       }
       throw error;
     }
-    row = requireOwned(await store.get(row.id), c);
-    finalizationNow = c.get("deps").now();
-    const commitLease = await store.renewFinalizationLease(
-      lease,
-      finalizationNow,
-      finalizationNow + c.get("deps").uploadLeaseMs,
-    );
-    if (commitLease === null) {
-      throw new StashError("upload-session-not-open", "Upload finalization lease was lost.");
+    if (verified === null) {
+      await store.finish({
+        lease: leaseState.current,
+        state: "failed",
+        errorCode: "staging-unavailable",
+        now: c.get("deps").now(),
+      });
+      throw new StashError("internal", "Completed multipart staging is unavailable.");
     }
-    lease = commitLease;
+    if (row.declared_hash !== null && verified.hash !== row.declared_hash) {
+      await store.finish({
+        lease: leaseState.current,
+        state: "failed",
+        errorCode: "upload-hash-mismatch",
+        now: c.get("deps").now(),
+      });
+      throw new StashError("upload-hash-mismatch", "Upload hash does not match its declaration.");
+    }
+    if (
+      !(await store.markMultipartVerified({
+        lease: leaseState.current,
+        size: verified.size,
+        hash: verified.hash,
+        now: c.get("deps").now(),
+      }))
+    ) {
+      throw finalizationLeaseLost();
+    }
+    row = requireOwned(await store.get(row.id), c);
   }
-  if (!(await verifyR2Staging(c, row))) {
+  const stagingAvailable =
+    row.storage_tier === "r2"
+      ? await withFinalizationLeaseHeartbeat(c, store, leaseState, () => verifyR2Staging(c, row))
+      : true;
+  finalizationNow = c.get("deps").now();
+  const commitLease = await store.renewFinalizationLease(
+    leaseState.current,
+    finalizationNow,
+    finalizationNow + c.get("deps").uploadLeaseMs,
+  );
+  if (commitLease === null) throw finalizationLeaseLost();
+  leaseState.current = commitLease;
+  if (!stagingAvailable) {
     await store.finish({
-      lease,
+      lease: leaseState.current,
       state: "failed",
       errorCode: "staging-unavailable",
       now: finalizationNow,
@@ -865,7 +958,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
   const origin = eventOrigin(c.req.raw);
   const unchanged = await finalizeUnchanged(c.env.DB, {
     session: row,
-    lease,
+    lease: leaseState.current,
     createdAt: finalizationNow,
     eventOrigin: origin,
   });
@@ -877,7 +970,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
   }
   const committed = await finalizeUpload(c.env.DB, {
     session: row,
-    lease,
+    lease: leaseState.current,
     createdAt: finalizationNow,
     eventOrigin: origin,
   });
@@ -911,7 +1004,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     }>();
   if (current === null || current.deleted_at !== null) {
     await store.finish({
-      lease,
+      lease: leaseState.current,
       state: "failed",
       errorCode: "stash-unavailable",
       now: finalizationNow,
@@ -924,7 +1017,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
       : current.head_version !== row.expected_version;
   if (!casIsStale) {
     await store.finish({
-      lease,
+      lease: leaseState.current,
       state: "failed",
       errorCode: "staging-unavailable",
       now: finalizationNow,
@@ -951,7 +1044,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
       : {}),
   });
   const stale = await store.finish({
-    lease,
+    lease: leaseState.current,
     state: "stale",
     resultStatus: 409,
     resultJson: staleJson,

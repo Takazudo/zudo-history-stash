@@ -9,7 +9,7 @@ import {
   type MultipartBucketStats,
 } from "../helpers/env.js";
 import type { Env } from "../../src/env.js";
-import { createGcEngine } from "../../src/gc.js";
+import { GC_ORPHAN_MIN_AGE_MS, createGcEngine } from "../../src/gc.js";
 
 const STASH = "multipart-upload";
 const BASE = `http://stash.test/v1/stashes/${STASH}/uploads`;
@@ -36,7 +36,13 @@ function headers(key: string): HeadersInit {
 
 async function createMultipart(
   bytes: Uint8Array,
-  options: { representation?: "text" | "binary"; hash?: string } = {},
+  options: {
+    representation?: "text" | "binary";
+    hash?: string;
+    expectedVersion?: number | null;
+    skipIfUnchanged?: boolean;
+    idempotencyKey?: string;
+  } = {},
   application = createApp({ binarySettingOverrides: policy }),
 ) {
   const response = await request(
@@ -44,15 +50,16 @@ async function createMultipart(
     `${BASE}/asset.bin`,
     {
       method: "POST",
-      headers: headers("create-multipart"),
+      headers: headers(options.idempotencyKey ?? "create-multipart"),
       body: JSON.stringify({
-        expectedVersion: null,
+        expectedVersion: options.expectedVersion ?? null,
         size: bytes.byteLength,
         ...(options.hash === undefined ? {} : { hash: options.hash }),
         representation: options.representation ?? "binary",
         contentType: "application/octet-stream",
         mode: "multipart",
         resumable: true,
+        ...(options.skipIfUnchanged ? { skipIfUnchanged: true } : {}),
       }),
     },
     bindings(),
@@ -197,6 +204,36 @@ describe("multipart raw upload lifecycle", () => {
     );
   });
 
+  it("heartbeats while multipart completion and full verification each outlast the lease", async () => {
+    const uploadLeaseMs = 100;
+    let delayBody = true;
+    runtimeEnv = withSyntheticMultipart(createTestEnv().env, multipartStats, {
+      beforeComplete: () => new Promise((resolve) => setTimeout(resolve, uploadLeaseMs * 2.5)),
+      beforeBodyRead: async () => {
+        if (!delayBody) return;
+        delayBody = false;
+        await new Promise((resolve) => setTimeout(resolve, uploadLeaseMs * 2.5));
+      },
+    });
+    const application = createApp({
+      uploadLeaseMs,
+      binarySettingOverrides: policy,
+    });
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const session = await createMultipart(bytes, {}, application);
+    await putPart(application, session.id, 1, bytes.slice(0, 3));
+    await putPart(application, session.id, 2, bytes.slice(3));
+
+    const startedAt = Date.now();
+    expect((await finish(application, session.id)).status).toBe(201);
+    expect(Date.now() - startedAt).toBeGreaterThan(uploadLeaseMs * 4);
+    await expect(
+      env.DB.prepare("SELECT state, finalization_lease_owner FROM upload_sessions WHERE id = ?")
+        .bind(session.id)
+        .first(),
+    ).resolves.toEqual({ state: "committed", finalization_lease_owner: null });
+  });
+
   it("replaces an unrecorded R2 part after the first response path is lost", async () => {
     let lose = true;
     const application = createApp({
@@ -330,6 +367,60 @@ describe("multipart raw upload lifecycle", () => {
     await expect(
       env.DB.prepare("SELECT COUNT(*) AS count FROM upload_objects WHERE session_id = ?")
         .bind(session.id)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
+  it("retires unchanged multipart R2 staging for orphan collection", async () => {
+    const application = createApp({ binarySettingOverrides: policy });
+    const bytes = new Uint8Array([7, 6, 5, 4]);
+    const first = await createMultipart(
+      bytes,
+      { idempotencyKey: "create-multipart-first" },
+      application,
+    );
+    await putPart(application, first.id, 1, bytes.slice(0, 3));
+    await putPart(application, first.id, 2, bytes.slice(3));
+    expect((await finish(application, first.id)).status).toBe(201);
+
+    const unchanged = await createMultipart(
+      bytes,
+      {
+        expectedVersion: 1,
+        skipIfUnchanged: true,
+        idempotencyKey: "create-multipart-unchanged",
+      },
+      application,
+    );
+    await putPart(application, unchanged.id, 1, bytes.slice(0, 3));
+    await putPart(application, unchanged.id, 2, bytes.slice(3));
+    const staged = await env.DB.prepare("SELECT staged_r2_key FROM upload_sessions WHERE id = ?")
+      .bind(unchanged.id)
+      .first<{ staged_r2_key: string }>();
+    expect((await finish(application, unchanged.id)).status).toBe(200);
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM upload_objects WHERE session_id = ?")
+        .bind(unchanged.id)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
+
+    const orphan = await runtimeEnv.BLOBS.head(staged!.staged_r2_key);
+    expect(orphan).not.toBeNull();
+    const gcNow = orphan!.uploaded.getTime() + GC_ORPHAN_MIN_AGE_MS + 1;
+    await createGcEngine(runtimeEnv, { now: () => gcNow }).run({
+      kind: "r2-orphans",
+      dryRun: false,
+      maxObjects: 24,
+    });
+    await expect(runtimeEnv.BLOBS.head(staged!.staged_r2_key)).resolves.toBeNull();
+    await createGcEngine(runtimeEnv, { now: () => gcNow }).run({
+      kind: "ledger",
+      dryRun: false,
+      maxObjects: 24,
+    });
+    await expect(
+      env.DB.prepare("SELECT COUNT(*) AS count FROM upload_parts WHERE session_id = ?")
+        .bind(unchanged.id)
         .first(),
     ).resolves.toEqual({ count: 0 });
   });

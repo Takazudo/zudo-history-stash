@@ -278,17 +278,22 @@ export async function finalizeUnchanged(
         input.session.id,
         ...fence.params,
       ),
-    ...(input.session.storage_tier === "d1"
-      ? [
-          session
-            .prepare(
-              `DELETE FROM upload_staged_bytes WHERE session_id = ? AND generation = ?
-               AND EXISTS (SELECT 1 FROM upload_sessions WHERE id = ? AND state = 'committed'
-                 AND result_status = 200)`,
-            )
-            .bind(input.session.id, input.lease.generation, input.session.id),
-        ]
-      : []),
+    input.session.storage_tier === "d1"
+      ? session
+          .prepare(
+            `DELETE FROM upload_staged_bytes WHERE session_id = ? AND generation = ?
+             AND EXISTS (SELECT 1 FROM upload_sessions WHERE id = ? AND state = 'committed'
+               AND result_status = 200)`,
+          )
+          .bind(input.session.id, input.lease.generation, input.session.id)
+      : session
+          .prepare(
+            `DELETE FROM upload_objects WHERE session_id = ? AND generation = ?
+             AND purpose = 'staging'
+             AND EXISTS (SELECT 1 FROM upload_sessions WHERE id = ? AND state = 'committed'
+               AND result_status = 200)`,
+          )
+          .bind(input.session.id, input.lease.generation, input.session.id),
   ];
   const results = await session.batch(statements);
   if (results[0]?.meta.changes !== 1) return null;
