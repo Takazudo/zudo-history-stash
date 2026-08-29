@@ -18,7 +18,7 @@ function lines(source) {
 function block(source, key, indent) {
   const sourceLines = Array.isArray(source) ? source : lines(source);
   const prefix = `${" ".repeat(indent)}${key}:`;
-  const start = sourceLines.findIndex((line) => line.startsWith(prefix));
+  const start = sourceLines.findIndex((line) => line === prefix);
   assert.notEqual(start, -1, `Missing ${key} block`);
   const end = sourceLines.findIndex(
     (line, index) => index > start && line.trim() && line.search(/\S/u) <= indent,
@@ -34,6 +34,7 @@ function stepForRun(job, command) {
   const start = jobLines.findLastIndex(
     (line, index) => index < runIndex && line.startsWith("      - name:"),
   );
+  assert.ok(start >= 0, `Missing step for ${command}`);
   const end = jobLines.findIndex(
     (line, index) => index > runIndex && line.startsWith("      - name:"),
   );
@@ -58,11 +59,9 @@ function validateDeployWorkflows({ stash, viewer }) {
     assert.doesNotMatch(source, /grep -Eq 'REPLACE_/u);
 
     const jobs = block(source, "jobs", 0);
-    for (const jobName of ["check-secrets", ...jobs.matchAll(/^  ([\w-]+):/gmu)].map((job) =>
-      typeof job === "string" ? job : job[1],
-    )) {
+    for (const [, jobName] of jobs.matchAll(/^  ([\w-]+):/gmu)) {
       const job = block(jobs, jobName, 2);
-      const gated = job.includes(`if: ${READY_IF}`);
+      const gated = job.includes(`\n    if: ${READY_IF}\n`);
       if (jobName !== "check-secrets" && job.includes("secrets.CLOUDFLARE_API_TOKEN")) {
         assert.ok(gated, `${name}/${jobName} must carry the deploy gate`);
       }
