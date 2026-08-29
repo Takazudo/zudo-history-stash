@@ -39,18 +39,6 @@ const UNSUPPORTED_SAMPLES: Record<
   health: { method: "GET", path: "/v1/health" },
   importHistory: { method: "POST", path: "/v1/stashes/demo/import" },
   listChanges: { method: "GET", path: "/v1/changes" },
-  createCommit: { method: "POST", path: "/v1/stashes/demo/commits" },
-  getCommit: { method: "GET", path: "/v1/stashes/demo/commits/cmt_1" },
-  listCommits: { method: "GET", path: "/v1/stashes/demo/commits" },
-  getCommitDiff: { method: "GET", path: "/v1/stashes/demo/commits/cmt_1/diff" },
-  revertCommit: { method: "POST", path: "/v1/stashes/demo/commits/cmt_1/revert" },
-  getSnapshot: { method: "GET", path: "/v1/stashes/demo/snapshot?at=commit%3Acmt_1" },
-  createChangeSet: { method: "POST", path: "/v1/stashes/demo/change-sets" },
-  listChangeSets: { method: "GET", path: "/v1/stashes/demo/change-sets" },
-  getChangeSet: { method: "GET", path: "/v1/stashes/demo/change-sets/cst_1" },
-  getChangeSetDiff: { method: "GET", path: "/v1/stashes/demo/change-sets/cst_1/diff" },
-  approveChangeSet: { method: "POST", path: "/v1/stashes/demo/change-sets/cst_1/approve" },
-  rejectChangeSet: { method: "POST", path: "/v1/stashes/demo/change-sets/cst_1/reject" },
 };
 
 const EMPTY_DIFF_ROUTES = [
@@ -231,6 +219,7 @@ describe("inspectable state and fixture helpers", () => {
     expect(exposed.r2Objects.size).toBe(0);
     expect(exposed.files.get("demo")?.size).toBe(1);
     expect(exposed.versions).toHaveLength(1);
+    expect(exposed.commits.size).toBe(1);
     expect(exposed.idempotency.get("demo")?.size).toBe(1);
 
     fake.reset();
@@ -241,6 +230,8 @@ describe("inspectable state and fixture helpers", () => {
     expect(exposed.r2Objects.size).toBe(0);
     expect(exposed.files.size).toBe(0);
     expect(exposed.versions).toHaveLength(0);
+    expect(exposed.commits.size).toBe(0);
+    expect(exposed.changeSets.size).toBe(0);
     expect(exposed.idempotency.size).toBe(0);
     expect(exposed.gcJobs.get("r2-orphans")).toMatchObject({
       nextCursor: null,
@@ -756,6 +747,7 @@ describe("stash administration routes", () => {
     );
     fake.state.versions.push({
       changeId: 1,
+      commitId: "cmt_fixture",
       stash: "demo",
       path: "referenced.txt",
       version: 1,

@@ -95,6 +95,22 @@ const rollbackResult = {
   createdAt: GOLDEN_RESPONSES.file.createdAt,
 };
 
+const goldenCommitSummary = (() => {
+  const { entries: _entries, ...summary } = GOLDEN_RESPONSES.commit;
+  return summary;
+})();
+const appliedChangeSet = {
+  status: "applied" as const,
+  commit: GOLDEN_RESPONSES.commit,
+};
+const rejectedChangeSet = {
+  ...GOLDEN_RESPONSES.changeSet,
+  status: "rejected" as const,
+  decidedAt: GOLDEN_CREATED_AT,
+  decidedBy: "fixture",
+  decisionReason: "fixture rejection",
+};
+
 const transportMatrix: TransportMatrixCase[] = [
   {
     name: "get 200 with ETag",
@@ -129,6 +145,154 @@ const transportMatrix: TransportMatrixCase[] = [
       settled: "fulfilled",
       value: { ok: true, value: GOLDEN_RESPONSES.put },
     },
+  },
+  {
+    name: "commit create 201",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commit, 201),
+    invoke: (client) =>
+      client.commits("golden").create(
+        {
+          entries: [{ op: "put", path: "docs/readme.md", expectedVersion: null, body: "hello" }],
+          author: "fixture",
+          message: "golden commit",
+        },
+        { idempotencyKey: "commit" },
+      ),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commit } },
+    expectedFetchUrl: "https://stash.example/v1/stashes/golden/commits",
+  },
+  {
+    name: "commit get",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commit),
+    invoke: (client) => client.commits("golden").get(GOLDEN_RESPONSES.commit.id),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commit } },
+  },
+  {
+    name: "commit list",
+    dispatch: async () =>
+      jsonResponse({ commits: [goldenCommitSummary], nextAfter: null, total: 1 }),
+    invoke: (client) => client.commits("golden").list({ limit: 2, path: "docs/readme.md" }),
+    expected: {
+      settled: "fulfilled",
+      value: { ok: true, value: { commits: [goldenCommitSummary], nextAfter: null, total: 1 } },
+    },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/commits?limit=2&path=docs%2Freadme.md",
+    expectedRpcQuery: { limit: "2", path: "docs/readme.md" },
+  },
+  {
+    name: "commit diff",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commitDiff),
+    invoke: (client) => client.commits("golden").diff(GOLDEN_RESPONSES.commit.id, { context: 1 }),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commitDiff } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/commits/cmt_1787952000000deadbeef/diff?context=1",
+    expectedRpcQuery: { context: "1" },
+  },
+  {
+    name: "commit revert",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.commit, 201),
+    invoke: (client) =>
+      client
+        .commits("golden")
+        .revert(
+          GOLDEN_RESPONSES.commit.id,
+          { author: "fixture", message: "revert" },
+          { idempotencyKey: "revert" },
+        ),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.commit } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/commits/cmt_1787952000000deadbeef/revert",
+  },
+  {
+    name: "snapshot at commit",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.snapshot),
+    invoke: (client) =>
+      client.files("golden").snapshot({
+        at: `commit:${GOLDEN_RESPONSES.commit.id}`,
+        prefix: "docs",
+        delimiter: "/",
+      }),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.snapshot } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/snapshot?at=commit%3Acmt_1787952000000deadbeef&prefix=docs&delimiter=%2F",
+    expectedRpcQuery: {
+      at: "commit:cmt_1787952000000deadbeef",
+      prefix: "docs",
+      delimiter: "/",
+    },
+  },
+  {
+    name: "change-set create",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.changeSet, 201),
+    invoke: (client) =>
+      client.changeSets("golden").create(
+        {
+          entries: [{ op: "put", path: "docs/readme.md", baseVersion: null, body: "hello" }],
+          author: "fixture",
+          message: "golden change set",
+        },
+        { idempotencyKey: "change-set" },
+      ),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.changeSet } },
+    expectedFetchUrl: "https://stash.example/v1/stashes/golden/change-sets",
+  },
+  {
+    name: "change-set list",
+    dispatch: async () =>
+      jsonResponse({ changeSets: [GOLDEN_RESPONSES.changeSet], nextAfter: null, total: 1 }),
+    invoke: (client) => client.changeSets("golden").list({ status: "all", limit: 2 }),
+    expected: {
+      settled: "fulfilled",
+      value: {
+        ok: true,
+        value: { changeSets: [GOLDEN_RESPONSES.changeSet], nextAfter: null, total: 1 },
+      },
+    },
+    expectedFetchUrl: "https://stash.example/v1/stashes/golden/change-sets?status=all&limit=2",
+    expectedRpcQuery: { status: "all", limit: "2" },
+  },
+  {
+    name: "change-set get",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.changeSet),
+    invoke: (client) => client.changeSets("golden").get(GOLDEN_RESPONSES.changeSet.id),
+    expected: { settled: "fulfilled", value: { ok: true, value: GOLDEN_RESPONSES.changeSet } },
+  },
+  {
+    name: "change-set diff",
+    dispatch: async () => jsonResponse(GOLDEN_RESPONSES.changeSetDiff),
+    invoke: (client) =>
+      client.changeSets("golden").diff(GOLDEN_RESPONSES.changeSet.id, { context: 1 }),
+    expected: {
+      settled: "fulfilled",
+      value: { ok: true, value: GOLDEN_RESPONSES.changeSetDiff },
+    },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/change-sets/chs_1787952000000deadbeef/diff?context=1",
+    expectedRpcQuery: { context: "1" },
+  },
+  {
+    name: "change-set approve",
+    dispatch: async () => jsonResponse(appliedChangeSet),
+    invoke: (client) =>
+      client.changeSets("golden").approve(GOLDEN_RESPONSES.changeSet.id, {
+        author: "fixture",
+        message: "approve",
+      }),
+    expected: { settled: "fulfilled", value: { ok: true, value: appliedChangeSet } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/change-sets/chs_1787952000000deadbeef/approve",
+  },
+  {
+    name: "change-set reject",
+    dispatch: async () => jsonResponse(rejectedChangeSet),
+    invoke: (client) =>
+      client.changeSets("golden").reject(GOLDEN_RESPONSES.changeSet.id, {
+        reason: "fixture rejection",
+      }),
+    expected: { settled: "fulfilled", value: { ok: true, value: rejectedChangeSet } },
+    expectedFetchUrl:
+      "https://stash.example/v1/stashes/golden/change-sets/chs_1787952000000deadbeef/reject",
   },
   {
     name: "put 200 unchanged",

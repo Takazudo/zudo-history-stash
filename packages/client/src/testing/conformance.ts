@@ -26,6 +26,18 @@ export const CONFORMANCE_SUPPORTED_ROUTE_IDS = [
   "getStashChanges",
   "runGc",
   "listGcRuns",
+  "createCommit",
+  "getCommit",
+  "listCommits",
+  "getCommitDiff",
+  "revertCommit",
+  "getSnapshot",
+  "createChangeSet",
+  "listChangeSets",
+  "getChangeSet",
+  "getChangeSetDiff",
+  "approveChangeSet",
+  "rejectChangeSet",
   "stashEvents",
   "getCapabilities",
   "getRawFile",
@@ -1349,6 +1361,381 @@ const TRACE: readonly TraceStep[] = [
     200,
     { files: [{ path, headVersion: 6 }], nextAfter: path },
   ),
+  {
+    name: "multi-entry commit creates atomically",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-commit" },
+      body: {
+        entries: [
+          { op: "put", path: "sdk/alpha.txt", expectedVersion: null, body: "alpha\n" },
+          {
+            op: "put",
+            path: "sdk/beta.bin",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        author: "conformance",
+        message: "multi-entry",
+        meta: { suite: "sdk" },
+      },
+    }),
+    verify(response, body, context) {
+      const step = "multi-entry commit creates atomically";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, { entryCount: 2, source: "commit", firstChangeId: 8 });
+      if (typeof value.id !== "string") traceFailure(step, "missing commit id");
+      remember(context, "sdkCommitId", value.id);
+      const entries = array(value.entries, step);
+      assertEqual(step, entries.length, 2, "entries.length");
+      assertSubset(step, entries[1], { path: "sdk/beta.bin", representation: "binary", size: 3 });
+    },
+  },
+  {
+    name: "commit replay preserves the atomic result",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-commit" },
+      body: {
+        entries: [
+          { op: "put", path: "sdk/alpha.txt", expectedVersion: null, body: "alpha\n" },
+          {
+            op: "put",
+            path: "sdk/beta.bin",
+            expectedVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        author: "conformance",
+        message: "multi-entry",
+        meta: { suite: "sdk" },
+      },
+    }),
+    verify(response, body, context) {
+      const step = "commit replay preserves the atomic result";
+      assertStatus(step, response, 201);
+      assertEqual(step, response.headers.get("Idempotent-Replayed"), "true", "replay header");
+      assertEqual(
+        step,
+        record(body, step).id,
+        stringValue(context, "sdkCommitId", step),
+        "commit id",
+      );
+    },
+  },
+  {
+    name: "commit conflict exposes per-entry conflicts",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-commit-conflict" },
+      body: { entries: [{ op: "put", path: "sdk/alpha.txt", expectedVersion: null, body: "new" }] },
+    }),
+    verify(response, body) {
+      const step = "commit conflict exposes per-entry conflicts";
+      assertStatus(step, response, 409);
+      errorCode(step, body, "commit-conflict");
+      const conflicts = array(record(body, step).conflicts, step);
+      assertEqual(step, conflicts.length, 1, "conflicts.length");
+      assertSubset(step, conflicts[0], {
+        path: "sdk/alpha.txt",
+        expectedVersion: null,
+        current: { version: 1 },
+      });
+    },
+  },
+  responseStep(
+    "commit get returns the sealed record",
+    "getCommit",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkCommitId", "commit get")}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({ id: stringValue(context, "sdkCommitId", "commit get"), entryCount: 2 }),
+  ),
+  responseStep(
+    "commit list includes the multi-entry commit",
+    "listCommits",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits?limit=1`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      commits: [{ id: stringValue(context, "sdkCommitId", "commit list") }],
+      total: 8,
+    }),
+  ),
+  responseStep(
+    "commit diff reports binary and text entries",
+    "getCommitDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkCommitId", "commit diff")}/diff`,
+      token: "read",
+    }),
+    200,
+    {
+      entries: [{ path: "sdk/alpha.txt" }, { path: "sdk/beta.bin", diff: { state: "binary" } }],
+      truncated: false,
+    },
+  ),
+  responseStep(
+    "revert creates a compensating commit",
+    "revertCommit",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkCommitId", "revert")}/revert`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-revert" },
+      body: { message: "undo sdk", meta: {} },
+    }),
+    201,
+    (context) => ({
+      source: "revert",
+      revertsCommitId: stringValue(context, "sdkCommitId", "revert"),
+    }),
+    (body, _response, context) => remember(context, "sdkRevertId", record(body, "revert").id),
+  ),
+  responseStep(
+    "open change set includes binary candidate",
+    "createChangeSet",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-change-set" },
+      body: {
+        entries: [
+          { op: "put", path: "sdk/review.txt", baseVersion: null, body: "review\n" },
+          {
+            op: "put",
+            path: "sdk/review.bin",
+            baseVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        message: "review",
+        meta: { suite: "sdk" },
+      },
+    }),
+    201,
+    () => ({ status: "open", entries: [{ path: "sdk/review.txt" }, { path: "sdk/review.bin" }] }),
+    (body, _response, context) =>
+      remember(context, "sdkChangeSetId", record(body, "change set").id),
+  ),
+  responseStep(
+    "change set diff reports candidate state",
+    "getChangeSetDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "change set diff")}/diff`,
+      token: "read",
+    }),
+    200,
+    {
+      stale: false,
+      status: "open",
+      entries: [{ path: "sdk/review.txt" }, { path: "sdk/review.bin", diff: { state: "binary" } }],
+    },
+  ),
+  responseStep(
+    "change set list includes the open review",
+    "listChangeSets",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets?limit=1`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      changeSets: [{ id: stringValue(context, "sdkChangeSetId", "change set list") }],
+      total: 1,
+    }),
+  ),
+  responseStep(
+    "change set get returns the open review",
+    "getChangeSet",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "change set get")}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({ id: stringValue(context, "sdkChangeSetId", "change set get"), status: "open" }),
+  ),
+  responseStep(
+    "external write makes the change set stale",
+    "putFile",
+    (context) => ({
+      method: "PUT",
+      path: `/v1/stashes/${context.stash}/files/sdk/review.txt`,
+      token: "write",
+      body: { body: "external\n", expectedVersion: null },
+    }),
+    201,
+    { version: 1 },
+  ),
+  responseStep(
+    "stale change set diff reports staleness",
+    "getChangeSetDiff",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "stale diff")}/diff`,
+      token: "read",
+    }),
+    200,
+    { stale: true, status: "open" },
+  ),
+  {
+    name: "stale change set can be rejected",
+    routeId: "rejectChangeSet",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkChangeSetId", "reject stale")}/reject`,
+      token: "write",
+      body: { reason: "stale fixture" },
+    }),
+    verify(response, body) {
+      const step = "stale change set can be rejected";
+      assertStatus(step, response, 200);
+      assertSubset(step, body, { status: "rejected" });
+    },
+  },
+  responseStep(
+    "fresh binary change set is approved",
+    "createChangeSet",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets`,
+      token: "write",
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "sdk/final.bin",
+            baseVersion: null,
+            representation: "binary",
+            contentType: "application/octet-stream",
+            bytesBase64: "AP8B",
+          },
+        ],
+        meta: { suite: "sdk-final" },
+      },
+    }),
+    201,
+    { status: "open" },
+    (body, _response, context) =>
+      remember(context, "sdkFinalChangeSetId", record(body, "fresh change set").id),
+  ),
+  responseStep(
+    "approved change set returns its commit",
+    "approveChangeSet",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/change-sets/${stringValue(context, "sdkFinalChangeSetId", "approve")}/approve`,
+      token: "write",
+      body: { author: "reviewer", message: "approved" },
+    }),
+    200,
+    {
+      status: "applied",
+      commit: {
+        source: "change-set",
+        entryCount: 1,
+        entries: [{ path: "sdk/final.bin", representation: "binary" }],
+      },
+    },
+    (body, _response, context) => {
+      const commit = record(record(body, "approve").commit, "approve commit");
+      remember(context, "sdkFinalCommitId", commit.id);
+      const entries = array(commit.entries, "approve commit");
+      remember(context, "sdkFinalChangeId", record(entries[0], "approve entry").changeId);
+    },
+  ),
+  responseStep(
+    "approved commit is readable",
+    "getCommit",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(context, "sdkFinalCommitId", "approved commit")}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      id: stringValue(context, "sdkFinalCommitId", "approved commit"),
+      source: "change-set",
+    }),
+  ),
+  responseStep(
+    "history and changes carry commit ids",
+    "getHistory",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/history/sdk/final.bin`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      versions: [{ commitId: stringValue(context, "sdkFinalCommitId", "history commit") }],
+    }),
+  ),
+  responseStep(
+    "change feed carries approved commit id",
+    "getStashChanges",
+    (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/changes?since=${numberValue(context, "sdkFinalChangeId", "change cursor") - 1}`,
+      token: "read",
+    }),
+    200,
+    (context) => ({
+      changes: [{ commitId: stringValue(context, "sdkFinalCommitId", "change commit") }],
+    }),
+  ),
+  {
+    name: "snapshot resolves the approved commit under a prefix",
+    routeId: "getSnapshot",
+    request: (context) => ({
+      method: "GET",
+      path: `/v1/stashes/${context.stash}/snapshot?at=commit%3A${encodeURIComponent(stringValue(context, "sdkFinalCommitId", "snapshot"))}&prefix=sdk`,
+      token: "read",
+    }),
+    verify(response, body, context) {
+      const step = "snapshot resolves the approved commit under a prefix";
+      assertStatus(step, response, 200);
+      const value = record(body, step);
+      assertSubset(step, value.at, { commitId: stringValue(context, "sdkFinalCommitId", step) });
+      const files = array(value.files, step).map((entry) => record(entry, step));
+      if (
+        !files.some(
+          (entry) =>
+            entry.path === "sdk/final.bin" && entry.headVersion === 1 && entry.deleted === false,
+        )
+      ) {
+        traceFailure(step, "approved commit snapshot omitted sdk/final.bin");
+      }
+    },
+  },
   errorStep(
     "file list rejects an excessive limit",
     "listFiles",

@@ -235,6 +235,50 @@ async function seedDeletedNote(client, stashName) {
   if (!deleted.ok) throw resultError("Deleting notes/todo.txt", deleted);
 }
 
+async function seedCommitAndChangeSet(client, stashName) {
+  const commit = await client.commits(stashName).create(
+    {
+      entries: [
+        {
+          op: "put",
+          path: "commits/overview.md",
+          expectedVersion: null,
+          body: "This multi-entry commit is part of the local demo fixture.\n",
+        },
+        {
+          op: "put",
+          path: "commits/checklist.txt",
+          expectedVersion: null,
+          body: "- inspect the commit\n- review the open change set\n",
+        },
+      ],
+      author: "seed-dev",
+      message: "Seed multi-entry commit",
+      meta: { fixture: "seed-dev-commit" },
+    },
+    { idempotencyKey: "seed-dev-commit" },
+  );
+  if (!commit.ok) throw resultError("Creating the seed multi-entry commit", commit);
+
+  const changeSet = await client.changeSets(stashName).create(
+    {
+      entries: [
+        {
+          op: "put",
+          path: "reviews/pending.md",
+          baseVersion: null,
+          body: "This change set is intentionally left open for review.\n",
+        },
+      ],
+      author: "seed-dev",
+      message: "Seed open change set",
+      meta: { fixture: "seed-dev-change-set" },
+    },
+    { idempotencyKey: "seed-dev-change-set" },
+  );
+  if (!changeSet.ok) throw resultError("Creating the seed open change set", changeSet);
+}
+
 export async function runSeed({
   argv = process.argv.slice(2),
   env = process.env,
@@ -285,6 +329,7 @@ export async function runSeed({
   await seedGuideVersions(writer, stashName);
   await seedDeletedNote(writer, stashName);
   await rollbackGuide(writer, stashName);
+  await seedCommitAndChangeSet(writer, stashName);
   const largeResult = large ? await seedLargeFile(writer, stashName) : null;
 
   log(`Seeded stash "${stashName}" through ${baseUrl}.`);

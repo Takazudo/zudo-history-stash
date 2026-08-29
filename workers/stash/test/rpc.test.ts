@@ -48,6 +48,8 @@ interface ResponseSnapshot {
 
 interface ScenarioState {
   etag?: string;
+  commitId?: string;
+  changeSetId?: string;
 }
 
 interface ParityScenario {
@@ -173,6 +175,51 @@ async function seedFile(body = "first version\n"): Promise<ScenarioState> {
 async function seedTwoVersions(): Promise<void> {
   await putFixture("first version\n", null);
   await putFixture("second version\n", 1);
+}
+
+async function seedCommitFixture(): Promise<ScenarioState> {
+  const result = await createStashStore(createTestEnv().env, {
+    createId: () => `rpc-fixture-commit-${++rpcCommitSequence}`,
+  }).commits.createCommit(
+    RPC_STASH,
+    {
+      entries: [
+        {
+          op: "put",
+          path: "docs/rpc-commit.txt",
+          expectedVersion: null,
+          body: "seeded commit\n",
+        },
+      ],
+      author: "rpc-fixture",
+      message: "Seed RPC commit",
+    },
+    { principal: "test-admin", idempotencyKey: "rpc-seeded-commit" },
+  );
+  if (!result.ok) throw new Error("RPC commit fixture failed");
+  return { commitId: result.value.id };
+}
+
+async function seedChangeSetFixture(): Promise<ScenarioState> {
+  const result = await createStashStore(createTestEnv().env, {
+    createId: () => `rpc-fixture-change-set-${++rpcCommitSequence}`,
+  }).changeSets.createChangeSet(
+    RPC_STASH,
+    {
+      entries: [
+        {
+          op: "put",
+          path: "docs/rpc-change-set.txt",
+          baseVersion: null,
+          body: "seeded change set\n",
+        },
+      ],
+      author: "rpc-fixture",
+      message: "Seed RPC change set",
+    },
+    { createdBy: "test-admin", idempotencyKey: "rpc-seeded-change-set" },
+  );
+  return { changeSetId: result.value.id };
 }
 
 async function seedExpiredTokenAtBoundary(): Promise<void> {
@@ -304,6 +351,172 @@ const scenarios: ParityScenario[] = [
     expectedBodyIncludes: '"path":"docs/rpc.txt"',
     seed: seedFile,
     init: { method: "GET", path: `/v1/stashes/${RPC_STASH}/files`, token: RPC_READ_TOKEN },
+  },
+  {
+    name: "create commit",
+    expectedStatus: 201,
+    expectedBodyIncludes: '"entryCount":1',
+    init: jsonRequest(
+      "POST",
+      `/v1/stashes/${RPC_STASH}/commits`,
+      {
+        entries: [
+          {
+            op: "put",
+            path: "docs/rpc-created-commit.txt",
+            expectedVersion: null,
+            body: "created through commit RPC\n",
+          },
+        ],
+        author: "rpc-parity",
+        message: "Create commit over transport",
+      },
+      RPC_WRITE_TOKEN,
+      { "Idempotency-Key": "rpc-create-commit" },
+    ),
+  },
+  {
+    name: "get commit",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"message":"Seed RPC commit"',
+    seed: seedCommitFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/commits/${state.commitId ?? "missing"}`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "list commits",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"commits":[',
+    seed: seedCommitFixture,
+    init: {
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/commits`,
+      query: { limit: "10" },
+      token: RPC_READ_TOKEN,
+    },
+  },
+  {
+    name: "commit diff",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"entries":[',
+    seed: seedCommitFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/commits/${state.commitId ?? "missing"}/diff`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "revert commit",
+    expectedStatus: 201,
+    expectedBodyIncludes: '"revertsCommitId":"',
+    seed: seedCommitFixture,
+    init: (state) =>
+      jsonRequest(
+        "POST",
+        `/v1/stashes/${RPC_STASH}/commits/${state.commitId ?? "missing"}/revert`,
+        { author: "rpc-parity", message: "Revert seeded commit" },
+        RPC_WRITE_TOKEN,
+        { "Idempotency-Key": "rpc-revert-commit" },
+      ),
+  },
+  {
+    name: "snapshot at commit",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"files":[',
+    seed: seedCommitFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/snapshot`,
+      query: { at: `commit:${state.commitId ?? "missing"}`, prefix: "docs" },
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "create change set",
+    expectedStatus: 201,
+    expectedBodyIncludes: '"status":"open"',
+    init: jsonRequest(
+      "POST",
+      `/v1/stashes/${RPC_STASH}/change-sets`,
+      {
+        entries: [
+          {
+            op: "put",
+            path: "docs/rpc-created-change-set.txt",
+            baseVersion: null,
+            body: "created through change-set RPC\n",
+          },
+        ],
+        author: "rpc-parity",
+        message: "Create change set over transport",
+      },
+      RPC_WRITE_TOKEN,
+      { "Idempotency-Key": "rpc-create-change-set" },
+    ),
+  },
+  {
+    name: "list change sets",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"changeSets":[',
+    seed: seedChangeSetFixture,
+    init: {
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/change-sets`,
+      query: { status: "all", limit: "10" },
+      token: RPC_READ_TOKEN,
+    },
+  },
+  {
+    name: "get change set",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"message":"Seed RPC change set"',
+    seed: seedChangeSetFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "change-set diff",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"status":"open"',
+    seed: seedChangeSetFixture,
+    init: (state) => ({
+      method: "GET",
+      path: `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}/diff`,
+      token: RPC_READ_TOKEN,
+    }),
+  },
+  {
+    name: "approve change set",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"status":"applied"',
+    seed: seedChangeSetFixture,
+    init: (state) =>
+      jsonRequest(
+        "POST",
+        `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}/approve`,
+        { author: "rpc-parity", message: "Approve seeded change set" },
+        RPC_WRITE_TOKEN,
+      ),
+  },
+  {
+    name: "reject change set",
+    expectedStatus: 200,
+    expectedBodyIncludes: '"status":"rejected"',
+    seed: seedChangeSetFixture,
+    init: (state) =>
+      jsonRequest(
+        "POST",
+        `/v1/stashes/${RPC_STASH}/change-sets/${state.changeSetId ?? "missing"}/reject`,
+        { reason: "Not ready" },
+        RPC_WRITE_TOKEN,
+      ),
   },
   {
     name: "get file",

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CLIENT_ROUTES, StashHttpError, createStashClient, validatePath } from "./index.js";
+import {
+  CLIENT_ROUTES,
+  StashHttpError,
+  createStashClient,
+  isCommitConflict,
+  validatePath,
+} from "./index.js";
 import { createRpcSend } from "./transport.js";
 import type { StashFetch, StashRpcBinding } from "./index.js";
 import {
@@ -844,5 +850,104 @@ describe("putLatest", () => {
     expect(binding.request.mock.calls[1]?.[0].body).toContain('"expectedVersion":1');
     expect(binding.request.mock.calls[3]?.[0].body).toContain('"expectedVersion":2');
     expect(mock).not.toHaveBeenCalled();
+  });
+});
+
+describe("commit, change-set, and snapshot routes", () => {
+  it("uses the reviewed route shapes and preserves typed commit conflicts", async () => {
+    mock.mockImplementation(async () => jsonResponse({}));
+    const c = client();
+    const commitBody = {
+      entries: [{ op: "put" as const, path: "docs/a.txt", expectedVersion: null, body: "a" }],
+      author: "test",
+      message: "commit",
+      meta: { suite: "client" },
+    };
+
+    await c.commits("demo").create(commitBody, { idempotencyKey: "commit-key" });
+    await c.commits("demo").get("cmt_1");
+    await c.commits("demo").list({ limit: 2, after: "cursor", path: "docs/a.txt" });
+    await c.commits("demo").diff("cmt_1", { context: 1, path: "docs/a.txt" });
+    await c
+      .commits("demo")
+      .revert(
+        "cmt_1",
+        { author: "test", message: "undo", meta: {} },
+        { idempotencyKey: "revert-key" },
+      );
+
+    const changeSetBody = {
+      entries: [{ op: "put" as const, path: "docs/review.txt", baseVersion: null, body: "review" }],
+      author: "test",
+      message: "review",
+      meta: {},
+    };
+    await c.changeSets("demo").create(changeSetBody, { idempotencyKey: "change-set-key" });
+    await c
+      .changeSets("demo")
+      .list({ status: "all", path: "docs/review.txt", limit: 2, after: "cursor" });
+    await c.changeSets("demo").get("chs_1");
+    await c.changeSets("demo").diff("chs_1", { context: 1, path: "docs/review.txt" });
+    await c.changeSets("demo").approve("chs_1", { author: "test", message: "approve" });
+    await c.changeSets("demo").reject("chs_1", { reason: "no" });
+    await c.files("demo").list({ prefix: "docs", delimiter: "/" });
+    await c.files("demo").snapshot({ at: "commit:cmt_1", prefix: "docs", delimiter: "/" });
+
+    expect(mock).toHaveBeenCalledTimes(13);
+    expect(requestAt(0)).toMatchObject({
+      url: "https://stash.example/v1/stashes/demo/commits",
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": "commit-key" },
+        body: JSON.stringify(commitBody),
+      },
+    });
+    expect(requestAt(1).url).toBe("https://stash.example/v1/stashes/demo/commits/cmt_1");
+    expect(requestAt(2).url).toBe(
+      "https://stash.example/v1/stashes/demo/commits?limit=2&after=cursor&path=docs%2Fa.txt",
+    );
+    expect(requestAt(3).url).toBe(
+      "https://stash.example/v1/stashes/demo/commits/cmt_1/diff?context=1&path=docs%2Fa.txt",
+    );
+    expect(requestAt(4)).toMatchObject({
+      url: "https://stash.example/v1/stashes/demo/commits/cmt_1/revert",
+      init: { method: "POST", headers: { "Idempotency-Key": "revert-key" } },
+    });
+    expect(requestAt(5).url).toBe("https://stash.example/v1/stashes/demo/change-sets");
+    expect(requestAt(6).url).toBe(
+      "https://stash.example/v1/stashes/demo/change-sets?status=all&path=docs%2Freview.txt&limit=2&after=cursor",
+    );
+    expect(requestAt(7).url).toBe("https://stash.example/v1/stashes/demo/change-sets/chs_1");
+    expect(requestAt(8).url).toBe(
+      "https://stash.example/v1/stashes/demo/change-sets/chs_1/diff?context=1&path=docs%2Freview.txt",
+    );
+    expect(requestAt(9).url).toBe(
+      "https://stash.example/v1/stashes/demo/change-sets/chs_1/approve",
+    );
+    expect(requestAt(10).url).toBe(
+      "https://stash.example/v1/stashes/demo/change-sets/chs_1/reject",
+    );
+    expect(requestAt(11).url).toBe(
+      "https://stash.example/v1/stashes/demo/files?prefix=docs&delimiter=%2F",
+    );
+    expect(requestAt(12).url).toBe(
+      "https://stash.example/v1/stashes/demo/snapshot?at=commit%3Acmt_1&prefix=docs&delimiter=%2F",
+    );
+
+    mock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: { code: "commit-conflict", message: "conflict" },
+          conflicts: [{ path: "docs/a.txt", expectedVersion: null, current: null }],
+        },
+        409,
+      ),
+    );
+    const conflict = await c.commits("demo").create(commitBody, { idempotencyKey: "conflict-key" });
+    expect(isCommitConflict(conflict)).toBe(true);
+    if (!isCommitConflict(conflict)) throw new Error("commit conflict was not narrowed");
+    expect(conflict.conflicts).toEqual([
+      { path: "docs/a.txt", expectedVersion: null, current: null },
+    ]);
   });
 });

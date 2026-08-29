@@ -2,6 +2,9 @@ import type {
   GcKind,
   GcRunResult,
   CapabilitiesResponse,
+  ChangeSetStatus,
+  CommitEntryRecord,
+  CommitRecord,
   ContentAccess,
   Current,
   JsonValue,
@@ -110,6 +113,8 @@ export interface FakeFileRow {
 
 export interface FakeVersionRow {
   changeId: number;
+  /** The immutable commit which appended this version. */
+  commitId: string;
   stash: string;
   path: string;
   version: number;
@@ -120,10 +125,55 @@ export interface FakeVersionRow {
   representation?: Representation;
   contentAccess?: ContentAccess;
   rollbackOf: number | null;
+  copiedFrom?: { path: string; version: number };
   author: string;
   message: string;
   meta: Record<string, JsonValue>;
   createdAt: number;
+}
+
+export interface FakeCommitRow extends CommitRecord {
+  /** Request fingerprint used to make create/revert replay deterministic. */
+  requestHash: string | null;
+  idempotencyKey: string | null;
+  /** Preserve the original request operation for replay and skipped entries. */
+  requestedEntries: Array<CommitEntryRecord["op"]>;
+}
+
+export interface FakeChangeSetEntryRow {
+  path: string;
+  op: CommitEntryRecord["op"];
+  baseVersion: number | null;
+  /** Candidate content is kept immutable and may be binary. */
+  body?: string;
+  bytes?: Uint8Array;
+  contentType?: string;
+  hash?: string | null;
+  size?: number;
+  representation?: Representation;
+  contentAccess?: ContentAccess;
+  copiedFrom?: { path: string; version: number };
+  toVersion?: number;
+}
+
+export interface FakeChangeSetRow {
+  id: string;
+  stash: string;
+  status: ChangeSetStatus;
+  author: string;
+  message: string;
+  meta: Record<string, JsonValue>;
+  expiresAt: number;
+  createdBy: string;
+  createdAt: number;
+  decidedAt: number | null;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  commitId: string | null;
+  expectedLastChangeId: number | null;
+  idempotencyKey: string | null;
+  requestHash: string | null;
+  entries: FakeChangeSetEntryRow[];
 }
 
 export interface FakeUploadSessionRow {
@@ -181,6 +231,8 @@ export interface FakeStashState {
   r2Objects: Map<string, FakeR2ObjectRow>;
   files: Map<string, Map<string, FakeFileRow>>;
   versions: FakeVersionRow[];
+  commits: Map<string, FakeCommitRow>;
+  changeSets: Map<string, FakeChangeSetRow>;
   idempotency: Map<string, Map<string, FakeIdempotencyRow>>;
   gcJobs: Map<GcKind, FakeGcJobRow>;
   gcRuns: GcRunResult[];

@@ -70,8 +70,9 @@ export interface StashRpcBinding {
 
 /**
  * One explicit RPC method per transport-eligible core route. Fetch-only routes remain available
- * through `request()` and are deliberately absent here. New contract routes return their
- * registered HTTP 501 skeleton response until their implementation waves land.
+ * through `request()` and are deliberately absent here. The named methods preserve the raw
+ * `Response` boundary for the newer commit, snapshot, and change-set routes; the public client
+ * parses those responses into the same typed result unions used by fetch.
  */
 export interface StashRpcMethods {
   health(token: string): Promise<ClientResult<HealthResponse>>;
