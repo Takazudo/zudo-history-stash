@@ -226,13 +226,13 @@ export const DiffCandidateBody = z.strictObject({
   context: z.number().int().nonnegative().optional(),
 });
 export const RunGcBody = z.strictObject({
-  kind: z.enum(["r2-orphans", "ledger"]),
+  kind: z.enum(["r2-orphans", "ledger", "content"]),
   dryRun: z.boolean().default(false),
   maxObjects: z.number().int().min(1).max(500).default(100),
   cursor: z.string().optional(),
 });
 export const ListGcRunsQuery = z.strictObject({
-  kind: z.enum(["r2-orphans", "ledger"]).optional(),
+  kind: z.enum(["r2-orphans", "ledger", "content"]).optional(),
   limit,
 });
 const entryPath = z.string().refine((value) => validatePath(value).ok, "Invalid file path");

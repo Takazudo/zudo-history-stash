@@ -101,21 +101,24 @@ export function decodeGcCursor(kind: GcJobKind, cursor: string): GcCursor {
     }
     return { v: 1, kind, value: value.value };
   }
-  if (
-    !exactKeys(value, ["v", "kind", "createdAt", "rowid"]) ||
-    !Number.isSafeInteger(value.createdAt) ||
-    (value.createdAt as number) < 0 ||
-    !Number.isSafeInteger(value.rowid) ||
-    (value.rowid as number) < 1
-  ) {
-    invalidCursor();
+  if (kind === "ledger") {
+    if (
+      !exactKeys(value, ["v", "kind", "createdAt", "rowid"]) ||
+      !Number.isSafeInteger(value.createdAt) ||
+      (value.createdAt as number) < 0 ||
+      !Number.isSafeInteger(value.rowid) ||
+      (value.rowid as number) < 1
+    ) {
+      invalidCursor();
+    }
+    return {
+      v: 1,
+      kind,
+      createdAt: value.createdAt as number,
+      rowid: value.rowid as number,
+    };
   }
-  return {
-    v: 1,
-    kind,
-    createdAt: value.createdAt as number,
-    rowid: value.rowid as number,
-  };
+  return invalidCursor();
 }
 
 export interface GcHooks {

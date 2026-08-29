@@ -56,6 +56,7 @@ describe("strict request and query schemas", () => {
       kind: "ledger",
       limit: 200,
     });
+    expect(ListGcRunsQuery.safeParse({ kind: "content" }).success).toBe(true);
     expect(ListGcRunsQuery.safeParse({ kind: "other" }).success).toBe(false);
     expect(ListGcRunsQuery.safeParse({ limit: "201" }).success).toBe(false);
   });
@@ -79,7 +80,7 @@ describe("strict request and query schemas", () => {
     for (const value of [0, 501, 1.5, -1]) {
       expect(RunGcBody.safeParse({ kind: "ledger", maxObjects: value }).success).toBe(false);
     }
-    for (const value of ["r2-orphans", "ledger"]) {
+    for (const value of ["r2-orphans", "ledger", "content"]) {
       expect(RunGcBody.safeParse({ kind: value }).success).toBe(true);
     }
     expect(RunGcBody.safeParse({ kind: "ledger", unknown: true }).success).toBe(false);

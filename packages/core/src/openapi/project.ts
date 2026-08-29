@@ -269,7 +269,7 @@ function describeRequestRefinements(source: ZodType, schema: JsonSchema): void {
     appendDescription(schema, "includeDeleted", "Whether soft-deleted stashes are included.");
   } else if (source === RunGcBody) {
     schema.description =
-      "kind selects the R2-orphan or ledger job. dryRun and maxObjects default to false and 100; maxObjects is an integer from 1 through 500. cursor is an opaque v1 base64url kind-bound envelope.";
+      "kind selects the R2-orphan, ledger, or unreferenced-content job. dryRun and maxObjects default to false and 100; maxObjects is an integer from 1 through 500. cursor is an opaque v1 base64url kind-bound envelope.";
     appendDescription(schema, "kind", "Selects the garbage-collection job kind.");
     appendDescription(
       schema,
