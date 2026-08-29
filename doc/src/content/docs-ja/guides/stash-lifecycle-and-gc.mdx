@@ -17,10 +17,12 @@ stash の削除は論理削除です。設定された復元期間中はデー�
 
 ## GC の実行
 
-GC は管理者専用でページ分割され、種別ごとにフェンスされた lease で保護されます。`r2-orphans` は
-古くて参照されていない非公開オブジェクトを削除し、`ledger` は期限切れの冪等性行を削除します。
-種別ごとに関数を別々に実行してください。この関数は dry-run の全ページを完了し、呼び出し側が
-各ページのカウンターを確認できるようにしてから、live の削除を開始します。
+GC は管理者専用でページ分割され、種別ごとにフェンスされた lease で保護されます。`r2-orphans` は古くて
+参照されていない非公開オブジェクトを削除し、`ledger` は期限切れの冪等性行を削除します。`content` は、
+content grace より古く、version、live change set の entry、進行中の upload session のいずれからも参照
+されていない `blobs` / `byte_blobs` 内の D1 content row を削除します。種別ごとに関数を別々に実行して
+ください。この関数は dry-run の全ページを完了し、呼び出し側が各ページのカウンターを確認できるように
+してから、live の削除を開始します。
 
 {/* zhs-example: consumer-gc */}
 
@@ -81,6 +83,11 @@ export async function collectGarbageSafely(input: {
   return { phase: "live" as const, outcome: live };
 }
 ```
+
+`content` job が削除するのは D1 row だけであり、R2 には一切触れません。object は orphan となり、後続の
+`r2-orphans` page で回収されます。そのため、content grace に `r2-orphans` の一回の pass を加えた期間、
+byte への課金が続きます。また、daily cron は一つの共有 operation budget を、従来の二種別ではなく三種別
+に分配するようになります。`content` を dry、次に live の順で実行してから、`r2-orphans` を実行してください。
 
 返された cursor はすべて不透明で GC 種別に結び付いているものとして扱い、バイト単位で変更せずに
 渡し直してください。null の cursor で、その pass は完了です。`maxObjects` がそれより大きくても、
