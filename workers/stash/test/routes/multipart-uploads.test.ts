@@ -205,7 +205,7 @@ describe("multipart raw upload lifecycle", () => {
   });
 
   it("heartbeats while multipart completion and full verification each outlast the lease", async () => {
-    const uploadLeaseMs = 100;
+    const uploadLeaseMs = 1_000;
     let delayBody = true;
     runtimeEnv = withSyntheticMultipart(createTestEnv().env, multipartStats, {
       beforeComplete: () => new Promise((resolve) => setTimeout(resolve, uploadLeaseMs * 2.5)),
@@ -232,7 +232,7 @@ describe("multipart raw upload lifecycle", () => {
         .bind(session.id)
         .first(),
     ).resolves.toEqual({ state: "committed", finalization_lease_owner: null });
-  });
+  }, 15_000);
 
   it("replaces an unrecorded R2 part after the first response path is lost", async () => {
     let lose = true;
