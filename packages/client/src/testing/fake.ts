@@ -72,6 +72,7 @@ import type {
   ErrorCode,
   GcKind,
   JsonValue,
+  ParsedRevertCommitBody,
   ReconnectReason,
   RouteId,
   StashEvent,
@@ -2275,6 +2276,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     declaredHash: row.declaredHash,
     representation: row.representation,
     contentType: row.contentType,
+    author: row.author,
+    message: row.message,
+    meta: row.meta === null ? null : cloneMeta(row.meta),
     mode: row.mode,
     storageTier: row.storageTier,
     partSize: row.partSize,
@@ -2342,7 +2346,11 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         existing.declaredHash !== (parsed.data.hash ?? null) ||
         existing.representation !== parsed.data.representation ||
         existing.contentType !== parsed.data.contentType ||
-        existing.mode !== mode)
+        existing.mode !== mode ||
+        existing.author !== (parsed.data.author ?? null) ||
+        existing.message !== (parsed.data.message ?? null) ||
+        (existing.meta === null ? null : canonicalJson(existing.meta)) !==
+          (parsed.data.meta === undefined ? null : canonicalJson(parsed.data.meta)))
     )
       return fail("idempotency-key-reused", "Idempotency-Key was reused.");
     if (existing !== undefined)
@@ -2381,6 +2389,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       declaredHash: parsed.data.hash ?? null,
       representation: parsed.data.representation,
       contentType: parsed.data.contentType,
+      author: parsed.data.author ?? null,
+      message: parsed.data.message ?? null,
+      meta: parsed.data.meta === undefined ? null : cloneMeta(parsed.data.meta),
       mode,
       storageTier:
         mode === "multipart" || parsed.data.size > capabilities.limits.d1InlineMaxBytes
@@ -2545,6 +2556,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         contentType: row.contentType,
       };
     } else {
+      const author = row.author ?? (row.principal.kind === "stash" ? row.principal.tokenId : "");
+      const message = row.message ?? "";
+      const meta = row.meta ?? {};
       const version = append(row.stash, row.path, {
         kind: "put",
         hash,
@@ -2557,9 +2571,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
             ? "inline"
             : "raw",
         rollbackOf: null,
-        author: "",
-        message: "",
-        meta: {},
+        author,
+        message,
+        meta: cloneMeta(meta),
       });
       const r2Key =
         row.storageTier === "r2"
@@ -2584,7 +2598,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         createdAt: version.createdAt,
       };
       nested(state.blobs, row.stash).set(hash, blob);
-      finalizeCommit(version.commitId, { createdBy: principalName(row.principal) });
+      finalizeCommit(version.commitId, {
+        author,
+        message,
+        meta,
+        createdBy: principalName(row.principal),
+      });
       row.result = {
         commitId: version.commitId,
         version: version.version,
@@ -3432,13 +3451,14 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return json({ entries, truncated });
   };
 
-  const revertRequestHash = async (id: string, input: RevertCommitBody): Promise<string> =>
+  const revertRequestHash = async (id: string, input: ParsedRevertCommitBody): Promise<string> =>
     sha256Hex(
       canonicalJson({
         commitId: id,
         author: input.author ?? "",
         message: input.message ?? `Revert ${id}`,
         meta: input.meta ?? {},
+        onto: input.onto,
       }),
     );
 
@@ -3479,19 +3499,24 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       const previous =
         entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
       const shouldDelete = entry.version === 1 || previous?.hash === null || previous === undefined;
-      if (shouldDelete && file?.headVersion === entry.version && file.deleted) {
+      const expectedVersion =
+        parsed.data.onto === "head" && head !== undefined ? head.version : entry.version;
+      const alreadyDeleted =
+        shouldDelete &&
+        file?.deleted === true &&
+        (parsed.data.onto === "head" || file.headVersion === entry.version);
+      if (alreadyDeleted) {
         skipped.push({ path: entry.path, reason: "already-deleted" });
       } else if (shouldDelete) {
-        entries.push({ op: "delete", path: entry.path, expectedVersion: entry.version });
+        entries.push({ op: "delete", path: entry.path, expectedVersion });
       } else {
         entries.push({
           op: "rollback",
           path: entry.path,
-          expectedVersion: entry.version,
+          expectedVersion,
           toVersion: entry.version - 1,
         });
       }
-      void head;
     }
     if (entries.length === 0) return fail("validation", "nothing to revert");
     const commit = await applyCommit({
