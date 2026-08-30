@@ -1,9 +1,14 @@
 import { env } from "cloudflare:workers";
-import { sha256Hex, StashEventSchema, type StashEvent } from "@takazudo/zudo-history-stash-core";
+import {
+  canonicalJson,
+  sha256Hex,
+  StashEventSchema,
+  type StashEvent,
+} from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { GC_ORPHAN_MIN_AGE_MS, createGcEngine } from "../../src/gc.js";
-import { bearer, request, resetDatabase, seedStash } from "../helpers/app.js";
+import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
 
 const STASH = "single-upload";
@@ -13,8 +18,8 @@ function bindings(overrides: Partial<ReturnType<typeof createTestEnv>["env"]> = 
   return { ...createTestEnv().env, ...overrides };
 }
 
-function jsonHeaders(key: string): HeadersInit {
-  return { ...bearer("test-admin"), "Content-Type": "application/json", "Idempotency-Key": key };
+function jsonHeaders(key: string, token = "test-admin"): HeadersInit {
+  return { ...bearer(token), "Content-Type": "application/json", "Idempotency-Key": key };
 }
 
 async function create(
@@ -22,11 +27,12 @@ async function create(
   key = "create-key",
   custom = bindings(),
   application = createApp(),
+  token = "test-admin",
 ) {
   return request(
     application,
     `${BASE}/asset.bin`,
-    { method: "POST", headers: jsonHeaders(key), body: JSON.stringify(body) },
+    { method: "POST", headers: jsonHeaders(key, token), body: JSON.stringify(body) },
     custom,
   );
 }
@@ -38,13 +44,14 @@ async function raw(
   headers: HeadersInit = {},
   custom = bindings(),
   application = createApp(),
+  token = "test-admin",
 ) {
   return request(
     application,
     `${BASE}/${id}/content`,
     {
       method: "PUT",
-      headers: { ...bearer("test-admin"), "Idempotency-Key": key, ...headers },
+      headers: { ...bearer(token), "Idempotency-Key": key, ...headers },
       body,
     },
     custom,
@@ -56,11 +63,12 @@ async function complete(
   key = "complete-key",
   custom = bindings(),
   application = createApp(),
+  token = "test-admin",
 ) {
   return request(
     application,
     `${BASE}/${id}/complete`,
-    { method: "POST", headers: jsonHeaders(key), body: JSON.stringify({ generation: 0 }) },
+    { method: "POST", headers: jsonHeaders(key, token), body: JSON.stringify({ generation: 0 }) },
     custom,
   );
 }
@@ -106,7 +114,7 @@ describe("single raw upload lifecycle", () => {
     await expect(
       env.DB.prepare(
         `SELECT source, source_id, entry_count, change_count, sealed,
-           first_change_id, last_change_id
+           first_change_id, last_change_id, author, message, meta_json
          FROM commits WHERE id = ?`,
       )
         .bind(value.commitId)
@@ -119,6 +127,9 @@ describe("single raw upload lifecycle", () => {
       sealed: 1,
       first_change_id: value.changeId,
       last_change_id: value.changeId,
+      author: "",
+      message: "",
+      meta_json: "{}",
     });
     const downloaded = await request(
       createApp(),
@@ -148,6 +159,179 @@ describe("single raw upload lifecycle", () => {
         .bind(STASH, hash)
         .first<{ body_bytes: ArrayBuffer; size_bytes: number }>(),
     ).resolves.toMatchObject({ size_bytes: bytes.byteLength });
+  });
+
+  it("carries upload attribution onto the commit and version rows", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const author = "upload-bot";
+    const message = "Publish archive";
+    const meta = { source: "test", nested: { z: 2, a: 1 } };
+    const metaJson = canonicalJson(meta);
+    const created = await create({
+      expectedVersion: null,
+      size: bytes.byteLength,
+      author,
+      message,
+      meta,
+      representation: "binary",
+      contentType: "application/octet-stream",
+      mode: "single",
+      resumable: false,
+    });
+    const session = await created.json<{ id: string }>();
+    expect(created.status).toBe(201);
+    expect((await raw(session.id, bytes)).status).toBe(202);
+    const committed = await complete(session.id);
+    expect(committed.status).toBe(201);
+    const result = await committed.json<{ commitId: string; changeId: number }>();
+    const commit = await env.DB.prepare(
+      "SELECT author, message, meta_json FROM commits WHERE id = ?",
+    )
+      .bind(result.commitId)
+      .first();
+    const version = await env.DB.prepare(
+      `SELECT author, message, meta_json FROM versions
+       WHERE stash_name = ? AND path = ? AND version = 1`,
+    )
+      .bind(STASH, "asset.bin")
+      .first();
+    expect(commit).toEqual({ author, message, meta_json: metaJson });
+    expect(version).toEqual({ author, message, meta_json: metaJson });
+    expect(commit?.meta_json).not.toContain("commitId");
+    expect(version?.meta_json).not.toContain("commitId");
+  });
+
+  it("echoes upload attribution and nulls in the create response", async () => {
+    const attributed = await create(
+      {
+        expectedVersion: null,
+        size: 1,
+        author: "response-bot",
+        message: "Response metadata",
+        meta: { source: "response-test" },
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-response-attributed",
+    );
+    expect(attributed.status).toBe(201);
+    await expect(attributed.json()).resolves.toMatchObject({
+      author: "response-bot",
+      message: "Response metadata",
+      meta: { source: "response-test" },
+    });
+    const unset = await create(
+      {
+        expectedVersion: null,
+        size: 1,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-response-unset",
+    );
+    expect(unset.status).toBe(201);
+    await expect(unset.json()).resolves.toMatchObject({ author: null, message: null, meta: null });
+  });
+
+  it("falls back to the principal or empty values without upload attribution", async () => {
+    const token = await mintToken(STASH, "write");
+    const bytes = new Uint8Array([7]);
+    const tokenCreated = await create(
+      {
+        expectedVersion: null,
+        size: bytes.byteLength,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-token-fallback",
+      bindings(),
+      createApp(),
+      token.token,
+    );
+    const tokenSession = await tokenCreated.json<{ id: string }>();
+    expect(
+      (
+        await raw(
+          tokenSession.id,
+          bytes,
+          "upload-token-fallback",
+          {},
+          bindings(),
+          createApp(),
+          token.token,
+        )
+      ).status,
+    ).toBe(202);
+    const tokenCompletion = await complete(
+      tokenSession.id,
+      "complete-token-fallback",
+      bindings(),
+      createApp(),
+      token.token,
+    );
+    const tokenResult = await tokenCompletion.json<{ commitId: string }>();
+
+    const adminCreated = await create(
+      {
+        expectedVersion: 1,
+        size: bytes.byteLength,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-admin-fallback",
+    );
+    const adminSession = await adminCreated.json<{ id: string }>();
+    expect((await raw(adminSession.id, bytes, "upload-admin-fallback")).status).toBe(202);
+    const adminCompletion = await complete(adminSession.id, "complete-admin-fallback");
+    const adminResult = await adminCompletion.json<{ commitId: string }>();
+
+    await expect(
+      env.DB.prepare("SELECT author, message, meta_json FROM commits WHERE id = ?")
+        .bind(tokenResult.commitId)
+        .first(),
+    ).resolves.toEqual({ author: token.id, message: "", meta_json: "{}" });
+    await expect(
+      env.DB.prepare("SELECT author, message, meta_json FROM versions WHERE commit_id = ?")
+        .bind(tokenResult.commitId)
+        .first(),
+    ).resolves.toEqual({ author: token.id, message: "", meta_json: "{}" });
+    await expect(
+      env.DB.prepare("SELECT author, message, meta_json FROM commits WHERE id = ?")
+        .bind(adminResult.commitId)
+        .first(),
+    ).resolves.toEqual({ author: "", message: "", meta_json: "{}" });
+    await expect(
+      env.DB.prepare("SELECT author, message, meta_json FROM versions WHERE commit_id = ?")
+        .bind(adminResult.commitId)
+        .first(),
+    ).resolves.toEqual({ author: "", message: "", meta_json: "{}" });
+  });
+
+  it("rejects a reused create idempotency key when attribution differs", async () => {
+    const body = {
+      expectedVersion: null,
+      size: 1,
+      representation: "binary",
+      contentType: "application/octet-stream",
+      mode: "single",
+      resumable: false,
+    };
+    expect((await create({ ...body, author: "first" }, "create-attribution-reuse")).status).toBe(
+      201,
+    );
+    const reused = await create({ ...body, author: "second" }, "create-attribution-reuse");
+    expect(reused.status).toBe(422);
+    await expect(reused.json()).resolves.toMatchObject({
+      error: { code: "idempotency-key-reused" },
+    });
   });
 
   it("streams R2 bytes without the global JSON limit and promotes the immutable pointer", async () => {

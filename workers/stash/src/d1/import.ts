@@ -12,9 +12,10 @@ import {
 import type { Env } from "../env.js";
 import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./blobs.js";
 import { importBatch, type PreparedImportVersion } from "./sql/import.js";
-import { selectHeadForWrite } from "./sql/writes.js";
+import { selectHeadForWrite } from "./sql/write-primitives.js";
 import type { StoreDependencies } from "./store.js";
 import { mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
+import { postBatchRefusal } from "./writes.js";
 
 interface HeadForImportRow {
   head_version: number;
@@ -350,8 +351,13 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
     } catch {
       // A competing fenced writer can win after the preflight read.
     }
-    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
-    return refusal(value.expectedVersion, await readHead(db, stash, value.path));
+    return postBatchRefusal({
+      stashIsLive: () => stashIsLive(db, stash),
+      replay: async () => null,
+      stashNotFound: () => failure("not-found", 404, "Stash not found"),
+      readHead: () => readHead(db, stash, value.path),
+      classify: (currentHead) => refusal(value.expectedVersion, currentHead),
+    });
   }
 
   return { importFile };

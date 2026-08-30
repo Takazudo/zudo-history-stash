@@ -72,6 +72,7 @@ import type {
   ErrorCode,
   GcKind,
   JsonValue,
+  ParsedRevertCommitBody,
   ReconnectReason,
   RouteId,
   StashEvent,
@@ -723,6 +724,17 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         "content",
         {
           kind: "content",
+          nextCursor: null,
+          leaseOwner: null,
+          leaseGeneration: 0,
+          leaseUntil: null,
+          updatedAt: 0,
+        },
+      ],
+      [
+        "change-sets",
+        {
+          kind: "change-sets",
           nextCursor: null,
           leaseOwner: null,
           leaseGeneration: 0,
@@ -1721,6 +1733,34 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           ? null
           : nextGcCursor(kind, last.key);
       // Content rows leave R2 objects for the existing r2-orphans job to reclaim in a later phase.
+    } else if (kind === "change-sets") {
+      const candidates = [...state.changeSets.values()]
+        .map((row) => ({ key: row.id, row }))
+        .sort((left, right) => left.key.localeCompare(right.key));
+      const start = pageStart(candidates, inputCursor, kind);
+      const page = candidates.slice(start, start + maxObjects);
+      run.scanned = page.length;
+      // The fake uses the orphan grace; its change-set retention window deliberately differs from
+      // the Worker's GC_CHANGE_SET_RETENTION_MS.
+      const eligible = page.filter(({ row: changeSet }) => {
+        const retentionAt =
+          changeSet.status === "rejected"
+            ? (changeSet.decidedAt ?? changeSet.expiresAt)
+            : changeSet.expiresAt;
+        return changeSet.status !== "applied" && startedAt - retentionAt >= gcOrphanMinAgeMs;
+      });
+      run.eligible = eligible.length;
+      if (!dryRun) {
+        for (const { row: changeSet } of eligible) {
+          state.changeSets.delete(changeSet.id);
+        }
+        run.deleted = eligible.length;
+      }
+      const last = page.at(-1);
+      run.cursor =
+        last === undefined || start + page.length >= candidates.length
+          ? null
+          : nextGcCursor(kind, last.key);
     } else {
       const candidates = ledgerCandidates();
       const start = pageStart(candidates, inputCursor, kind);
@@ -1749,6 +1789,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     pruneGcRuns("r2-orphans");
     pruneGcRuns("ledger");
     pruneGcRuns("content");
+    pruneGcRuns("change-sets");
     const runs = state.gcRuns
       .filter((run) => parsed.data.kind === undefined || run.kind === parsed.data.kind)
       .sort(compareGcRuns)
@@ -2275,6 +2316,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     declaredHash: row.declaredHash,
     representation: row.representation,
     contentType: row.contentType,
+    author: row.author,
+    message: row.message,
+    meta: row.meta === null ? null : cloneMeta(row.meta),
     mode: row.mode,
     storageTier: row.storageTier,
     partSize: row.partSize,
@@ -2342,7 +2386,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         existing.declaredHash !== (parsed.data.hash ?? null) ||
         existing.representation !== parsed.data.representation ||
         existing.contentType !== parsed.data.contentType ||
-        existing.mode !== mode)
+        existing.skipIfUnchanged !== parsed.data.skipIfUnchanged ||
+        existing.mode !== mode ||
+        existing.author !== (parsed.data.author ?? null) ||
+        existing.message !== (parsed.data.message ?? null) ||
+        (existing.meta === null ? null : canonicalJson(existing.meta)) !==
+          (parsed.data.meta === undefined ? null : canonicalJson(parsed.data.meta)))
     )
       return fail("idempotency-key-reused", "Idempotency-Key was reused.");
     if (existing !== undefined)
@@ -2381,6 +2430,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       declaredHash: parsed.data.hash ?? null,
       representation: parsed.data.representation,
       contentType: parsed.data.contentType,
+      author: parsed.data.author ?? null,
+      message: parsed.data.message ?? null,
+      meta: parsed.data.meta === undefined ? null : cloneMeta(parsed.data.meta),
       mode,
       storageTier:
         mode === "multipart" || parsed.data.size > capabilities.limits.d1InlineMaxBytes
@@ -2545,6 +2597,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         contentType: row.contentType,
       };
     } else {
+      const author = row.author ?? (row.principal.kind === "stash" ? row.principal.tokenId : "");
+      const message = row.message ?? "";
+      const meta = row.meta ?? {};
       const version = append(row.stash, row.path, {
         kind: "put",
         hash,
@@ -2557,9 +2612,9 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
             ? "inline"
             : "raw",
         rollbackOf: null,
-        author: "",
-        message: "",
-        meta: {},
+        author,
+        message,
+        meta: cloneMeta(meta),
       });
       const r2Key =
         row.storageTier === "r2"
@@ -2584,7 +2639,12 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         createdAt: version.createdAt,
       };
       nested(state.blobs, row.stash).set(hash, blob);
-      finalizeCommit(version.commitId, { createdBy: principalName(row.principal) });
+      finalizeCommit(version.commitId, {
+        author,
+        message,
+        meta,
+        createdBy: principalName(row.principal),
+      });
       row.result = {
         commitId: version.commitId,
         version: version.version,
@@ -3432,13 +3492,14 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     return json({ entries, truncated });
   };
 
-  const revertRequestHash = async (id: string, input: RevertCommitBody): Promise<string> =>
+  const revertRequestHash = async (id: string, input: ParsedRevertCommitBody): Promise<string> =>
     sha256Hex(
       canonicalJson({
         commitId: id,
         author: input.author ?? "",
         message: input.message ?? `Revert ${id}`,
         meta: input.meta ?? {},
+        onto: input.onto,
       }),
     );
 
@@ -3479,19 +3540,24 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
       const previous =
         entry.version > 1 ? getVersion(stash, entry.path, entry.version - 1) : undefined;
       const shouldDelete = entry.version === 1 || previous?.hash === null || previous === undefined;
-      if (shouldDelete && file?.headVersion === entry.version && file.deleted) {
+      const expectedVersion =
+        parsed.data.onto === "head" && head !== undefined ? head.version : entry.version;
+      const alreadyDeleted =
+        shouldDelete &&
+        file?.deleted === true &&
+        (parsed.data.onto === "head" || file.headVersion === entry.version);
+      if (alreadyDeleted) {
         skipped.push({ path: entry.path, reason: "already-deleted" });
       } else if (shouldDelete) {
-        entries.push({ op: "delete", path: entry.path, expectedVersion: entry.version });
+        entries.push({ op: "delete", path: entry.path, expectedVersion });
       } else {
         entries.push({
           op: "rollback",
           path: entry.path,
-          expectedVersion: entry.version,
+          expectedVersion,
           toVersion: entry.version - 1,
         });
       }
-      void head;
     }
     if (entries.length === 0) return fail("validation", "nothing to revert");
     const commit = await applyCommit({

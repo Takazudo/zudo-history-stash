@@ -140,6 +140,71 @@ describe("D1 upload session transition store", () => {
     });
   });
 
+  it("renews an expired lease when its exact owner and expiry still match", async () => {
+    await seedSession("upl_lease_catch_up", "uploaded");
+    const store = new D1UploadSessionStore(env.DB);
+    const lease = await store.acquireFinalizationLease({
+      sessionId: "upl_lease_catch_up",
+      generation: 0,
+      owner: "owner-a",
+      now: 10,
+      leaseUntil: 20,
+    });
+    if (!lease) throw new Error("Expected lease");
+
+    await expect(store.renewFinalizationLease(lease, 25, 35)).resolves.toEqual({
+      ...lease,
+      expiresAt: 35,
+    });
+  });
+
+  it("rejects renewal by an old owner after lease takeover", async () => {
+    await seedSession("upl_lease_taken_over", "uploaded");
+    const store = new D1UploadSessionStore(env.DB);
+    const first = await store.acquireFinalizationLease({
+      sessionId: "upl_lease_taken_over",
+      generation: 0,
+      owner: "owner-a",
+      now: 10,
+      leaseUntil: 20,
+    });
+    const takeover = await store.acquireFinalizationLease({
+      sessionId: "upl_lease_taken_over",
+      generation: 0,
+      owner: "owner-b",
+      now: 20,
+      leaseUntil: 30,
+    });
+    if (!first || !takeover) throw new Error("Expected both leases");
+
+    await expect(store.renewFinalizationLease(first, 21, 31)).resolves.toBeNull();
+    await expect(store.get("upl_lease_taken_over")).resolves.toMatchObject({
+      finalization_lease_owner: "owner-b",
+      finalization_lease_until: 30,
+    });
+  });
+
+  it("rejects a stale same-owner lease after its expiry was renewed", async () => {
+    await seedSession("upl_lease_stale_expiry", "uploaded");
+    const store = new D1UploadSessionStore(env.DB);
+    const first = await store.acquireFinalizationLease({
+      sessionId: "upl_lease_stale_expiry",
+      generation: 0,
+      owner: "owner-a",
+      now: 10,
+      leaseUntil: 20,
+    });
+    if (!first) throw new Error("Expected lease");
+    const renewed = await store.renewFinalizationLease(first, 15, 30);
+    if (!renewed) throw new Error("Expected renewal");
+
+    await expect(store.renewFinalizationLease(first, 16, 40)).resolves.toBeNull();
+    await expect(store.get("upl_lease_stale_expiry")).resolves.toMatchObject({
+      finalization_lease_owner: "owner-a",
+      finalization_lease_until: 30,
+    });
+  });
+
   it("rejects expired lease acquisition and completion", async () => {
     await seedSession("upl_expired_lease", "uploaded");
     const store = new D1UploadSessionStore(env.DB);

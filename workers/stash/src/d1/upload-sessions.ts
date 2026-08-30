@@ -28,6 +28,9 @@ export interface CreateUploadSessionInput {
   maxOpenSessions: number;
   maxReservedBytes: number;
   skipIfUnchanged: boolean;
+  commitAuthor: string | null;
+  commitMessage: string | null;
+  commitMetaJson: string | null;
 }
 
 /** Durable mutation seam shared by the single-stream and multipart implementations. */
@@ -81,8 +84,9 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
         `INSERT INTO upload_sessions
           (id, stash_name, path, principal_kind, principal_id, expected_version, declared_size,
            declared_hash, representation, content_type, upload_mode, storage_tier, part_size,
-           state, expires_at, create_fingerprint, created_at, updated_at, skip_if_unchanged)
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?
+           state, expires_at, create_fingerprint, created_at, updated_at, skip_if_unchanged,
+           commit_author, commit_message, commit_meta_json)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM stashes WHERE name = ? AND deleted_at IS NULL)
            AND (SELECT COUNT(*) FROM upload_sessions
                 WHERE stash_name = ? AND reservation_released_at IS NULL
@@ -110,6 +114,9 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
         input.now,
         input.now,
         input.skipIfUnchanged ? 1 : 0,
+        input.commitAuthor,
+        input.commitMessage,
+        input.commitMetaJson,
         input.stash,
         input.stash,
         input.now,
@@ -307,10 +314,9 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
       .prepare(
         `UPDATE upload_sessions SET finalization_lease_until = ?, updated_at = ?
          WHERE id = ? AND state = 'finalizing' AND attempt_generation = ?
-           AND finalization_lease_owner = ? AND finalization_lease_until = ?
-           AND finalization_lease_until > ?`,
+           AND finalization_lease_owner = ? AND finalization_lease_until = ?`,
       )
-      .bind(leaseUntil, now, lease.sessionId, lease.generation, lease.owner, lease.expiresAt, now)
+      .bind(leaseUntil, now, lease.sessionId, lease.generation, lease.owner, lease.expiresAt)
       .run();
     return result.meta.changes === 1 ? { ...lease, expiresAt: leaseUntil } : null;
   }

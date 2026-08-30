@@ -171,6 +171,9 @@ export interface UploadSessionRow {
   event_publish_owner: string | null;
   event_publish_until: number | null;
   event_origin: string | null;
+  commit_author: string | null;
+  commit_message: string | null;
+  commit_meta_json: string | null;
 }
 
 export interface UploadStagedBytesRow {
@@ -218,7 +221,7 @@ export interface IdempotencyRow {
   created_at: number;
 }
 
-export type GcJobKind = "r2-orphans" | "ledger" | "content";
+export type GcJobKind = "r2-orphans" | "ledger" | "content" | "change-sets";
 
 export interface GcJobRow {
   kind: GcJobKind;
@@ -429,6 +432,9 @@ export const TABLE_COLUMNS = {
     "event_publish_owner",
     "event_publish_until",
     "event_origin",
+    "commit_author",
+    "commit_message",
+    "commit_meta_json",
   ],
   upload_staged_bytes: [
     "session_id",

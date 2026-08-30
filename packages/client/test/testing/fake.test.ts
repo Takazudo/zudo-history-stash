@@ -15,6 +15,7 @@ import {
   FAKE_SUPPORTED_ROUTE_IDS,
   createFakeStash,
 } from "../../src/testing/index.js";
+import type { FakeChangeSetRow } from "../../src/testing/types.js";
 
 const ADMIN = "fake-admin";
 
@@ -135,12 +136,113 @@ describe("fake universal commit attribution", () => {
       expectedVersion: null,
       representation: "binary",
       contentType: "application/octet-stream",
+      author: "upload author",
+      message: "upload message",
+      meta: { source: "session" },
     });
     if (!uploaded.ok || "unchanged" in uploaded.value) throw new Error("Token upload failed");
     await expect(admin.commits("demo").get(uploaded.value.commitId)).resolves.toMatchObject({
       ok: true,
-      value: { createdBy: me.value.tokenId },
+      value: {
+        author: "upload author",
+        message: "upload message",
+        meta: { source: "session" },
+        createdBy: me.value.tokenId,
+      },
     });
+    await expect(admin.files("demo").history("token.bin")).resolves.toMatchObject({
+      ok: true,
+      value: {
+        versions: [
+          {
+            author: "upload author",
+            message: "upload message",
+            meta: { source: "session" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("preserves JSON upload attribution and rejects divergent session-create replay", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: ADMIN,
+      fetch: fake.fetch,
+      idempotencyKey: () => crypto.randomUUID(),
+    });
+    const uploaded = await client.files("demo").upload("json.txt", "json body", {
+      expectedVersion: null,
+      representation: "text",
+      contentType: "text/plain",
+      mode: "json",
+      author: "json author",
+      message: "json message",
+      meta: { source: "json" },
+    });
+    expect(uploaded).toMatchObject({ ok: true });
+    await expect(client.files("demo").history("json.txt")).resolves.toMatchObject({
+      ok: true,
+      value: {
+        versions: [
+          {
+            author: "json author",
+            message: "json message",
+            meta: { source: "json" },
+          },
+        ],
+      },
+    });
+
+    const create = (author: string) =>
+      request(fake, "/v1/stashes/demo/uploads/session.bin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fake-upload-create-attribution",
+        },
+        body: JSON.stringify({
+          expectedVersion: null,
+          size: 3,
+          representation: "binary",
+          contentType: "application/octet-stream",
+          mode: "single",
+          author,
+        }),
+      });
+    const first = await create("first author");
+    expect(first.status).toBe(201);
+    const diverged = await create("different author");
+    expect(diverged.status).toBe(422);
+    expect(await errorCode(diverged)).toBe("idempotency-key-reused");
+  });
+
+  it("rejects a session-create replay with a different skip-if-unchanged flag", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const create = (skipIfUnchanged: boolean) =>
+      request(fake, "/v1/stashes/demo/uploads/session.bin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fake-upload-create-skip",
+        },
+        body: JSON.stringify({
+          expectedVersion: null,
+          size: 3,
+          representation: "binary",
+          contentType: "application/octet-stream",
+          mode: "single",
+          skipIfUnchanged,
+        }),
+      });
+    const first = await create(false);
+    expect(first.status).toBe(201);
+    const diverged = await create(true);
+    expect(diverged.status).toBe(422);
+    expect(await errorCode(diverged)).toBe("idempotency-key-reused");
   });
 
   it("materializes text when identical binary bytes were stored first", async () => {
@@ -179,6 +281,72 @@ describe("fake universal commit attribution", () => {
       value: { representation: "text", body: "same bytes" },
     });
     await expect(client.files("demo").raw.get("binary.bin")).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe("fake head-mode revert parity", () => {
+  it("skips later tombstones consistently and rejects a mode-divergent replay", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: ADMIN,
+      fetch: fake.fetch,
+      idempotencyKey: () => crypto.randomUUID(),
+    });
+    const files = client.files("demo");
+    const commits = client.commits("demo");
+    await expect(
+      files.put("updated.txt", { body: "before update", expectedVersion: null }),
+    ).resolves.toMatchObject({ ok: true });
+    const target = await commits.create({
+      entries: [
+        { op: "put", path: "created.txt", expectedVersion: null, body: "created" },
+        { op: "put", path: "updated.txt", expectedVersion: 1, body: "after update" },
+      ],
+    });
+    if (!target.ok) throw new Error("Head-mode revert target failed");
+    await expect(
+      commits.create({
+        entries: [{ op: "delete", path: "created.txt", expectedVersion: 1 }],
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    const first = await commits.revert(
+      target.value.id,
+      { onto: "head" },
+      { idempotencyKey: "fake-head-revert" },
+    );
+    expect(first).toMatchObject({
+      ok: true,
+      value: {
+        entries: [{ path: "updated.txt", op: "rollback", version: 3, rollbackOf: 1 }],
+        skipped: [{ path: "created.txt", reason: "already-deleted" }],
+      },
+    });
+    const replayed = await commits.revert(
+      target.value.id,
+      { onto: "head" },
+      { idempotencyKey: "fake-head-revert" },
+    );
+    expect(replayed).toEqual({ ...first, replayed: true });
+
+    const modeTarget = await commits.create({
+      entries: [{ op: "put", path: "mode.txt", expectedVersion: null, body: "mode" }],
+    });
+    if (!modeTarget.ok) throw new Error("Mode-divergence target failed");
+    await expect(
+      commits.revert(modeTarget.value.id, {}, { idempotencyKey: "fake-revert-mode" }),
+    ).resolves.toMatchObject({ ok: true });
+    const diverged = await commits.revert(
+      modeTarget.value.id,
+      { onto: "head" },
+      { idempotencyKey: "fake-revert-mode" },
+    );
+    expect(diverged).toMatchObject({
+      ok: false,
+      error: { status: 422, code: "idempotency-key-reused" },
+    });
   });
 });
 
@@ -1052,6 +1220,106 @@ describe("stash administration routes", () => {
     });
   });
 
+  it("reclaims change sets at and past retention while retaining recent and applied rows", async () => {
+    const now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const retentionWindow = 900_000;
+    const changeSet = (
+      id: string,
+      overrides: Pick<FakeChangeSetRow, "status" | "expiresAt" | "decidedAt">,
+    ): FakeChangeSetRow => ({
+      id,
+      stash: "demo",
+      status: "open",
+      author: "fixture",
+      message: "fixture",
+      meta: {},
+      expiresAt: now,
+      createdBy: "fixture",
+      createdAt: now,
+      decidedAt: null,
+      decidedBy: null,
+      decisionReason: null,
+      commitId: null,
+      expectedLastChangeId: null,
+      expectedLastChangePrefix: null,
+      idempotencyKey: null,
+      requestHash: null,
+      entries: [],
+      ...overrides,
+    });
+    const rows = [
+      changeSet("chs_0000000000001aaaaaaaa", {
+        expiresAt: now - retentionWindow - 1,
+        decidedAt: null,
+        status: "open",
+      }),
+      changeSet("chs_0000000000002aaaaaaaa", {
+        expiresAt: now + 86_400_000,
+        decidedAt: now - retentionWindow - 1,
+        status: "rejected",
+      }),
+      changeSet("chs_0000000000003aaaaaaaa", {
+        expiresAt: now - retentionWindow + 1,
+        decidedAt: null,
+        status: "open",
+      }),
+      changeSet("chs_0000000000004aaaaaaaa", {
+        expiresAt: now + 86_400_000,
+        decidedAt: now - retentionWindow + 1,
+        status: "rejected",
+      }),
+      changeSet("chs_0000000000005aaaaaaaa", {
+        expiresAt: now - retentionWindow - 1,
+        decidedAt: now - retentionWindow - 1,
+        status: "applied",
+      }),
+      changeSet("chs_0000000000006aaaaaaaa", {
+        expiresAt: now - retentionWindow,
+        decidedAt: null,
+        status: "open",
+      }),
+      changeSet("chs_0000000000007aaaaaaaa", {
+        expiresAt: now + 86_400_000,
+        decidedAt: now - retentionWindow,
+        status: "rejected",
+      }),
+    ];
+    for (const row of rows) fake.state.changeSets.set(row.id, row);
+
+    const first = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "change-sets", maxObjects: 2 }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      scanned: number;
+      eligible: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(firstBody).toMatchObject({ scanned: 2, eligible: 2, deleted: 2 });
+    expect(firstBody.cursor).toEqual(expect.any(String));
+    expect(fake.state.changeSets.has(rows[0]!.id)).toBe(false);
+    expect(fake.state.changeSets.has(rows[1]!.id)).toBe(false);
+
+    const second = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "change-sets", maxObjects: 500, cursor: firstBody.cursor }),
+    });
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      scanned: 5,
+      eligible: 2,
+      deleted: 2,
+      cursor: null,
+    });
+    expect([...fake.state.changeSets.keys()]).toEqual(rows.slice(2, 5).map(({ id }) => id));
+  });
+
   it("validates opaque cursors, uses a strict age boundary, and preserves logical history", async () => {
     const now = Date.parse("2026-08-26T00:00:00.000Z");
     const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
@@ -1301,6 +1569,29 @@ describe("fake change-set ordering", () => {
     expect(diff.status).toBe(200);
     const diffBody = (await diff.json()) as { entries: Array<{ path: string }> };
     expect(diffBody.entries.map(({ path }) => path)).toEqual(["sdk/review.bin", "sdk/review.txt"]);
+  });
+
+  it("rejects divergent change-set create replays with 422", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const create = (message: string) =>
+      request(fake, "/v1/stashes/demo/change-sets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fake-change-set-create",
+        },
+        body: JSON.stringify({
+          entries: [{ op: "put", path: "review.txt", baseVersion: null, body: "review" }],
+          message,
+        }),
+      });
+
+    const first = await create("first message");
+    expect(first.status).toBe(201);
+    const diverged = await create("different message");
+    expect(diverged.status).toBe(422);
+    expect(await errorCode(diverged)).toBe("idempotency-key-reused");
   });
 });
 

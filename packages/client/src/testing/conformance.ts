@@ -1524,6 +1524,64 @@ const TRACE: readonly TraceStep[] = [
     }),
     (body, _response, context) => remember(context, "sdkRevertId", record(body, "revert").id),
   ),
+  {
+    name: "create a commit for head-mode revert",
+    routeId: "createCommit",
+    request: (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-revert-head-target" },
+      body: {
+        entries: [
+          {
+            op: "put",
+            path: "sdk/revert-head.txt",
+            expectedVersion: null,
+            body: "target\n",
+          },
+        ],
+      },
+    }),
+    verify(response, body, context) {
+      const step = "create a commit for head-mode revert";
+      assertStatus(step, response, 201);
+      remember(context, "sdkHeadRevertTargetId", record(body, step).id);
+    },
+  },
+  responseStep(
+    "move the target path after its commit",
+    "putFile",
+    (context) => ({
+      method: "PUT",
+      path: `/v1/stashes/${context.stash}/files/sdk/revert-head.txt`,
+      token: "write",
+      body: { body: "interfering write\n", expectedVersion: 1 },
+    }),
+    201,
+    { version: 2 },
+  ),
+  responseStep(
+    "head-mode revert overwrites an interfering write",
+    "revertCommit",
+    (context) => ({
+      method: "POST",
+      path: `/v1/stashes/${context.stash}/commits/${stringValue(
+        context,
+        "sdkHeadRevertTargetId",
+        "head-mode revert",
+      )}/revert`,
+      token: "write",
+      headers: { "Idempotency-Key": "conformance-revert-head" },
+      body: { onto: "head" },
+    }),
+    201,
+    (context) => ({
+      source: "revert",
+      revertsCommitId: stringValue(context, "sdkHeadRevertTargetId", "head-mode revert"),
+      entries: [{ path: "sdk/revert-head.txt", op: "delete", version: 3 }],
+    }),
+  ),
   responseStep(
     "open change set includes binary candidate",
     "createChangeSet",
@@ -2440,6 +2498,9 @@ const TRACE: readonly TraceStep[] = [
         size: 6,
         representation: "binary",
         contentType: "application/octet-stream",
+        author: "binary author",
+        message: "binary upload",
+        meta: { suite: "sdk", transfer: "single" },
         mode: "single",
       },
     }),
@@ -2452,6 +2513,9 @@ const TRACE: readonly TraceStep[] = [
         declaredSize: 6,
         representation: "binary",
         mode: "single",
+        author: "binary author",
+        message: "binary upload",
+        meta: { suite: "sdk", transfer: "single" },
       });
       remember(context, "binarySession", value.id);
       remember(context, "binaryGeneration", value.attemptGeneration);
@@ -2608,13 +2672,22 @@ const TRACE: readonly TraceStep[] = [
         size: 4,
         representation: "binary",
         contentType: "application/zip",
+        author: "multipart author",
+        message: "multipart upload",
+        meta: { suite: "sdk", transfer: "multipart" },
         mode: "multipart",
         resumable: true,
       },
     }),
     verify(response, body, context) {
-      assertStatus("multipart session accepts durable replacement parts", response, 201);
-      const value = record(body, "multipart session accepts durable replacement parts");
+      const step = "multipart session accepts durable replacement parts";
+      assertStatus(step, response, 201);
+      const value = record(body, step);
+      assertSubset(step, value, {
+        author: "multipart author",
+        message: "multipart upload",
+        meta: { suite: "sdk", transfer: "multipart" },
+      });
       remember(context, "multipartSession", value.id);
       remember(context, "multipartGeneration", value.attemptGeneration);
     },

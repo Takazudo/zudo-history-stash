@@ -1,7 +1,7 @@
 import type { ChangeSetEntryRow, CommitRow } from "../schema.js";
 import type { PreparedBlob } from "../blobs.js";
 import type { PreparedByteWrite } from "../byte-writes.js";
-import type { SqlFragment } from "./writes.js";
+import { insertLedger, type LedgerInsert, type SqlFragment } from "./write-primitives.js";
 
 type Preparer = Pick<D1DatabaseSession, "prepare">;
 
@@ -161,7 +161,7 @@ export function commitGateStatement(db: Preparer, input: CommitGateInput): D1Pre
 
 export function commitFence(stash: string, id: string): SqlFragment {
   return {
-    sql: "EXISTS (SELECT 1 FROM commits WHERE stash_name = ? AND id = ?)",
+    sql: "EXISTS (SELECT 1 FROM commits WHERE stash_name = ? AND id = ? AND sealed = 0)",
     params: [stash, id],
   };
 }
@@ -201,6 +201,7 @@ export type PreparedCommitEntry =
 export interface CommitBatchInput {
   row: CommitInsertRow;
   entries: PreparedCommitEntry[];
+  ledger?: LedgerInsert;
   expectedLastChangeId?: number;
   expectedLastChangePrefixLo?: string;
   expectedLastChangePrefixHi?: string;
@@ -452,6 +453,23 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
     if (entry.op === "put") statements.push(...putEntryStatements(db, input, entry));
     else statements.push(derivedEntryStatement(db, input, entry));
     statements.push(headStatement(db, input, entry));
+  }
+  // This ledger statement may sit here only because it is fenced on position-independent commitFence(stash, id), not the operation fence; an operation fence here would write zero rows and break idempotent replay.
+  if (input.ledger) {
+    const entry = input.entries[0];
+    if (input.entries.length !== 1 || !entry) {
+      throw new Error("Commit batch ledger requires exactly one entry");
+    }
+    statements.push(
+      insertLedger(db, {
+        stash: input.row.stash_name,
+        path: entry.path,
+        version: entry.version,
+        createdAt: entry.createdAt,
+        ledger: input.ledger,
+        operationFence: commitFence(input.row.stash_name, input.row.id),
+      }),
+    );
   }
   statements.push(commitSealStatement(db, input));
   return statements;

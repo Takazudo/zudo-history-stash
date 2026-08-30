@@ -200,6 +200,33 @@ async function seedCommitFixture(): Promise<ScenarioState> {
   return { commitId: result.value.id };
 }
 
+async function seedHeadRevertFixture(): Promise<{ commitId: string }> {
+  const store = createStashStore(createTestEnv().env, {
+    createId: () => `rpc-head-revert-${++rpcCommitSequence}`,
+  });
+  const target = await store.commits.createCommit(
+    RPC_STASH,
+    {
+      entries: [
+        {
+          op: "put",
+          path: "docs/rpc-head-revert.txt",
+          expectedVersion: null,
+          body: "target write\n",
+        },
+      ],
+    },
+    { principal: "test-admin" },
+  );
+  if (!target.ok) throw new Error("RPC head-revert target failed");
+  const moved = await store.writes.put(RPC_STASH, "docs/rpc-head-revert.txt", {
+    body: "interfering write\n",
+    expectedVersion: 1,
+  });
+  if (!moved.ok || "unchanged" in moved.value) throw new Error("RPC head-revert move failed");
+  return { commitId: target.value.id };
+}
+
 async function seedChangeSetFixture(): Promise<ScenarioState> {
   const result = await createStashStore(createTestEnv().env, {
     createId: () => `rpc-fixture-change-set-${++rpcCommitSequence}`,
@@ -1033,6 +1060,46 @@ async function typedParity<T>(
 }
 
 describe("typed StashRpc methods", () => {
+  it("preserves head-mode revert semantics across the typed RPC boundary", async () => {
+    const results: ResponseSnapshot[] = [];
+    for (const transport of ["http", "rpc"] as const) {
+      rpcCommitSequence = 0;
+      await resetDatabase();
+      await seedRpcFixture();
+      const { commitId } = await seedHeadRevertFixture();
+      const bindings = createTestEnv().env;
+      const response =
+        transport === "http"
+          ? await dispatchHttp(
+              jsonRequest(
+                "POST",
+                `/v1/stashes/${RPC_STASH}/commits/${commitId}/revert`,
+                { onto: "head" },
+                RPC_WRITE_TOKEN,
+                { "Idempotency-Key": "rpc-head-revert" },
+              ),
+              bindings,
+            )
+          : await new StashRpc(createExecutionContext(), bindings).revertCommit(
+              RPC_WRITE_TOKEN,
+              RPC_STASH,
+              commitId,
+              { onto: "head" },
+              "rpc-head-revert",
+            );
+      results.push(await snapshot(response));
+      await expect(
+        bindings.DB.prepare(
+          "SELECT head_version, deleted FROM files WHERE stash_name = ? AND path = ?",
+        )
+          .bind(RPC_STASH, "docs/rpc-head-revert.txt")
+          .first(),
+      ).resolves.toEqual({ head_version: 3, deleted: 1 });
+    }
+    expect(results[1]).toEqual(results[0]);
+    expect(results[1]?.status).toBe(201);
+  });
+
   it("matches the rpc-transport client for putFile", async () => {
     const input = { body: "typed put\n", expectedVersion: null };
     const options = { idempotencyKey: "typed-put" };

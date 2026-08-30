@@ -1,0 +1,17 @@
+# mdx-formatter 1.3.0-next.4 skips .mdx-formatter.json excludes for literal paths, so the pre-commit hook uses this file; doc/scripts/integration.test.mjs keeps both files in lockstep.
+node_modules/**
+dist/**
+**/dist/**
+worktrees/**
+__inbox/**
+.playwright-cli/**
+_temp-resource/**
+doc/src/content/docs/claude*/**
+doc/src/content/docs-ja/claude*/**
+doc/dist/**
+doc/.zfb*/**
+doc/.zudo-doc/**
+doc/.wrangler/**
+doc/.claude/skills/zudo-history-stash-wisdom/**
+doc/.codex/skills/zudo-history-stash-wisdom/**
+packages/*/CHANGELOG.md

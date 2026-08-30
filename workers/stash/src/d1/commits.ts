@@ -1040,6 +1040,7 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
         author: value.author ?? "",
         message: value.message ?? `Revert ${id}`,
         meta: value.meta ?? {},
+        onto: value.onto,
       }),
     );
     const db = env.DB.withSession("first-primary");
@@ -1103,15 +1104,22 @@ export function createCommits(env: Env, deps: CommitDependencies): StashCommits 
       if (first === undefined || last === undefined) continue;
       const head = headByPath.get(path);
       const shouldDelete = first.version === 1 || first.previous_hash === null;
-      if (shouldDelete && head?.head_version === last.version && head.deleted === 1) {
+      // A missing files row leaves the head-derived expectation underivable and must conflict rather than be guessed.
+      const expectedVersion =
+        value.onto === "head" && head !== undefined ? head.head_version : last.version;
+      const alreadyDeleted =
+        shouldDelete &&
+        head?.deleted === 1 &&
+        (value.onto === "head" || head.head_version === last.version);
+      if (alreadyDeleted) {
         skipped.push({ path, reason: "already-deleted" });
       } else if (shouldDelete) {
-        entries.push({ op: "delete", path, expectedVersion: last.version });
+        entries.push({ op: "delete", path, expectedVersion });
       } else {
         entries.push({
           op: "rollback",
           path,
-          expectedVersion: last.version,
+          expectedVersion,
           toVersion: first.version - 1,
         });
       }

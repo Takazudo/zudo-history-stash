@@ -246,7 +246,7 @@ describe("GcPanel", () => {
       within(kind)
         .getAllByRole("option")
         .map((option) => option.getAttribute("value")),
-    ).toEqual(["r2-orphans", "ledger", "content"]);
+    ).toEqual(["r2-orphans", "ledger", "content", "change-sets"]);
     await user.selectOptions(kind, "content");
     await user.click(await screen.findByRole("button", { name: "Run" }));
     await screen.findByRole("region", { name: "Current run" });

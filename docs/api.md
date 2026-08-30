@@ -456,7 +456,7 @@ See [Importing an existing corpus](#importing-an-existing-corpus) for chaining.
 
 - **Principal/capability:** `admin`; administrator only (lifecycle/write class).
 - **Request:** Strict JSON `{ kind, dryRun?, maxObjects?, cursor? }`. `kind` is `r2-orphans`,
-  `ledger`, or `content`; `content` deletes D1 content rows in `blobs` and `byte_blobs` that are
+  `ledger`, `content`, or `change-sets`; `content` deletes D1 content rows in `blobs` and `byte_blobs` that are
   older than the content grace (`GC_CONTENT_MIN_AGE_MS`, 24 hours) and are referenced by no
   version, no entry of a live change set, and no in-flight upload session. `dryRun` defaults to
   `false`; `maxObjects` defaults to `100` and accepts integers from `1` through `500`; `cursor` is
@@ -479,14 +479,22 @@ history retains the newest five hundred records per kind.
 A `content` page deletes ONLY the D1 row and never calls R2; the object that row pointed at becomes
 an orphan, which the existing `r2-orphans` job reclaims on a later page (that job derives its
 reference set from the surviving `blobs`/`byte_blobs` rows). The stored bytes stay billed for the
-content grace PLUS however long the `r2-orphans` cursor takes to reach that key on its next pass;
-because the daily cron now splits one 45-operation budget across three kinds instead of two while
-an R2 page is still capped at 24 objects, that can be several cron days for a large bucket.
+content grace plus however long the `r2-orphans` cursor takes to reach that key on its next pass.
+
+Expired and rejected change sets remain listable with
+`GET /v1/stashes/{name}/change-sets?status=expired|rejected` for 30 days after expiry or rejection;
+the `change-sets` job then reclaims both the `change_sets` and `change_set_entries` rows. Applied
+change sets are retained permanently as commit provenance. Reclamation emits no event and leaves no
+tombstone, so clients that need to observe an end state must poll before the window closes. Reclaiming
+also frees the idempotency key: a later POST reusing it mints a new change set instead of replaying the
+old one. The 30-day window deliberately exceeds the 7-day idempotency TTL and 14-day change-set TTLs.
+The sweep intentionally does not filter on stash soft-deletion, so change sets belonging to soft-deleted
+stashes are reclaimed on schedule.
 
 ### `GET /v1/admin/gc/runs`
 
 - **Principal/capability:** `admin`; administrator only (read class).
-- **Request:** Optional `kind=r2-orphans|ledger|content` and `limit` (default `50`, maximum `200`).
+- **Request:** Optional `kind=r2-orphans|ledger|content|change-sets` and `limit` (default `50`, maximum `200`).
   Results are newest-first and deterministic.
 - **Response:** `200 { runs: GcRunResult[] }`. Each run has its UUID `runId`, stable `jobId` equal to
   its `kind`, dry-run flag, counters, opaque cursor or `null`, timestamps, and nullable error.
@@ -507,14 +515,18 @@ curl --fail-with-body -X POST \
 ```
 
 The R2 engine caps every page at 24 objects; the ledger accepts up to 500 rows per request. The
-scheduled handler requests 80 objects, round-robins `r2-orphans`, `ledger`, and `content` pages,
-shares one 45-operation budget across the whole invocation, and stops after ten pages per kind or
-before the next page would exceed that budget. Pass returned cursors unchanged when continuing an
-explicit page; omitting `cursor` uses the stored progress. `cursor: null` restarts a later pass from
-the beginning. If a lease expires or a worker is interrupted, retry the same kind after the
-five-minute lease window; a `409 gc-busy` response means another page currently owns the fenced
-lease. Dry runs never delete data or persist progress, and no response, run record, or log exposes
-an R2 key or generation.
+scheduled handler requests 80 objects in the settled order `content`, `change-sets`, `ledger`,
+`r2-orphans`. Content and change-sets each have a flat six-operation page cost, so they run first.
+Ledger runs third because multipart cleanup adds two operations per cleanup row, making its cost
+unbounded even though its admission floor is six; downstream admission is reserved for kinds not yet
+served and threaded into the ledger cleanup limit. R2 runs last because `budget.remaining - 5` lets it
+self-degrade instead of starving a kind. The handler shares one 45-operation budget across the whole
+invocation and stops after ten pages per kind or before the next page would exceed that budget. Pass
+returned cursors unchanged when continuing an explicit page; omitting `cursor` uses the stored progress.
+`cursor: null` restarts a later pass from the beginning. If a lease expires or a worker is interrupted,
+retry the same kind after the five-minute lease window; a `409 gc-busy` response means another page
+currently owns the fenced lease. Dry runs never delete data or persist progress, and no response, run
+record, or log exposes an R2 key or generation.
 
 A `content` page reports `scanned` and `eligible` as the same eligible-row count, following the
 ledger engine's convention. `deleted` can legitimately be lower because the fenced DELETE
@@ -579,6 +591,9 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 ### `POST /v1/stashes/:stash/commits/:id/revert`
 
+- **Request:** Optional `author`, `message`, and `meta` attribution; optional `onto` defaults to
+  `"commit"` and reverts each entry against the version written by the reverted commit, while
+  `"head"` deliberately overwrites later unrelated writes using each path's current head.
 - **Response:** `201 CommitResult`; replay includes `Idempotent-Replayed`.
 - **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 commit-conflict`, `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited`, `500 internal`.
 
@@ -784,8 +799,9 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 - **Principal/capability:** `write`; administrator or a matching `write` token.
 - **Request:** JSON metadata with exact `size`, optional SHA-256 `hash`, `representation`,
-  `contentType`, expected-version CAS, and transfer preference; creation has its own
-  `Idempotency-Key` fingerprint.
+  `contentType`, expected-version CAS, transfer preference, and optional `author`, `message`, and
+  `meta` carried to the commit minted at finalize; creation has its own `Idempotency-Key`
+  fingerprint.
 - **Response:** `201` session with `Idempotent-Replayed`, chosen mode/tier, expiry, and generation.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `403 scope`,
   `404 not-found`, `409 stale`, `413 payload-too-large`, `422 idempotency-key-reused`,
@@ -996,6 +1012,9 @@ Every file mutation is compare-and-set (CAS):
 2. Send that value as `expectedVersion`. Use `null` only when the path must not exist.
 3. On `409 stale`, inspect the root-level `current`, decide whether to recompute, and retry with a
    new operation. Do not blindly overwrite the winner.
+
+A revert with `onto: "head"` is the single deliberate, opt-in exception to “Do not blindly overwrite
+the winner.”
 
 `putLatest(stash, path, body)` performs the read and up to three bounded stale retries for simple
 last-head updates. Use explicit `files.put` when the consumer needs its own conflict policy.

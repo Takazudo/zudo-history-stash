@@ -23,6 +23,9 @@ export async function setup(overrides: Partial<WriteDependencies> = {}) {
     createBlobGeneration:
       overrides.createBlobGeneration ?? (() => generation((generationSequence += 1))),
     ...(overrides.onBeforeCommit ? { onBeforeCommit: overrides.onBeforeCommit } : {}),
+    ...(overrides.alterWriteStatementsForTest
+      ? { alterWriteStatementsForTest: overrides.alterWriteStatementsForTest }
+      : {}),
   };
   return { env: workerEnv, stash, deps, writes: createWrites(workerEnv, deps) };
 }

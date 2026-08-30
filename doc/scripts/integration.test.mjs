@@ -63,6 +63,7 @@ test("root recursion, aliases, formatter ownership, CI parity, and skill naming 
     docManifest.scripts["check:template-drift"],
     "node scripts/check-template-drift.mjs",
   );
+  assert.equal(docManifest.scripts["test:tooling"], docManifest.scripts.test);
 
   const prettierIgnore = await readFile(join(repositoryRoot, ".prettierignore"), "utf8");
   assert.match(prettierIgnore, /^\*\*\/\*\.md$/m);
@@ -91,7 +92,16 @@ test("root recursion, aliases, formatter ownership, CI parity, and skill naming 
   ]) {
     assert.ok(formatter.exclude.includes(exclusion), `missing formatter exclusion ${exclusion}`);
   }
+  const formatterIgnore = (await readFile(join(repositoryRoot, ".mdx-formatter-ignore"), "utf8"))
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+  assert.deepEqual(formatterIgnore, formatter.exclude);
   const lefthook = await readFile(join(repositoryRoot, "lefthook.yml"), "utf8");
+  assert.ok(
+    lefthook.includes(
+      "pnpm exec mdx-formatter --write --ignore-path .mdx-formatter-ignore {staged_files}",
+    ),
+  );
   assert.match(lefthook, /stage_fixed:\s*true/);
   assert.doesNotMatch(lefthook, /git add/);
 

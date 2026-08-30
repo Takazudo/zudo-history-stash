@@ -21,6 +21,7 @@ export const GC_STORAGE_OPERATION_LIMIT = 45;
 export const GC_R2_LIST_LIMIT = 24;
 export const GC_ORPHAN_MIN_AGE_MS = 900_000;
 export const GC_CONTENT_MIN_AGE_MS = 86_400_000;
+export const GC_CHANGE_SET_RETENTION_MS = 2_592_000_000;
 const IDEMPOTENCY_TTL_MS = IDEMPOTENCY_TTL_DAYS * 24 * 60 * 60 * 1_000;
 
 type R2Cursor = { v: 1; kind: "r2-orphans"; value: string };
@@ -31,7 +32,13 @@ type ContentCursor = {
   table: "blobs" | "byte_blobs";
   after: { stashName: string; hash: string } | null;
 };
-type GcCursor = R2Cursor | LedgerCursor | ContentCursor;
+type ChangeSetCursor = {
+  v: 1;
+  kind: "change-sets";
+  phase: "expired" | "rejected";
+  afterId: string | null;
+};
+type GcCursor = R2Cursor | LedgerCursor | ContentCursor | ChangeSetCursor;
 
 export class GcCursorValidationError extends Error {
   constructor() {
@@ -101,6 +108,14 @@ export function encodeContentCursor(
   return encodeJson({ v: 1, kind: "content", table, after });
 }
 
+export function encodeChangeSetCursor(
+  phase: ChangeSetCursor["phase"],
+  afterId: string | null,
+): string {
+  if (afterId !== null && afterId.length === 0) invalidCursor();
+  return encodeJson({ v: 1, kind: "change-sets", phase, afterId });
+}
+
 export function decodeGcCursor(kind: GcJobKind, cursor: string): GcCursor {
   const decoded = decodeJson(cursor);
   if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) invalidCursor();
@@ -161,6 +176,21 @@ export function decodeGcCursor(kind: GcJobKind, cursor: string): GcCursor {
       after: after as ContentCursor["after"],
     };
   }
+  if (kind === "change-sets") {
+    if (
+      !exactKeys(value, ["v", "kind", "phase", "afterId"]) ||
+      (value.phase !== "expired" && value.phase !== "rejected") ||
+      (value.afterId !== null && (typeof value.afterId !== "string" || value.afterId.length === 0))
+    ) {
+      invalidCursor();
+    }
+    return {
+      v: 1,
+      kind,
+      phase: value.phase,
+      afterId: value.afterId as string | null,
+    };
+  }
   return invalidCursor();
 }
 
@@ -176,6 +206,7 @@ export interface GcDependencies {
   createId: () => string;
   createOwner: () => string;
   budget: StorageOperationBudget;
+  downstreamReserveOperations: number;
   hooks: GcHooks;
 }
 
@@ -198,9 +229,16 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     createId: () => crypto.randomUUID(),
     createOwner: () => crypto.randomUUID(),
     budget: new StorageOperationBudget(GC_STORAGE_OPERATION_LIMIT),
+    downstreamReserveOperations: 0,
     hooks: {},
     ...overrides,
   };
+  if (
+    !Number.isInteger(dependencies.downstreamReserveOperations) ||
+    dependencies.downstreamReserveOperations < 0
+  ) {
+    throw new Error("Invalid downstream GC reservation");
+  }
   const store = createGcStore(env, dependencies.budget);
   const orphanMinAgeMs = configuredExactInteger(
     "GC_ORPHAN_MIN_AGE_MS",
@@ -211,6 +249,11 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     "GC_CONTENT_MIN_AGE_MS",
     env.GC_CONTENT_MIN_AGE_MS,
     GC_CONTENT_MIN_AGE_MS,
+  );
+  const changeSetRetentionMs = configuredExactInteger(
+    "GC_CHANGE_SET_RETENTION_MS",
+    env.GC_CHANGE_SET_RETENTION_MS,
+    GC_CHANGE_SET_RETENTION_MS,
   );
 
   async function finishError(run: GcRunHandle): Promise<GcRunResult> {
@@ -311,7 +354,15 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     await store.heartbeat(run, dependencies.now());
     const cleanupLimit = run.dryRun
       ? 0
-      : Math.min(input.maxObjects, Math.floor(Math.max(0, dependencies.budget.remaining - 3) / 2));
+      : Math.min(
+          input.maxObjects,
+          Math.floor(
+            Math.max(
+              0,
+              dependencies.budget.remaining - 3 - dependencies.downstreamReserveOperations,
+            ) / 2,
+          ),
+        );
     const ledgerCleanup = run.dryRun
       ? { deleted: 0, cleanup: [] }
       : await store.deleteLedgerAndCleanupUploadStaging(
@@ -388,10 +439,45 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     });
   }
 
+  async function runChangeSets(
+    run: GcRunHandle,
+    input: ParsedRunGcBody,
+    cursor: ChangeSetCursor | null,
+  ): Promise<GcRunResult> {
+    const cutoff = dependencies.now() - changeSetRetentionMs;
+    const phase = cursor?.phase ?? "expired";
+    const afterId = cursor?.afterId ?? null;
+    const rows = await store.changeSetPage(phase, cutoff, afterId, input.maxObjects + 1);
+    const page = rows.slice(0, input.maxObjects);
+    const hasNext = rows.length > input.maxObjects;
+    const boundary = page.at(-1);
+    const nextCursor = hasNext
+      ? boundary === undefined
+        ? invalidCursor()
+        : encodeChangeSetCursor(phase, boundary.id)
+      : phase === "expired"
+        ? encodeChangeSetCursor("rejected", null)
+        : null;
+    await store.heartbeat(run, dependencies.now());
+    if (!run.dryRun && page.length > 0) await dependencies.hooks.beforeDelete?.();
+    const deleted = run.dryRun ? 0 : await store.deleteChangeSetPage(run, phase, page, cutoff);
+    return store.finish(run, {
+      nextCursor,
+      scanned: page.length,
+      eligible: page.length,
+      deleted,
+      error: null,
+      finishedAt: dependencies.now(),
+    });
+  }
+
   return {
     budget: dependencies.budget,
     async run(input: ParsedRunGcBody): Promise<GcRunResult> {
-      if (!dependencies.budget.canCharge(input.kind === "r2-orphans" ? 8 : 6)) {
+      const minimumOperations = input.kind === "r2-orphans" ? 8 : 6;
+      if (
+        !dependencies.budget.canCharge(minimumOperations + dependencies.downstreamReserveOperations)
+      ) {
         throw new GcBudgetExhaustedError();
       }
       const explicit = input.cursor === undefined ? null : decodeGcCursor(input.kind, input.cursor);
@@ -415,6 +501,8 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
             return await runLedger(run, input, decoded as LedgerCursor | null);
           case "content":
             return await runContent(run, input, decoded as ContentCursor | null);
+          case "change-sets":
+            return await runChangeSets(run, input, decoded as ChangeSetCursor | null);
         }
       } catch (error) {
         if (error instanceof GcLeaseLostError) throw error;
