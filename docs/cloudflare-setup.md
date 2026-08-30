@@ -374,12 +374,15 @@ does not authorize hard-purging them.
 | `STASH_DELETE_GRACE_DAYS` | `"30"`                       | Restore window for deleted stashes                                   |
 | `GC_ORPHAN_MIN_AGE_MS`    | `"900000"`                   | Minimum age for an orphaned R2 object to become eligible for cleanup |
 | `GC_CONTENT_MIN_AGE_MS`   | `"86400000"`                 | Minimum age before an unreferenced D1 content row becomes eligible for the content sweep |
+| `GC_CHANGE_SET_RETENTION_MS` | `"2592000000"`            | Retention for expired or rejected change sets before their rows are reclaimed |
 | `GC_LEASE_TTL_MS`         | `"300000"`                   | Lease duration for a fenced GC run                                   |
 
 Keep the same values in the root `[vars]` and `[env.preview.vars]` sections of
 `workers/stash/wrangler.toml` for every row in this table; vars are not inherited into
 `[env.preview]`. The 24-hour value is an unmeasured, deliberately generous starting point, and —
-like every other row in this table — the same value must appear in both sections.
+like every other row in this table — the same value must appear in both sections. The
+`GC_CHANGE_SET_RETENTION_MS` value is pinned to `"2592000000"` (30 days); the Worker refuses a
+mismatched value just as it does for the other exact GC variables.
 
 GC is an administrator-only, resumable operation. For a safe inspection, run one dry page first:
 
@@ -392,14 +395,18 @@ curl --fail-with-body -X POST \
 ```
 
 The R2 orphan engine scans at most 24 objects per page, even when a larger `maxObjects` value is
-requested. Ledger pages accept at most 500 rows. The scheduled invocation requests 80 objects,
-round-robins `r2-orphans`, `ledger`, and `content` for a fair first attempt, shares one
-45-operation storage budget across all three kinds, and stops before an unsafe page. It runs no
-more than ten pages per kind per invocation. A returned cursor is opaque and must be passed
-unchanged; `cursor: null` means the current pass is complete. A live lease returns `409 gc-busy`.
-If a deployment or operator stops a page, resume by invoking the same kind without a cursor (the
-stored cursor is used), or pass the last returned cursor explicitly when recovering a known page.
-Never copy R2 keys or generations from logs or storage into an operator-facing record.
+requested. Ledger pages accept at most 500 rows. The scheduled invocation requests 80 objects in
+the settled order `content`, `change-sets`, `ledger`, `r2-orphans`. Content and change-sets are
+flat six-operation kinds, so they run first. Ledger runs third because multipart cleanup adds two
+operations per cleanup row, making its cost unbounded even though its admission floor is six;
+downstream admission is reserved for kinds not yet served and threaded into the ledger cleanup
+limit. R2 runs last because `budget.remaining - 5` lets it self-degrade instead of starving a kind.
+The invocation shares one 45-operation storage budget and stops before an unsafe page; it runs no
+more than ten pages per kind per invocation. A returned cursor is opaque and must be passed unchanged;
+`cursor: null` means the current pass is complete. A live lease returns `409 gc-busy`. If a deployment
+or operator stops a page, resume by invoking the same kind without a cursor (the stored cursor is used),
+or pass the last returned cursor explicitly when recovering a known page. Never copy R2 keys or
+generations from logs or storage into an operator-facing record.
 
 Every page creates a run record with a per-page UUID, stable kind/job ID, counters, timestamps,
 opaque cursor, and nullable error. `GET /v1/admin/gc/runs` lists recent records newest first;
@@ -408,12 +415,23 @@ but do not delete R2 objects, delete ledger rows, or persist a cursor.
 
 A `content` page deletes ONLY the D1 row and never calls R2; the object that row pointed at becomes
 an orphan, which the existing `r2-orphans` job reclaims on a later page (that job derives its
-reference set from the surviving `blobs`/`byte_blobs` rows). The stored bytes stay billed for the
-content grace PLUS however long the `r2-orphans` cursor takes to reach that key on its next pass;
-because the daily cron now splits one 45-operation budget across three kinds instead of two while
-an R2 page is still capped at 24 objects, that can be several cron days for a large bucket. To
-reclaim bytes promptly after a large content sweep, run additional manual `r2-orphans` pages rather
-than waiting for the cron.
+reference set from the surviving `blobs`/`byte_blobs` rows). The merged scheduled test's saturated
+19-row multipart-cleanup fixture measures the first R2 page at one object: content and change-sets
+consume `6 + 6` operations, ledger admits 9 cleanup rows (`4` setup + `3` tail + `9 × 2` per row =
+`25`), and R2's fixed 7 operations leave `45 - 12 - 25 - 7 = 1`. Thus the stored bytes stay billed
+for the content grace plus the time for the `r2-orphans` cursor to reach that key; for a large bucket,
+run additional manual R2 pages rather than waiting for the cron.
+
+Expired and rejected change sets remain listable with
+`GET /v1/stashes/{name}/change-sets?status=expired|rejected` for 30 days after expiry or rejection;
+the `change-sets` job then reclaims both the `change_sets` and `change_set_entries` rows. Applied
+change sets are retained permanently as commit provenance. Reclamation emits no event and leaves no
+tombstone, so clients that need to observe an end state must poll before the window closes. Reclaiming
+also frees the idempotency key: a later POST reusing it mints a new change set instead of replaying the
+old one. The 30-day window deliberately exceeds the 7-day idempotency TTL and 14-day change-set TTLs.
+The sweep intentionally does not filter on stash soft-deletion, so change sets belonging to soft-deleted
+stashes are reclaimed on schedule. To reclaim bytes promptly after a large content sweep, run additional
+manual `r2-orphans` pages rather than waiting for the cron.
 
 Production application GC runs at `17 3 * * *` (UTC). The committed static-preview environment and
 generated PR Workers explicitly have no application GC cron. PR close teardown and the weekly
