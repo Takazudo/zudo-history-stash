@@ -929,6 +929,10 @@ Released: 2026-08-25
       join(fixture, ".mdx-formatter.json"),
       `${JSON.stringify(formatterConfig, null, 2)}\n`,
     );
+    await writeFile(
+      join(fixture, ".mdx-formatter-ignore"),
+      await readFile(join(REPOSITORY_ROOT, ".mdx-formatter-ignore")),
+    );
     await writeFile(join(fixture, "package.json"), '{"name":"formatter-fixture","private":true}\n');
     await symlink(join(REPOSITORY_ROOT, "node_modules"), join(fixture, "node_modules"), "dir");
 
@@ -954,12 +958,39 @@ Released: 2026-08-25
     assert.notEqual(await readFile(enSource, "utf8"), unformattedHuman);
     assert.notEqual(await readFile(jaSource, "utf8"), unformattedHuman);
 
-    const lefthook = run("pnpm", ["exec", "mdx-formatter", "--write", ...generatedPaths], {
+    // lefthook.yml is the source of truth for this command shape.
+    const lefthook = run(
+      "pnpm",
+      [
+        "exec",
+        "mdx-formatter",
+        "--write",
+        "--ignore-path",
+        ".mdx-formatter-ignore",
+        ...generatedPaths,
+      ],
+      {
+        cwd: fixture,
+        env: { PATH: `${join(REPOSITORY_ROOT, "node_modules/.bin")}:${process.env.PATH}` },
+      },
+    );
+    assert.equal(lefthook.status, 0, `${lefthook.stdout}\n${lefthook.stderr}`);
+    await assertOutputsEqual(projectRoot, snapshots);
+
+    for (const entry of CHANGELOGS) {
+      await writeFile(outputPath(projectRoot, entry), snapshots.get(entry.slug));
+    }
+    const guardRemoved = run("pnpm", ["exec", "mdx-formatter", "--write", ...generatedPaths], {
       cwd: fixture,
       env: { PATH: `${join(REPOSITORY_ROOT, "node_modules/.bin")}:${process.env.PATH}` },
     });
-    assert.equal(lefthook.status, 0, `${lefthook.stdout}\n${lefthook.stderr}`);
-    await assertOutputsEqual(projectRoot, snapshots);
+    assert.equal(guardRemoved.status, 0, `${guardRemoved.stdout}\n${guardRemoved.stderr}`);
+    for (const entry of CHANGELOGS) {
+      assert.notDeepEqual(
+        await readFile(outputPath(projectRoot, entry)),
+        snapshots.get(entry.slug),
+      );
+    }
 
     formatterConfig.exclude = formatterConfig.exclude.filter(
       (pattern) => pattern !== "packages/*/CHANGELOG.md",
@@ -971,11 +1002,12 @@ Released: 2026-08-25
     for (const entry of CHANGELOGS) {
       await writeFile(outputPath(projectRoot, entry), snapshots.get(entry.slug));
     }
-    const red = run("pnpm", ["exec", "mdx-formatter", "--write", ...generatedPaths], {
-      cwd: fixture,
-      env: { PATH: `${join(REPOSITORY_ROOT, "node_modules/.bin")}:${process.env.PATH}` },
-    });
-    assert.equal(red.status, 0, `${red.stdout}\n${red.stderr}`);
+    const excludeRemoved = run(
+      formatter,
+      ["--write", "--config", join(fixture, ".mdx-formatter.json"), "**/*.{md,mdx}"],
+      { cwd: fixture },
+    );
+    assert.equal(excludeRemoved.status, 0, excludeRemoved.stderr);
     for (const entry of CHANGELOGS) {
       assert.notDeepEqual(
         await readFile(outputPath(projectRoot, entry)),
