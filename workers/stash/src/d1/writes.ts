@@ -21,16 +21,13 @@ import {
 import type { Env } from "../env.js";
 import { prepareBlob, type BlobGenerationFactory } from "./blobs.js";
 import type { IdempotencyRow, VersionRow } from "./schema.js";
+import { deleteBatch, putCreateBatch, putUpdateBatch, rollbackBatch } from "./sql/writes.js";
 import {
-  deleteBatch,
-  putCreateBatch,
-  putUpdateBatch,
-  rollbackBatch,
   selectHeadForWrite,
   selectLedger,
   selectVersionMeta,
   type LedgerInsert,
-} from "./sql/writes.js";
+} from "./sql/write-primitives.js";
 import type { StoreDependencies } from "./store.js";
 import { mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
 
