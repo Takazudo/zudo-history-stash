@@ -21,7 +21,6 @@ import {
 import type { Env } from "../env.js";
 import { prepareBlob, type BlobGenerationFactory } from "./blobs.js";
 import type { IdempotencyRow, VersionRow } from "./schema.js";
-import { deleteBatch, putCreateBatch, putUpdateBatch, rollbackBatch } from "./sql/writes.js";
 import {
   selectHeadForWrite,
   selectLedger,
@@ -29,7 +28,7 @@ import {
   type LedgerInsert,
 } from "./sql/write-primitives.js";
 import type { StoreDependencies } from "./store.js";
-import { mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
+import { commitBatch, mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
 
@@ -308,27 +307,47 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     const ledger: LedgerInsert | undefined = options.idempotencyKey
       ? { key: options.idempotencyKey, requestHash, statusCode: 201 }
       : undefined;
-    const batchInput = {
-      stash,
-      commitId,
-      createdBy: options.createdBy ?? "system",
-      path,
-      expectedVersion: input.expectedVersion,
-      hash,
-      ...prepared,
-      size,
-      contentType,
-      author: input.author ?? "",
-      message: input.message ?? "",
-      metaJson: canonicalJson(input.meta ?? {}),
-      createdAt,
-      ...(ledger ? { ledger } : {}),
-    };
+    const author = input.author ?? "";
+    const message = input.message ?? "";
+    const metaJson = canonicalJson(input.meta ?? {});
     try {
       const results = await db.batch(
-        input.expectedVersion === null
-          ? putCreateBatch(db, batchInput)
-          : putUpdateBatch(db, batchInput),
+        commitBatch(db, {
+          row: {
+            id: commitId,
+            stash_name: stash,
+            source: "put",
+            source_id: null,
+            author,
+            message,
+            meta_json: metaJson,
+            entry_count: 1,
+            reverts_commit_id: null,
+            idempotency_key: null,
+            request_hash: null,
+            created_by: options.createdBy ?? "system",
+            created_at: createdAt,
+          },
+          entries: [
+            {
+              op: "put",
+              representation: "text",
+              path,
+              expectedVersion: input.expectedVersion,
+              version: (input.expectedVersion ?? 0) + 1,
+              hash,
+              size,
+              contentType,
+              author,
+              message,
+              metaJson,
+              createdAt,
+              ...prepared,
+            },
+          ],
+          // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
+          ...(ledger ? { ledger } : {}),
+        }),
       );
       if (batchWon(results)) {
         const id = await committedChangeId(db, stash, commitId);
@@ -411,17 +430,39 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     const ledger: LedgerInsert | undefined = options.idempotencyKey
       ? { key: options.idempotencyKey, requestHash, statusCode: 200 }
       : undefined;
+    const author = input.author ?? "";
+    const message = input.message ?? "";
     try {
       const results = await db.batch(
-        deleteBatch(db, {
-          stash,
-          commitId,
-          createdBy: options.createdBy ?? "system",
-          path,
-          expectedVersion: input.expectedVersion,
-          author: input.author ?? "",
-          message: input.message ?? "",
-          createdAt,
+        commitBatch(db, {
+          row: {
+            id: commitId,
+            stash_name: stash,
+            source: "delete",
+            source_id: null,
+            author,
+            message,
+            meta_json: "{}",
+            entry_count: 1,
+            reverts_commit_id: null,
+            idempotency_key: null,
+            request_hash: null,
+            created_by: options.createdBy ?? "system",
+            created_at: createdAt,
+          },
+          entries: [
+            {
+              op: "delete",
+              path,
+              expectedVersion: input.expectedVersion,
+              version: input.expectedVersion + 1,
+              author,
+              message,
+              metaJson: "{}",
+              createdAt,
+            },
+          ],
+          // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
           ...(ledger ? { ledger } : {}),
         }),
       );
@@ -517,19 +558,42 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     const ledger: LedgerInsert | undefined = options.idempotencyKey
       ? { key: options.idempotencyKey, requestHash, statusCode: 201 }
       : undefined;
+    const author = input.author ?? "";
+    const message = input.message ?? "";
+    const versionMessage = message === "" ? `Rollback to v${input.toVersion}` : message;
+    const metaJson = canonicalJson(input.meta ?? {});
     try {
       const results = await db.batch(
-        rollbackBatch(db, {
-          stash,
-          commitId,
-          createdBy: options.createdBy ?? "system",
-          path,
-          expectedVersion: input.expectedVersion,
-          toVersion: input.toVersion,
-          author: input.author ?? "",
-          message: input.message ?? "",
-          metaJson: canonicalJson(input.meta ?? {}),
-          createdAt,
+        commitBatch(db, {
+          row: {
+            id: commitId,
+            stash_name: stash,
+            source: "rollback",
+            source_id: null,
+            author,
+            message,
+            meta_json: metaJson,
+            entry_count: 1,
+            reverts_commit_id: null,
+            idempotency_key: null,
+            request_hash: null,
+            created_by: options.createdBy ?? "system",
+            created_at: createdAt,
+          },
+          entries: [
+            {
+              op: "rollback",
+              path,
+              expectedVersion: input.expectedVersion,
+              version: input.expectedVersion + 1,
+              toVersion: input.toVersion,
+              author,
+              message: versionMessage,
+              metaJson,
+              createdAt,
+            },
+          ],
+          // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
           ...(ledger ? { ledger } : {}),
         }),
       );
