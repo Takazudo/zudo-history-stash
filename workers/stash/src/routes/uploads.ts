@@ -9,6 +9,7 @@ import {
   canonicalJson,
   sha256Hex,
   validatePath,
+  type JsonValue,
   type UploadCompletionResult,
   type UploadSessionRecord,
 } from "@takazudo/zudo-history-stash-core";
@@ -108,6 +109,12 @@ function record(row: UploadSessionRow): UploadSessionRecord {
       row.finalization_lease_until === null
         ? null
         : new Date(row.finalization_lease_until).toISOString(),
+    author: row.commit_author,
+    message: row.commit_message,
+    meta:
+      row.commit_meta_json === null
+        ? null
+        : (JSON.parse(row.commit_meta_json) as Record<string, JsonValue>),
     result: result(row),
   };
 }
@@ -151,7 +158,10 @@ function sameCreate(
     row.representation === candidate.representation &&
     row.content_type === candidate.contentType &&
     row.skip_if_unchanged === (candidate.skipIfUnchanged ? 1 : 0) &&
-    row.upload_mode === mode
+    row.upload_mode === mode &&
+    row.commit_author === (candidate.author ?? null) &&
+    row.commit_message === (candidate.message ?? null) &&
+    row.commit_meta_json === (candidate.meta === undefined ? null : canonicalJson(candidate.meta))
   );
 }
 
@@ -268,6 +278,9 @@ async function createSession(c: Context<AppEnv>) {
     maxOpenSessions: policy.maxOpenUploadSessions,
     maxReservedBytes: policy.maxReservedUploadBytes,
     skipIfUnchanged: parsed.data.skipIfUnchanged,
+    commitAuthor: parsed.data.author ?? null,
+    commitMessage: parsed.data.message ?? null,
+    commitMetaJson: parsed.data.meta === undefined ? null : canonicalJson(parsed.data.meta),
   });
   if (!created) {
     const raced = await store.getByCreateFingerprint(stash, createFingerprint);
