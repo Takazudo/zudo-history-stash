@@ -40,7 +40,11 @@ rejected and should be repaired by rebuilding from the English source. Release b
 generated bracket headings. Its exact sixteen-path staging allowlist covers six version-bearing
 files, six bilingual version pages, three generated changelogs, and `docs/openapi.json`; the
 committed diff may be a subset when a reused source page is already clean, but it must never contain
-a path outside that allowlist.
+a path outside that allowlist. The pre-commit `format-mdx` hook is kept off generated changelogs by
+the root `.mdx-formatter-ignore` file passed via `--ignore-path`; the `.mdx-formatter.json`
+`exclude` list alone does not protect them because the formatter skips `exclude` for literal file
+paths. An assertion in `doc/scripts/integration.test.mjs` keeps `.mdx-formatter-ignore` and the
+`.mdx-formatter.json` `exclude` array in sync.
 
 To re-run a partial release after a transient failure, re-run the workflow for the same tag push.
 Its exact-version safeguards recognize packages that are already published and skip them, so the
