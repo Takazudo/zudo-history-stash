@@ -9,11 +9,12 @@ import {
 import type { Env } from "../../src/env.js";
 import { blobKey, parseBlobKey, type BlobGenerationFactory } from "../../src/d1/blobs.js";
 import { createImport } from "../../src/d1/import.js";
-import { importBatch, type PreparedImportVersion } from "../../src/d1/sql/import.js";
+import { commitBatch, type PreparedCommitEntry } from "../../src/d1/sql/commits.js";
 import { createWrites } from "../../src/d1/writes.js";
 import { resetDatabase } from "../helpers/app.js";
 import { wrapBlobs, type BlobCallCounts } from "../helpers/env.js";
 import { generation, generationFactory } from "../helpers/blob-generations.js";
+import { seedCommit } from "../helpers/seed-rows.js";
 
 const workerEnv = env as Env;
 let idSequence = 0;
@@ -177,7 +178,8 @@ describe("history import store", () => {
       (
         await env.DB.prepare(
           `SELECT version, kind, blob_hash, size_bytes, content_type, rollback_of,
-             author, message, meta_json, created_at
+             author, message, meta_json, created_at, representation, application_etag,
+             content_storage
            FROM versions WHERE stash_name = ? AND path = ? ORDER BY version`,
         )
           .bind(stash, "history.txt")
@@ -213,6 +215,35 @@ describe("history import store", () => {
       .first<{ id: number }>();
     expect(result.value.firstChangeId).toBe(first?.id);
     expect(await counts("imported")).toMatchObject({ idempotency: 0 });
+  });
+
+  it("commits the 20-version import budget with contiguous change ids", async () => {
+    const stash = "max-import";
+    await seedStash(stash);
+    const result = await importer().importFile(stash, {
+      path: "history.txt",
+      expectedVersion: null,
+      versions: Array.from({ length: 20 }, (_, index) => ({
+        kind: "put" as const,
+        body: `version-${index + 1}`,
+        createdAt: 1_001 + index,
+      })),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      statusCode: 201,
+      value: { path: "history.txt", headVersion: 20 },
+    });
+    if (!result.ok) throw new Error("Expected maximum import to commit");
+    expect(result.createdVersions.map(({ changeId }) => changeId)).toEqual(
+      Array.from({ length: 20 }, (_, index) => result.value.firstChangeId + index),
+    );
+    await expect(
+      env.DB.prepare("SELECT entry_count, change_count FROM commits WHERE id = ?")
+        .bind(result.value.commitId)
+        .first(),
+    ).resolves.toEqual({ entry_count: 20, change_count: 20 });
   });
 
   it("prepares A, B, A once per distinct hash before one fenced commit", async () => {
@@ -711,6 +742,132 @@ describe("history import store", () => {
     expect((await env.BLOBS.list({ prefix: "v2/stored-tombstone/" })).objects).toEqual([]);
   });
 
+  it("rejects a first delete for new and tombstoned paths before blob preparation", async () => {
+    const stash = "first-delete";
+    await seedStash(stash);
+    const calls: BlobCallCounts = { get: -1, put: -1 };
+    let generationCalls = 0;
+    const store = importer(10_000, wrapBlobs(workerEnv, { count: calls }), undefined, () => {
+      generationCalls += 1;
+      return generation(generationCalls);
+    });
+
+    const createDelete = await store.importFile(stash, {
+      path: "new.txt",
+      expectedVersion: null,
+      versions: [
+        { kind: "delete", body: null, createdAt: 1_001 },
+        { kind: "put", body: spilledBody("NEW_FIRST_DELETE", "n"), createdAt: 1_002 },
+      ],
+    });
+    expect(createDelete).toMatchObject({
+      ok: false,
+      error: { code: "validation", status: 400 },
+    });
+    expect(calls).toEqual({ get: 0, put: 0 });
+    expect(generationCalls).toBe(0);
+    expect(await counts(stash)).toEqual({ blobs: 0, versions: 0, files: 0, idempotency: 0 });
+
+    await importer().importFile(stash, {
+      path: "deleted.txt",
+      expectedVersion: null,
+      versions: [
+        { kind: "put", body: "one", createdAt: 1_001 },
+        { kind: "delete", body: null, createdAt: 1_002 },
+      ],
+    });
+    const before = await counts(stash);
+    const tombstoneDelete = await store.importFile(stash, {
+      path: "deleted.txt",
+      expectedVersion: 2,
+      versions: [
+        { kind: "delete", body: null, createdAt: 1_003 },
+        { kind: "put", body: spilledBody("TOMBSTONE_FIRST_DELETE", "t"), createdAt: 1_004 },
+      ],
+    });
+    expect(tombstoneDelete).toMatchObject({
+      ok: false,
+      error: { code: "validation", status: 400 },
+    });
+    expect(calls).toEqual({ get: 0, put: 0 });
+    expect(generationCalls).toBe(0);
+    expect(await counts(stash)).toEqual(before);
+    expect((await env.BLOBS.list({ prefix: `v2/${stash}/` })).objects).toEqual([]);
+  });
+
+  it("copies byte-backed head storage fields through imported delete and rollback", async () => {
+    const stash = "binary-import";
+    const path = "asset.bin";
+    const hash = "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    await seedStash(stash);
+    const commitId = await seedCommit(stash, "cmt_binary_import_source", 1_001, "upload");
+    await env.DB.prepare(
+      `INSERT INTO byte_blobs
+         (stash_name, hash, body_bytes, r2_key, size_bytes, created_at)
+       VALUES (?, ?, ?, NULL, 4, ?)`,
+    )
+      .bind(stash, hash, new Uint8Array([0, 1, 2, 3]).buffer, 1_001)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO versions
+         (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
+          rollback_of, author, message, meta_json, created_at, representation,
+          application_etag, content_storage, commit_id)
+       VALUES (?, ?, 1, 'put', ?, 4, 'application/octet-stream', NULL, '', '', '{}', ?,
+         'binary', ?, 'bytes', ?)`,
+    )
+      .bind(stash, path, hash, 1_001, hash, commitId)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO files
+         (stash_name, path, head_version, head_hash, deleted, created_at, updated_at)
+       VALUES (?, ?, 1, ?, 0, ?, ?)`,
+    )
+      .bind(stash, path, hash, 1_001, 1_001)
+      .run();
+
+    const result = await importer().importFile(stash, {
+      path,
+      expectedVersion: 1,
+      versions: [
+        { kind: "delete", body: null, createdAt: 1_002 },
+        { kind: "rollback", body: null, rollbackOf: 1, createdAt: 1_003 },
+      ],
+    });
+    expect(result).toMatchObject({ ok: true, value: { headVersion: 3 } });
+    const rows = await env.DB.prepare(
+      `SELECT version, kind, blob_hash, size_bytes, content_type, representation,
+         application_etag, content_storage, rollback_of
+       FROM versions WHERE stash_name = ? AND path = ? AND version >= 2 ORDER BY version`,
+    )
+      .bind(stash, path)
+      .all();
+    expect(rows.results).toEqual([
+      {
+        version: 2,
+        kind: "delete",
+        blob_hash: null,
+        size_bytes: 0,
+        content_type: "application/octet-stream",
+        representation: "binary",
+        application_etag: null,
+        content_storage: "bytes",
+        rollback_of: null,
+      },
+      {
+        version: 3,
+        kind: "rollback",
+        blob_hash: hash,
+        size_bytes: 4,
+        content_type: "application/octet-stream",
+        representation: "binary",
+        application_etag: hash,
+        content_storage: "bytes",
+        rollback_of: 1,
+      },
+    ]);
+  });
+
   it("keeps the SQL batch fenced and writes the final tombstone head last", async () => {
     await seedStash("batch-fence");
     const writes = createWrites(workerEnv, {
@@ -719,33 +876,45 @@ describe("history import store", () => {
     });
     await writes.put("batch-fence", "race.txt", { body: "one", expectedVersion: null });
     const db = env.DB.withSession("first-primary");
-    const prepared: PreparedImportVersion[] = [
+    const prepared: PreparedCommitEntry[] = [
       {
+        op: "put",
+        path: "race.txt",
+        expectedVersion: 1,
         version: 2,
-        kind: "put",
+        representation: "text",
+        contentType: "text/plain; charset=utf-8",
         body: "loser",
         r2_key: null,
         hash: "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         size: 5,
-        rollbackOf: null,
         author: "",
         message: "",
         metaJson: "{}",
         createdAt: 1_001,
       },
     ];
-    const built = importBatch(db, {
-      commitId: "cmt_batch_fence",
-      createdBy: "test",
-      createdAt: 1_001,
-      stash: "batch-fence",
-      path: "race.txt",
-      expectedVersion: 1,
-      versions: prepared,
+    const built = commitBatch(db, {
+      row: {
+        id: "cmt_batch_fence",
+        stash_name: "batch-fence",
+        source: "import",
+        source_id: null,
+        author: "",
+        message: "",
+        meta_json: "{}",
+        entry_count: 1,
+        reverts_commit_id: null,
+        idempotency_key: null,
+        request_hash: null,
+        created_by: "test",
+        created_at: 1_001,
+      },
+      entries: prepared,
     });
     await writes.put("batch-fence", "race.txt", { body: "winner", expectedVersion: 1 });
     const before = await counts("batch-fence");
-    const results = await db.batch(built.statements);
+    const results = await db.batch(built);
     expect(results.at(-1)?.meta.changes).toBe(0);
     expect(await counts("batch-fence")).toEqual(before);
 
