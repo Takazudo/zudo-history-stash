@@ -474,6 +474,9 @@ export interface AbortUploadResult {
 }
 export interface CreateUploadSessionInput {
   expectedVersion: number | null;
+  author?: string;
+  message?: string;
+  meta?: Record<string, JsonValue>;
   size: number;
   hash?: string;
   representation: Representation;
