@@ -13,6 +13,8 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - ".mdx-formatter.json"
+      - ".mdx-formatter-ignore"
+      - "lefthook.yml"
       - ".github/workflows/doc-checks.yml"
     types: [opened, synchronize, reopened]
   push:
@@ -26,6 +28,8 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - ".mdx-formatter.json"
+      - ".mdx-formatter-ignore"
+      - "lefthook.yml"
       - ".github/workflows/doc-checks.yml"
 
 permissions:
@@ -65,3 +69,6 @@ jobs:
 
       - name: Run documentation aggregate
         run: pnpm b4push:doc
+
+      - name: Run documentation tooling tests
+        run: pnpm --filter zudo-history-stash-doc test:tooling

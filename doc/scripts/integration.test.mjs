@@ -63,6 +63,7 @@ test("root recursion, aliases, formatter ownership, CI parity, and skill naming 
     docManifest.scripts["check:template-drift"],
     "node scripts/check-template-drift.mjs",
   );
+  assert.equal(docManifest.scripts["test:tooling"], docManifest.scripts.test);
 
   const prettierIgnore = await readFile(join(repositoryRoot, ".prettierignore"), "utf8");
   assert.match(prettierIgnore, /^\*\*\/\*\.md$/m);
