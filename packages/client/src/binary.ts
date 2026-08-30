@@ -5,6 +5,7 @@ import type {
   CompleteUploadResult,
   CreateUploadSessionInput,
   GetUploadSessionResult,
+  JsonValue,
   Representation,
   RouteId,
   UploadMode,
@@ -33,6 +34,9 @@ export interface UploadOptions {
   expectedVersion: number | null;
   representation: Representation;
   contentType: string;
+  author?: string;
+  message?: string;
+  meta?: Record<string, JsonValue>;
   /** Required for a one-shot ReadableStream. */
   size?: number;
   sha256?: string;
@@ -635,6 +639,9 @@ export async function upload(
       expectedVersion: options.expectedVersion,
       size: source.size,
       ...(options.sha256 === undefined ? {} : { hash: options.sha256 }),
+      ...(options.author === undefined ? {} : { author: options.author }),
+      ...(options.message === undefined ? {} : { message: options.message }),
+      ...(options.meta === undefined ? {} : { meta: options.meta }),
       representation: options.representation,
       contentType: options.contentType,
       mode,
