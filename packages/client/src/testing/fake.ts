@@ -1747,7 +1747,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           changeSet.status === "rejected"
             ? (changeSet.decidedAt ?? changeSet.expiresAt)
             : changeSet.expiresAt;
-        return changeSet.status !== "applied" && startedAt - retentionAt > gcOrphanMinAgeMs;
+        return changeSet.status !== "applied" && startedAt - retentionAt >= gcOrphanMinAgeMs;
       });
       run.eligible = eligible.length;
       if (!dryRun) {

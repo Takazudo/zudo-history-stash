@@ -1220,7 +1220,7 @@ describe("stash administration routes", () => {
     });
   });
 
-  it("reclaims past-retention change sets while retaining recent and applied rows", async () => {
+  it("reclaims change sets at and past retention while retaining recent and applied rows", async () => {
     const now = Date.parse("2026-08-26T00:00:00.000Z");
     const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
     fake.createStash("demo");
@@ -1275,6 +1275,16 @@ describe("stash administration routes", () => {
         decidedAt: now - retentionWindow - 1,
         status: "applied",
       }),
+      changeSet("chs_0000000000006aaaaaaaa", {
+        expiresAt: now - retentionWindow,
+        decidedAt: null,
+        status: "open",
+      }),
+      changeSet("chs_0000000000007aaaaaaaa", {
+        expiresAt: now + 86_400_000,
+        decidedAt: now - retentionWindow,
+        status: "rejected",
+      }),
     ];
     for (const row of rows) fake.state.changeSets.set(row.id, row);
 
@@ -1302,12 +1312,12 @@ describe("stash administration routes", () => {
     });
     expect(second.status).toBe(200);
     await expect(second.json()).resolves.toMatchObject({
-      scanned: 3,
-      eligible: 0,
-      deleted: 0,
+      scanned: 5,
+      eligible: 2,
+      deleted: 2,
       cursor: null,
     });
-    expect([...fake.state.changeSets.keys()]).toEqual(rows.slice(2).map(({ id }) => id));
+    expect([...fake.state.changeSets.keys()]).toEqual(rows.slice(2, 5).map(({ id }) => id));
   });
 
   it("validates opaque cursors, uses a strict age boundary, and preserves logical history", async () => {
