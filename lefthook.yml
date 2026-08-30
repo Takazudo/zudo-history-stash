@@ -8,5 +8,5 @@ pre-commit:
   commands:
     format-mdx:
       glob: "*.{md,mdx}"
-      run: pnpm exec mdx-formatter --write {staged_files}
+      run: pnpm exec mdx-formatter --write --ignore-path .mdx-formatter-ignore {staged_files}
       stage_fixed: true
