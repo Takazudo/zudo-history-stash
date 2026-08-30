@@ -11,10 +11,14 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import type { Env } from "../env.js";
 import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./blobs.js";
-import { importBatch, type PreparedImportVersion } from "./sql/import.js";
 import { selectHeadForWrite } from "./sql/write-primitives.js";
 import type { StoreDependencies } from "./store.js";
-import { mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
+import {
+  commitBatch,
+  mintCommitId,
+  SELECT_COMMIT_VERSIONS,
+  type PreparedCommitEntry,
+} from "./sql/commits.js";
 import { postBatchRefusal } from "./writes.js";
 
 interface HeadForImportRow {
@@ -173,19 +177,6 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
       return failure("validation", 400, "Import createdAt cannot be in the future");
     }
 
-    const putFacts: (ImportPutFact | undefined)[] = new Array(value.versions.length);
-    const distinctPuts = new Map<string, ImportPutFact>();
-    for (const [index, entry] of value.versions.entries()) {
-      if (entry.kind !== "put") continue;
-      const fact = {
-        body: entry.body,
-        hash: await sha256Hex(entry.body),
-        size: utf8ByteLength(entry.body),
-      };
-      putFacts[index] = fact;
-      if (!distinctPuts.has(fact.hash)) distinctPuts.set(fact.hash, fact);
-    }
-
     const db = env.DB.withSession("first-primary");
     if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
     const head = await readHead(db, stash, value.path);
@@ -197,6 +188,12 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
       return failure("stale", 409, "Expected version is stale", currentFromHead(head));
     }
     const firstImportedVersion = value.versions[0];
+    if (
+      firstImportedVersion?.kind === "delete" &&
+      (value.expectedVersion === null || head?.deleted === 1)
+    ) {
+      return failure("validation", 400, "Import cannot start with a delete");
+    }
     if (head && firstImportedVersion && firstImportedVersion.createdAt < head.created_at) {
       return failure("validation", 400, "Import createdAt cannot precede the current head");
     }
@@ -216,6 +213,19 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
       if (target.blob_hash === null) {
         return failure("validation", 400, "Import rollback target is a tombstone");
       }
+    }
+
+    const putFacts: (ImportPutFact | undefined)[] = new Array(value.versions.length);
+    const distinctPuts = new Map<string, ImportPutFact>();
+    for (const [index, entry] of value.versions.entries()) {
+      if (entry.kind !== "put") continue;
+      const fact = {
+        body: entry.body,
+        hash: await sha256Hex(entry.body),
+        size: utf8ByteLength(entry.body),
+      };
+      putFacts[index] = fact;
+      if (!distinctPuts.has(fact.hash)) distinctPuts.set(fact.hash, fact);
     }
 
     const logical: LogicalImportVersion[] = [];
@@ -280,27 +290,58 @@ export function createImport(env: Env, deps: ImportDependencies): StashImport {
       );
     }
 
-    const prepared = logical.map((entry): PreparedImportVersion => {
-      if (entry.kind !== "put") return entry;
-      const storage = storageByHash.get(entry.hash);
-      if (storage === undefined) throw new Error("Missing prepared import blob");
-      return { ...entry, ...storage };
+    const prepared = logical.map((entry, index): PreparedCommitEntry => {
+      const base = {
+        path: value.path,
+        version: entry.version,
+        expectedVersion: index === 0 ? value.expectedVersion : baseVersion + index,
+        author: entry.author,
+        message: entry.message,
+        metaJson: entry.metaJson,
+        createdAt: entry.createdAt,
+      };
+      if (entry.kind === "put") {
+        const storage = storageByHash.get(entry.hash);
+        if (storage === undefined) throw new Error("Missing prepared import blob");
+        return {
+          ...base,
+          ...storage,
+          op: "put",
+          representation: "text",
+          hash: entry.hash,
+          size: entry.size,
+          contentType: "text/plain; charset=utf-8",
+        };
+      }
+      if (entry.kind === "rollback") {
+        return { ...base, op: "rollback", toVersion: entry.rollbackOf };
+      }
+      return { ...base, op: "delete" };
     });
 
     await deps.onBeforeCommit?.();
     const commitCreatedAt = deps.now();
     const commitId = mintCommitId(commitCreatedAt, deps.createId);
-    const batch = importBatch(db, {
-      commitId,
-      createdBy: deps.createdBy ?? "system",
-      createdAt: commitCreatedAt,
-      stash,
-      path: value.path,
-      expectedVersion: value.expectedVersion,
-      versions: prepared,
+    const statements = commitBatch(db, {
+      row: {
+        id: commitId,
+        stash_name: stash,
+        source: "import",
+        source_id: null,
+        author: "",
+        message: "",
+        meta_json: "{}",
+        entry_count: prepared.length,
+        reverts_commit_id: null,
+        idempotency_key: null,
+        request_hash: null,
+        created_by: deps.createdBy ?? "system",
+        created_at: commitCreatedAt,
+      },
+      entries: prepared,
     });
     try {
-      const results = await db.batch(batch.statements);
+      const results = await db.batch(statements);
       if (results.at(-1)?.meta.changes === 1) {
         const committedRows = await db.prepare(SELECT_COMMIT_VERSIONS).bind(stash, commitId).all<{
           id: number;
