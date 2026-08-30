@@ -9,17 +9,27 @@ category: reference
 
 **Contract:** operation `runGc`; principal `admin`; transport `any`.
 
-上限付きの `r2-orphans`、`ledger`、または `content` page を一つ、任意の `dryRun`、`maxObjects`、kind に
-紐づいた opaque cursor とともに実行します。`content` kind は、content grace を過ぎ、version、live
-change set の entry、進行中の upload session のいずれからも参照されていない `blobs` / `byte_blobs` 内の
-D1 content row を sweep します。R2 object を削除することはありません。同期的に完了した実行結果を
-返します。`null` cursor は pass の完了を表し、その後に cursor なしで呼び出すと新しい pass が始まります。
+上限付きの `r2-orphans`、`ledger`、`content`、または `change-sets` page を一つ、任意の `dryRun`、
+`maxObjects`、kind に紐づいた opaque cursor とともに実行します。`content` kind は、content grace を過ぎ、
+version、live change set の entry、進行中の upload session のいずれからも参照されていない `blobs` /
+`byte_blobs` 内の D1 content row を sweep します。R2 object を削除することはありません。`change-sets` kind
+は、30 日経過後の expired と rejected change set、および `change_sets` と `change_set_entries` の row を
+回収します。同期的に完了した実行結果を返します。`null` cursor は pass の完了を表し、その後に cursor
+なしで呼び出すと新しい pass が始まります。
 
 dry run は同じ五分間の世代フェンス付きリースを取得し、counter を記録しますが、削除や進捗の永続化は
 決して行いません。dry run でない実行者が heartbeat/finalize できるのは、現在のリースを所有している間
 だけです。アクティブな所有者がいる場合は `409 gc-busy` になります。R2 key と generation は response や
 log に決して公開しません。手動操作は dry run から始め、counter を確認してから、上限付きの非 dry-run
 page を実行してください。
+
+期限切れまたは rejected の change set は、期限切れまたは却下の後 30 日間、
+`GET /v1/stashes/{name}/change-sets?status=expired|rejected` で一覧取得できます。その後の回収では両方の
+table を削除します。`applied` change set は commit provenance として恒久保持します。回収時に event は
+発行せず tombstone も残さないため、終了状態を確認する必要がある client は期間内に list を polling して
+ください。回収すると idempotency key が解放され、後で同じ key を POST すると新しい change set を発行します。
+この 30 日は 7 日の idempotency TTL と 14 日の change-set TTL より長く設定されています。sweep は stash の
+soft-deletion で絞り込まないため、soft-deleted stash の row も回収対象です。
 
 ### `GET /v1/admin/gc/runs`
 

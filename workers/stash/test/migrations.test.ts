@@ -25,10 +25,16 @@ const appendOnlyMutationPatterns = [
   ["DELETE FROM files", /\bDELETE\s+FROM\s+files\b/i],
   ["DELETE FROM blobs", /\bDELETE\s+FROM\s+blobs\b/i],
   ["DELETE FROM byte_blobs", /\bDELETE\s+FROM\s+byte_blobs\b/i],
+  ["DELETE FROM change_sets", /\bDELETE\s+FROM\s+change_sets\b/i],
+  ["DELETE FROM change_set_entries", /\bDELETE\s+FROM\s+change_set_entries\b/i],
 ] as const;
 
 const CONTENT_SWEEP_MODULE = "../src/d1/sql/gc.ts";
 const CONTENT_SWEEP_EXEMPT = new Set(["DELETE FROM blobs", "DELETE FROM byte_blobs"]);
+const CHANGE_SET_SWEEP_EXEMPT = new Set([
+  "DELETE FROM change_sets",
+  "DELETE FROM change_set_entries",
+]);
 
 function assertAppendOnlyHygiene(sources: readonly (readonly [string, string])[]): void {
   const violations = appendOnlyMutationPatterns
@@ -36,7 +42,10 @@ function assertAppendOnlyHygiene(sources: readonly (readonly [string, string])[]
       sources.some(
         ([path, source]) =>
           pattern.test(source) &&
-          !(path.endsWith(CONTENT_SWEEP_MODULE) && CONTENT_SWEEP_EXEMPT.has(name)),
+          !(
+            path.endsWith(CONTENT_SWEEP_MODULE) &&
+            (CONTENT_SWEEP_EXEMPT.has(name) || CHANGE_SET_SWEEP_EXEMPT.has(name))
+          ),
       ),
     )
     .map(([name]) => name);
@@ -111,6 +120,7 @@ describe("D1 migrations", () => {
         expect.objectContaining({ name: "change_sets_stash_idempotency", partial: 1 }),
       ]),
     );
+    expect(changeSetIndexes.results.map(({ name }) => name)).toContain("change_sets_status_id");
     const entryIndexes = await env.DB.prepare("PRAGMA index_list(change_set_entries)").all<{
       name: string;
     }>();
@@ -123,6 +133,14 @@ describe("D1 migrations", () => {
       "SELECT kind, next_cursor, lease_owner, lease_generation, lease_until, updated_at FROM gc_jobs ORDER BY kind",
     ).all();
     expect(jobs.results).toEqual([
+      {
+        kind: "change-sets",
+        next_cursor: null,
+        lease_owner: null,
+        lease_generation: 0,
+        lease_until: null,
+        updated_at: 0,
+      },
       {
         kind: "content",
         next_cursor: null,
@@ -236,11 +254,23 @@ describe("D1 migrations", () => {
     expect(() => assertAppendOnlyHygiene([["../src/x.ts", "DELETE FROM byte_blobs"]])).toThrow(
       "DELETE FROM byte_blobs",
     );
+    expect(() => assertAppendOnlyHygiene([["../src/x.ts", "DELETE FROM change_sets"]])).toThrow(
+      "DELETE FROM change_sets",
+    );
+    expect(() =>
+      assertAppendOnlyHygiene([["../src/x.ts", "DELETE FROM change_set_entries"]]),
+    ).toThrow("DELETE FROM change_set_entries");
     expect(() =>
       assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM blobs"]]),
     ).not.toThrow();
     expect(() =>
       assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM byte_blobs"]]),
+    ).not.toThrow();
+    expect(() =>
+      assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM change_sets"]]),
+    ).not.toThrow();
+    expect(() =>
+      assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM change_set_entries"]]),
     ).not.toThrow();
     expect(() => assertAppendOnlyHygiene([[CONTENT_SWEEP_MODULE, "DELETE FROM versions"]])).toThrow(
       "DELETE FROM versions",
@@ -423,7 +453,7 @@ describe("D1 migrations", () => {
     });
   });
 
-  it("resets GC runs while retaining all three seeded job rows", async () => {
+  it("resets GC runs while retaining all four seeded job rows", async () => {
     await env.DB.prepare(
       `UPDATE gc_jobs
          SET next_cursor = 'cursor', lease_owner = 'owner', lease_generation = 7,
@@ -442,6 +472,14 @@ describe("D1 migrations", () => {
       "SELECT kind, next_cursor, lease_owner, lease_generation, lease_until, updated_at FROM gc_jobs ORDER BY kind",
     ).all();
     expect(jobs.results).toEqual([
+      {
+        kind: "change-sets",
+        next_cursor: null,
+        lease_owner: null,
+        lease_generation: 0,
+        lease_until: null,
+        updated_at: 0,
+      },
       {
         kind: "content",
         next_cursor: null,

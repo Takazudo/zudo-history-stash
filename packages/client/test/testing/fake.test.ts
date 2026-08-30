@@ -15,6 +15,7 @@ import {
   FAKE_SUPPORTED_ROUTE_IDS,
   createFakeStash,
 } from "../../src/testing/index.js";
+import type { FakeChangeSetRow } from "../../src/testing/types.js";
 
 const ADMIN = "fake-admin";
 
@@ -1219,6 +1220,106 @@ describe("stash administration routes", () => {
     });
   });
 
+  it("reclaims change sets at and past retention while retaining recent and applied rows", async () => {
+    const now = Date.parse("2026-08-26T00:00:00.000Z");
+    const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
+    fake.createStash("demo");
+    const retentionWindow = 900_000;
+    const changeSet = (
+      id: string,
+      overrides: Pick<FakeChangeSetRow, "status" | "expiresAt" | "decidedAt">,
+    ): FakeChangeSetRow => ({
+      id,
+      stash: "demo",
+      status: "open",
+      author: "fixture",
+      message: "fixture",
+      meta: {},
+      expiresAt: now,
+      createdBy: "fixture",
+      createdAt: now,
+      decidedAt: null,
+      decidedBy: null,
+      decisionReason: null,
+      commitId: null,
+      expectedLastChangeId: null,
+      expectedLastChangePrefix: null,
+      idempotencyKey: null,
+      requestHash: null,
+      entries: [],
+      ...overrides,
+    });
+    const rows = [
+      changeSet("chs_0000000000001aaaaaaaa", {
+        expiresAt: now - retentionWindow - 1,
+        decidedAt: null,
+        status: "open",
+      }),
+      changeSet("chs_0000000000002aaaaaaaa", {
+        expiresAt: now + 86_400_000,
+        decidedAt: now - retentionWindow - 1,
+        status: "rejected",
+      }),
+      changeSet("chs_0000000000003aaaaaaaa", {
+        expiresAt: now - retentionWindow + 1,
+        decidedAt: null,
+        status: "open",
+      }),
+      changeSet("chs_0000000000004aaaaaaaa", {
+        expiresAt: now + 86_400_000,
+        decidedAt: now - retentionWindow + 1,
+        status: "rejected",
+      }),
+      changeSet("chs_0000000000005aaaaaaaa", {
+        expiresAt: now - retentionWindow - 1,
+        decidedAt: now - retentionWindow - 1,
+        status: "applied",
+      }),
+      changeSet("chs_0000000000006aaaaaaaa", {
+        expiresAt: now - retentionWindow,
+        decidedAt: null,
+        status: "open",
+      }),
+      changeSet("chs_0000000000007aaaaaaaa", {
+        expiresAt: now + 86_400_000,
+        decidedAt: now - retentionWindow,
+        status: "rejected",
+      }),
+    ];
+    for (const row of rows) fake.state.changeSets.set(row.id, row);
+
+    const first = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "change-sets", maxObjects: 2 }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      scanned: number;
+      eligible: number;
+      deleted: number;
+      cursor: string | null;
+    };
+    expect(firstBody).toMatchObject({ scanned: 2, eligible: 2, deleted: 2 });
+    expect(firstBody.cursor).toEqual(expect.any(String));
+    expect(fake.state.changeSets.has(rows[0]!.id)).toBe(false);
+    expect(fake.state.changeSets.has(rows[1]!.id)).toBe(false);
+
+    const second = await request(fake, "/v1/admin/gc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "change-sets", maxObjects: 500, cursor: firstBody.cursor }),
+    });
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toMatchObject({
+      scanned: 5,
+      eligible: 2,
+      deleted: 2,
+      cursor: null,
+    });
+    expect([...fake.state.changeSets.keys()]).toEqual(rows.slice(2, 5).map(({ id }) => id));
+  });
+
   it("validates opaque cursors, uses a strict age boundary, and preserves logical history", async () => {
     const now = Date.parse("2026-08-26T00:00:00.000Z");
     const fake = createFakeStash({ adminToken: ADMIN, now: () => now });
@@ -1468,6 +1569,29 @@ describe("fake change-set ordering", () => {
     expect(diff.status).toBe(200);
     const diffBody = (await diff.json()) as { entries: Array<{ path: string }> };
     expect(diffBody.entries.map(({ path }) => path)).toEqual(["sdk/review.bin", "sdk/review.txt"]);
+  });
+
+  it("rejects divergent change-set create replays with 422", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const create = (message: string) =>
+      request(fake, "/v1/stashes/demo/change-sets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fake-change-set-create",
+        },
+        body: JSON.stringify({
+          entries: [{ op: "put", path: "review.txt", baseVersion: null, body: "review" }],
+          message,
+        }),
+      });
+
+    const first = await create("first message");
+    expect(first.status).toBe(201);
+    const diverged = await create("different message");
+    expect(diverged.status).toBe(422);
+    expect(await errorCode(diverged)).toBe("idempotency-key-reused");
   });
 });
 

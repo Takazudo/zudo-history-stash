@@ -10,11 +10,27 @@ import type { Env } from "./env.js";
 export const GC_SCHEDULED_MAX_OBJECTS = 80;
 export const GC_SCHEDULED_MAX_PAGES_PER_KIND = 10;
 
-const GC_KINDS: readonly GcKind[] = ["r2-orphans", "ledger", "content"];
+// Flat-6 content/change-sets run first; ledger is third because multipart cleanup is unbounded at two operations per row.
+// R2 runs last because budget.remaining - 5 lets it self-degrade instead of starving a kind.
+const GC_KINDS: readonly GcKind[] = ["content", "change-sets", "ledger", "r2-orphans"];
 
 function minimumPageOperations(kind: GcKind): number {
-  // Content charges acquire + startRun + contentPage + heartbeat + delete-batch + finish = 6, exactly the ledger cost.
+  // Admission floors: content/change-sets are flat 6; ledger's floor is 6 but cleanup adds 2 per row.
   return kind === "r2-orphans" ? 8 : 6;
+}
+
+function downstreamAdmissionReserve(
+  current: GcKind,
+  active: ReadonlySet<GcKind>,
+  pages: ReadonlyMap<GcKind, number>,
+): number {
+  return GC_KINDS.reduce(
+    (reserve, kind) =>
+      kind !== current && active.has(kind) && (pages.get(kind) ?? 0) === 0
+        ? reserve + minimumPageOperations(kind)
+        : reserve,
+    0,
+  );
 }
 
 function logPage(kind: GcKind, count: number, runId?: string): void {
@@ -35,7 +51,6 @@ function isFinished(result: GcRunResult): boolean {
  */
 export async function runScheduledGc(env: Env): Promise<void> {
   const budget = new StorageOperationBudget(GC_STORAGE_OPERATION_LIMIT);
-  const engines = new Map(GC_KINDS.map((kind) => [kind, createGcEngine(env, { budget })] as const));
   const pages = new Map<GcKind, number>(GC_KINDS.map((kind) => [kind, 0]));
   const active = new Set<GcKind>(GC_KINDS);
   let nextKind = 0;
@@ -46,9 +61,10 @@ export async function runScheduledGc(env: Env): Promise<void> {
     if (kind === undefined || !active.has(kind)) continue;
 
     const pageCount = pages.get(kind) ?? 0;
+    const downstreamReserveOperations = downstreamAdmissionReserve(kind, active, pages);
     if (
       pageCount >= GC_SCHEDULED_MAX_PAGES_PER_KIND ||
-      !budget.canCharge(minimumPageOperations(kind))
+      !budget.canCharge(minimumPageOperations(kind) + downstreamReserveOperations)
     ) {
       active.delete(kind);
       logStopped(kind);
@@ -58,9 +74,10 @@ export async function runScheduledGc(env: Env): Promise<void> {
     pages.set(kind, pageCount + 1);
     let result: GcRunResult;
     try {
-      result = await engines
-        .get(kind)!
-        .run(RunGcBody.parse({ kind, maxObjects: GC_SCHEDULED_MAX_OBJECTS }));
+      result = await createGcEngine(env, {
+        budget,
+        downstreamReserveOperations,
+      }).run(RunGcBody.parse({ kind, maxObjects: GC_SCHEDULED_MAX_OBJECTS }));
     } catch (error) {
       active.delete(kind);
       logStopped(kind);

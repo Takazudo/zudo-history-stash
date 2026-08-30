@@ -7,6 +7,7 @@ import {
   GcCursorValidationError,
   createGcEngine,
   decodeGcCursor,
+  encodeChangeSetCursor,
   encodeLedgerCursor,
   encodeR2Cursor,
 } from "../src/gc.js";
@@ -151,6 +152,7 @@ describe("strict GC cursors", () => {
   it("round trips exact kind-bound v1 envelopes", () => {
     const r2 = encodeR2Cursor("opaque");
     const ledger = encodeLedgerCursor(10, 2);
+    const changeSets = encodeChangeSetCursor("expired", "chs_0000000000001aaaaaaaa");
     expect(decodeGcCursor("r2-orphans", r2)).toEqual({
       v: 1,
       kind: "r2-orphans",
@@ -162,7 +164,14 @@ describe("strict GC cursors", () => {
       createdAt: 10,
       rowid: 2,
     });
+    expect(decodeGcCursor("change-sets", changeSets)).toEqual({
+      v: 1,
+      kind: "change-sets",
+      phase: "expired",
+      afterId: "chs_0000000000001aaaaaaaa",
+    });
     expect(() => decodeGcCursor("ledger", r2)).toThrow(GcCursorValidationError);
+    expect(() => decodeGcCursor("change-sets", "garbage")).toThrow(GcCursorValidationError);
   });
 
   it.each([

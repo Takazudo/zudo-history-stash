@@ -78,7 +78,7 @@ import {
 const TimestampSchema = z.iso.datetime();
 const HashSchema = z.string().regex(/^sha256-[0-9a-f]{64}$/);
 const VersionKindSchema = z.enum(["put", "delete", "rollback"]);
-const GcKindSchema = z.enum(["r2-orphans", "ledger", "content"]);
+const GcKindSchema = z.enum(["r2-orphans", "ledger", "content", "change-sets"]);
 const ChangeSetStatusSchema = z.enum(["open", "applied", "rejected", "expired"]);
 const TokenScopeSchema = z.enum(["read", "write"]);
 const MetaSchema = z.record(z.string(), z.json());

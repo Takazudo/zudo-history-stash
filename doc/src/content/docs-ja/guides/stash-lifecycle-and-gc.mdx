@@ -20,9 +20,10 @@ stash の削除は論理削除です。設定された復元期間中はデー�
 GC は管理者専用でページ分割され、種別ごとにフェンスされた lease で保護されます。`r2-orphans` は古くて
 参照されていない非公開オブジェクトを削除し、`ledger` は期限切れの冪等性行を削除します。`content` は、
 content grace より古く、version、live change set の entry、進行中の upload session のいずれからも参照
-されていない `blobs` / `byte_blobs` 内の D1 content row を削除します。種別ごとに関数を別々に実行して
-ください。この関数は dry-run の全ページを完了し、呼び出し側が各ページのカウンターを確認できるように
-してから、live の削除を開始します。
+されていない `blobs` / `byte_blobs` 内の D1 content row を削除します。`change-sets` は retention window
+経過後の expired または rejected change-set row を回収します。種別ごとに関数を別々に実行してください。
+この関数は dry-run の全ページを完了し、呼び出し側が各ページのカウンターを確認できるようにしてから、
+live の削除を開始します。
 
 {/* zhs-example: consumer-gc */}
 
@@ -84,10 +85,25 @@ export async function collectGarbageSafely(input: {
 }
 ```
 
-`content` job が削除するのは D1 row だけであり、R2 には一切触れません。object は orphan となり、後続の
-`r2-orphans` page で回収されます。そのため、content grace に `r2-orphans` の一回の pass を加えた期間、
-byte への課金が続きます。また、daily cron は一つの共有 operation budget を、従来の二種別ではなく三種別
-に分配するようになります。`content` を dry、次に live の順で実行してから、`r2-orphans` を実行してください。
+scheduled handler は 80 objects を要求し、確定した順序 `content`、`change-sets`、`ledger`、`r2-orphans` で
+実行します。content と change-sets は flat な 六 operation の page cost なので最初に実行します。ledger は
+multipart cleanup が cleanup row ごとに 二 operation を追加し、admission floor は 六 でも cost が unbounded
+になるため 三 番目です。まだ処理していない種別への downstream admission を予約し、その値を ledger cleanup
+limit に渡します。R2 は `budget.remaining - 5` により自ら縮退でき、他の種別を枯渇させないため最後です。
+統合済み scheduled test の 19-row fixture では、最初の R2 page は 一 object でした。content と change-sets
+は `6 + 6` operation を使い、ledger は cleanup row を 9 件（`4` setup + `3` tail + `9 × 2` per row =
+`25`）受け入れ、R2 固定 7 operation の残りは `45 - 12 - 25 - 7 = 1` です。content page は D1 row だけを
+削除して R2 には触れないため、object は後続の `r2-orphans` page まで課金対象です。`content` を dry、次に
+live の順で実行してから、`r2-orphans` を実行してください。
+
+期限切れまたは rejected の change set は、期限切れまたは却下の後 30 日間、
+`GET /v1/stashes/{name}/change-sets?status=expired|rejected` で一覧取得できます。その後 `change-sets` job
+が `change_sets` と `change_set_entries` の両 row を回収します。applied change set は commit provenance
+として恒久保持します。回収時に event は発行せず tombstone も残さないため、終了状態を観測したい client は
+期間内に list を polling してください。回収すると idempotency key が解放され、後で同じ key を POST すると
+古いものを replay せず新しい change set を発行します。この 30 日は 7 日の idempotency TTL と 14 日の
+change-set TTL より長く設定されています。sweep は stash の soft-deletion で絞り込まないため、
+soft-deleted stash の change set も予定どおり回収されます。
 
 返された cursor はすべて不透明で GC 種別に結び付いているものとして扱い、バイト単位で変更せずに
 渡し直してください。null の cursor で、その pass は完了です。`maxObjects` がそれより大きくても、

@@ -3,17 +3,19 @@ import type { Env } from "../env.js";
 import type { GcJobKind, GcJobRow, GcRunRow } from "./schema.js";
 import {
   acquireLease,
+  buildChangeSetDeletes,
   buildContentDeletes,
   deleteLedgerRows,
   finishRunBatch,
   heartbeatLease,
   insertRun,
   releaseLease,
+  selectChangeSetPage,
   selectContentPage,
   selectLedgerPage,
   selectReferencedR2Keys,
 } from "./sql/gc.js";
-import type { ContentRow, ContentTable } from "./sql/gc.js";
+import type { ChangeSetPhase, ChangeSetRetentionRow, ContentRow, ContentTable } from "./sql/gc.js";
 
 export const GC_LEASE_TTL_MS = 300_000;
 
@@ -374,6 +376,40 @@ export function createGcStore(env: Env, budget: StorageOperationBudget) {
         }),
       );
       return results.reduce((total, result) => total + changed(result), 0);
+    },
+
+    async changeSetPage(
+      phase: ChangeSetPhase,
+      cutoff: number,
+      afterId: string | null,
+      limit: number,
+    ): Promise<ChangeSetRetentionRow[]> {
+      budget.charge();
+      const rows = await env.DB.withSession("first-primary")
+        .prepare(selectChangeSetPage(phase))
+        .bind(cutoff, afterId ?? "", limit)
+        .all<ChangeSetRetentionRow>();
+      return rows.results;
+    },
+
+    async deleteChangeSetPage(
+      run: GcRunHandle,
+      phase: ChangeSetPhase,
+      rows: readonly ChangeSetRetentionRow[],
+      cutoff: number,
+    ): Promise<number> {
+      if (rows.length === 0) return 0;
+      budget.charge();
+      const batch = buildChangeSetDeletes(env.DB, {
+        phase,
+        rows,
+        cutoff,
+        kind: run.kind,
+        owner: run.owner,
+        generation: run.generation,
+      });
+      const results = await env.DB.batch(batch.statements);
+      return batch.parentIndexes.reduce((total, index) => total + changed(results[index]!), 0);
     },
 
     async listRuns(kind: GcJobKind | undefined, limit: number): Promise<GcRunResult[]> {

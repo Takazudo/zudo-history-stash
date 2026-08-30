@@ -2488,11 +2488,11 @@
             ]
           },
           "jobId": {
-            "enum": ["r2-orphans", "ledger", "content"],
+            "enum": ["r2-orphans", "ledger", "content", "change-sets"],
             "type": "string"
           },
           "kind": {
-            "enum": ["r2-orphans", "ledger", "content"],
+            "enum": ["r2-orphans", "ledger", "content", "change-sets"],
             "type": "string"
           },
           "runId": {
@@ -4422,7 +4422,7 @@
                   },
                   "kind": {
                     "description": "Selects the garbage-collection job kind.",
-                    "enum": ["r2-orphans", "ledger", "content"],
+                    "enum": ["r2-orphans", "ledger", "content", "change-sets"],
                     "type": "string"
                   },
                   "maxObjects": {
@@ -4511,7 +4511,7 @@
             "required": false,
             "schema": {
               "description": "Optional garbage-collection job-kind filter.",
-              "enum": ["r2-orphans", "ledger", "content"],
+              "enum": ["r2-orphans", "ledger", "content", "change-sets"],
               "type": "string"
             },
             "style": "form"

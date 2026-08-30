@@ -731,6 +731,17 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           updatedAt: 0,
         },
       ],
+      [
+        "change-sets",
+        {
+          kind: "change-sets",
+          nextCursor: null,
+          leaseOwner: null,
+          leaseGeneration: 0,
+          leaseUntil: null,
+          updatedAt: 0,
+        },
+      ],
     ]),
     gcRuns: [],
     uploadSessions: new Map(),
@@ -1722,6 +1733,34 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
           ? null
           : nextGcCursor(kind, last.key);
       // Content rows leave R2 objects for the existing r2-orphans job to reclaim in a later phase.
+    } else if (kind === "change-sets") {
+      const candidates = [...state.changeSets.values()]
+        .map((row) => ({ key: row.id, row }))
+        .sort((left, right) => left.key.localeCompare(right.key));
+      const start = pageStart(candidates, inputCursor, kind);
+      const page = candidates.slice(start, start + maxObjects);
+      run.scanned = page.length;
+      // The fake uses the orphan grace; its change-set retention window deliberately differs from
+      // the Worker's GC_CHANGE_SET_RETENTION_MS.
+      const eligible = page.filter(({ row: changeSet }) => {
+        const retentionAt =
+          changeSet.status === "rejected"
+            ? (changeSet.decidedAt ?? changeSet.expiresAt)
+            : changeSet.expiresAt;
+        return changeSet.status !== "applied" && startedAt - retentionAt >= gcOrphanMinAgeMs;
+      });
+      run.eligible = eligible.length;
+      if (!dryRun) {
+        for (const { row: changeSet } of eligible) {
+          state.changeSets.delete(changeSet.id);
+        }
+        run.deleted = eligible.length;
+      }
+      const last = page.at(-1);
+      run.cursor =
+        last === undefined || start + page.length >= candidates.length
+          ? null
+          : nextGcCursor(kind, last.key);
     } else {
       const candidates = ledgerCandidates();
       const start = pageStart(candidates, inputCursor, kind);
@@ -1750,6 +1789,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
     pruneGcRuns("r2-orphans");
     pruneGcRuns("ledger");
     pruneGcRuns("content");
+    pruneGcRuns("change-sets");
     const runs = state.gcRuns
       .filter((run) => parsed.data.kind === undefined || run.kind === parsed.data.kind)
       .sort(compareGcRuns)

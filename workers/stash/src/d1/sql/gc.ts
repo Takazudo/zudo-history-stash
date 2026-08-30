@@ -245,3 +245,84 @@ export function buildContentDeletes(
   }
   return statements;
 }
+
+export type ChangeSetPhase = "expired" | "rejected";
+
+export interface ChangeSetRetentionRow {
+  id: string;
+}
+
+function retentionPredicate(phase: ChangeSetPhase): string {
+  // This predicate owns exactly one placeholder: the retention cutoff.
+  return phase === "expired"
+    ? "status = 'open' AND expires_at <= ?"
+    : "status = 'rejected' AND COALESCE(decided_at, expires_at) <= ?";
+}
+
+export function selectChangeSetPage(phase: ChangeSetPhase): string {
+  return `SELECT id FROM change_sets
+    WHERE ${retentionPredicate(phase)}
+      AND id > ?
+    ORDER BY id
+    LIMIT ?`;
+}
+
+export const CHANGE_SET_DELETE_ROW_CHUNK_SIZE = D1_MAX_BOUND_PARAMS - 5;
+
+export function buildChangeSetDeletes(
+  db: Preparer,
+  input: {
+    phase: ChangeSetPhase;
+    rows: readonly ChangeSetRetentionRow[];
+    cutoff: number;
+    kind: GcJobKind;
+    owner: string;
+    generation: number;
+  },
+): { statements: D1PreparedStatement[]; parentIndexes: number[] } {
+  if (input.rows.length === 0) {
+    throw new Error("buildChangeSetDeletes requires at least one row");
+  }
+  const statements: D1PreparedStatement[] = [];
+  const parentIndexes: number[] = [];
+  for (let offset = 0; offset < input.rows.length; offset += CHANGE_SET_DELETE_ROW_CHUNK_SIZE) {
+    const chunk = input.rows.slice(offset, offset + CHANGE_SET_DELETE_ROW_CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const ids = chunk.map(({ id }) => id);
+    statements.push(
+      db
+        .prepare(
+          `DELETE FROM change_set_entries
+           WHERE change_set_id IN (${placeholders})
+             AND EXISTS (
+               SELECT 1 FROM change_sets
+               WHERE change_sets.id = change_set_entries.change_set_id
+                 AND ${retentionPredicate(input.phase)}
+             )
+             AND EXISTS (
+               SELECT 1 FROM gc_jobs
+               WHERE kind = ? AND lease_owner = ? AND lease_generation = ?
+             )`,
+        )
+        .bind(...ids, input.cutoff, input.kind, input.owner, input.generation),
+    );
+    parentIndexes.push(statements.length);
+    statements.push(
+      db
+        .prepare(
+          `DELETE FROM change_sets
+           WHERE id IN (${placeholders})
+             AND ${retentionPredicate(input.phase)}
+             AND NOT EXISTS (
+               SELECT 1 FROM change_set_entries e WHERE e.change_set_id = change_sets.id
+             )
+             AND EXISTS (
+               SELECT 1 FROM gc_jobs
+               WHERE kind = ? AND lease_owner = ? AND lease_generation = ?
+             )`,
+        )
+        .bind(...ids, input.cutoff, input.kind, input.owner, input.generation),
+    );
+  }
+  return { statements, parentIndexes };
+}
