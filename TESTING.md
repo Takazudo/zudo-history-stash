@@ -290,6 +290,11 @@ pnpm --filter zudo-history-stash exec vitest run \
   --config vitest.config.ts test/store/commit-gate-proofs.test.ts --reporter=verbose
 ```
 
+`workers/stash/test/store/commit-builder-sequential.test.ts` is the permanent proof for sequential
+per-path chains, contiguous versions, and final per-path heads. `workers/stash/test/store/commit-builder-seams.test.ts`
+covers the upload gate/seal predicates, staged-content entries, and post-entry statement seams.
+Both files run in the ordinary `pnpm test` lane alongside the aggregate gate proof.
+
 `pnpm --filter zudo-history-stash probe:commit-batch` is an explicit, mutating L5 probe. It starts a
 short-lived probe Worker with the selected Wrangler config, runs the same 62-statement batch through
 the `DB` binding, prints the number of per-statement results and `meta.changes` values, drops its

@@ -971,6 +971,7 @@ async function complete(c: Context<AppEnv>): Promise<Response> {
     throw new StashError("internal", "Durable upload staging is unavailable.");
   }
   const origin = eventOrigin(c.req.raw);
+  await c.get("deps").uploadHooks.beforeFinalizeCommit?.();
   const unchanged = await finalizeUnchanged(c.env.DB, {
     session: row,
     lease: leaseState.current,
