@@ -758,6 +758,140 @@ describe("commit routes", () => {
     });
   });
 
+  it("reverts onto current heads after a later write moves one path", async () => {
+    const stash = "commit-revert-onto-head";
+    await seedStash(stash);
+    await put(stash, "moved.txt", "moved before\n", null);
+    await put(stash, "steady.txt", "steady before\n", null);
+    const created = await api(stash, "", {
+      method: "POST",
+      body: {
+        entries: [
+          { op: "put", path: "moved.txt", expectedVersion: 1, body: "moved by commit\n" },
+          { op: "put", path: "steady.txt", expectedVersion: 1, body: "steady by commit\n" },
+        ],
+      },
+    });
+    expect(created.status).toBe(201);
+    const commit = await created.json<{ id: string }>();
+    await put(stash, "moved.txt", "later unrelated write\n", 2);
+
+    const reverted = await api(stash, `/${commit.id}/revert`, {
+      method: "POST",
+      body: { onto: "head" },
+    });
+    expect(reverted.status).toBe(201);
+    await expect(reverted.json()).resolves.toMatchObject({
+      source: "revert",
+      revertsCommitId: commit.id,
+      entries: [
+        { path: "moved.txt", op: "rollback", version: 4, rollbackOf: 1 },
+        { path: "steady.txt", op: "rollback", version: 3, rollbackOf: 1 },
+      ],
+    });
+    const store = createStashStore(createTestEnv().env);
+    await expect(store.reads.getFile(stash, "moved.txt")).resolves.toMatchObject({
+      version: 4,
+      body: "moved before\n",
+    });
+    await expect(
+      createTestEnv()
+        .env.DB.prepare(
+          "SELECT path, head_version, deleted FROM files WHERE stash_name = ? ORDER BY path",
+        )
+        .bind(stash)
+        .all(),
+    ).resolves.toMatchObject({
+      results: [
+        { path: "moved.txt", head_version: 4, deleted: 0 },
+        { path: "steady.txt", head_version: 3, deleted: 0 },
+      ],
+    });
+  });
+
+  it("skips a later tombstone when reverting created paths onto current heads", async () => {
+    const stash = "commit-revert-onto-tombstone";
+    await seedStash(stash);
+    await put(stash, "updated.txt", "before update\n", null);
+    const created = await api(stash, "", {
+      method: "POST",
+      body: {
+        entries: [
+          { op: "put", path: "created.txt", expectedVersion: null, body: "created\n" },
+          { op: "put", path: "updated.txt", expectedVersion: 1, body: "after update\n" },
+        ],
+      },
+    });
+    expect(created.status).toBe(201);
+    const commit = await created.json<{ id: string }>();
+    const tombstoned = await api(stash, "", {
+      method: "POST",
+      body: { entries: [{ op: "delete", path: "created.txt", expectedVersion: 1 }] },
+    });
+    expect(tombstoned.status).toBe(201);
+
+    const reverted = await api(stash, `/${commit.id}/revert`, {
+      method: "POST",
+      body: { onto: "head" },
+      key: "revert-onto-tombstone",
+    });
+    expect(reverted.status).toBe(201);
+    const value = await reverted.json();
+    expect(value).toMatchObject({
+      entries: [{ path: "updated.txt", op: "rollback", version: 3, rollbackOf: 1 }],
+      skipped: [{ path: "created.txt", reason: "already-deleted" }],
+    });
+    const replayed = await api(stash, `/${commit.id}/revert`, {
+      method: "POST",
+      body: { onto: "head" },
+      key: "revert-onto-tombstone",
+    });
+    expect(replayed.status).toBe(201);
+    expect(replayed.headers.get("Idempotent-Replayed")).toBe("true");
+    await expect(replayed.json()).resolves.toEqual(value);
+  });
+
+  it("rejects an idempotency key replayed with a different revert mode", async () => {
+    const stash = "commit-revert-onto-idempotency";
+    await seedStash(stash);
+    await put(stash, "updated.txt", "before update\n", null);
+    const created = await api(stash, "", {
+      method: "POST",
+      body: {
+        entries: [{ op: "put", path: "updated.txt", expectedVersion: 1, body: "after update\n" }],
+      },
+    });
+    expect(created.status).toBe(201);
+    const commit = await created.json<{ id: string }>();
+    const first = await api(stash, `/${commit.id}/revert`, {
+      method: "POST",
+      body: {},
+      key: "revert-onto-idempotency",
+    });
+    expect(first.status).toBe(201);
+
+    const diverged = await api(stash, `/${commit.id}/revert`, {
+      method: "POST",
+      body: { onto: "head" },
+      key: "revert-onto-idempotency",
+    });
+    expect(diverged.status).toBe(422);
+    await expect(diverged.json()).resolves.toMatchObject({
+      error: { code: "idempotency-key-reused" },
+    });
+  });
+
+  it("validates the revert onto mode", async () => {
+    const stash = "commit-revert-onto-validation";
+    await seedStash(stash);
+    const response = await api(stash, "/missing/revert", {
+      method: "POST",
+      body: { onto: "latest" },
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "validation" } });
+  });
+
   it("collapses an imported path to one inverse entry and restores its pre-import absence", async () => {
     const stash = "commit-revert-import";
     await seedStash(stash);
