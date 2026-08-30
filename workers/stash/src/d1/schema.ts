@@ -221,7 +221,7 @@ export interface IdempotencyRow {
   created_at: number;
 }
 
-export type GcJobKind = "r2-orphans" | "ledger" | "content";
+export type GcJobKind = "r2-orphans" | "ledger" | "content" | "change-sets";
 
 export interface GcJobRow {
   kind: GcJobKind;

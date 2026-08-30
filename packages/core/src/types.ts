@@ -11,7 +11,7 @@ import type { UploadCompletionResult, UploadPartRecord, UploadSessionRecord } fr
 
 export type VersionKind = "put" | "delete" | "rollback";
 export type TokenScope = "read" | "write";
-export type GcKind = "r2-orphans" | "ledger" | "content";
+export type GcKind = "r2-orphans" | "ledger" | "content" | "change-sets";
 export type ChangeSetStatus = "open" | "applied" | "rejected" | "expired";
 export type ReconnectReason = "lifetime" | "replay-limit" | "shutdown";
 
