@@ -98,9 +98,9 @@ export function uploadFinalizeBatch(
         stash_name: input.session.stash_name,
         source: "upload",
         source_id: input.session.id,
-        author: input.session.principal_id ?? "",
-        message: "",
-        meta_json: "{}",
+        author: input.session.commit_author ?? input.session.principal_id ?? "",
+        message: input.session.commit_message ?? "",
+        meta_json: input.session.commit_meta_json ?? "{}",
         entry_count: 1,
         reverts_commit_id: null,
         idempotency_key: null,
@@ -134,7 +134,7 @@ export function uploadFinalizeBatch(
            (stash_name, path, version, kind, blob_hash, size_bytes, content_type,
             rollback_of, author, message, meta_json, created_at, representation,
             application_etag, content_storage, commit_id)
-         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, '', '{}', ?, ?, ?, 'bytes', ?
+         SELECT ?, ?, ?, 'put', ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'bytes', ?
          WHERE ${versionFence}`,
       )
       .bind(
@@ -144,7 +144,9 @@ export function uploadFinalizeBatch(
         input.session.uploaded_hash,
         input.session.uploaded_size,
         input.session.content_type,
-        input.session.principal_id ?? "",
+        input.session.commit_author ?? input.session.principal_id ?? "",
+        input.session.commit_message ?? "",
+        input.session.commit_meta_json ?? "{}",
         input.createdAt,
         input.session.representation,
         input.session.uploaded_hash,
