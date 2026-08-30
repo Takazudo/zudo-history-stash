@@ -21,6 +21,7 @@ export type AppDependencies = Pick<StoreDependencies, "now" | "createId"> & {
     afterMultipartComplete?: () => void | Promise<void>;
     afterMultipartPart?: () => void | Promise<void>;
     duringFinalizing?: () => void | Promise<void>;
+    beforeFinalizeCommit?: () => void | Promise<void>;
     afterCommit?: () => void | Promise<void>;
     beforeEventPublish?: () => void | Promise<void>;
   };
