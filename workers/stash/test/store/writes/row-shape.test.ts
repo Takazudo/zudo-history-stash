@@ -275,6 +275,12 @@ describe("single-path write raw-row characterization", () => {
       contentType: "text/markdown",
     });
     if (!first.ok || "unchanged" in first.value) throw new Error("Expected initial put");
+    await env.DB.prepare(
+      `UPDATE versions SET representation = 'binary', content_storage = 'bytes'
+       WHERE stash_name = ? AND path = ? AND version = 1`,
+    )
+      .bind(stash, path)
+      .run();
     const deleted = await writes.delete(stash, path, {
       expectedVersion: 1,
       author: "delete author",
@@ -297,9 +303,9 @@ describe("single-path write raw-row characterization", () => {
       message: "delete message",
       meta_json: "{}",
       created_at: createdAt,
-      representation: "text",
+      representation: "binary",
       application_etag: null,
-      content_storage: "legacy",
+      content_storage: "bytes",
       commit_id: deleted.value.commitId,
       copied_from_path: null,
       copied_from_version: null,
@@ -385,6 +391,13 @@ describe("single-path write raw-row characterization", () => {
       contentType: "text/markdown",
     });
     if (!first.ok || "unchanged" in first.value) throw new Error("Expected rollback target");
+    await env.DB.prepare(
+      `UPDATE versions
+       SET representation = 'binary', application_etag = 'target-etag', content_storage = 'bytes'
+       WHERE stash_name = ? AND path = ? AND version = 1`,
+    )
+      .bind(stash, path)
+      .run();
     await writes.put(stash, path, {
       body: "later body",
       expectedVersion: 1,
@@ -418,9 +431,9 @@ describe("single-path write raw-row characterization", () => {
       message: "undo",
       meta_json: canonicalJson(meta),
       created_at: createdAt,
-      representation: "text",
-      application_etag: null,
-      content_storage: "legacy",
+      representation: "binary",
+      application_etag: "target-etag",
+      content_storage: "bytes",
       commit_id: rolledBack.value.commitId,
       copied_from_path: null,
       copied_from_version: null,
