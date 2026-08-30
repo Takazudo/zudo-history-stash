@@ -65,6 +65,7 @@ export interface CommitGateInput {
   expectedLastChangeId?: number;
   expectedLastChangePrefixLo?: string;
   expectedLastChangePrefixHi?: string;
+  extraPredicate?: SqlFragment;
 }
 
 /**
@@ -74,6 +75,7 @@ export interface CommitGateInput {
  */
 export function commitGateStatement(db: Preparer, input: CommitGateInput): D1PreparedStatement {
   const row = input.row;
+  const extra = input.extraPredicate;
   return db
     .prepare(
       `INSERT INTO commits
@@ -126,7 +128,7 @@ export function commitGateStatement(db: Preparer, input: CommitGateInput): D1Pre
                  AND source.version = json_extract(e.value, '$.from.version')
                  AND source.blob_hash IS NOT NULL
              ))
-         )`,
+         )${extra ? `\n         AND (${extra.sql})` : ""}`,
     )
     .bind(
       row.id,
@@ -156,6 +158,7 @@ export function commitGateStatement(db: Preparer, input: CommitGateInput): D1Pre
       row.stash_name,
       row.stash_name,
       row.stash_name,
+      ...(extra?.params ?? []),
     );
 }
 
@@ -194,6 +197,19 @@ export type PreparedCommitEntry =
         size: number;
         contentType: string;
       })
+  | (PreparedCommitBase & {
+      op: "put";
+      content: "staged";
+      representation: "text" | "binary";
+      hash: string;
+      size: number;
+      contentType: string;
+      staged: {
+        tier: "d1" | "r2";
+        sessionId: string;
+        generation: number;
+      };
+    })
   | (PreparedCommitBase & { op: "copy"; from: { path: string; version: number } })
   | (PreparedCommitBase & { op: "delete" })
   | (PreparedCommitBase & { op: "rollback"; toVersion: number });
@@ -205,6 +221,13 @@ export interface CommitBatchInput {
   expectedLastChangeId?: number;
   expectedLastChangePrefixLo?: string;
   expectedLastChangePrefixHi?: string;
+  extraGatePredicate?: SqlFragment;
+  /**
+   * Statements inserted after all entry writes and before the ledger and seal. Callers must fence
+   * every statement on commitFence(stash, id).
+   */
+  postEntryStatements?: D1PreparedStatement[];
+  extraSealPredicate?: SqlFragment;
 }
 
 function entryFence(input: CommitBatchInput): SqlFragment {
@@ -217,8 +240,9 @@ function putEntryStatements(
   entry: Extract<PreparedCommitEntry, { op: "put" }>,
 ): D1PreparedStatement[] {
   const fence = entryFence(input);
+  const staged = "content" in entry;
   const storedBlob =
-    entry.representation === "text"
+    entry.representation === "text" && !staged
       ? `EXISTS (SELECT 1 FROM blobs
           WHERE stash_name = ? AND hash = ? AND size_bytes = ?
             AND ((body IS NOT NULL AND r2_key IS NULL)
@@ -227,40 +251,101 @@ function putEntryStatements(
           WHERE stash_name = ? AND hash = ? AND size_bytes = ?
             AND ((body_bytes IS NOT NULL AND r2_key IS NULL)
               OR (body_bytes IS NULL AND r2_key IS NOT NULL)))`;
-  const blobStatement =
-    entry.representation === "text"
-      ? db
-          .prepare(
-            `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
+  let blobStatement: D1PreparedStatement;
+  if (staged) {
+    const ownership = `sessions.id = ? AND sessions.stash_name = ? AND sessions.path = ?
+               AND sessions.storage_tier = ? AND sessions.attempt_generation = ?
+               AND sessions.uploaded_hash = ? AND sessions.uploaded_size = ?`;
+    if (entry.staged.tier === "d1") {
+      blobStatement = db
+        .prepare(
+          `INSERT INTO byte_blobs
+            (stash_name, hash, body_bytes, r2_key, storage_generation, size_bytes, created_at)
+           SELECT ?, ?, staged.body_bytes, NULL, ?, staged.size_bytes, ?
+           FROM upload_staged_bytes AS staged
+           JOIN upload_sessions AS sessions ON sessions.id = staged.session_id
+           WHERE staged.session_id = ? AND staged.generation = ? AND staged.hash = ?
+             AND staged.size_bytes = ? AND ${ownership} AND ${fence.sql}
+           ON CONFLICT(stash_name, hash) DO NOTHING`,
+        )
+        .bind(
+          input.row.stash_name,
+          entry.hash,
+          entry.staged.generation,
+          entry.createdAt,
+          entry.staged.sessionId,
+          entry.staged.generation,
+          entry.hash,
+          entry.size,
+          entry.staged.sessionId,
+          input.row.stash_name,
+          entry.path,
+          entry.staged.tier,
+          entry.staged.generation,
+          entry.hash,
+          entry.size,
+          ...fence.params,
+        );
+    } else {
+      blobStatement = db
+        .prepare(
+          `INSERT INTO byte_blobs
+            (stash_name, hash, body_bytes, r2_key, storage_generation, size_bytes, created_at)
+           SELECT ?, ?, NULL, sessions.staged_r2_key, ?, sessions.uploaded_size, ?
+           FROM upload_sessions AS sessions
+           WHERE ${ownership} AND sessions.staged_r2_key IS NOT NULL AND ${fence.sql}
+           ON CONFLICT(stash_name, hash) DO NOTHING`,
+        )
+        .bind(
+          input.row.stash_name,
+          entry.hash,
+          entry.staged.generation,
+          entry.createdAt,
+          entry.staged.sessionId,
+          input.row.stash_name,
+          entry.path,
+          entry.staged.tier,
+          entry.staged.generation,
+          entry.hash,
+          entry.size,
+          ...fence.params,
+        );
+    }
+  } else if (entry.representation === "text") {
+    blobStatement = db
+      .prepare(
+        `INSERT INTO blobs (stash_name, hash, body, r2_key, size_bytes, created_at)
              SELECT ?, ?, ?, ?, ?, ? WHERE ${fence.sql}
              ON CONFLICT(stash_name, hash) DO NOTHING`,
-          )
-          .bind(
-            input.row.stash_name,
-            entry.hash,
-            entry.body,
-            entry.r2_key,
-            entry.size,
-            entry.createdAt,
-            ...fence.params,
-          )
-      : db
-          .prepare(
-            `INSERT INTO byte_blobs
+      )
+      .bind(
+        input.row.stash_name,
+        entry.hash,
+        entry.body,
+        entry.r2_key,
+        entry.size,
+        entry.createdAt,
+        ...fence.params,
+      );
+  } else {
+    blobStatement = db
+      .prepare(
+        `INSERT INTO byte_blobs
               (stash_name, hash, body_bytes, r2_key, storage_generation, size_bytes, created_at)
              SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${fence.sql}
              ON CONFLICT(stash_name, hash) DO NOTHING`,
-          )
-          .bind(
-            input.row.stash_name,
-            entry.hash,
-            entry.bodyBytes,
-            entry.r2Key,
-            entry.storageGeneration,
-            entry.size,
-            entry.createdAt,
-            ...fence.params,
-          );
+      )
+      .bind(
+        input.row.stash_name,
+        entry.hash,
+        entry.bodyBytes,
+        entry.r2Key,
+        entry.storageGeneration,
+        entry.size,
+        entry.createdAt,
+        ...fence.params,
+      );
+  }
   return [
     blobStatement,
     db
@@ -284,8 +369,8 @@ function putEntryStatements(
         entry.metaJson,
         entry.createdAt,
         entry.representation,
-        entry.representation === "binary" ? entry.hash : null,
-        entry.representation === "binary" ? "bytes" : "legacy",
+        staged || entry.representation === "binary" ? entry.hash : null,
+        staged || entry.representation === "binary" ? "bytes" : "legacy",
         input.row.id,
         ...fence.params,
         input.row.stash_name,
@@ -476,6 +561,9 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
             expectedLastChangePrefixLo: input.expectedLastChangePrefixLo,
             expectedLastChangePrefixHi: input.expectedLastChangePrefixHi,
           }),
+      ...(input.extraGatePredicate === undefined
+        ? {}
+        : { extraPredicate: input.extraGatePredicate }),
     }),
   ];
   for (const entry of input.entries) {
@@ -487,6 +575,7 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
       statements.push(headStatement(db, input, pathEntries.first, pathEntries.last));
     }
   }
+  statements.push(...(input.postEntryStatements ?? []));
   // This ledger statement may sit here only because it is fenced on position-independent commitFence(stash, id), not the operation fence; an operation fence here would write zero rows and break idempotent replay.
   if (input.ledger) {
     const entry = input.entries[0];
@@ -518,6 +607,7 @@ function commitSealStatement(
   input: CommitBatchInput,
   entriesByPath: Map<string, PreparedPathEntries>,
 ): D1PreparedStatement {
+  const extra = input.extraSealPredicate;
   const expectedHeads = [...entriesByPath.values()].map(({ last }) => ({
     path: last.path,
     version: last.version,
@@ -542,7 +632,7 @@ function commitSealStatement(
                      AND committed.path = json_extract(expected.value, '$.path')
                      AND committed.version = json_extract(expected.value, '$.version')
                  )
-             )
+             )${extra ? `\n             AND (${extra.sql})` : ""}
            THEN (SELECT COUNT(*) FROM versions WHERE commit_id = commits.id)
            ELSE -1 END,
            first_change_id = (SELECT MIN(id) FROM versions WHERE commit_id = commits.id),
@@ -550,7 +640,12 @@ function commitSealStatement(
            sealed = 1
        WHERE stash_name = ? AND id = ? AND sealed = 0`,
     )
-    .bind(JSON.stringify(expectedHeads), input.row.stash_name, input.row.id);
+    .bind(
+      JSON.stringify(expectedHeads),
+      ...(extra?.params ?? []),
+      input.row.stash_name,
+      input.row.id,
+    );
 }
 
 export function sealStatement(
