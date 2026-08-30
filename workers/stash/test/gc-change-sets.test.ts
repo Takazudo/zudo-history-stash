@@ -61,16 +61,24 @@ async function seedChangeSet(values: {
   status: "open" | "applied" | "rejected";
   expiresAt: number;
   decidedAt?: number | null;
+  commitId?: string | null;
   stash?: string;
   entries?: number;
 }): Promise<void> {
   const stash = values.stash ?? STASH;
   await env.DB.prepare(
     `INSERT INTO change_sets
-       (id, stash_name, status, expires_at, created_by, created_at, decided_at)
-     VALUES (?, ?, ?, ?, 'test', 0, ?)`,
+       (id, stash_name, status, expires_at, created_by, created_at, decided_at, commit_id)
+     VALUES (?, ?, ?, ?, 'test', 0, ?, ?)`,
   )
-    .bind(values.id, stash, values.status, values.expiresAt, values.decidedAt ?? null)
+    .bind(
+      values.id,
+      stash,
+      values.status,
+      values.expiresAt,
+      values.decidedAt ?? null,
+      values.commitId ?? null,
+    )
     .run();
   for (let index = 0; index < (values.entries ?? 1); index += 1) {
     await env.DB.prepare(
@@ -370,6 +378,8 @@ describe("change-set garbage collection", () => {
     const rejected = changeSetId(2);
     const rejectedFallback = changeSetId(3);
     const survivor = changeSetId(4);
+    const applied = changeSetId(5);
+    const appliedCommit = "cmt_gc_change_sets_applied";
     await seedChangeSet({ id: expired, status: "open", expiresAt: CUTOFF });
     await seedChangeSet({
       id: rejected,
@@ -384,6 +394,18 @@ describe("change-set garbage collection", () => {
       decidedAt: null,
     });
     await seedChangeSet({ id: survivor, status: "open", expiresAt: CUTOFF + 1 });
+    await env.DB.prepare(
+      `INSERT INTO commits (id, stash_name, source, entry_count, created_by, created_at)
+       VALUES (?, ?, 'change-set', 1, 'test', 0)`,
+    )
+      .bind(appliedCommit, STASH)
+      .run();
+    await seedChangeSet({
+      id: applied,
+      status: "applied",
+      expiresAt: 0,
+      commitId: appliedCommit,
+    });
 
     let cursor: string | null | undefined;
     let pages = 0;
@@ -401,11 +423,17 @@ describe("change-set garbage collection", () => {
     } while (cursor !== null && pages < 10);
     expect(cursor).toBeNull();
 
-    await expect(survivingIds()).resolves.toEqual([survivor]);
+    await expect(survivingIds()).resolves.toEqual([survivor, applied]);
     for (const id of [expired, rejected, rejectedFallback]) {
       await expect(entryCount(id)).resolves.toBe(0);
     }
     await expect(entryCount(survivor)).resolves.toBe(1);
+    await expect(entryCount(applied)).resolves.toBe(1);
+    await expect(
+      env.DB.prepare("SELECT commit_id FROM change_sets WHERE id = ?")
+        .bind(applied)
+        .first<{ commit_id: string | null }>(),
+    ).resolves.toEqual({ commit_id: appliedCommit });
 
     const response = await request(
       createApp({ now: () => NOW }),
