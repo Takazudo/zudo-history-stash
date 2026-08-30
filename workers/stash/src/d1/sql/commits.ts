@@ -366,12 +366,13 @@ function derivedEntryStatement(
 function headStatement(
   db: Preparer,
   input: CommitBatchInput,
-  entry: PreparedCommitEntry,
+  firstEntry: PreparedCommitEntry,
+  lastEntry: PreparedCommitEntry,
 ): D1PreparedStatement {
   const fence = entryFence(input);
   const hash = `(SELECT blob_hash FROM versions WHERE stash_name = ? AND path = ? AND version = ?)`;
-  const deleted = entry.op === "delete" ? 1 : 0;
-  if (entry.expectedVersion === null) {
+  const deleted = lastEntry.op === "delete" ? 1 : 0;
+  if (firstEntry.expectedVersion === null) {
     return db
       .prepare(
         `INSERT INTO files
@@ -383,20 +384,20 @@ function headStatement(
       )
       .bind(
         input.row.stash_name,
-        entry.path,
-        entry.version,
+        firstEntry.path,
+        lastEntry.version,
         input.row.stash_name,
-        entry.path,
-        entry.version,
+        firstEntry.path,
+        lastEntry.version,
         deleted,
-        entry.createdAt,
-        entry.createdAt,
+        firstEntry.createdAt,
+        lastEntry.createdAt,
         ...fence.params,
         input.row.stash_name,
-        entry.path,
+        firstEntry.path,
         input.row.stash_name,
-        entry.path,
-        entry.version,
+        firstEntry.path,
+        lastEntry.version,
       );
   }
   return db
@@ -407,32 +408,60 @@ function headStatement(
            WHERE stash_name = ? AND path = ? AND version = ?)`,
     )
     .bind(
-      entry.version,
+      lastEntry.version,
       input.row.stash_name,
-      entry.path,
-      entry.version,
+      firstEntry.path,
+      lastEntry.version,
       deleted,
-      entry.createdAt,
+      lastEntry.createdAt,
       input.row.stash_name,
-      entry.path,
-      entry.expectedVersion,
+      firstEntry.path,
+      firstEntry.expectedVersion,
       ...fence.params,
       input.row.stash_name,
-      entry.path,
-      entry.version,
+      firstEntry.path,
+      lastEntry.version,
     );
+}
+
+interface PreparedPathEntries {
+  first: PreparedCommitEntry;
+  last: PreparedCommitEntry;
+}
+
+function preparePathEntries(entries: PreparedCommitEntry[]): Map<string, PreparedPathEntries> {
+  const byPath = new Map<string, PreparedPathEntries>();
+  for (const entry of entries) {
+    const pathEntries = byPath.get(entry.path);
+    if (!pathEntries) {
+      if (entry.version !== (entry.expectedVersion ?? 0) + 1) {
+        throw new Error(`Commit batch path ${entry.path} is not a contiguous version chain`);
+      }
+      byPath.set(entry.path, { first: entry, last: entry });
+      continue;
+    }
+    if (
+      entry.expectedVersion !== pathEntries.last.version ||
+      entry.version !== entry.expectedVersion + 1
+    ) {
+      throw new Error(`Commit batch path ${entry.path} is not a contiguous version chain`);
+    }
+    pathEntries.last = entry;
+  }
+  return byPath;
 }
 
 export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedStatement[] {
   if (input.entries.length === 0 || input.entries.length !== input.row.entry_count) {
     throw new Error("Commit batch entry count mismatch");
   }
-  const gateEntries: CommitGateEntry[] = input.entries.map((entry) => ({
-    op: entry.op,
-    path: entry.path,
-    expectedVersion: entry.expectedVersion,
-    ...(entry.op === "rollback" ? { toVersion: entry.toVersion } : {}),
-    ...(entry.op === "copy" ? { from: entry.from } : {}),
+  const entriesByPath = preparePathEntries(input.entries);
+  const gateEntries: CommitGateEntry[] = [...entriesByPath.values()].map(({ first }) => ({
+    op: first.op,
+    path: first.path,
+    expectedVersion: first.expectedVersion,
+    ...(first.op === "rollback" ? { toVersion: first.toVersion } : {}),
+    ...(first.op === "copy" ? { from: first.from } : {}),
   }));
   const statements: D1PreparedStatement[] = [
     commitGateStatement(db, {
@@ -452,7 +481,11 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
   for (const entry of input.entries) {
     if (entry.op === "put") statements.push(...putEntryStatements(db, input, entry));
     else statements.push(derivedEntryStatement(db, input, entry));
-    statements.push(headStatement(db, input, entry));
+    const pathEntries = entriesByPath.get(entry.path);
+    if (!pathEntries) throw new Error("Missing prepared commit path");
+    if (entry === pathEntries.last) {
+      statements.push(headStatement(db, input, pathEntries.first, pathEntries.last));
+    }
   }
   // This ledger statement may sit here only because it is fenced on position-independent commitFence(stash, id), not the operation fence; an operation fence here would write zero rows and break idempotent replay.
   if (input.ledger) {
@@ -471,7 +504,7 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
       }),
     );
   }
-  statements.push(commitSealStatement(db, input));
+  statements.push(commitSealStatement(db, input, entriesByPath));
   return statements;
 }
 
@@ -480,11 +513,15 @@ export function commitBatch(db: Preparer, input: CommitBatchInput): D1PreparedSt
  * version and file-head write must be visible or the existing commits CHECK is intentionally
  * violated so D1 rolls the whole batch back.
  */
-function commitSealStatement(db: Preparer, input: CommitBatchInput): D1PreparedStatement {
-  const expectedHeads = input.entries.map((entry) => ({
-    path: entry.path,
-    version: entry.version,
-    deleted: entry.op === "delete" ? 1 : 0,
+function commitSealStatement(
+  db: Preparer,
+  input: CommitBatchInput,
+  entriesByPath: Map<string, PreparedPathEntries>,
+): D1PreparedStatement {
+  const expectedHeads = [...entriesByPath.values()].map(({ last }) => ({
+    path: last.path,
+    version: last.version,
+    deleted: last.op === "delete" ? 1 : 0,
   }));
   return db
     .prepare(
