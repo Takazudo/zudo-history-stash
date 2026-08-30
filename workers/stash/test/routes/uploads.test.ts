@@ -7,6 +7,8 @@ import {
 } from "@takazudo/zudo-history-stash-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
+import { finalizeUpload } from "../../src/d1/upload-finalize.js";
+import { D1UploadSessionStore } from "../../src/d1/upload-sessions.js";
 import { GC_ORPHAN_MIN_AGE_MS, createGcEngine } from "../../src/gc.js";
 import { bearer, mintToken, request, resetDatabase, seedStash } from "../helpers/app.js";
 import { createTestEnv } from "../helpers/env.js";
@@ -873,6 +875,149 @@ describe("single raw upload lifecycle", () => {
     expect((await complete(id, "complete-lease", custom, application)).status).toBe(409);
     now += 11;
     expect((await complete(id, "complete-lease", custom, application)).status).toBe(201);
+  });
+
+  it("fences a finalizer whose renewed lease is stolen immediately before commit", async () => {
+    let now = 1_800_000_100_000;
+    let id = "";
+    const winnerResult = {
+      commitId: "cmt_winner",
+      version: 1,
+      hash: "winner-hash",
+      size: 1,
+      representation: "binary",
+      contentType: "application/octet-stream",
+      changeId: 123,
+      createdAt: new Date(now).toISOString(),
+    };
+    const application = createApp({
+      now: () => now,
+      uploadLeaseMs: 10,
+      uploadHooks: {
+        async beforeFinalizeCommit() {
+          now += 11;
+          const store = new D1UploadSessionStore(env.DB);
+          const winner = await store.acquireFinalizationLease({
+            sessionId: id,
+            generation: 0,
+            owner: "winner",
+            now,
+            leaseUntil: now + 10,
+          });
+          if (winner === null) throw new Error("Expected winner to steal the expired lease");
+          const finished = await store.finish({
+            lease: winner,
+            state: "committed",
+            resultStatus: 201,
+            resultJson: JSON.stringify(winnerResult),
+            now,
+          });
+          if (!finished) throw new Error("Expected winner to preserve its committed result");
+        },
+      },
+    });
+    const custom = bindings();
+    const created = await create(
+      {
+        expectedVersion: null,
+        size: 1,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-stolen-finalize-lease",
+      custom,
+      application,
+    );
+    id = (await created.json<{ id: string }>()).id;
+    await raw(id, new Uint8Array([1]), "upload-stolen-finalize-lease", {}, custom, application);
+
+    expect((await complete(id, "complete-stolen-finalize-lease", custom, application)).status).toBe(
+      500,
+    );
+    await expect(
+      env.DB.prepare("SELECT result_status, result_json FROM upload_sessions WHERE id = ?")
+        .bind(id)
+        .first(),
+    ).resolves.toEqual({ result_status: 201, result_json: JSON.stringify(winnerResult) });
+    for (const table of ["commits", "versions", "files", "byte_blobs"] as const) {
+      await expect(
+        env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first(),
+      ).resolves.toEqual({ count: 0 });
+    }
+  });
+
+  it("returns null and rolls back when the committed upload result fails the seal predicate", async () => {
+    const now = 1_800_000_200_000;
+    const application = createApp({ now: () => now });
+    const custom = bindings();
+    const created = await create(
+      {
+        expectedVersion: null,
+        size: 1,
+        representation: "binary",
+        contentType: "application/octet-stream",
+        mode: "single",
+        resumable: false,
+      },
+      "create-mismatched-finalize-result",
+      custom,
+      application,
+    );
+    const id = (await created.json<{ id: string }>()).id;
+    await raw(
+      id,
+      new Uint8Array([7]),
+      "upload-mismatched-finalize-result",
+      {},
+      custom,
+      application,
+    );
+    const store = new D1UploadSessionStore(env.DB);
+    const lease = await store.acquireFinalizationLease({
+      sessionId: id,
+      generation: 0,
+      owner: "seal-test",
+      now,
+      leaseUntil: now + 30_000,
+    });
+    if (lease === null) throw new Error("Expected finalization lease");
+    const session = await store.get(id);
+    if (session === null) throw new Error("Expected upload session");
+    const commitId = "cmt_seal_test";
+
+    await expect(
+      finalizeUpload(env.DB, {
+        commitId,
+        createdBy: "admin",
+        session,
+        lease,
+        createdAt: now,
+        eventOrigin: null,
+        alterUploadFinalizeStatementsForTest(statements) {
+          const altered = [...statements];
+          altered[altered.length - 2] = env.DB.prepare(
+            `UPDATE upload_sessions SET state = 'committed', result_status = 201,
+               result_json = json_object('commitId', 'mismatched'),
+               reservation_released_at = ?, finalization_lease_owner = NULL,
+               finalization_lease_until = NULL, updated_at = ?
+             WHERE id = ? AND state = 'finalizing'`,
+          ).bind(now, now, id);
+          return altered;
+        },
+      }),
+    ).resolves.toBeNull();
+    for (const table of ["commits", "versions", "files", "byte_blobs"] as const) {
+      await expect(
+        env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first(),
+      ).resolves.toEqual({ count: 0 });
+    }
+    await expect(
+      env.DB.prepare("SELECT state, result_status, result_json FROM upload_sessions WHERE id = ?")
+        .bind(id)
+        .first(),
+    ).resolves.toEqual({ state: "finalizing", result_status: null, result_json: null });
   });
 
   it("returns current state for open resume and finalizes durable uploaded staging", async () => {
