@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { MAX_BODY_BYTES } from "./limits.js";
+import { MAX_BODY_BYTES, MAX_META_BYTES } from "./limits.js";
 import {
   ChangesQuery,
   ApproveChangeSetBody,
@@ -7,6 +7,7 @@ import {
   CommitDiffQuery,
   CreateChangeSetBody,
   CreateCommitBody,
+  CreateUploadSessionBody,
   CreateStashBody,
   CreateTokenBody,
   DiffCandidateBody,
@@ -23,6 +24,7 @@ import {
   PutFileBody,
   parseSnapshotSelector,
   RejectChangeSetBody,
+  RevertCommitBody,
   SnapshotQuery,
   RunGcBody,
   RotateTokenBody,
@@ -254,6 +256,36 @@ describe("ImportBody", () => {
 const put = { op: "put", path: "docs/a.md", expectedVersion: null, body: "a" } as const;
 
 describe("commit and change-set request schemas", () => {
+  it("defaults revert targeting, accepts head mode, and stays strict", () => {
+    expect(RevertCommitBody.parse({})).toEqual({ onto: "commit" });
+    expect(RevertCommitBody.parse({ onto: "head" })).toEqual({ onto: "head" });
+    expect(RevertCommitBody.safeParse({ onto: "latest" }).success).toBe(false);
+    expect(RevertCommitBody.safeParse({ unknown: true }).success).toBe(false);
+  });
+
+  it("accepts upload attribution and enforces the metadata byte limit", () => {
+    const request = {
+      expectedVersion: null,
+      size: 1,
+      representation: "text" as const,
+      contentType: "text/plain",
+    };
+    expect(
+      CreateUploadSessionBody.parse({
+        ...request,
+        author: "Ada",
+        message: "Upload fixture",
+        meta: { source: "test" },
+      }),
+    ).toMatchObject({ author: "Ada", message: "Upload fixture", meta: { source: "test" } });
+    expect(
+      CreateUploadSessionBody.safeParse({
+        ...request,
+        meta: { value: "x".repeat(MAX_META_BYTES) },
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts every commit entry shape with strict integer versions", () => {
     const entries = [
       put,

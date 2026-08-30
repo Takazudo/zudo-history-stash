@@ -1517,6 +1517,16 @@
             "minimum": 0,
             "type": "integer"
           },
+          "author": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "contentType": {
             "type": "string"
           },
@@ -1577,6 +1587,32 @@
           },
           "id": {
             "type": "string"
+          },
+          "message": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meta": {
+            "oneOf": [
+              {
+                "additionalProperties": {
+                  "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+                },
+                "propertyNames": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "mode": {
             "enum": ["single", "multipart"],
@@ -1698,6 +1734,9 @@
           "mode",
           "storageTier",
           "partSize",
+          "author",
+          "message",
+          "meta",
           "expiresAt",
           "attemptGeneration",
           "uploadedSize",
@@ -2847,6 +2886,16 @@
             "minimum": 0,
             "type": "integer"
           },
+          "author": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "contentType": {
             "type": "string"
           },
@@ -2907,6 +2956,32 @@
           },
           "id": {
             "type": "string"
+          },
+          "message": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meta": {
+            "oneOf": [
+              {
+                "additionalProperties": {
+                  "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+                },
+                "propertyNames": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "mode": {
             "enum": ["single", "multipart"],
@@ -3056,6 +3131,9 @@
           "mode",
           "storageTier",
           "partSize",
+          "author",
+          "message",
+          "meta",
           "expiresAt",
           "attemptGeneration",
           "uploadedSize",
@@ -7363,7 +7441,7 @@
     },
     "/v1/stashes/{stash}/commits/{id}/revert": {
       "post": {
-        "description": "Creates a new commit that reverses the named commit.\n\nwrite; administrator or a matching write stash token.",
+        "description": "Creates a new commit that reverses the named commit. The onto option defaults to \"commit\" (the strict behavior), deriving each entry's expectedVersion from the version the reverted commit itself wrote. Set onto to \"head\" as an opt-in mode to derive expectedVersion from the path's current head and deliberately overwrite later unrelated writes.\n\nwrite; administrator or a matching write stash token.",
         "operationId": "revertCommit",
         "parameters": [
           {
@@ -7429,6 +7507,11 @@
                       "type": "string"
                     },
                     "type": "object"
+                  },
+                  "onto": {
+                    "default": "commit",
+                    "enum": ["commit", "head"],
+                    "type": "string"
                   }
                 },
                 "type": "object"
@@ -10667,7 +10750,7 @@
     },
     "/v1/stashes/{stash}/uploads/{path}": {
       "post": {
-        "description": "Reserves declared exact content bytes and chooses single or multipart transfer plus D1 or R2 staging. Repeating the same idempotency fingerprint replays the session.\n\nwrite; administrator or a matching write stash token.\n\nThe path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
+        "description": "Reserves declared exact content bytes and chooses single or multipart transfer plus D1 or R2 staging. Repeating the same idempotency fingerprint replays the session. Optional author, message, and meta are carried onto the commit minted when the upload is finalized.\n\nwrite; administrator or a matching write stash token.\n\nThe path value contains unescaped `/`. OpenAPI 3.1 path templating does not permit this, so generated clients must not be assumed to work for this operation.",
         "operationId": "createUploadSession",
         "parameters": [
           {
@@ -10718,6 +10801,9 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "author": {
+                    "type": "string"
+                  },
                   "contentType": {
                     "type": "string"
                   },
@@ -10736,6 +10822,18 @@
                   "hash": {
                     "pattern": "^sha256-[0-9a-f]{64}$",
                     "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "meta": {
+                    "additionalProperties": {
+                      "description": "Any JSON value. The recursive z.json() validator is intentionally represented as an unconstrained schema."
+                    },
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "type": "object"
                   },
                   "mode": {
                     "default": "auto",
@@ -10773,6 +10871,7 @@
               "application/json": {
                 "example": {
                   "attemptGeneration": 0,
+                  "author": "docs-bot",
                   "contentType": "application/octet-stream",
                   "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "declaredSize": 13,
@@ -10781,6 +10880,10 @@
                   "finalizationLeaseExpiresAt": null,
                   "finalizationLeaseOwner": null,
                   "id": "upl_1787702400000deadbeef",
+                  "message": "Upload archive",
+                  "meta": {
+                    "source": "example"
+                  },
                   "mode": "single",
                   "partSize": null,
                   "path": "assets/archive.bin",
@@ -11138,6 +11241,7 @@
               "application/json": {
                 "example": {
                   "attemptGeneration": 0,
+                  "author": "docs-bot",
                   "contentType": "application/octet-stream",
                   "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "declaredSize": 13,
@@ -11146,6 +11250,10 @@
                   "finalizationLeaseExpiresAt": null,
                   "finalizationLeaseOwner": null,
                   "id": "upl_1787702400000deadbeef",
+                  "message": "Upload archive",
+                  "meta": {
+                    "source": "example"
+                  },
                   "mode": "single",
                   "partSize": null,
                   "parts": [],
@@ -11494,6 +11602,7 @@
               "application/json": {
                 "example": {
                   "attemptGeneration": 0,
+                  "author": "docs-bot",
                   "contentType": "application/octet-stream",
                   "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "declaredSize": 13,
@@ -11502,6 +11611,10 @@
                   "finalizationLeaseExpiresAt": null,
                   "finalizationLeaseOwner": null,
                   "id": "upl_1787702400000deadbeef",
+                  "message": "Upload archive",
+                  "meta": {
+                    "source": "example"
+                  },
                   "mode": "single",
                   "partSize": null,
                   "path": "assets/archive.bin",
@@ -11729,6 +11842,7 @@
               "application/json": {
                 "example": {
                   "attemptGeneration": 0,
+                  "author": "docs-bot",
                   "contentType": "application/octet-stream",
                   "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "declaredSize": 13,
@@ -11737,6 +11851,10 @@
                   "finalizationLeaseExpiresAt": null,
                   "finalizationLeaseOwner": null,
                   "id": "upl_1787702400000deadbeef",
+                  "message": "Upload archive",
+                  "meta": {
+                    "source": "example"
+                  },
                   "mode": "single",
                   "partSize": null,
                   "parts": [],
@@ -11946,6 +12064,7 @@
               "application/json": {
                 "example": {
                   "attemptGeneration": 0,
+                  "author": "docs-bot",
                   "contentType": "application/octet-stream",
                   "declaredHash": "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "declaredSize": 13,
@@ -11954,6 +12073,10 @@
                   "finalizationLeaseExpiresAt": null,
                   "finalizationLeaseOwner": null,
                   "id": "upl_1787702400000deadbeef",
+                  "message": "Upload archive",
+                  "meta": {
+                    "source": "example"
+                  },
                   "mode": "single",
                   "partSize": null,
                   "path": "assets/archive.bin",

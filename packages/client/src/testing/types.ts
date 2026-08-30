@@ -188,6 +188,9 @@ export interface FakeUploadSessionRow {
   declaredHash: string | null;
   representation: Representation;
   contentType: string;
+  author: string | null;
+  message: string | null;
+  meta: Record<string, JsonValue> | null;
   mode: UploadMode;
   storageTier: StorageTier;
   partSize: number | null;

@@ -135,12 +135,113 @@ describe("fake universal commit attribution", () => {
       expectedVersion: null,
       representation: "binary",
       contentType: "application/octet-stream",
+      author: "upload author",
+      message: "upload message",
+      meta: { source: "session" },
     });
     if (!uploaded.ok || "unchanged" in uploaded.value) throw new Error("Token upload failed");
     await expect(admin.commits("demo").get(uploaded.value.commitId)).resolves.toMatchObject({
       ok: true,
-      value: { createdBy: me.value.tokenId },
+      value: {
+        author: "upload author",
+        message: "upload message",
+        meta: { source: "session" },
+        createdBy: me.value.tokenId,
+      },
     });
+    await expect(admin.files("demo").history("token.bin")).resolves.toMatchObject({
+      ok: true,
+      value: {
+        versions: [
+          {
+            author: "upload author",
+            message: "upload message",
+            meta: { source: "session" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("preserves JSON upload attribution and rejects divergent session-create replay", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: ADMIN,
+      fetch: fake.fetch,
+      idempotencyKey: () => crypto.randomUUID(),
+    });
+    const uploaded = await client.files("demo").upload("json.txt", "json body", {
+      expectedVersion: null,
+      representation: "text",
+      contentType: "text/plain",
+      mode: "json",
+      author: "json author",
+      message: "json message",
+      meta: { source: "json" },
+    });
+    expect(uploaded).toMatchObject({ ok: true });
+    await expect(client.files("demo").history("json.txt")).resolves.toMatchObject({
+      ok: true,
+      value: {
+        versions: [
+          {
+            author: "json author",
+            message: "json message",
+            meta: { source: "json" },
+          },
+        ],
+      },
+    });
+
+    const create = (author: string) =>
+      request(fake, "/v1/stashes/demo/uploads/session.bin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fake-upload-create-attribution",
+        },
+        body: JSON.stringify({
+          expectedVersion: null,
+          size: 3,
+          representation: "binary",
+          contentType: "application/octet-stream",
+          mode: "single",
+          author,
+        }),
+      });
+    const first = await create("first author");
+    expect(first.status).toBe(201);
+    const diverged = await create("different author");
+    expect(diverged.status).toBe(422);
+    expect(await errorCode(diverged)).toBe("idempotency-key-reused");
+  });
+
+  it("rejects a session-create replay with a different skip-if-unchanged flag", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const create = (skipIfUnchanged: boolean) =>
+      request(fake, "/v1/stashes/demo/uploads/session.bin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fake-upload-create-skip",
+        },
+        body: JSON.stringify({
+          expectedVersion: null,
+          size: 3,
+          representation: "binary",
+          contentType: "application/octet-stream",
+          mode: "single",
+          skipIfUnchanged,
+        }),
+      });
+    const first = await create(false);
+    expect(first.status).toBe(201);
+    const diverged = await create(true);
+    expect(diverged.status).toBe(422);
+    expect(await errorCode(diverged)).toBe("idempotency-key-reused");
   });
 
   it("materializes text when identical binary bytes were stored first", async () => {
@@ -179,6 +280,72 @@ describe("fake universal commit attribution", () => {
       value: { representation: "text", body: "same bytes" },
     });
     await expect(client.files("demo").raw.get("binary.bin")).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe("fake head-mode revert parity", () => {
+  it("skips later tombstones consistently and rejects a mode-divergent replay", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const client = createStashClient({
+      baseUrl: "https://fake.invalid",
+      token: ADMIN,
+      fetch: fake.fetch,
+      idempotencyKey: () => crypto.randomUUID(),
+    });
+    const files = client.files("demo");
+    const commits = client.commits("demo");
+    await expect(
+      files.put("updated.txt", { body: "before update", expectedVersion: null }),
+    ).resolves.toMatchObject({ ok: true });
+    const target = await commits.create({
+      entries: [
+        { op: "put", path: "created.txt", expectedVersion: null, body: "created" },
+        { op: "put", path: "updated.txt", expectedVersion: 1, body: "after update" },
+      ],
+    });
+    if (!target.ok) throw new Error("Head-mode revert target failed");
+    await expect(
+      commits.create({
+        entries: [{ op: "delete", path: "created.txt", expectedVersion: 1 }],
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    const first = await commits.revert(
+      target.value.id,
+      { onto: "head" },
+      { idempotencyKey: "fake-head-revert" },
+    );
+    expect(first).toMatchObject({
+      ok: true,
+      value: {
+        entries: [{ path: "updated.txt", op: "rollback", version: 3, rollbackOf: 1 }],
+        skipped: [{ path: "created.txt", reason: "already-deleted" }],
+      },
+    });
+    const replayed = await commits.revert(
+      target.value.id,
+      { onto: "head" },
+      { idempotencyKey: "fake-head-revert" },
+    );
+    expect(replayed).toEqual({ ...first, replayed: true });
+
+    const modeTarget = await commits.create({
+      entries: [{ op: "put", path: "mode.txt", expectedVersion: null, body: "mode" }],
+    });
+    if (!modeTarget.ok) throw new Error("Mode-divergence target failed");
+    await expect(
+      commits.revert(modeTarget.value.id, {}, { idempotencyKey: "fake-revert-mode" }),
+    ).resolves.toMatchObject({ ok: true });
+    const diverged = await commits.revert(
+      modeTarget.value.id,
+      { onto: "head" },
+      { idempotencyKey: "fake-revert-mode" },
+    );
+    expect(diverged).toMatchObject({
+      ok: false,
+      error: { status: 422, code: "idempotency-key-reused" },
+    });
   });
 });
 

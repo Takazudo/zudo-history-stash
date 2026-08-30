@@ -1,3 +1,4 @@
+import type { JsonValue } from "./canonical.js";
 import type { Representation, StorageTier, UploadMode } from "./binary.js";
 
 export const UPLOAD_SESSION_STATES = [
@@ -34,6 +35,9 @@ export interface UploadSessionRecord extends UploadSessionIdentity {
   mode: UploadMode;
   storageTier: StorageTier;
   partSize: number | null;
+  author: string | null;
+  message: string | null;
+  meta: Record<string, JsonValue> | null;
   expiresAt: string;
   attemptGeneration: number;
   uploadedSize: number | null;
