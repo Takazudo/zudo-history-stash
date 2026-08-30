@@ -2346,6 +2346,7 @@ export function createFakeStash(options: FakeStashOptions = {}): FakeStash {
         existing.declaredHash !== (parsed.data.hash ?? null) ||
         existing.representation !== parsed.data.representation ||
         existing.contentType !== parsed.data.contentType ||
+        existing.skipIfUnchanged !== parsed.data.skipIfUnchanged ||
         existing.mode !== mode ||
         existing.author !== (parsed.data.author ?? null) ||
         existing.message !== (parsed.data.message ?? null) ||

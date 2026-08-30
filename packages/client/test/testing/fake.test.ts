@@ -218,6 +218,32 @@ describe("fake universal commit attribution", () => {
     expect(await errorCode(diverged)).toBe("idempotency-key-reused");
   });
 
+  it("rejects a session-create replay with a different skip-if-unchanged flag", async () => {
+    const fake = createFakeStash({ adminToken: ADMIN });
+    fake.createStash("demo");
+    const create = (skipIfUnchanged: boolean) =>
+      request(fake, "/v1/stashes/demo/uploads/session.bin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "fake-upload-create-skip",
+        },
+        body: JSON.stringify({
+          expectedVersion: null,
+          size: 3,
+          representation: "binary",
+          contentType: "application/octet-stream",
+          mode: "single",
+          skipIfUnchanged,
+        }),
+      });
+    const first = await create(false);
+    expect(first.status).toBe(201);
+    const diverged = await create(true);
+    expect(diverged.status).toBe(422);
+    expect(await errorCode(diverged)).toBe("idempotency-key-reused");
+  });
+
   it("materializes text when identical binary bytes were stored first", async () => {
     const fake = createFakeStash({ adminToken: ADMIN });
     fake.createStash("demo");
