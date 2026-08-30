@@ -9,16 +9,26 @@ category: reference
 
 **Contract:** operation `runGc`; principal `admin`; transport `any`.
 
-Runs one bounded `r2-orphans`, `ledger`, or `content` page with optional `dryRun`, `maxObjects`, and an
-opaque, kind-bound cursor. The `content` kind sweeps D1 content rows in `blobs` / `byte_blobs` that are
-past the content grace and are unreferenced by versions, live change-set entries, and in-flight upload
-sessions; it never deletes an R2 object. It returns a synchronously completed run result. A `null`
-cursor completes the pass; a later cursor-less call starts a fresh pass.
+Runs one bounded `r2-orphans`, `ledger`, `content`, or `change-sets` page with optional `dryRun`,
+`maxObjects`, and an opaque, kind-bound cursor. The `content` kind sweeps D1 content rows in `blobs` /
+`byte_blobs` that are past the content grace and are unreferenced by versions, live change-set entries,
+and in-flight upload sessions; it never deletes an R2 object. The `change-sets` kind reclaims expired
+and rejected change sets, including their `change_sets` and `change_set_entries` rows, after 30 days.
+It returns a synchronously completed run result. A `null` cursor completes the pass; a later cursor-less
+call starts a fresh pass.
 
 Dry runs acquire the same five-minute generation-fenced lease and record counters but never delete
 or persist progress. A non-dry runner can heartbeat/finalize only while it owns the current lease;
 an active owner yields `409 gc-busy`. R2 keys and generations are never exposed in responses or
 logs. Begin manual operations with a dry run, review counters, then run bounded non-dry pages.
+
+Expired and rejected change sets remain listable with
+`GET /v1/stashes/{name}/change-sets?status=expired|rejected` for 30 days after expiry or rejection;
+reclamation then removes both tables; `applied` change sets are retained permanently as commit provenance.
+Reclamation emits no event and leaves no tombstone, so clients must poll the list before the window
+closes if they need to observe an end state. Reclaiming frees the idempotency key, so a later POST with
+the same key mints a new change set; the 30-day window exceeds the 7-day idempotency TTL and 14-day
+change-set TTLs. The sweep intentionally includes rows belonging to soft-deleted stashes.
 
 ### `GET /v1/admin/gc/runs`
 
