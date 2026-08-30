@@ -4,6 +4,11 @@ import { sha256Hex, type CreateCommitBody } from "@takazudo/zudo-history-stash-c
 import type { Env } from "../../src/env.js";
 import { createCommits } from "../../src/d1/commits.js";
 import { createStashStore } from "../../src/d1/store.js";
+import {
+  commitBatch,
+  type CommitBatchInput,
+  type PreparedCommitEntry,
+} from "../../src/d1/sql/commits.js";
 import { resetDatabase, seedStash } from "../helpers/app.js";
 import { generation } from "../helpers/blob-generations.js";
 
@@ -33,6 +38,55 @@ async function tableCount(table: "commits" | "versions" | "files", stash: string
   return row?.count ?? -1;
 }
 
+function preparedPut(
+  path: string,
+  expectedVersion: number | null,
+  version: number,
+): PreparedCommitEntry {
+  return {
+    op: "put",
+    path,
+    expectedVersion,
+    version,
+    author: "author",
+    message: "message",
+    metaJson: "{}",
+    createdAt: 1_000,
+    representation: "text",
+    hash: `sha256-${"a".repeat(64)}`,
+    size: 4,
+    contentType: "text/plain; charset=utf-8",
+    body: "body",
+    r2_key: null,
+  };
+}
+
+function commitBatchInput(
+  stash: string,
+  entries: PreparedCommitEntry[],
+  ledger?: CommitBatchInput["ledger"],
+): CommitBatchInput {
+  return {
+    row: {
+      id: `cmt-direct-${stash}`,
+      stash_name: stash,
+      source: "commit",
+      source_id: null,
+      author: "author",
+      message: "message",
+      meta_json: "{}",
+      entry_count: entries.length,
+      reverts_commit_id: null,
+      idempotency_key: null,
+      request_hash: "request-hash",
+      created_by: "test",
+      created_at: 1_000,
+    },
+    entries,
+    ...(ledger ? { ledger } : {}),
+  };
+}
+
 beforeEach(async () => {
   sequence = 0;
   await resetDatabase();
@@ -44,6 +98,101 @@ describe("commit store", () => {
     for (const byte of bytes) binary += String.fromCharCode(byte);
     return btoa(binary);
   }
+
+  it("writes one fenced ledger row for a successful direct commit batch", async () => {
+    const stash = "commit-batch-ledger";
+    await seedStash(stash);
+    const input = commitBatchInput(stash, [preparedPut("one.txt", null, 1)], {
+      key: "direct-key",
+      requestHash: "direct-request",
+      statusCode: 201,
+    });
+
+    const results = await env.DB.batch(commitBatch(env.DB, input));
+
+    expect(results.at(-1)?.meta.changes).toBe(1);
+    const ledger = await env.DB.prepare(
+      "SELECT key, request_hash, path, version, status_code FROM idempotency WHERE stash_name = ?",
+    )
+      .bind(stash)
+      .all();
+    expect(ledger.results).toEqual([
+      {
+        key: "direct-key",
+        request_hash: "direct-request",
+        path: "one.txt",
+        version: 1,
+        status_code: 201,
+      },
+    ]);
+  });
+
+  it("writes no ledger row when the direct commit batch gate refuses", async () => {
+    const stash = "commit-batch-ledger-refused";
+    await seedStash(stash);
+    await seedFile(stash, "one.txt", "before");
+    const input = commitBatchInput(stash, [preparedPut("one.txt", 99, 100)], {
+      key: "refused-key",
+      requestHash: "refused-request",
+      statusCode: 201,
+    });
+
+    const results = await env.DB.batch(commitBatch(env.DB, input));
+
+    expect(results.at(-1)?.meta.changes).toBe(0);
+    const ledger = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM idempotency WHERE stash_name = ?",
+    )
+      .bind(stash)
+      .first<{ count: number }>();
+    expect(ledger?.count).toBe(0);
+  });
+
+  it("writes nothing when a refused batch reuses a sealed commit id", async () => {
+    const stash = "commit-batch-sealed-id-collision";
+    await seedStash(stash);
+
+    const accepted = commitBatchInput(stash, [preparedPut("accepted.txt", null, 1)]);
+    const acceptedResults = await env.DB.batch(commitBatch(env.DB, accepted));
+    expect(acceptedResults.at(-1)?.meta.changes).toBe(1);
+
+    const refused = commitBatchInput(stash, [preparedPut("refused.txt", 99, 100)], {
+      key: "refused-collision-key",
+      requestHash: "refused-collision-request",
+      statusCode: 201,
+    });
+    const refusedResults = await env.DB.batch(commitBatch(env.DB, refused));
+
+    expect(refusedResults.at(-1)?.meta.changes).toBe(0);
+    expect(await tableCount("commits", stash)).toBe(1);
+    expect(await tableCount("versions", stash)).toBe(1);
+    expect(await tableCount("files", stash)).toBe(1);
+    const ledger = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM idempotency WHERE stash_name = ?",
+    )
+      .bind(stash)
+      .first<{ count: number }>();
+    expect(ledger?.count).toBe(0);
+    const commit = await env.DB.prepare(
+      "SELECT entry_count, change_count, sealed FROM commits WHERE stash_name = ? AND id = ?",
+    )
+      .bind(stash, accepted.row.id)
+      .first();
+    expect(commit).toEqual({ entry_count: 1, change_count: 1, sealed: 1 });
+  });
+
+  it("rejects a ledger on a multi-entry direct commit batch", async () => {
+    const stash = "commit-batch-ledger-many";
+    const input = commitBatchInput(
+      stash,
+      [preparedPut("one.txt", null, 1), preparedPut("two.txt", null, 1)],
+      { key: "many-key", requestHash: "many-request", statusCode: 201 },
+    );
+
+    expect(() => commitBatch(env.DB, input)).toThrow(
+      "Commit batch ledger requires exactly one entry",
+    );
+  });
 
   it("atomically seals create, put, and delete entries under one commit", async () => {
     const stash = "commit-three";
