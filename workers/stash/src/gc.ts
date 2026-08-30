@@ -206,6 +206,7 @@ export interface GcDependencies {
   createId: () => string;
   createOwner: () => string;
   budget: StorageOperationBudget;
+  downstreamReserveOperations: number;
   hooks: GcHooks;
 }
 
@@ -228,9 +229,16 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     createId: () => crypto.randomUUID(),
     createOwner: () => crypto.randomUUID(),
     budget: new StorageOperationBudget(GC_STORAGE_OPERATION_LIMIT),
+    downstreamReserveOperations: 0,
     hooks: {},
     ...overrides,
   };
+  if (
+    !Number.isInteger(dependencies.downstreamReserveOperations) ||
+    dependencies.downstreamReserveOperations < 0
+  ) {
+    throw new Error("Invalid downstream GC reservation");
+  }
   const store = createGcStore(env, dependencies.budget);
   const orphanMinAgeMs = configuredExactInteger(
     "GC_ORPHAN_MIN_AGE_MS",
@@ -346,7 +354,15 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
     await store.heartbeat(run, dependencies.now());
     const cleanupLimit = run.dryRun
       ? 0
-      : Math.min(input.maxObjects, Math.floor(Math.max(0, dependencies.budget.remaining - 3) / 2));
+      : Math.min(
+          input.maxObjects,
+          Math.floor(
+            Math.max(
+              0,
+              dependencies.budget.remaining - 3 - dependencies.downstreamReserveOperations,
+            ) / 2,
+          ),
+        );
     const ledgerCleanup = run.dryRun
       ? { deleted: 0, cleanup: [] }
       : await store.deleteLedgerAndCleanupUploadStaging(
@@ -458,7 +474,10 @@ export function createGcEngine(env: Env, overrides: Partial<GcDependencies> = {}
   return {
     budget: dependencies.budget,
     async run(input: ParsedRunGcBody): Promise<GcRunResult> {
-      if (!dependencies.budget.canCharge(input.kind === "r2-orphans" ? 8 : 6)) {
+      const minimumOperations = input.kind === "r2-orphans" ? 8 : 6;
+      if (
+        !dependencies.budget.canCharge(minimumOperations + dependencies.downstreamReserveOperations)
+      ) {
         throw new GcBudgetExhaustedError();
       }
       const explicit = input.cursor === undefined ? null : decodeGcCursor(input.kind, input.cursor);
