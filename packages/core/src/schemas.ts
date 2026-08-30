@@ -318,7 +318,12 @@ export const CreateCommitBody = z
       });
     }
   });
-export const RevertCommitBody = z.strictObject({ author, message, meta: commitMeta });
+export const RevertCommitBody = z.strictObject({
+  author,
+  message,
+  meta: commitMeta,
+  onto: z.enum(["commit", "head"]).default("commit"),
+});
 export const ListCommitsQuery = z.strictObject({
   limit,
   after: z.string().optional(),
@@ -426,6 +431,9 @@ export const ChangeSetDiffQuery = z.strictObject({
 /** Metadata-only creation request; content bytes always travel on a raw upload route. */
 export const CreateUploadSessionBody = z.strictObject({
   expectedVersion,
+  author,
+  message,
+  meta,
   size: z.number().int().nonnegative(),
   hash: sha256.optional(),
   representation: z.enum(["text", "binary"]),
@@ -512,7 +520,8 @@ export type ParsedListStashesQuery = z.output<typeof ListStashesQuery>;
 export type ListFilesQuery = z.infer<typeof ListFilesQuery>;
 export type CommitEntryInput = z.infer<typeof CommitEntryInput>;
 export type CreateCommitBody = z.infer<typeof CreateCommitBody>;
-export type RevertCommitBody = z.infer<typeof RevertCommitBody>;
+export type RevertCommitBody = z.input<typeof RevertCommitBody>;
+export type ParsedRevertCommitBody = z.output<typeof RevertCommitBody>;
 export type ListCommitsQuery = z.infer<typeof ListCommitsQuery>;
 export type CommitDiffQuery = z.infer<typeof CommitDiffQuery>;
 export type SnapshotQuery = z.infer<typeof SnapshotQuery>;

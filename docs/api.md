@@ -579,6 +579,9 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 ### `POST /v1/stashes/:stash/commits/:id/revert`
 
+- **Request:** Optional `author`, `message`, and `meta` attribution; optional `onto` defaults to
+  `"commit"` and reverts each entry against the version written by the reverted commit, while
+  `"head"` deliberately overwrites later unrelated writes using each path's current head.
 - **Response:** `201 CommitResult`; replay includes `Idempotent-Replayed`.
 - **Errors:** `400 validation`, `401 unauthorized`, `403 scope`, `404 not-found`, `409 commit-conflict`, `413 payload-too-large`, `422 idempotency-key-reused`, `429 rate-limited`, `500 internal`.
 
@@ -784,8 +787,9 @@ staged when a change set is created; binary review diffs report base/candidate h
 
 - **Principal/capability:** `write`; administrator or a matching `write` token.
 - **Request:** JSON metadata with exact `size`, optional SHA-256 `hash`, `representation`,
-  `contentType`, expected-version CAS, and transfer preference; creation has its own
-  `Idempotency-Key` fingerprint.
+  `contentType`, expected-version CAS, transfer preference, and optional `author`, `message`, and
+  `meta` carried to the commit minted at finalize; creation has its own `Idempotency-Key`
+  fingerprint.
 - **Response:** `201` session with `Idempotent-Replayed`, chosen mode/tier, expiry, and generation.
 - **Errors:** `400 validation`, `400 invalid-path`, `401 unauthorized`, `403 scope`,
   `404 not-found`, `409 stale`, `413 payload-too-large`, `422 idempotency-key-reused`,
@@ -996,6 +1000,9 @@ Every file mutation is compare-and-set (CAS):
 2. Send that value as `expectedVersion`. Use `null` only when the path must not exist.
 3. On `409 stale`, inspect the root-level `current`, decide whether to recompute, and retry with a
    new operation. Do not blindly overwrite the winner.
+
+A revert with `onto: "head"` is the single deliberate, opt-in exception to “Do not blindly overwrite
+the winner.”
 
 `putLatest(stash, path, body)` performs the read and up to three bounded stale retries for simple
 last-head updates. Use explicit `files.put` when the consumer needs its own conflict policy.

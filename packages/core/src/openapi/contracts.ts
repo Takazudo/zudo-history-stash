@@ -422,7 +422,8 @@ export const ROUTE_CONTRACTS = {
   },
   revertCommit: {
     summary: "Revert a commit",
-    description: "Creates a new commit that reverses the named commit.",
+    description:
+      'Creates a new commit that reverses the named commit. The onto option defaults to "commit" (the strict behavior), deriving each entry\'s expectedVersion from the version the reverted commit itself wrote. Set onto to "head" as an opt-in mode to derive expectedVersion from the path\'s current head and deliberately overwrite later unrelated writes.',
     principalNote: "write; administrator or a matching write stash token.",
     body: RevertCommitBody,
     requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
@@ -875,7 +876,7 @@ export const ROUTE_CONTRACTS = {
   createUploadSession: {
     summary: "Create a raw upload session",
     description:
-      "Reserves declared exact content bytes and chooses single or multipart transfer plus D1 or R2 staging. Repeating the same idempotency fingerprint replays the session.",
+      "Reserves declared exact content bytes and chooses single or multipart transfer plus D1 or R2 staging. Repeating the same idempotency fingerprint replays the session. Optional author, message, and meta are carried onto the commit minted when the upload is finalized.",
     principalNote: "write; administrator or a matching write stash token.",
     body: CreateUploadSessionBody,
     requestHeaders: ["Idempotency-Key", STASH_CLIENT_ID_HEADER],
