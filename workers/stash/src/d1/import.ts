@@ -12,7 +12,7 @@ import {
 import type { Env } from "../env.js";
 import { prepareBlob, type BlobGenerationFactory, type PreparedBlob } from "./blobs.js";
 import { importBatch, type PreparedImportVersion } from "./sql/import.js";
-import { selectHeadForWrite } from "./sql/writes.js";
+import { selectHeadForWrite } from "./sql/write-primitives.js";
 import type { StoreDependencies } from "./store.js";
 import { mintCommitId, SELECT_COMMIT_VERSIONS } from "./sql/commits.js";
 

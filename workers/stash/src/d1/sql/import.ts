@@ -1,5 +1,5 @@
 import type { PreparedBlob } from "../blobs.js";
-import { fence, type SqlFragment } from "./writes.js";
+import { fence, type SqlFragment } from "./write-primitives.js";
 import { commitInsertStatement, sealStatement } from "./commits.js";
 
 const DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8";
