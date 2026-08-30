@@ -276,7 +276,8 @@ describe("single-path write raw-row characterization", () => {
     });
     if (!first.ok || "unchanged" in first.value) throw new Error("Expected initial put");
     await env.DB.prepare(
-      `UPDATE versions SET representation = 'binary', content_storage = 'bytes'
+      `UPDATE versions
+       SET representation = 'binary', application_etag = 'source-etag', content_storage = 'bytes'
        WHERE stash_name = ? AND path = ? AND version = 1`,
     )
       .bind(stash, path)
