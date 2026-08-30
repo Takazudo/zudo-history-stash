@@ -743,7 +743,10 @@ describe("commit routes", () => {
       body: JSON.stringify({
         path: "deleted.txt",
         expectedVersion: null,
-        versions: [{ kind: "delete", body: null, createdAt: 1 }],
+        versions: [
+          { kind: "put", body: "created then deleted", createdAt: 1 },
+          { kind: "delete", body: null, createdAt: 2 },
+        ],
       }),
     });
     expect(imported.status).toBe(201);
