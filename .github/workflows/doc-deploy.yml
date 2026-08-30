@@ -12,6 +12,8 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - ".mdx-formatter.json"
+      - ".mdx-formatter-ignore"
+      - "lefthook.yml"
       - ".github/workflows/doc-deploy.yml"
   workflow_dispatch:
 

@@ -19,6 +19,8 @@ const COMMON_PATHS = [
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   ".mdx-formatter.json",
+  ".mdx-formatter-ignore",
+  "lefthook.yml",
 ];
 const INTERNAL_AGGREGATE_COMMANDS = [
   "build:libs",
@@ -515,6 +517,7 @@ function assertChecks(source, pins) {
       "Setup Node.js",
       "Install dependencies",
       "Run documentation aggregate",
+      "Run documentation tooling tests",
     ],
   );
   assertSecretAllowlist(source, {});
