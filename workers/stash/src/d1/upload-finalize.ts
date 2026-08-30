@@ -62,6 +62,7 @@ function casFence(input: UploadFinalizeInput): { sql: string; params: unknown[] 
   };
 }
 
+// See #384: commitBatch lacks the upload lease fence and staged-content promotion seams.
 export function uploadFinalizeBatch(
   db: Preparer,
   input: UploadFinalizeInput,

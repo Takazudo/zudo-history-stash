@@ -164,6 +164,7 @@ function rollbackStatement(
     );
 }
 
+// See #384: commitBatch cannot model N sequential versions on one path.
 export function importBatch(db: Preparer, input: ImportBatchInput): ImportBatch {
   if (input.versions.length === 0) throw new Error("Import batch requires versions");
   const importFence = operationFence(input);
