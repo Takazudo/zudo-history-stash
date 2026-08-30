@@ -82,6 +82,8 @@ export interface StashWrites {
 export interface WriteDependencies extends StoreDependencies {
   onBeforeCommit?: () => void | Promise<void>;
   createBlobGeneration?: BlobGenerationFactory;
+  // Deliberate single-path counterpart to alterCommitStatementsForTest; keep both race seams.
+  alterWriteStatementsForTest?: (statements: D1PreparedStatement[]) => D1PreparedStatement[];
 }
 
 function failure<T>(
@@ -220,6 +222,19 @@ async function existingReplay<T>(
   return ledger ? replay<T>(db, ledger, requestHash) : null;
 }
 
+export async function postBatchRefusal<T, Head>(input: {
+  stashIsLive: () => Promise<boolean>;
+  replay: () => Promise<T | null>;
+  stashNotFound: () => T;
+  readHead: () => Promise<Head | null>;
+  classify: (head: Head | null) => T | Promise<T>;
+}): Promise<T> {
+  if (!(await input.stashIsLive())) return input.stashNotFound();
+  const replayed = await input.replay();
+  if (replayed !== null) return replayed;
+  return input.classify(await input.readHead());
+}
+
 function batchWon(results: D1Result[]): boolean {
   return results.at(-1)?.meta.changes === 1;
 }
@@ -311,44 +326,44 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     const message = input.message ?? "";
     const metaJson = canonicalJson(input.meta ?? {});
     try {
-      const results = await db.batch(
-        commitBatch(db, {
-          row: {
-            id: commitId,
-            stash_name: stash,
-            source: "put",
-            source_id: null,
+      let statements = commitBatch(db, {
+        row: {
+          id: commitId,
+          stash_name: stash,
+          source: "put",
+          source_id: null,
+          author,
+          message,
+          meta_json: metaJson,
+          entry_count: 1,
+          reverts_commit_id: null,
+          idempotency_key: null,
+          request_hash: null,
+          created_by: options.createdBy ?? "system",
+          created_at: createdAt,
+        },
+        entries: [
+          {
+            op: "put",
+            representation: "text",
+            path,
+            expectedVersion: input.expectedVersion,
+            version: (input.expectedVersion ?? 0) + 1,
+            hash,
+            size,
+            contentType,
             author,
             message,
-            meta_json: metaJson,
-            entry_count: 1,
-            reverts_commit_id: null,
-            idempotency_key: null,
-            request_hash: null,
-            created_by: options.createdBy ?? "system",
-            created_at: createdAt,
+            metaJson,
+            createdAt,
+            ...prepared,
           },
-          entries: [
-            {
-              op: "put",
-              representation: "text",
-              path,
-              expectedVersion: input.expectedVersion,
-              version: (input.expectedVersion ?? 0) + 1,
-              hash,
-              size,
-              contentType,
-              author,
-              message,
-              metaJson,
-              createdAt,
-              ...prepared,
-            },
-          ],
-          // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
-          ...(ledger ? { ledger } : {}),
-        }),
-      );
+        ],
+        // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
+        ...(ledger ? { ledger } : {}),
+      });
+      statements = deps.alterWriteStatementsForTest?.(statements) ?? statements;
+      const results = await db.batch(statements);
       if (batchWon(results)) {
         const id = await committedChangeId(db, stash, commitId);
         if (id === null) return failure("internal", 500, "Missing put change id");
@@ -367,25 +382,24 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // A concurrent, independently fenced batch may win the unique ledger key.
     }
-    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
-    const wonByOther = await existingReplay<PutResult>(
-      db,
-      stash,
-      options.idempotencyKey,
-      requestHash,
-    );
-    if (wonByOther) return wonByOther;
-    const currentHead = await readHead(db, stash, path);
-    if (input.expectedVersion === null) {
-      return currentHead
-        ? failure("exists", 409, "File already exists", currentFromHead(currentHead))
-        : failure("internal", 500, "Put batch failed without a competing write");
-    }
-    if (!currentHead) return failure("not-found", 404, "File not found");
-    if (currentHead.head_version === input.expectedVersion) {
-      return failure("internal", 500, "Put batch failed without a competing write");
-    }
-    return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
+    return postBatchRefusal({
+      stashIsLive: () => stashIsLive(db, stash),
+      replay: () => existingReplay<PutResult>(db, stash, options.idempotencyKey, requestHash),
+      stashNotFound: () => failure("not-found", 404, "Stash not found"),
+      readHead: () => readHead(db, stash, path),
+      classify: (currentHead) => {
+        if (input.expectedVersion === null) {
+          return currentHead
+            ? failure("exists", 409, "File already exists", currentFromHead(currentHead))
+            : failure("internal", 500, "Put batch failed without a competing write");
+        }
+        if (!currentHead) return failure("not-found", 404, "File not found");
+        if (currentHead.head_version === input.expectedVersion) {
+          return failure("internal", 500, "Put batch failed without a competing write");
+        }
+        return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
+      },
+    });
   }
 
   async function deleteFile(
@@ -433,39 +447,39 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     const author = input.author ?? "";
     const message = input.message ?? "";
     try {
-      const results = await db.batch(
-        commitBatch(db, {
-          row: {
-            id: commitId,
-            stash_name: stash,
-            source: "delete",
-            source_id: null,
+      let statements = commitBatch(db, {
+        row: {
+          id: commitId,
+          stash_name: stash,
+          source: "delete",
+          source_id: null,
+          author,
+          message,
+          meta_json: "{}",
+          entry_count: 1,
+          reverts_commit_id: null,
+          idempotency_key: null,
+          request_hash: null,
+          created_by: options.createdBy ?? "system",
+          created_at: createdAt,
+        },
+        entries: [
+          {
+            op: "delete",
+            path,
+            expectedVersion: input.expectedVersion,
+            version: input.expectedVersion + 1,
             author,
             message,
-            meta_json: "{}",
-            entry_count: 1,
-            reverts_commit_id: null,
-            idempotency_key: null,
-            request_hash: null,
-            created_by: options.createdBy ?? "system",
-            created_at: createdAt,
+            metaJson: "{}",
+            createdAt,
           },
-          entries: [
-            {
-              op: "delete",
-              path,
-              expectedVersion: input.expectedVersion,
-              version: input.expectedVersion + 1,
-              author,
-              message,
-              metaJson: "{}",
-              createdAt,
-            },
-          ],
-          // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
-          ...(ledger ? { ledger } : {}),
-        }),
-      );
+        ],
+        // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
+        ...(ledger ? { ledger } : {}),
+      });
+      statements = deps.alterWriteStatementsForTest?.(statements) ?? statements;
+      const results = await db.batch(statements);
       if (batchWon(results)) {
         const id = await committedChangeId(db, stash, commitId);
         if (id === null) return failure("internal", 500, "Missing delete change id");
@@ -482,28 +496,27 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // See put: only a concurrent ledger claim is recoverable as a replay.
     }
-    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
-    const wonByOther = await existingReplay<DeleteResult>(
-      db,
-      stash,
-      options.idempotencyKey,
-      requestHash,
-    );
-    if (wonByOther) return wonByOther;
-    const currentHead = await readHead(db, stash, path);
-    if (!currentHead) return failure("not-found", 404, "File not found");
-    if (currentHead.head_version !== input.expectedVersion) {
-      return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
-    }
-    if (currentHead.deleted === 1) {
-      return failure(
-        "already-deleted",
-        409,
-        "File is already deleted",
-        currentFromHead(currentHead),
-      );
-    }
-    return failure("internal", 500, "Delete batch failed without a competing write");
+    return postBatchRefusal({
+      stashIsLive: () => stashIsLive(db, stash),
+      replay: () => existingReplay<DeleteResult>(db, stash, options.idempotencyKey, requestHash),
+      stashNotFound: () => failure("not-found", 404, "Stash not found"),
+      readHead: () => readHead(db, stash, path),
+      classify: (currentHead) => {
+        if (!currentHead) return failure("not-found", 404, "File not found");
+        if (currentHead.head_version !== input.expectedVersion) {
+          return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
+        }
+        if (currentHead.deleted === 1) {
+          return failure(
+            "already-deleted",
+            409,
+            "File is already deleted",
+            currentFromHead(currentHead),
+          );
+        }
+        return failure("internal", 500, "Delete batch failed without a competing write");
+      },
+    });
   }
 
   async function rollback(
@@ -563,40 +576,40 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     const versionMessage = message === "" ? `Rollback to v${input.toVersion}` : message;
     const metaJson = canonicalJson(input.meta ?? {});
     try {
-      const results = await db.batch(
-        commitBatch(db, {
-          row: {
-            id: commitId,
-            stash_name: stash,
-            source: "rollback",
-            source_id: null,
+      let statements = commitBatch(db, {
+        row: {
+          id: commitId,
+          stash_name: stash,
+          source: "rollback",
+          source_id: null,
+          author,
+          message,
+          meta_json: metaJson,
+          entry_count: 1,
+          reverts_commit_id: null,
+          idempotency_key: null,
+          request_hash: null,
+          created_by: options.createdBy ?? "system",
+          created_at: createdAt,
+        },
+        entries: [
+          {
+            op: "rollback",
+            path,
+            expectedVersion: input.expectedVersion,
+            version: input.expectedVersion + 1,
+            toVersion: input.toVersion,
             author,
-            message,
-            meta_json: metaJson,
-            entry_count: 1,
-            reverts_commit_id: null,
-            idempotency_key: null,
-            request_hash: null,
-            created_by: options.createdBy ?? "system",
-            created_at: createdAt,
+            message: versionMessage,
+            metaJson,
+            createdAt,
           },
-          entries: [
-            {
-              op: "rollback",
-              path,
-              expectedVersion: input.expectedVersion,
-              version: input.expectedVersion + 1,
-              toVersion: input.toVersion,
-              author,
-              message: versionMessage,
-              metaJson,
-              createdAt,
-            },
-          ],
-          // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
-          ...(ledger ? { ledger } : {}),
-        }),
-      );
+        ],
+        // The ledger can follow entries because commitBatch fences it on the position-independent commit row.
+        ...(ledger ? { ledger } : {}),
+      });
+      statements = deps.alterWriteStatementsForTest?.(statements) ?? statements;
+      const results = await db.batch(statements);
       if (batchWon(results)) {
         const id = await committedChangeId(db, stash, commitId);
         if (id === null) return failure("internal", 500, "Missing rollback change id");
@@ -623,32 +636,36 @@ export function createWrites(env: Env, deps: WriteDependencies): StashWrites {
     } catch {
       // See put: only a concurrent ledger claim is recoverable as a replay.
     }
-    if (!(await stashIsLive(db, stash))) return failure("not-found", 404, "Stash not found");
-    const wonByOther = await existingReplay<RollbackResult>(
-      db,
-      stash,
-      options.idempotencyKey,
-      requestHash,
-    );
-    if (wonByOther) return wonByOther;
-    const currentHead = await readHead(db, stash, path);
-    if (!currentHead) return failure("not-found", 404, "File not found");
-    const currentTarget = await readVersion(db, stash, path, input.toVersion);
-    if (!currentTarget) {
-      return failure("version-not-found", 404, "Version not found", currentFromHead(currentHead));
-    }
-    if (currentTarget.blob_hash === null) {
-      return failure(
-        "rollback-target-tombstone",
-        422,
-        "Cannot rollback to a tombstone",
-        currentFromHead(currentHead),
-      );
-    }
-    if (currentHead.head_version === input.expectedVersion) {
-      return failure("internal", 500, "Rollback batch failed without a competing write");
-    }
-    return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
+    return postBatchRefusal({
+      stashIsLive: () => stashIsLive(db, stash),
+      replay: () => existingReplay<RollbackResult>(db, stash, options.idempotencyKey, requestHash),
+      stashNotFound: () => failure("not-found", 404, "Stash not found"),
+      readHead: () => readHead(db, stash, path),
+      classify: async (currentHead) => {
+        if (!currentHead) return failure("not-found", 404, "File not found");
+        const currentTarget = await readVersion(db, stash, path, input.toVersion);
+        if (!currentTarget) {
+          return failure(
+            "version-not-found",
+            404,
+            "Version not found",
+            currentFromHead(currentHead),
+          );
+        }
+        if (currentTarget.blob_hash === null) {
+          return failure(
+            "rollback-target-tombstone",
+            422,
+            "Cannot rollback to a tombstone",
+            currentFromHead(currentHead),
+          );
+        }
+        if (currentHead.head_version === input.expectedVersion) {
+          return failure("internal", 500, "Rollback batch failed without a competing write");
+        }
+        return failure("stale", 409, "Expected version is stale", currentFromHead(currentHead));
+      },
+    });
   }
 
   return {
