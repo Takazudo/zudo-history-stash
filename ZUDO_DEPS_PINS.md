@@ -12,4 +12,4 @@ Updated by /dev-bump-zudo-deps on every sync — keep `pinned:` accurate.
 - track: releases
 - pinned: 7ca73f197021961603c22042748c23d9ce9d6c50 (v5.13.1)
 - updated: 2026-08-29
-- notes: doc/.template-drift-allowlist records intentional scaffold differences; preserve every listed adaptation during sync
+- notes: doc/.template-drift-allowlist records intentional scaffold differences; preserve every listed adaptation during sync; the current create-zudo-doc generator still emits @takazudo/zdtp at 0.4.12, so it remains at 0.4.12 until a create-zudo-doc release re-pins it
