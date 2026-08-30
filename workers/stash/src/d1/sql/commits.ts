@@ -161,7 +161,7 @@ export function commitGateStatement(db: Preparer, input: CommitGateInput): D1Pre
 
 export function commitFence(stash: string, id: string): SqlFragment {
   return {
-    sql: "EXISTS (SELECT 1 FROM commits WHERE stash_name = ? AND id = ?)",
+    sql: "EXISTS (SELECT 1 FROM commits WHERE stash_name = ? AND id = ? AND sealed = 0)",
     params: [stash, id],
   };
 }

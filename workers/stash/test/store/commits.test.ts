@@ -148,6 +148,39 @@ describe("commit store", () => {
     expect(ledger?.count).toBe(0);
   });
 
+  it("writes nothing when a refused batch reuses a sealed commit id", async () => {
+    const stash = "commit-batch-sealed-id-collision";
+    await seedStash(stash);
+
+    const accepted = commitBatchInput(stash, [preparedPut("accepted.txt", null, 1)]);
+    const acceptedResults = await env.DB.batch(commitBatch(env.DB, accepted));
+    expect(acceptedResults.at(-1)?.meta.changes).toBe(1);
+
+    const refused = commitBatchInput(stash, [preparedPut("refused.txt", 99, 100)], {
+      key: "refused-collision-key",
+      requestHash: "refused-collision-request",
+      statusCode: 201,
+    });
+    const refusedResults = await env.DB.batch(commitBatch(env.DB, refused));
+
+    expect(refusedResults.at(-1)?.meta.changes).toBe(0);
+    expect(await tableCount("commits", stash)).toBe(1);
+    expect(await tableCount("versions", stash)).toBe(1);
+    expect(await tableCount("files", stash)).toBe(1);
+    const ledger = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM idempotency WHERE stash_name = ?",
+    )
+      .bind(stash)
+      .first<{ count: number }>();
+    expect(ledger?.count).toBe(0);
+    const commit = await env.DB.prepare(
+      "SELECT entry_count, change_count, sealed FROM commits WHERE stash_name = ? AND id = ?",
+    )
+      .bind(stash, accepted.row.id)
+      .first();
+    expect(commit).toEqual({ entry_count: 1, change_count: 1, sealed: 1 });
+  });
+
   it("rejects a ledger on a multi-entry direct commit batch", async () => {
     const stash = "commit-batch-ledger-many";
     const input = commitBatchInput(
