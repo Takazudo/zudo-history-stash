@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { IDEMPOTENCY_TTL_DAYS, MAX_BODY_BYTES, RunGcBody } from "@takazudo/zudo-history-stash-core";
 import { describe, expect, it } from "vitest";
 import { createWrites } from "../../../src/d1/writes.js";
-import { rollbackBatch } from "../../../src/d1/sql/writes.js";
+import { commitBatch } from "../../../src/d1/sql/commits.js";
 import { createGcEngine } from "../../../src/gc.js";
 import { counts, expectError, setup } from "./helpers.js";
 
@@ -320,17 +320,35 @@ describe("stash writes", () => {
     const db = env.DB.withSession("first-primary");
     const before = await counts(stash);
     const results = await db.batch(
-      rollbackBatch(db, {
-        commitId: "cmt_tombstone_refusal",
-        createdBy: "test",
-        stash,
-        path: "hole.txt",
-        expectedVersion: 2,
-        toVersion: 2,
-        author: "",
-        message: "",
-        metaJson: "{}",
-        createdAt: 123,
+      commitBatch(db, {
+        row: {
+          id: "cmt_tombstone_refusal",
+          stash_name: stash,
+          source: "rollback",
+          source_id: null,
+          author: "",
+          message: "",
+          meta_json: "{}",
+          entry_count: 1,
+          reverts_commit_id: null,
+          idempotency_key: null,
+          request_hash: null,
+          created_by: "test",
+          created_at: 123,
+        },
+        entries: [
+          {
+            op: "rollback",
+            path: "hole.txt",
+            expectedVersion: 2,
+            version: 3,
+            toVersion: 2,
+            author: "",
+            message: "Rollback to v2",
+            metaJson: "{}",
+            createdAt: 123,
+          },
+        ],
       }),
     );
     expect(results.at(-1)?.meta.changes).toBe(0);
