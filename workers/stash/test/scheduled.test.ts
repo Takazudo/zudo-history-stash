@@ -153,11 +153,14 @@ describe("scheduled GC orchestration", () => {
       next_cursor: string | null;
     }>();
     expect(jobs.results).toEqual([
+      { kind: "change-sets", next_cursor: null },
       { kind: "content", next_cursor: expect.any(String) },
       { kind: "ledger", next_cursor: expect.any(String) },
       { kind: "r2-orphans", next_cursor: expect.any(String) },
     ]);
-    expect(decodeGcCursor("content", jobs.results[0]!.next_cursor!)).toEqual({
+    expect(
+      decodeGcCursor("content", jobs.results.find((row) => row.kind === "content")!.next_cursor!),
+    ).toEqual({
       v: 1,
       kind: "content",
       table: "byte_blobs",
