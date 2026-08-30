@@ -22,6 +22,7 @@ declare global {
       STASH_DELETE_GRACE_DAYS: string;
       GC_ORPHAN_MIN_AGE_MS: string;
       GC_CONTENT_MIN_AGE_MS: string;
+      GC_CHANGE_SET_RETENTION_MS: string;
       GC_LEASE_TTL_MS: string;
       CHANGE_SET_TTL_DAYS: string;
       STASH_EVENTS_MAX_STREAM_MS: string;
