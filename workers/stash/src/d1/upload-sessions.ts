@@ -314,10 +314,9 @@ export class D1UploadSessionStore implements UploadSessionMutationStore {
       .prepare(
         `UPDATE upload_sessions SET finalization_lease_until = ?, updated_at = ?
          WHERE id = ? AND state = 'finalizing' AND attempt_generation = ?
-           AND finalization_lease_owner = ? AND finalization_lease_until = ?
-           AND finalization_lease_until > ?`,
+           AND finalization_lease_owner = ? AND finalization_lease_until = ?`,
       )
-      .bind(leaseUntil, now, lease.sessionId, lease.generation, lease.owner, lease.expiresAt, now)
+      .bind(leaseUntil, now, lease.sessionId, lease.generation, lease.owner, lease.expiresAt)
       .run();
     return result.meta.changes === 1 ? { ...lease, expiresAt: leaseUntil } : null;
   }
