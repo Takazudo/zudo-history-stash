@@ -6,8 +6,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const b4push = readFileSync(resolve(root, "scripts/run-b4push.sh"), "utf8");
 const ci = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
 
+// `heavy` is the local machine-wide queue wrapper, not part of the command CI runs.
 const b4pushCommands = Array.from(b4push.matchAll(/^run_step\s+"[^"]+"\s+(.+)$/gm), ([, command]) =>
-  command.trim(),
+  command.trim().replace(/^heavy\s+/, ""),
 );
 // Package publint/attw checks are an intentional CI-only extension; compare the shared prefix.
 const quality = ci.match(

@@ -30,16 +30,26 @@ run_step() {
   fi
 }
 
+# Machine-wide queue for heavy steps, shared by every agent session on this machine
+# (owner's ~/.claude or ~/.codex). Absent on CI and on other machines → runs directly.
+heavy() {
+  local g="${HEAVY_GUARD:-}"
+  [ -n "$g" ] || for c in "$HOME/.claude/scripts/heavy-guard.sh" "$HOME/.codex/scripts/heavy-guard.sh"; do
+    [ -x "$c" ] && { g="$c"; break; }
+  done
+  if [ -n "$g" ] && [ -z "${CI:-}" ]; then "$g" -- "$@"; else "$@"; fi
+}
+
 run_step "Step 1/10: Install dependencies (frozen lockfile)" pnpm install --frozen-lockfile
 run_step "Step 2/10: B4push/CI parity"                       pnpm check:b4push-ci-parity
-run_step "Step 3/10: Build libraries"                       pnpm build:libs
+run_step "Step 3/10: Build libraries"                       heavy pnpm build:libs
 run_step "Step 4/10: Format check"                          pnpm format:check
 run_step "Step 5/10: Markdown format check"                 pnpm format:md:check
 run_step "Step 6/10: Typecheck"                             pnpm typecheck
 run_step "Step 7/10: Lint"                                  pnpm lint
 run_step "Step 8/10: Design-token lint"                     pnpm lint:tokens
-run_step "Step 9/10: Tests"                                 pnpm test
-run_step "Step 10/10: Build"                                pnpm build
+run_step "Step 9/10: Tests"                                 heavy pnpm test
+run_step "Step 10/10: Build"                                heavy pnpm build
 
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
